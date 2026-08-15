@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Spec fixtures checkout used by the conformance harness in CI
+.legaldown-spec/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

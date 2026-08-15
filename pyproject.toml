@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "legaldown-validator"
+version = "0.1.0"
+description = "Reference parser and validator for the LegalDown legal document format"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+keywords = ["legaldown", "legal", "contracts", "markdown", "parser", "validator"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Legal Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Markup",
+]
+dependencies = ["pyyaml>=6.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+legaldown = "legaldown.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ForLegalAI/legaldown-validator"
+Repository = "https://github.com/ForLegalAI/legaldown-validator"
+Specification = "https://github.com/ForLegalAI/LegalDown"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/legaldown"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+pythonpath = ["src"]
+markers = [
+    "conformance: Specification conformance (needs the LegalDown fixtures corpus)",
+]
