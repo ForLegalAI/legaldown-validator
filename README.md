@@ -25,10 +25,12 @@ to filter, suppress, or gate a build on.
 ## Install
 
 ```bash
-pip install legaldown-validator
+pip install legaldown-validator      # distribution name
+python -c "import legaldown"         # import name
 ```
 
-Requires Python 3.11+.
+Requires Python 3.11+. The package ships a `py.typed` marker, so type checkers use its annotations
+directly.
 
 ## Command line
 
@@ -150,6 +152,13 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 
 Cases for unimplemented rules are skipped and named, so the run doubles as the coverage ledger
 above. CI runs this on every push and pull request.
+
+### Releasing
+
+Version history is in [CHANGELOG.md](CHANGELOG.md). Releases are published to PyPI by the
+`publish` workflow using Trusted Publishing — see [PUBLISHING.md](PUBLISHING.md) for the one-time
+setup and the release checklist. `__version__` in `src/legaldown/__init__.py` is the single source
+of truth; the workflow refuses to publish if it disagrees with the release tag.
 
 ## License
 

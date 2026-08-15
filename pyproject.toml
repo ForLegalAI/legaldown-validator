@@ -4,26 +4,46 @@ build-backend = "hatchling.build"
 
 [project]
 name = "legaldown-validator"
-version = "0.1.0"
+# Single-sourced from src/legaldown/__init__.py so the package and the
+# distribution can never disagree about the version.
+dynamic = ["version"]
 description = "Reference parser and validator for the LegalDown legal document format"
 readme = "README.md"
-license = "MIT"
 requires-python = ">=3.11"
-keywords = ["legaldown", "legal", "contracts", "markdown", "parser", "validator"]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "ForLegalAI s.r.o." }]
+maintainers = [{ name = "ForLegalAI s.r.o." }]
+keywords = [
+    "legaldown",
+    "legal",
+    "contracts",
+    "legaltech",
+    "markdown",
+    "parser",
+    "validator",
+    "document-format",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Legal Industry",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Software Development :: Quality Assurance",
     "Topic :: Text Processing :: Markup",
+    "Typing :: Typed",
 ]
 dependencies = ["pyyaml>=6.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.6", "build>=1.2", "twine>=5.1"]
 
 [project.scripts]
 legaldown = "legaldown.cli:main"
@@ -31,10 +51,27 @@ legaldown = "legaldown.cli:main"
 [project.urls]
 Homepage = "https://github.com/ForLegalAI/legaldown-validator"
 Repository = "https://github.com/ForLegalAI/legaldown-validator"
+Issues = "https://github.com/ForLegalAI/legaldown-validator/issues"
+Changelog = "https://github.com/ForLegalAI/legaldown-validator/blob/main/CHANGELOG.md"
 Specification = "https://github.com/ForLegalAI/LegalDown"
+
+[tool.hatch.version]
+path = "src/legaldown/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/legaldown"]
+
+[tool.hatch.build.targets.sdist]
+# Ship the tests and license with the source distribution so downstream
+# packagers can verify the build; exclude CI and editor noise.
+include = [
+    "src/legaldown",
+    "tests",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 [tool.ruff]
 line-length = 120

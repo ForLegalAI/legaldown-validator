@@ -79,7 +79,9 @@ jobs:
       - run: pip install build twine
       - run: python -m build
       - name: Check package metadata
-        run: twine check dist/*
+        # --strict matches the publish workflow, so a metadata problem fails
+        # here on the pull request rather than at release time.
+        run: twine check --strict dist/*
       - uses: actions/upload-artifact@v4
         with:
           name: dist
