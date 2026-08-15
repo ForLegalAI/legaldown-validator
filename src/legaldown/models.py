@@ -437,3 +437,60 @@ def empty_document() -> Document:
         ],
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Legacy metadata repair (spec v0.1 hard cutover)
+# ---------------------------------------------------------------------------
+#
+# Before 0.1, party and side `name` often held a display name ("Acme
+# Corporation Ltd.") and `type` used short spellings ("company"). The model
+# used to coerce those on load, which hid genuine violations from the
+# validator — §15.6 requires side-party-name-format and party-type-invalid to
+# be reported. Parsing is therefore faithful, and this repair is applied
+# explicitly at an application's storage boundary when loading stored content,
+# alongside migrate_legacy_directives().
+
+_LEGACY_PARTY_TYPES = {
+    "legal": "legal_entity",
+    "company": "legal_entity",
+    "entity": "legal_entity",
+    "organization": "legal_entity",
+    "natural": "natural_person",
+    "person": "natural_person",
+    "individual": "natural_person",
+}
+
+
+def repair_legacy_metadata(document: Document) -> Document:
+    """Normalize pre-0.1 side/party metadata in place, returning *document*.
+
+    - A non-identifier ``name`` becomes a slug; the original text is preserved
+      as ``legal_name`` (parties) or ``label`` (sides) when those are empty, so
+      nothing displayed to the user is lost.
+    - Legacy ``type`` spellings map onto ``legal_entity`` / ``natural_person``.
+
+    Values containing a ``{{placeholder:}}`` are left untouched — those must
+    still reach the validator (§3.10).
+    """
+    for side in document.metadata.sides:
+        name = (side.name or "").strip()
+        if name and "{{" not in name and not _IDENTIFIER_RE.match(name):
+            if not (side.label or "").strip():
+                side.label = name
+            side.name = _slugify(name, fallback="side")
+
+        for party in side.parties:
+            party_type = (party.type or "").strip()
+            if party_type and party_type not in ("legal_entity", "natural_person"):
+                mapped = _LEGACY_PARTY_TYPES.get(party_type.lower())
+                if mapped:
+                    party.type = mapped
+
+            pname = (party.name or "").strip()
+            if pname and "{{" not in pname and not _IDENTIFIER_RE.match(pname):
+                if not (party.legal_name or "").strip():
+                    party.legal_name = pname
+                party.name = _slugify(pname, fallback="party")
+
+    return document

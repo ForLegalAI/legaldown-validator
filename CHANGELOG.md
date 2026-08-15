@@ -12,6 +12,29 @@ release targets is exported as `legaldown.SPEC_VERSION`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `result.sections` stays positionally paired with `document.sections` when a
+  heading uses an out-of-range level. The section previously got no index
+  entry, so consumers that zip the two lists shifted every later section's
+  number and dropped the last section from rendered output. Numbering now
+  clamps into range and the `heading-depth` Error is still reported.
+- `amend-term-undefined` (Error) is no longer downgraded to
+  `amend-term-unresolvable` (Info) when the amended original is imported
+  successfully but declares no definitions.
+
+### Added
+
+- `repair_legacy_metadata()` normalizes pre-0.1 side/party metadata: a
+  display name in `name` becomes an identifier (the original text is kept as
+  `legal_name`/`label`), and legacy `type` spellings map onto `legal_entity`
+  / `natural_person`. Like `migrate_legacy_directives()` it is opt-in, so the
+  parser stays faithful and the validator still reports the violations when
+  they are authored deliberately.
+- `render_block()` is now public. Applications that render one block at a
+  time were reaching for the private `_render_block`, which this package
+  cannot keep stable across versions.
+
 ## [0.1.0] — 2026-08-15
 
 First release. Targets LegalDown specification **v0.1** at conformance

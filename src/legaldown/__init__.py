@@ -45,13 +45,14 @@ from .models import (
     empty_document,
     metadata_from_dict,
     party_from_dict,
+    repair_legacy_metadata,
     section_from_dict,
     side_from_dict,
 )
 
 # Parser & serializer
 from .parser import collect_source_directives, parse_document
-from .serializer import serialize_document
+from .serializer import render_block, serialize_document
 
 # Validator
 from .validator import (
@@ -91,6 +92,8 @@ __all__ = [
     "DEF_ANCHOR_RE",
     "migrate_legacy_definitions",
     "migrate_legacy_directives",
+    "repair_legacy_metadata",
+    "render_block",
     "AttachmentDefinitionsImporter",
     # Result types
     "ValidationResult",

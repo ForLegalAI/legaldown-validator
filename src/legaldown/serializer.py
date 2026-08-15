@@ -187,3 +187,13 @@ def serialize_document(document: Document) -> str:
     return "\n".join(parts).strip() + "\n"
 
 
+
+
+def render_block(block: Block) -> str:
+    """Render a single block to LegalDown source.
+
+    Public alias for the block renderer: applications that render one
+    block at a time (editors, previews) need it, and a private name is
+    not a contract this package can keep stable.
+    """
+    return _render_block(block)

@@ -313,17 +313,23 @@ def validate_document(
     last_level = 0
 
     for section in document.sections:
-        if section.level < 1 or section.level > 5:
+        # An out-of-range level is an Error, but the section still gets an
+        # index entry: `result.sections` is positionally paired with
+        # `document.sections` by callers (renderers, the editor), so skipping
+        # one here would shift every later section's number and drop the last
+        # one from rendered output. Numbering clamps into the valid range.
+        level = section.level
+        if level < 1 or level > 5:
             result.error(
                 "heading-depth",
                 f"Section '{section.title}' uses unsupported heading level "
                 f"{section.level}. LegalDown supports levels 1-5 (§4.1).",
             )
-            continue
-        if last_level > 0 and section.level - last_level > 1:
+            level = min(max(level, 1), 5)
+        if last_level > 0 and level - last_level > 1:
             result.error(
                 "heading-skip",
-                f"Heading levels must not skip. '{section.title}' jumps from level {last_level} to {section.level}.",
+                f"Heading levels must not skip. '{section.title}' jumps from level {last_level} to {level}.",
             )
         if re.match(
             r"^(article\s+[ivxlcdm]+|\d+(?:\.\d+)*)",
@@ -365,25 +371,25 @@ def validate_document(
                 f"Section identifier '{identifier}' collides with an attachment id.",
             )
 
-        for idx in range(section.level, 7):
-            if idx == section.level:
+        for idx in range(level, 7):
+            if idx == level:
                 counters[idx] += 1
-            elif idx > section.level:
+            elif idx > level:
                 counters[idx] = 0
-        path_stack = path_stack[: max(section.level - 1, 0)]
+        path_stack = path_stack[: max(level - 1, 0)]
         path_stack.append(identifier)
-        number = format_section_number(counters, section.level)
+        number = format_section_number(counters, level)
         entry = SectionIndexEntry(
             title=section.title,
             identifier=identifier,
             path=".".join(path_stack),
-            level=section.level,
+            level=level,
             number=number,
         )
         result.sections.append(entry)
         result.section_lookup[identifier] = entry
         result.section_lookup[entry.path] = entry
-        last_level = section.level
+        last_level = level
 
     # ── Item and paragraph anchors (§5.7) ──
     # A trailing {#id} on a list item or paragraph joins the shared anchor
@@ -493,6 +499,10 @@ def validate_document(
 
     # ── Amendment definition import (§7.5) ──
     _amends_is_legaldown = False
+    # Distinct from "imported something": an original that legitimately
+    # declares no definitions still counts as consulted, so a missing term is
+    # an Error (§15.8) rather than being downgraded to Info.
+    _amends_import_succeeded = False
     _imported_definitions: dict[str, str] = {}
     if document.metadata.amends and document.metadata.amends.file:
         amends_file = document.metadata.amends.file
@@ -502,6 +512,7 @@ def validate_document(
             if import_definitions is not None:
                 imported = import_definitions(amends_file, document.filename)
                 if imported is not None:
+                    _amends_import_succeeded = True
                     _imported_definitions = imported
                     for def_id in result.definition_lookup:
                         if def_id in _imported_definitions:
@@ -753,7 +764,7 @@ def validate_document(
                 result.used_terms.add(target)
                 if target not in result.definition_lookup:
                     if document.metadata.amends:
-                        if _amends_is_legaldown and _imported_definitions:
+                        if _amends_is_legaldown and _amends_import_succeeded:
                             result.error(
                                 "amend-term-undefined",
                                 f"Undefined term reference: '{target}' (not found in "
