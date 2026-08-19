@@ -88,8 +88,12 @@ contract.lgd: warning: [money-missing-currency] Money directive without currency
 1 error(s), 1 warning(s), 0 info(s)
 ```
 
-One diagnostic per line, each prefixed with its rule id. A clean document prints
+One diagnostic per line, each prefixed with its rule id. A clean document reports
 `No issues found.` and exits `0`.
+
+Diagnostics go to **stdout**; the trailing summary and `No issues found.` go to **stderr**, so
+`legaldown validate contracts/ > report.txt` captures the findings alone. `--quiet` drops the
+summary entirely.
 
 ## Command line
 
@@ -188,7 +192,9 @@ from legaldown import parse_document, serialize_document
 
 document = parse_document(source)
 document.metadata.governing_law = "Czech Republic"
-open("contract.lgd", "w").write(serialize_document(document))
+
+with open("contract.lgd", "w", encoding="utf-8") as handle:
+    handle.write(serialize_document(document))
 ```
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
@@ -228,7 +234,7 @@ It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — every rule it
 implements passes. The specification (§16.5) requires an implementation to be explicit about the
 checks it does not perform, so those are listed in
-[CONFORMANCE.md](CONFORMANCE.md) rather than left to be discovered.
+[CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md) rather than left to be discovered.
 
 ## Development
 
@@ -249,14 +255,14 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Cases for rules outside Core are skipped and named, so the run doubles as the coverage ledger in
-[CONFORMANCE.md](CONFORMANCE.md). CI runs it on every push and pull request.
+[CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md). CI runs it on every push and pull request.
 
-Version history is in [CHANGELOG.md](CHANGELOG.md). Bug reports and pull requests are welcome in
+Version history is in [CHANGELOG.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CHANGELOG.md). Bug reports and pull requests are welcome in
 [Issues](https://github.com/ForLegalAI/legaldown-validator/issues); questions about the format
 itself belong in the specification repository's
 [Discussions](https://github.com/ForLegalAI/LegalDown/discussions).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The LegalDown specification itself is published separately under
+MIT — see [LICENSE](https://github.com/ForLegalAI/legaldown-validator/blob/main/LICENSE). The LegalDown specification itself is published separately under
 CC BY 4.0; it permits implementations to choose their own license.

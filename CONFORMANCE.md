@@ -51,5 +51,6 @@ legaldown.CONFORMANCE_LEVEL  # "core" — conformance level claimed
 legaldown.__version__        # implementation version
 ```
 
-The CLI's JSON output carries the same information on every run, under `legaldown_spec` and
-`validator_version`.
+The CLI's JSON output repeats the first and last of these on every run, as `legaldown_spec` and
+`validator_version`. The conformance level is not part of the JSON payload — read it from the
+package.

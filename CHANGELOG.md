@@ -23,14 +23,19 @@ release targets is exported as `legaldown.SPEC_VERSION`.
   `amend-term-unresolvable` (Info) when the amended original is imported
   successfully but declares no definitions.
 
+### Removed
+
+- The migration helpers and the tolerant frontmatter fallbacks that existed to
+  carry content written before the specification settled:
+  `migrate_legacy_directives()`, `migrate_legacy_definitions()`,
+  `repair_legacy_metadata()`, and the `BUILTIN_DIRECTIVES` alias. Frontmatter
+  now reads exactly the shape §3 defines — sides under `sides`, parties under
+  `parties`, `type`, `label`, `representatives`, `identification_number` — and
+  anything else is reported by the validator rather than quietly reinterpreted.
+  There is nothing to migrate from: 0.1 is the first specification version.
+
 ### Added
 
-- `repair_legacy_metadata()` normalizes non-conforming side/party metadata:
-  a display name in `name` becomes an identifier (the original text is kept
-  as `legal_name`/`label`), and alternative `type` spellings map onto
-  `legal_entity` / `natural_person`. Like `migrate_legacy_directives()` it is
-  opt-in, so the parser stays faithful and the validator still reports the
-  violations when they are authored deliberately.
 - `render_block()` is now public. Applications that render one block at a
   time were reaching for the private `_render_block`, which this package
   cannot keep stable across versions.
@@ -54,10 +59,6 @@ First release. Targets LegalDown specification **v0.1** at conformance
 - **Command line** — `legaldown validate` with plain-text and JSON output (§15.9), `--ignore` by
   rule id, `--warnings-as-errors`, `--strict`, recursive directory walking, and exit codes suitable
   for gating a build.
-- **`migrate_legacy_directives()`** — rewrites directive spellings the specification does not
-  accept (`{{pct: X}}` → `{{field: X%, type=percentage}}`, `unit=M` → `unit=MIN`) without touching
-  code spans or fenced blocks. Opt-in by design: the parser never rewrites its input, so a
-  deliberately authored `unit=M` still reports `duration-invalid-unit`.
 - **`SPEC_VERSION` and `CONFORMANCE_LEVEL`** exported so consumers can assert what they validate
   against.
 - **Conformance harness** — runs the validator against the specification's own fixtures corpus.

@@ -195,11 +195,10 @@ def _parse_blocks(chunk: str) -> list[Block]:
 def parse_document(source: str, *, filename: str = "") -> Document:
     """Parse a LegalDown source string into a Document object.
 
-    The parser is deliberately faithful to the source: pre-0.1 spellings are
-    **not** rewritten here, so the validator reports what the document actually
-    says (a bare ``unit=M`` must surface as duration-invalid-unit). Legacy
-    content is upgraded at the storage boundary instead — see
-    ``app.services.documents.parse_document_row``.
+    The parser is deliberately faithful to the source: nothing is rewritten to
+    make a document valid, so the validator reports what the document actually
+    says (a bare ``unit=M`` surfaces as duration-invalid-unit rather than being
+    silently corrected).
     """
     metadata, body = _split_frontmatter(source or "")
     payload: dict[str, Any] = {

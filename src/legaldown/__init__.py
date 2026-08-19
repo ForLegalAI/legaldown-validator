@@ -24,8 +24,6 @@ from .definitions import (
     DefinitionRef,
     collect_definitions,
     definition_lookup,
-    migrate_legacy_definitions,
-    migrate_legacy_directives,
 )
 from .models import (
     BLOCK_DEFAULTS,
@@ -45,7 +43,6 @@ from .models import (
     empty_document,
     metadata_from_dict,
     party_from_dict,
-    repair_legacy_metadata,
     section_from_dict,
     side_from_dict,
 )
@@ -72,7 +69,8 @@ SPEC_VERSION = "0.1"
 
 #: Conformance level per specification §16. "core" — parse and validate a
 #: single document. Rendering and Full (multi-file: includes, attachments,
-#: bilingual sets) are not claimed; see the README for exact rule coverage.
+#: bilingual sets) are not claimed. Exact rule coverage:
+#: https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md
 CONFORMANCE_LEVEL = "core"
 
 __all__ = [
@@ -90,9 +88,6 @@ __all__ = [
     "DefinitionRef",
     "DELIMITER_PAIRS",
     "DEF_ANCHOR_RE",
-    "migrate_legacy_definitions",
-    "migrate_legacy_directives",
-    "repair_legacy_metadata",
     "render_block",
     "AttachmentDefinitionsImporter",
     # Result types
