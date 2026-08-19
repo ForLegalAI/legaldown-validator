@@ -1,12 +1,11 @@
-"""Specification 0.1 behavior: legacy migration, code spans, and directives.
+"""Specification 0.1 behavior: faithful parsing, code spans, and directives.
 
 Complements tests/conformance (which runs the specification's own fixtures
-corpus) with cases the corpus does not cover: the pre-0.1 migration helpers
-and the §11.4 recognition contexts.
+corpus) with cases the corpus does not cover: the parser's refusal to repair
+its input, and the §11.4 recognition contexts.
 """
 from __future__ import annotations
 
-from legaldown.definitions import migrate_legacy_directives
 from legaldown.parser import parse_document
 from legaldown.validator import validate_document
 
@@ -35,58 +34,74 @@ def _validate(body: str):
     return validate_document(parse_document(_FRONTMATTER + body, filename="t.lgd"))
 
 
-# ── Legacy directive migration ────────────────────────────────────
+# ── Faithful parsing ──────────────────────────────────────────────
 
 
-def test_legacy_pct_migrates_to_field():
-    assert migrate_legacy_directives("Rate {{pct: 1.5}}.") == (
-        "Rate {{field: 1.5%, type=percentage}}."
-    )
-
-
-def test_legacy_pct_keeps_note_and_existing_sign():
-    assert migrate_legacy_directives("{{pct: 5%, note=annual}}") == (
-        "{{field: 5%, type=percentage, note=annual}}"
-    )
-
-
-def test_legacy_duration_unit_m_becomes_min():
-    assert migrate_legacy_directives("{{duration: 30, unit=M}}") == (
-        "{{duration: 30, unit=MIN}}"
-    )
-    # MO must not be touched by the M rewrite.
-    assert migrate_legacy_directives("{{duration: 3, unit=MO}}") == (
-        "{{duration: 3, unit=MO}}"
-    )
-
-
-def test_migration_leaves_code_regions_untouched():
-    source = "Live {{pct: 2}} and `{{pct: 9}}` plus\n\n```\n{{duration: 1, unit=M}}\n```\n"
-    migrated = migrate_legacy_directives(source)
-    assert "{{field: 2%, type=percentage}}" in migrated
-    assert "`{{pct: 9}}`" in migrated          # inline code span preserved
-    assert "{{duration: 1, unit=M}}\n```" in migrated  # fenced block preserved
-
-
-def test_legacy_document_still_validates_after_migration():
-    """A pre-0.1 stored document must not become unsaveable.
-
-    The migration is an explicit, opt-in helper — applications call it at
-    their own storage boundary when loading stored content. The parser never
-    applies it implicitly, so it is applied explicitly here too.
-    """
-    body = "Rate {{pct: 1.5}} over {{duration: 30, unit=M}}."
-    source = migrate_legacy_directives(_FRONTMATTER + body)
-    result = validate_document(parse_document(source, filename="t.lgd"))
-    assert result.errors == []
-    assert ("30", "MIN") in result.inline_durations
-    assert ("1.5%", "percentage") in result.inline_fields
-
-
-def test_parser_does_not_silently_migrate_legacy_spellings():
-    """The parser stays faithful: a bare unit=M must reach the validator."""
+def test_parser_does_not_silently_correct_an_invalid_duration_unit():
+    """A bare unit=M must reach the validator, not be repaired on the way."""
     result = _validate("Within {{duration: 30, unit=M}}.")
     assert "duration-invalid-unit" in result.rules("error")
+
+
+def test_parser_does_not_silently_correct_party_metadata():
+    """Display names and unknown types survive the parse so §15.6 can report them.
+
+    The party carrying the malformed name and the one carrying the bad type are
+    deliberately separate: the validator stops checking a party once its name is
+    rejected, so a single party would only ever report the name.
+    """
+    source = """---
+title: Fixture
+document_type: contract
+sides:
+  - name: Providing Party
+    parties:
+      - name: Acme Corporation Ltd.
+        type: company
+  - name: clients
+    parties:
+      - name: beta
+        type: corporation
+        legal_name: Beta Industries Inc.
+---
+
+# Scope {#scope}
+
+Text.
+"""
+    document = parse_document(source, filename="t.lgd")
+    side = document.metadata.sides[0]
+    assert side.name == "Providing Party"           # preserved verbatim
+    assert side.parties[0].type == "company"        # not mapped onto legal_entity
+
+    rules = validate_document(document).rules("error")
+    assert "side-party-name-format" in rules        # the display name
+    assert "party-type-invalid" in rules            # the unknown type
+
+
+def test_a_party_omitting_the_required_type_is_reported():
+    """§3.4 makes `type` REQUIRED, so an absent one must not default to a value."""
+    source = """---
+title: Fixture
+document_type: contract
+sides:
+  - name: providers
+    parties:
+      - name: acme
+        legal_name: Acme Corporation
+  - name: clients
+    parties:
+      - name: beta
+        type: legal_entity
+---
+
+# Scope {#scope}
+
+Text.
+"""
+    document = parse_document(source, filename="t.lgd")
+    assert document.metadata.sides[0].parties[0].type == ""
+    assert "party-type-invalid" in validate_document(document).rules("error")
 
 
 # ── §11.4 recognition contexts ────────────────────────────────────
@@ -188,43 +203,118 @@ def test_amend_term_is_an_error_when_original_defines_nothing():
     assert "amend-term-unresolvable" not in result.rules()
 
 
-# ── Legacy metadata repair ────────────────────────────────────────
+# ── Inline value indices ──────────────────────────────────────────
 
 
-def test_repair_legacy_metadata_normalizes_names_and_types():
-    from legaldown import repair_legacy_metadata
+def test_inline_value_indices_collect_field_spec_values():
+    """ValidationResult exposes the values the checks indexed, for reuse."""
+    result = _validate(
+        "Rate {{field: 1.5%, type=percentage}} over {{duration: 30, unit=MIN}} "
+        "from {{date: 2026-06-01}} for {{money: 5000, currency=EUR}}."
+    )
+    assert ("1.5%", "percentage") in result.inline_fields
+    assert ("30", "MIN") in result.inline_durations
+    assert "2026-06-01" in result.inline_dates
+    assert ("5000", "EUR") in result.inline_money
 
-    source = """---
-title: Legacy
+
+# ── Attachments (§15.10) ──────────────────────────────────────────
+#
+# The corpus fixtures for these rules span several files, so the
+# single-document conformance harness skips them; they are exercised here.
+
+_ATTACHMENT_FRONTMATTER = """---
+title: Fixture
 document_type: contract
 sides:
-  - name: Providing Party
+  - name: providers
     parties:
-      - name: Acme Corporation Ltd.
-        type: company
+      - name: acme
+        type: legal_entity
   - name: clients
     parties:
       - name: beta
         type: legal_entity
-        legal_name: Beta Industries Inc.
+attachments:
+{attachments}
 ---
+
+# Scope {{#scope}}
+
+{body}
+"""
+
+
+def _validate_attachments(attachments: str, body: str = "Text."):
+    source = _ATTACHMENT_FRONTMATTER.format(attachments=attachments, body=body)
+    return validate_document(parse_document(source, filename="t.lgd"))
+
+
+def test_duplicate_attachment_id_is_reported():
+    result = _validate_attachments(
+        "  - id: schedule-a\n    title: Schedule A\n    file: a.lgd\n"
+        "  - id: schedule-a\n    title: Schedule A again\n    file: b.lgd",
+        body="See {{attach: schedule-a}}.",
+    )
+    assert "attachment-id-duplicate" in result.rules("error")
+
+
+def test_attachment_without_a_title_is_reported():
+    result = _validate_attachments(
+        "  - id: schedule-a\n    file: a.lgd",
+        body="See {{attach: schedule-a}}.",
+    )
+    assert "attachment-title-empty" in result.rules("error")
+
+
+def test_attachment_id_colliding_with_a_section_anchor_is_reported():
+    """An attachment id and a section identifier share one namespace."""
+    result = _validate_attachments(
+        "  - id: scope\n    title: Scope Schedule\n    file: a.lgd",
+        body="See {{attach: scope}}.",
+    )
+    assert "attachment-id-collision" in result.rules("error")
+
+
+def test_declared_but_unreferenced_attachment_is_a_warning():
+    result = _validate_attachments(
+        "  - id: schedule-a\n    title: Schedule A\n    file: a.lgd"
+    )
+    assert "attachment-unreferenced" in result.rules("warning")
+
+
+# ── Amendments (§15.8) ────────────────────────────────────────────
+
+
+def test_amendment_redefining_an_imported_term_is_a_warning():
+    """amend-def-override: the amendment redeclares a term the original defines."""
+    source = """---
+title: First Amendment
+document_type: contract
+amends:
+  title: Services Agreement
+  file: services-agreement.lgd
+sides:
+  - name: providers
+    parties:
+      - name: acme
+        type: legal_entity
+  - name: clients
+    parties:
+      - name: beta
+        type: legal_entity
+---
+
+# Definitions {#definitions}
+
+"Services" {{def: services}} means the amended services.
 
 # Scope {#scope}
 
-Text.
+The {{term: services}} are amended.
 """
-    document = parse_document(source, filename="legacy.lgd")
-    # Faithful parse: the violations are visible to the validator.
-    assert "side-party-name-format" in validate_document(document).rules("error")
-
-    repair_legacy_metadata(document)
-    side = document.metadata.sides[0]
-    assert side.name == "providing-party"
-    assert side.label == "Providing Party"       # display text preserved
-    party = side.parties[0]
-    assert party.name == "acme-corporation-ltd"
-    assert party.legal_name == "Acme Corporation Ltd."
-    assert party.type == "legal_entity"          # "company" mapped
-    repaired = validate_document(document)
-    assert "side-party-name-format" not in repaired.rules()
-    assert "party-type-invalid" not in repaired.rules()
+    document = parse_document(source, filename="first-amendment.lgd")
+    result = validate_document(
+        document, import_definitions=lambda *_: {"services": "Services"}
+    )
+    assert "amend-def-override" in result.rules("warning")

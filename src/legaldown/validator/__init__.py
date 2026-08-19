@@ -13,7 +13,6 @@ from .helpers import (
 )
 from .patterns import (
     ATTACH_RE,
-    BUILTIN_DIRECTIVES,
     DATE_RE,
     DIRECTIVE_NAME_RE,
     DURATION_RE,
@@ -66,7 +65,6 @@ __all__ = [
     "ATTACH_RE",
     "NOTE_RE",
     "DIRECTIVE_NAME_RE",
-    "BUILTIN_DIRECTIVES",
     "KNOWN_DIRECTIVES",
     "RESERVED_VALUE_TYPES",
     "VALID_DOC_TYPES",

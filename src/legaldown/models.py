@@ -5,7 +5,6 @@ in memory, plus factory functions for safe construction from dicts.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -48,7 +47,10 @@ class Party:
     """A contractual party (legal entity or natural person)."""
     name: str = ""
     label: str = ""
-    type: str = "legal_entity"
+    #: legal_entity or natural_person. REQUIRED (§3.4) and deliberately not
+    #: defaulted: an unset type must reach the validator as party-type-invalid
+    #: rather than be silently chosen here.
+    type: str = ""
     legal_name: str = ""
     identification_number: str = ""
     address: str = ""
@@ -143,9 +145,6 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
 # Internal utilities
 # ---------------------------------------------------------------------------
 
-_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9-]*$")
-
-
 def _str(value: Any, default: str = "") -> str:
     """Coerce a value to a stripped string, falling back to *default*."""
     result = str(value or "").strip()
@@ -173,17 +172,6 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _slugify(value: str, *, fallback: str = "item") -> str:
-    """Convert free-form text to a valid lowercase identifier."""
-    text = re.sub(r"[^a-z0-9\s_-]", "", (value or "").lower())
-    text = re.sub(r"[\s_]+", "-", text).strip("-")[:64]
-    if not text:
-        return fallback
-    if not text[0].isalpha():
-        text = f"{fallback}-{text}"[:64].strip("-")
-    return text or fallback
 
 
 def _parse_str_dict(raw: Any) -> dict[str, str]:
@@ -233,44 +221,26 @@ def section_from_dict(data: dict[str, Any] | None) -> Section:
 
 
 def party_from_dict(data: dict[str, Any] | None) -> Party:
-    """Construct a Party from a dict, handling legacy field names."""
+    """Construct a Party from a frontmatter dict (§3.4).
+
+    Values are taken verbatim: an unknown ``type`` or a non-identifier ``name``
+    is preserved, and a missing ``type`` stays empty even though §3.4 requires
+    it, so the validator reports party-type-invalid or side-party-name-format
+    (§15.6) instead of the model silently repairing the document.
+    """
     payload = data or {}
 
-    # Representatives (handle legacy singular key)
-    reps_raw = list(payload.get("representatives") or [])
-    if not reps_raw:
-        old_rep = payload.get("representative")
-        if isinstance(old_rep, dict) and (old_rep.get("name") or old_rep.get("title")):
-            reps_raw = [old_rep]
-
-    # Type (handle legacy "kind" field and short spellings). Invalid values are
-    # preserved verbatim so the validator can report party-type-invalid (§15.6)
-    # instead of the model silently repairing the document.
-    raw_type = _str(payload.get("type") or payload.get("kind"), "legal_entity")
-    party_type = {"legal": "legal_entity", "natural": "natural_person"}.get(
-        raw_type, raw_type
-    )
-
-    # Name / label / legal_name (handle legacy "short_name"). A non-identifier
-    # name is preserved verbatim so the validator can report
-    # side-party-name-format (§15.6).
-    raw_name = _str(payload.get("name"))
-    raw_label = _str(payload.get("label") or payload.get("short_name"))
-    raw_legal_name = _str(payload.get("legal_name"))
-
     return Party(
-        name=raw_name,
-        label=raw_label,
-        type=party_type,
-        legal_name=raw_legal_name,
-        identification_number=_str(
-            payload.get("identification_number") or payload.get("entity_type")
-        ),
+        name=_str(payload.get("name")),
+        label=_str(payload.get("label")),
+        type=_str(payload.get("type")),
+        legal_name=_str(payload.get("legal_name")),
+        identification_number=_str(payload.get("identification_number")),
         address=_str(payload.get("address")),
         date_of_birth=_str(payload.get("date_of_birth")),
         representatives=[
             Representative(name=_str(r.get("name")), title=_str(r.get("title")))
-            for r in reps_raw
+            for r in list(payload.get("representatives") or [])
             if isinstance(r, dict)
         ],
         custom_fields=[
@@ -282,34 +252,26 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
 
 
 def side_from_dict(data: dict[str, Any] | None) -> Side:
-    """Construct a Side from a dict, handling legacy format with typed party lists."""
-    payload = data or {}
-    # A non-identifier side name is preserved verbatim so the validator can
-    # report side-party-name-format (§15.6) instead of a silent repair.
-    raw_name = _str(payload.get("name"))
-    raw_label = _str(payload.get("label"))
+    """Construct a Side and its parties from a frontmatter dict (§3.3).
 
-    # Collect parties from either "parties" key or legacy "legal_entity"/"natural_person"
-    raw_parties = list(payload.get("parties") or [])
-    if not raw_parties:
-        for entity in list(payload.get("legal_entity") or []):
-            if isinstance(entity, dict):
-                entity.setdefault("type", "legal_entity")
-                raw_parties.append(entity)
-        for person in list(payload.get("natural_person") or []):
-            if isinstance(person, dict):
-                person.setdefault("type", "natural_person")
-                raw_parties.append(person)
+    A non-identifier side name is preserved verbatim so the validator can
+    report side-party-name-format (§15.6) instead of a silent repair.
+    """
+    payload = data or {}
 
     return Side(
-        name=raw_name,
-        label=raw_label,
-        parties=[party_from_dict(p) for p in raw_parties if isinstance(p, dict)],
+        name=_str(payload.get("name")),
+        label=_str(payload.get("label")),
+        parties=[
+            party_from_dict(p)
+            for p in list(payload.get("parties") or [])
+            if isinstance(p, dict)
+        ],
     )
 
 
 def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
-    """Construct Metadata from a frontmatter dict, handling legacy formats."""
+    """Construct Metadata from a parsed frontmatter dict (§3)."""
     payload = data or {}
 
     # Tags (accept comma-separated string or list)
@@ -317,29 +279,13 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
     if isinstance(tags, str):
         tags = [part.strip() for part in tags.split(",")]
 
-    # Sides: new format (list of side dicts) or legacy flat parties list
-    sides: list[Side] = []
+    # Sides (§3.3). Absent or malformed, the validator reports sides-absent.
     raw_sides = payload.get("sides")
-    if isinstance(raw_sides, list):
-        sides = [side_from_dict(s) for s in raw_sides if isinstance(s, dict)]
-    else:
-        raw_parties = list(payload.get("parties") or [])
-        if raw_parties:
-            buckets: dict[int, list[dict[str, Any]]] = {}
-            for p in raw_parties:
-                if not isinstance(p, dict):
-                    continue
-                try:
-                    side_num = max(1, int(p.get("side") or 1))
-                except (ValueError, TypeError):
-                    side_num = 1
-                buckets.setdefault(side_num, []).append(p)
-            for side_num in sorted(buckets):
-                sides.append(Side(
-                    name=f"side-{side_num}",
-                    label=f"Side {side_num}",
-                    parties=[party_from_dict(p) for p in buckets[side_num]],
-                ))
+    sides: list[Side] = (
+        [side_from_dict(s) for s in raw_sides if isinstance(s, dict)]
+        if isinstance(raw_sides, list)
+        else []
+    )
 
     # Amends
     raw_amends = payload.get("amends")
@@ -436,61 +382,3 @@ def empty_document() -> Document:
             ),
         ],
     )
-
-
-
-# ---------------------------------------------------------------------------
-# Legacy metadata repair (spec v0.1 hard cutover)
-# ---------------------------------------------------------------------------
-#
-# Before 0.1, party and side `name` often held a display name ("Acme
-# Corporation Ltd.") and `type` used short spellings ("company"). The model
-# used to coerce those on load, which hid genuine violations from the
-# validator — §15.6 requires side-party-name-format and party-type-invalid to
-# be reported. Parsing is therefore faithful, and this repair is applied
-# explicitly at an application's storage boundary when loading stored content,
-# alongside migrate_legacy_directives().
-
-_LEGACY_PARTY_TYPES = {
-    "legal": "legal_entity",
-    "company": "legal_entity",
-    "entity": "legal_entity",
-    "organization": "legal_entity",
-    "natural": "natural_person",
-    "person": "natural_person",
-    "individual": "natural_person",
-}
-
-
-def repair_legacy_metadata(document: Document) -> Document:
-    """Normalize pre-0.1 side/party metadata in place, returning *document*.
-
-    - A non-identifier ``name`` becomes a slug; the original text is preserved
-      as ``legal_name`` (parties) or ``label`` (sides) when those are empty, so
-      nothing displayed to the user is lost.
-    - Legacy ``type`` spellings map onto ``legal_entity`` / ``natural_person``.
-
-    Values containing a ``{{placeholder:}}`` are left untouched — those must
-    still reach the validator (§3.10).
-    """
-    for side in document.metadata.sides:
-        name = (side.name or "").strip()
-        if name and "{{" not in name and not _IDENTIFIER_RE.match(name):
-            if not (side.label or "").strip():
-                side.label = name
-            side.name = _slugify(name, fallback="side")
-
-        for party in side.parties:
-            party_type = (party.type or "").strip()
-            if party_type and party_type not in ("legal_entity", "natural_person"):
-                mapped = _LEGACY_PARTY_TYPES.get(party_type.lower())
-                if mapped:
-                    party.type = mapped
-
-            pname = (party.name or "").strip()
-            if pname and "{{" not in pname and not _IDENTIFIER_RE.match(pname):
-                if not (party.legal_name or "").strip():
-                    party.legal_name = pname
-                party.name = _slugify(pname, fallback="party")
-
-    return document

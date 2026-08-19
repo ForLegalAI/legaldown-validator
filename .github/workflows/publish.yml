@@ -1,7 +1,7 @@
 name: Publish
 
 # Publishes the distribution to PyPI via Trusted Publishing (OIDC) — no API
-# token is stored in this repository. See PUBLISHING.md for the one-time PyPI
+# token is stored in this repository. See .github/PUBLISHING.md for the one-time PyPI
 # setup that must exist before the first run.
 #
 # Triggers:

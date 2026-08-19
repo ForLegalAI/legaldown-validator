@@ -49,7 +49,8 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
                 party_dict: dict[str, Any] = {"name": party.name}
                 if party.label:
                     party_dict["label"] = party.label
-                party_dict["type"] = party.type
+                if party.type:
+                    party_dict["type"] = party.type
                 if party.legal_name:
                     party_dict["legal_name"] = party.legal_name
                 if party.identification_number:

@@ -43,8 +43,6 @@ KNOWN_DIRECTIVES: frozenset[str] = frozenset({
 # Reserved value-type names (§3.2): field_types keys must not collide with
 # the built-in field specs or placeholder types.
 RESERVED_VALUE_TYPES: frozenset[str] = frozenset({"date", "money", "duration", "party", "text"})
-# Backward-compatible alias (pre-0.1 name; lacked "text").
-BUILTIN_DIRECTIVES: frozenset[str] = RESERVED_VALUE_TYPES
 VALID_DOC_TYPES: frozenset[str] = frozenset({"contract", "unilateral_act", "collective_act"})
 # §10.5: the bare unit "M" is deliberately undefined (ISO 8601 ambiguity);
 # validators reject it with a hint suggesting MIN (minutes) or MO (months).

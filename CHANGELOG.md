@@ -23,14 +23,18 @@ release targets is exported as `legaldown.SPEC_VERSION`.
   `amend-term-unresolvable` (Info) when the amended original is imported
   successfully but declares no definitions.
 
+### Changed
+
+- Frontmatter is read as exactly the shape §3 defines — sides under `sides`,
+  parties under `parties`, with `type`, `label`, `representatives`, and
+  `identification_number` spelled as the specification spells them. Alternative
+  spellings and container shapes are no longer reinterpreted, and a party
+  omitting the REQUIRED `type` no longer defaults to `legal_entity`; both now
+  reach the validator, which reports `party-type-invalid` and
+  `side-party-name-format` (§15.6) as it should.
+
 ### Added
 
-- `repair_legacy_metadata()` normalizes pre-0.1 side/party metadata: a
-  display name in `name` becomes an identifier (the original text is kept as
-  `legal_name`/`label`), and legacy `type` spellings map onto `legal_entity`
-  / `natural_person`. Like `migrate_legacy_directives()` it is opt-in, so the
-  parser stays faithful and the validator still reports the violations when
-  they are authored deliberately.
 - `render_block()` is now public. Applications that render one block at a
   time were reaching for the private `_render_block`, which this package
   cannot keep stable across versions.
@@ -54,15 +58,12 @@ First release. Targets LegalDown specification **v0.1** at conformance
 - **Command line** — `legaldown validate` with plain-text and JSON output (§15.9), `--ignore` by
   rule id, `--warnings-as-errors`, `--strict`, recursive directory walking, and exit codes suitable
   for gating a build.
-- **`migrate_legacy_directives()`** — upgrades pre-0.1 spellings (`{{pct: X}}` → `{{field: X%,
-  type=percentage}}`, `unit=M` → `unit=MIN`) without touching code spans or fenced blocks. Opt-in by
-  design: the parser never rewrites its input, so a deliberately authored `unit=M` still reports
-  `duration-invalid-unit`.
 - **`SPEC_VERSION` and `CONFORMANCE_LEVEL`** exported so consumers can assert what they validate
   against.
 - **Conformance harness** — runs the validator against the specification's own fixtures corpus.
-  57 of the corpus's 95 rules are implemented and pass; the remainder are listed in the README per
-  §16.5, which requires an implementation never to silently skip a check it cannot perform.
+  57 of the corpus's 95 rules are implemented and pass; the remainder are listed in
+  [CONFORMANCE.md](CONFORMANCE.md) per §16.5, which requires an implementation never to silently
+  skip a check it cannot perform.
 
 ### Notes
 
