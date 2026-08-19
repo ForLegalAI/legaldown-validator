@@ -44,7 +44,12 @@ def test_parser_does_not_silently_correct_an_invalid_duration_unit():
 
 
 def test_parser_does_not_silently_correct_party_metadata():
-    """A display name in `name` and an unknown `type` are reported, not fixed."""
+    """Display names and unknown types survive the parse so §15.6 can report them.
+
+    The party carrying the malformed name and the one carrying the bad type are
+    deliberately separate: the validator stops checking a party once its name is
+    rejected, so a single party would only ever report the name.
+    """
     source = """---
 title: Fixture
 document_type: contract
@@ -56,7 +61,7 @@ sides:
   - name: clients
     parties:
       - name: beta
-        type: legal_entity
+        type: corporation
         legal_name: Beta Industries Inc.
 ---
 
@@ -66,11 +71,37 @@ Text.
 """
     document = parse_document(source, filename="t.lgd")
     side = document.metadata.sides[0]
-    assert side.name == "Providing Party"          # preserved verbatim
-    assert side.parties[0].type == "company"       # not mapped onto legal_entity
+    assert side.name == "Providing Party"           # preserved verbatim
+    assert side.parties[0].type == "company"        # not mapped onto legal_entity
 
     rules = validate_document(document).rules("error")
-    assert "side-party-name-format" in rules
+    assert "side-party-name-format" in rules        # the display name
+    assert "party-type-invalid" in rules            # the unknown type
+
+
+def test_a_party_omitting_the_required_type_is_reported():
+    """§3.6 makes `type` REQUIRED, so an absent one must not default to a value."""
+    source = """---
+title: Fixture
+document_type: contract
+sides:
+  - name: providers
+    parties:
+      - name: acme
+        legal_name: Acme Corporation
+  - name: clients
+    parties:
+      - name: beta
+        type: legal_entity
+---
+
+# Scope {#scope}
+
+Text.
+"""
+    document = parse_document(source, filename="t.lgd")
+    assert document.metadata.sides[0].parties[0].type == ""
+    assert "party-type-invalid" in validate_document(document).rules("error")
 
 
 # ── §11.4 recognition contexts ────────────────────────────────────
@@ -170,3 +201,120 @@ def test_amend_term_is_an_error_when_original_defines_nothing():
     result = validate_document(document, import_definitions=lambda *_: {})
     assert "amend-term-undefined" in result.rules("error")
     assert "amend-term-unresolvable" not in result.rules()
+
+
+# ── Inline value indices ──────────────────────────────────────────
+
+
+def test_inline_value_indices_collect_field_spec_values():
+    """ValidationResult exposes the values the checks indexed, for reuse."""
+    result = _validate(
+        "Rate {{field: 1.5%, type=percentage}} over {{duration: 30, unit=MIN}} "
+        "from {{date: 2026-06-01}} for {{money: 5000, currency=EUR}}."
+    )
+    assert ("1.5%", "percentage") in result.inline_fields
+    assert ("30", "MIN") in result.inline_durations
+    assert "2026-06-01" in result.inline_dates
+    assert ("5000", "EUR") in result.inline_money
+
+
+# ── Attachments (§15.10) ──────────────────────────────────────────
+#
+# The corpus fixtures for these rules span several files, so the
+# single-document conformance harness skips them; they are exercised here.
+
+_ATTACHMENT_FRONTMATTER = """---
+title: Fixture
+document_type: contract
+sides:
+  - name: providers
+    parties:
+      - name: acme
+        type: legal_entity
+  - name: clients
+    parties:
+      - name: beta
+        type: legal_entity
+attachments:
+{attachments}
+---
+
+# Scope {{#scope}}
+
+{body}
+"""
+
+
+def _validate_attachments(attachments: str, body: str = "Text."):
+    source = _ATTACHMENT_FRONTMATTER.format(attachments=attachments, body=body)
+    return validate_document(parse_document(source, filename="t.lgd"))
+
+
+def test_duplicate_attachment_id_is_reported():
+    result = _validate_attachments(
+        "  - id: schedule-a\n    title: Schedule A\n    file: a.lgd\n"
+        "  - id: schedule-a\n    title: Schedule A again\n    file: b.lgd",
+        body="See {{attach: schedule-a}}.",
+    )
+    assert "attachment-id-duplicate" in result.rules("error")
+
+
+def test_attachment_without_a_title_is_reported():
+    result = _validate_attachments(
+        "  - id: schedule-a\n    file: a.lgd",
+        body="See {{attach: schedule-a}}.",
+    )
+    assert "attachment-title-empty" in result.rules("error")
+
+
+def test_attachment_id_colliding_with_a_section_anchor_is_reported():
+    """An attachment id and a section identifier share one namespace."""
+    result = _validate_attachments(
+        "  - id: scope\n    title: Scope Schedule\n    file: a.lgd",
+        body="See {{attach: scope}}.",
+    )
+    assert "attachment-id-collision" in result.rules("error")
+
+
+def test_declared_but_unreferenced_attachment_is_a_warning():
+    result = _validate_attachments(
+        "  - id: schedule-a\n    title: Schedule A\n    file: a.lgd"
+    )
+    assert "attachment-unreferenced" in result.rules("warning")
+
+
+# ── Amendments (§15.8) ────────────────────────────────────────────
+
+
+def test_amendment_redefining_an_imported_term_is_a_warning():
+    """amend-def-override: the amendment redeclares a term the original defines."""
+    source = """---
+title: First Amendment
+document_type: contract
+amends:
+  title: Services Agreement
+  file: services-agreement.lgd
+sides:
+  - name: providers
+    parties:
+      - name: acme
+        type: legal_entity
+  - name: clients
+    parties:
+      - name: beta
+        type: legal_entity
+---
+
+# Definitions {#definitions}
+
+"Services" {{def: services}} means the amended services.
+
+# Scope {#scope}
+
+The {{term: services}} are amended.
+"""
+    document = parse_document(source, filename="first-amendment.lgd")
+    result = validate_document(
+        document, import_definitions=lambda *_: {"services": "Services"}
+    )
+    assert "amend-def-override" in result.rules("warning")

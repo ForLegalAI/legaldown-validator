@@ -6,7 +6,13 @@ and validate a single document in memory.
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
 validation rule, paired with the diagnostic a conforming validator must produce. **57 of the
-corpus's 95 rules are implemented, and every implemented rule passes.**
+corpus's 95 rules are implemented, and every one the corpus can exercise at Core level passes.**
+
+Seven implemented rules — `amend-def-override`, `amend-term-undefined`, `amend-term-unresolvable`,
+`attachment-id-collision`, `attachment-id-duplicate`, `attachment-title-empty`, and
+`attachment-unreferenced` — have fixtures that span several files or are marked for the Full level,
+so this single-document harness skips them. They are covered by the unit tests in
+`tests/test_spec_alignment.py` instead.
 
 The specification (§16.5) requires an implementation never to silently skip a check it cannot
 perform, so the remaining rules are named here. Most of them belong to conformance levels this
@@ -36,8 +42,10 @@ git clone https://github.com/ForLegalAI/LegalDown ../LegalDown
 LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
-Cases for the rules above are skipped by name, so the run reproduces this table. CI runs it on
-every push and pull request.
+Cases for the rules above are skipped by name, so the 38 `not implemented` skips reproduce this
+table one for one. The run reports 45 skips in total: the remaining seven are the implemented
+rules named above, skipped as `multi-file case` or `requires conformance level full`. CI runs this
+on every push and pull request.
 
 ## Declaring conformance in code
 

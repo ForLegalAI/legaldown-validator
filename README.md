@@ -232,7 +232,8 @@ covers authoring, editing, and CI validation of individual documents.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — every rule it
-implements passes. The specification (§16.5) requires an implementation to be explicit about the
+implements passes, bar seven whose fixtures span several files and are covered by unit tests
+instead. The specification (§16.5) requires an implementation to be explicit about the
 checks it does not perform, so those are listed in
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md) rather than left to be discovered.
 
@@ -255,7 +256,8 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Cases for rules outside Core are skipped and named, so the run doubles as the coverage ledger in
-[CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md). CI runs it on every push and pull request.
+[CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md),
+which accounts for every skip. CI runs it on every push and pull request.
 
 Version history is in [CHANGELOG.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CHANGELOG.md). Bug reports and pull requests are welcome in
 [Issues](https://github.com/ForLegalAI/legaldown-validator/issues); questions about the format

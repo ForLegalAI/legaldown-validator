@@ -221,16 +221,16 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
     """Construct a Party from a frontmatter dict (§3.6).
 
     Values are taken verbatim: an unknown ``type`` or a non-identifier ``name``
-    is preserved so the validator can report party-type-invalid or
-    side-party-name-format (§15.6) instead of the model silently repairing the
-    document.
+    is preserved, and a missing ``type`` stays empty even though §3.6 requires
+    it, so the validator reports party-type-invalid or side-party-name-format
+    (§15.6) instead of the model silently repairing the document.
     """
     payload = data or {}
 
     return Party(
         name=_str(payload.get("name")),
         label=_str(payload.get("label")),
-        type=_str(payload.get("type"), "legal_entity"),
+        type=_str(payload.get("type")),
         legal_name=_str(payload.get("legal_name")),
         identification_number=_str(payload.get("identification_number")),
         address=_str(payload.get("address")),
@@ -252,7 +252,7 @@ def side_from_dict(data: dict[str, Any] | None) -> Side:
     """Construct a Side and its parties from a frontmatter dict (§3.5).
 
     A non-identifier side name is preserved verbatim so the validator can
-    report side-name-malformed (§15.6) instead of a silent repair.
+    report side-party-name-format (§15.6) instead of a silent repair.
     """
     payload = data or {}
 

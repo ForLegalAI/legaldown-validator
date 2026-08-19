@@ -23,16 +23,15 @@ release targets is exported as `legaldown.SPEC_VERSION`.
   `amend-term-unresolvable` (Info) when the amended original is imported
   successfully but declares no definitions.
 
-### Removed
+### Changed
 
-- The migration helpers and the tolerant frontmatter fallbacks that existed to
-  carry content written before the specification settled:
-  `migrate_legacy_directives()`, `migrate_legacy_definitions()`,
-  `repair_legacy_metadata()`, and the `BUILTIN_DIRECTIVES` alias. Frontmatter
-  now reads exactly the shape §3 defines — sides under `sides`, parties under
-  `parties`, `type`, `label`, `representatives`, `identification_number` — and
-  anything else is reported by the validator rather than quietly reinterpreted.
-  There is nothing to migrate from: 0.1 is the first specification version.
+- Frontmatter is read as exactly the shape §3 defines — sides under `sides`,
+  parties under `parties`, with `type`, `label`, `representatives`, and
+  `identification_number` spelled as the specification spells them. Alternative
+  spellings and container shapes are no longer reinterpreted, and a party
+  omitting the REQUIRED `type` no longer defaults to `legal_entity`; both now
+  reach the validator, which reports `party-type-invalid` and
+  `side-party-name-format` (§15.6) as it should.
 
 ### Added
 
