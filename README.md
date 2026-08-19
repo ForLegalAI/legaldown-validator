@@ -261,7 +261,7 @@ Cases for rules outside Core are skipped and named, so the run doubles as the co
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md),
 which accounts for every skip. CI runs it on every push and pull request.
 
-Version history is in [CHANGELOG.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CHANGELOG.md). Bug reports and pull requests are welcome in
+Bug reports and pull requests are welcome in
 [Issues](https://github.com/ForLegalAI/legaldown-validator/issues); questions about the format
 itself belong in the specification repository's
 [Discussions](https://github.com/ForLegalAI/LegalDown/discussions).

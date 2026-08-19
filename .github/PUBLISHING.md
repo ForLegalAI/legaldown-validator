@@ -44,8 +44,8 @@ version number can never be reused once published.
 
 1. Bump `__version__` in [`src/legaldown/__init__.py`](../src/legaldown/__init__.py) — it is the single
    source of truth; `pyproject.toml` reads it via `[tool.hatch.version]`.
-2. Move the `Unreleased` items in [`CHANGELOG.md`](../CHANGELOG.md) under the new version heading.
-3. Commit, then publish a GitHub Release with the tag `vX.Y.Z`.
+2. Commit, then publish a GitHub Release with the tag `vX.Y.Z`. Its notes are where this
+   project records what changed in a release.
 
 The workflow builds the sdist and wheel, runs `twine check --strict`, **verifies the tag matches
 `__version__`** (a mismatch fails the run rather than publishing the wrong version), smoke-tests the

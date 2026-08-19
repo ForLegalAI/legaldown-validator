@@ -52,7 +52,6 @@ legaldown = "legaldown.cli:main"
 Homepage = "https://github.com/ForLegalAI/legaldown-validator"
 Repository = "https://github.com/ForLegalAI/legaldown-validator"
 Issues = "https://github.com/ForLegalAI/legaldown-validator/issues"
-Changelog = "https://github.com/ForLegalAI/legaldown-validator/blob/main/CHANGELOG.md"
 Specification = "https://github.com/ForLegalAI/LegalDown"
 
 [tool.hatch.version]
@@ -68,7 +67,6 @@ include = [
     "src/legaldown",
     "tests",
     "README.md",
-    "CHANGELOG.md",
     "CONFORMANCE.md",
     "LICENSE",
     "pyproject.toml",
