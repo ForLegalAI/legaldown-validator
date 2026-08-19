@@ -47,7 +47,10 @@ class Party:
     """A contractual party (legal entity or natural person)."""
     name: str = ""
     label: str = ""
-    type: str = "legal_entity"
+    #: legal_entity or natural_person. REQUIRED (§3.4) and deliberately not
+    #: defaulted: an unset type must reach the validator as party-type-invalid
+    #: rather than be silently chosen here.
+    type: str = ""
     legal_name: str = ""
     identification_number: str = ""
     address: str = ""
@@ -218,10 +221,10 @@ def section_from_dict(data: dict[str, Any] | None) -> Section:
 
 
 def party_from_dict(data: dict[str, Any] | None) -> Party:
-    """Construct a Party from a frontmatter dict (§3.6).
+    """Construct a Party from a frontmatter dict (§3.4).
 
     Values are taken verbatim: an unknown ``type`` or a non-identifier ``name``
-    is preserved, and a missing ``type`` stays empty even though §3.6 requires
+    is preserved, and a missing ``type`` stays empty even though §3.4 requires
     it, so the validator reports party-type-invalid or side-party-name-format
     (§15.6) instead of the model silently repairing the document.
     """
@@ -249,7 +252,7 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
 
 
 def side_from_dict(data: dict[str, Any] | None) -> Side:
-    """Construct a Side and its parties from a frontmatter dict (§3.5).
+    """Construct a Side and its parties from a frontmatter dict (§3.3).
 
     A non-identifier side name is preserved verbatim so the validator can
     report side-party-name-format (§15.6) instead of a silent repair.
@@ -276,7 +279,7 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
     if isinstance(tags, str):
         tags = [part.strip() for part in tags.split(",")]
 
-    # Sides (§3.5). Absent or malformed, the validator reports sides-absent.
+    # Sides (§3.3). Absent or malformed, the validator reports sides-absent.
     raw_sides = payload.get("sides")
     sides: list[Side] = (
         [side_from_dict(s) for s in raw_sides if isinstance(s, dict)]

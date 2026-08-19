@@ -80,7 +80,7 @@ Text.
 
 
 def test_a_party_omitting_the_required_type_is_reported():
-    """§3.6 makes `type` REQUIRED, so an absent one must not default to a value."""
+    """§3.4 makes `type` REQUIRED, so an absent one must not default to a value."""
     source = """---
 title: Fixture
 document_type: contract

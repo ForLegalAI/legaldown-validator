@@ -33,6 +33,13 @@ In practice this means multi-file processing is out of scope: includes, attachme
 and bilingual document sets are not resolved or cross-checked. Single-document authoring, editing,
 and CI validation are fully covered.
 
+One id appears on both sides of that line. `attachment-file-missing` is defined as *the attachment
+`file` path exists*, which needs the filesystem and is therefore unimplemented — but the validator
+also emits that id when an attachment declares no `file` at all, which is visible in the document
+itself. The specification provides no separate id for the absent key, so a diagnostic carrying
+`attachment-file-missing` from this implementation always means the key is missing, never that the
+path failed to resolve.
+
 ## Checking this yourself
 
 The conformance harness runs against a checkout of the specification repository:

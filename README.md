@@ -61,12 +61,14 @@ sides:
       - name: acme
         label: Acme
         type: legal_entity
+        legal_name: Acme Corporation
   - name: clients
     label: Client
     parties:
       - name: beta
         label: Beta
         type: legal_entity
+        legal_name: Beta Industries Inc.
 language: en
 ---
 
