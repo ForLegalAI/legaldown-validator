@@ -1,6 +1,9 @@
-# Publishing
+# Publishing (maintainers)
 
-`legaldown-validator` is published to PyPI by the [`publish`](.github/workflows/publish.yml)
+Release mechanics for this repository. Nothing here is needed to *use* the
+validator — see the [README](../README.md) for that.
+
+`legaldown-validator` is published to PyPI by the [`publish`](workflows/publish.yml)
 workflow using **Trusted Publishing** (OIDC). No API token is stored in this repository — PyPI
 verifies the identity of the workflow run itself.
 
@@ -39,9 +42,9 @@ version number can never be reused once published.
 
 ## Cutting a release
 
-1. Bump `__version__` in [`src/legaldown/__init__.py`](src/legaldown/__init__.py) — it is the single
+1. Bump `__version__` in [`src/legaldown/__init__.py`](../src/legaldown/__init__.py) — it is the single
    source of truth; `pyproject.toml` reads it via `[tool.hatch.version]`.
-2. Move the `Unreleased` items in [`CHANGELOG.md`](CHANGELOG.md) under the new version heading.
+2. Move the `Unreleased` items in [`CHANGELOG.md`](../CHANGELOG.md) under the new version heading.
 3. Commit, then publish a GitHub Release with the tag `vX.Y.Z`.
 
 The workflow builds the sdist and wheel, runs `twine check --strict`, **verifies the tag matches
