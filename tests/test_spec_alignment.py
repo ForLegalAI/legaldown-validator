@@ -334,6 +334,61 @@ def test_defined_term_is_the_nearest_quoted_span():
     assert result.definition_lookup["b"] == "B"
 
 
+def test_quoted_value_may_contain_backticks():
+    """§11.3: once a directive opens, its value is lexed as written."""
+    result = _validate('Case {{field: "a`b", type=code}} and `c` here.')
+    assert result.diagnostics == []
+    assert ("a`b", "code") in result.inline_fields
+
+
+def test_lifted_values_are_kept_as_written():
+    source = _FRONTMATTER + '"X" {{def: x}} y.\n\nSee {{term: x, label="a `b` c"}}.\n'
+    assert parse_document(source).sections[0].blocks[1].label == "a `b` c"
+    reparsed = parse_document(serialize_document(parse_document(source)))
+    assert reparsed.sections[0].blocks[1].label == "a `b` c"
+
+
+def test_code_in_a_note_is_markdown():
+    assert "note-invalid" in _validate("On {{date: 2026-01-01, note=see `x` here}}.").rules("error")
+
+
+def test_text_inside_a_malformed_directive_is_not_lexed():
+    rules = _validate('Pay {{money: "5, {{date: 2026-13-01}} now.').rules()
+    assert "directive-malformed" in rules
+    assert "date-invalid" not in rules
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    ['“The "Best" Co” {{def: best}} means x.', "„Käufer“ {{def: best}} means x."],
+)
+def test_definition_with_other_quotation_marks_round_trips(paragraph):
+    """The serializer writes straight quotes, so other delimiters stay text."""
+    source = _FRONTMATTER + paragraph + "\n"
+    assert paragraph in serialize_document(parse_document(source))
+
+
+def test_ref_inside_a_defined_term_is_not_lifted():
+    result = _validate('The "Buyer {{ref: terms}} Co" {{def: buyer}} means x. {{term: buyer}}')
+    assert result.diagnostics == []
+
+
+def test_bold_italic_defined_term_is_recognized():
+    result = _validate('***"Buyer"*** {{def: buyer}} means x. {{term: buyer}}')
+    assert result.rules() == {"def-emphasis"}
+
+
+def test_placeholder_currency_is_unknown_whatever_the_type():
+    for body in ("{{placeholder: x, currency=USD}}", "{{placeholder: x, type=bogus, currency=USD}}"):
+        assert "directive-unknown-param" in _validate(body).rules("warning")
+
+
+def test_directive_is_unhashable_like_other_models():
+    (directive,) = iter_directives("{{ref: x}}")
+    with pytest.raises(TypeError):
+        hash(directive)
+
+
 def test_iter_directives_decodes_escapes():
     (directive,) = iter_directives(r'{{field: "say \"hi\" C:\path\\", type=t}}')
     assert directive.positional == 'say "hi" C:\\path\\'

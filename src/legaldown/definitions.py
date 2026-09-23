@@ -57,14 +57,20 @@ _EMPHASIS_MARKERS = ("**", "__", "++", "*")
 
 
 def _trailing_emphasis(text: str, start: int, end: int) -> int:
-    """Length of an emphasis marker ending at *end* (not before *start*)."""
-    for marker in _EMPHASIS_MARKERS:
-        if end - len(marker) >= start and text.startswith(marker, end - len(marker)):
-            return len(marker)
-    return 0
+    """Length of the emphasis markers ending at *end* (not before *start*);
+    nested markers such as bold-italic ``***`` count together."""
+    length = 0
+    while True:
+        for marker in _EMPHASIS_MARKERS:
+            at = end - length - len(marker)
+            if at >= start and text.startswith(marker, at):
+                length += len(marker)
+                break
+        else:
+            return length
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class DefinitionAnchor:
     """A ``{{def:}}`` directive and the quoted term it anchors (§7.2).
 
@@ -98,7 +104,7 @@ def find_definition_anchors(
     closing = {pair[1]: pair for pair in accepted_delimiters(language)}
     scan = strip_uninterpreted(text)
     anchors: list[DefinitionAnchor] = []
-    for directive in iter_directives(scan):
+    for directive in iter_directives(text):
         if directive.name != "def":
             continue
         line_start = scan.rfind("\n", 0, directive.start) + 1

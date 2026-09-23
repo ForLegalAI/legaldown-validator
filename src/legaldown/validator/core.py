@@ -129,15 +129,7 @@ def _check_placeholder(
                 )
         else:
             placeholder_types[pid] = ptype
-        if "currency" in directive.params and ptype != "money":
-            # §13.5 placeholder rule 7: a type-specific parameter not defined
-            # for the effective type is ignored and reported as a Warning.
-            result.warning(
-                "directive-unknown-param",
-                f"Parameter 'currency' is not defined for placeholder type '{ptype}' "
-                f"and is ignored: '{directive.source}'.",
-            )
-        elif ptype == "money" and pcurrency and pcurrency not in KNOWN_CURRENCIES:
+        if ptype == "money" and pcurrency and pcurrency not in KNOWN_CURRENCIES:
             result.warning(
                 "placeholder-unknown-currency",
                 f"Placeholder '{pid}' has unrecognized currency code '{pcurrency}'.",
@@ -622,9 +614,7 @@ def validate_document(
                 ref_targets.append(block.target.strip())
             if block.kind == "term" and block.target.strip():
                 term_targets.append(block.target.strip())
-            # §11.4: directive-like text inside code spans/blocks and comments
-            # is literal — never a directive, never a diagnostic.
-            for fragment in (strip_uninterpreted(f) for f in text_fragments(block)):
+            for fragment in text_fragments(block):
                 for directive in iter_directives(fragment):
                     name = directive.name
                     if not _check_directive_arguments(directive, result):

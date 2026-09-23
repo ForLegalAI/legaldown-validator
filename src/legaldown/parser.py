@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import Directive, iter_directives, strip_uninterpreted
+from .directives import Directive, iter_directives
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -95,7 +95,14 @@ def _parse_paragraph(paragraph: str) -> Block:
             term=anchor.term,
             text=stripped[anchor.directive.end:].strip(),
         )
-    directives = list(iter_directives(strip_uninterpreted(stripped)))
+    # A directive inside a defined term's quoted span cannot be split out
+    # without separating the {{def:}} from its opening quotation mark.
+    anchored = [(a.start, a.directive.start) for a in anchors if a.term is not None]
+    directives = [
+        d
+        for d in iter_directives(stripped)
+        if not any(start <= d.start < end for start, end in anchored)
+    ]
     ref_directive = _first_liftable(directives, "ref")
     if ref_directive is not None:
         return Block(
@@ -118,13 +125,19 @@ def _parse_paragraph(paragraph: str) -> Block:
 
 def _is_liftable_definition(anchor: DefinitionAnchor) -> bool:
     """True if the definition block fields represent *anchor* exactly: it
-    leads the paragraph, with a plain quoted term and a bare or omitted id."""
+    leads the paragraph, with a plain quoted term and a bare or omitted id.
+
+    The serializer writes the term in straight double quotes, so only that
+    delimiter, around a term that does not itself contain one, round-trips.
+    """
     directive = anchor.directive
     return (
         anchor.start == 0
         and anchor.term is not None
+        and anchor.pair is not None
+        and anchor.pair[2] == "straight-double"
+        and '"' not in anchor.term
         and not anchor.emphasis
-        and not anchor.single_quoted
         and not directive.malformed
         and not directive.params
         and directive.positional != ""
@@ -283,7 +296,7 @@ def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
             if block.kind == "term" and block.target:
                 terms.add(block.target)
             for fragment in text_fragments(block):
-                for directive in iter_directives(strip_uninterpreted(fragment)):
+                for directive in iter_directives(fragment):
                     if directive.malformed or not directive.positional:
                         continue
                     if directive.name == "ref":

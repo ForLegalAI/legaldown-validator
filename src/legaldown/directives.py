@@ -36,6 +36,10 @@ DIRECTIVE_PARAMS: dict[str, frozenset[str]] = {
     "attach": frozenset({"label"}),
 }
 
+# Parameters defined only for one value of the directive's ``type`` (§10.7):
+# a placeholder takes ``currency`` only when its effective type is ``money``.
+_TYPE_SPECIFIC_PARAMS: dict[tuple[str, str], str] = {("placeholder", "currency"): "money"}
+
 # Directive vocabulary defined by §11.1.
 KNOWN_DIRECTIVES: frozenset[str] = frozenset(DIRECTIVE_PARAMS)
 
@@ -65,7 +69,7 @@ def strip_uninterpreted(text: str) -> str:
     return _CODE_SPAN_RE.sub(_blank, text)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Directive:
     """One directive occurrence in a piece of text.
 
@@ -74,7 +78,8 @@ class Directive:
     value. A repeated parameter keeps its first value in ``params`` and is
     listed in ``duplicates``. ``malformed`` describes the §11.2 violation, or
     is empty for a well-formed directive; a malformed directive carries no
-    arguments, and its ``end`` is the end of its opener.
+    arguments, and ``source`` runs through the first ``}}`` on its line, or to
+    the end of the line.
     """
 
     name: str
@@ -87,11 +92,20 @@ class Directive:
     source: str
 
     def unknown_params(self) -> list[str]:
-        """Named parameters this directive does not define, in source order."""
-        allowed = DIRECTIVE_PARAMS.get(self.name)
-        if allowed is None:
+        """Named parameters this directive does not define, in source order.
+
+        Empty for a directive name outside the vocabulary, which is reported
+        as an unknown directive instead.
+        """
+        if self.name not in DIRECTIVE_PARAMS:
             return []
-        return [name for name in self.params if name not in allowed]
+        return [param for param in self.params if not self._defines(param)]
+
+    def _defines(self, param: str) -> bool:
+        if param not in DIRECTIVE_PARAMS[self.name]:
+            return False
+        required_type = _TYPE_SPECIFIC_PARAMS.get((self.name, param))
+        return required_type is None or self.params.get("type", "text") == required_type
 
 
 class _Malformed(Exception):
@@ -210,11 +224,13 @@ def _malformed_source(text: str, start: int) -> str:
 def iter_directives(text: str) -> Iterator[Directive]:
     """Yield every directive in *text* in order, well-formed or malformed.
 
-    Callers pass text through ``strip_uninterpreted`` first where code spans,
-    code blocks, and comments may occur.
+    Openers inside code spans, code blocks, and comments are literal (§11.4)
+    and skipped. Once a directive opens, its arguments are lexed from the
+    source as written, so a quoted value may contain backticks.
     """
+    scan = strip_uninterpreted(text)  # same offsets as text
     pos = 0
-    while opener := _OPENER_RE.search(text, pos):
+    while opener := _OPENER_RE.search(scan, pos):
         start = opener.start()
         if _is_escaped(text, start):
             pos = start + 1
@@ -222,6 +238,8 @@ def iter_directives(text: str) -> Iterator[Directive]:
         try:
             positional, params, duplicates, end = _lex_arguments(text, opener.end())
         except _Malformed as exc:
+            source = _malformed_source(text, start)
+            end = start + len(source)
             yield Directive(
                 name=opener.group(1),
                 positional=None,
@@ -229,21 +247,24 @@ def iter_directives(text: str) -> Iterator[Directive]:
                 duplicates=(),
                 malformed=str(exc),
                 start=start,
-                end=opener.end(),
-                source=_malformed_source(text, start),
+                end=end,
+                source=source,
             )
-            pos = opener.end()
-            continue
-        yield Directive(
-            name=opener.group(1),
-            positional=positional,
-            params=params,
-            duplicates=tuple(duplicates),
-            malformed="",
-            start=start,
-            end=end,
-            source=text[start:end],
-        )
+        else:
+            yield Directive(
+                name=opener.group(1),
+                positional=positional,
+                params=params,
+                duplicates=tuple(duplicates),
+                malformed="",
+                start=start,
+                end=end,
+                source=text[start:end],
+            )
+        if scan[start:end] != text[start:end]:
+            # A backtick or comment marker inside the directive was taken
+            # for literal-region syntax; recompute the regions after it.
+            scan = scan[:end] + strip_uninterpreted(text[end:])
         pos = end
 
 
