@@ -37,11 +37,10 @@ _StrDateSafeLoader.add_constructor(
 
 # ── Parser regex patterns ─────────────────────────────────────────
 
-# The YAML between the delimiters may be empty, and a byte-order mark may
-# precede the opening one.
-FRONTMATTER_RE = re.compile(
-    r"\A\ufeff?---[ \t\r]*\n(?:(.*?)\n)?---[ \t\r]*(?:\n|\Z)", re.DOTALL
-)
+# The YAML between the delimiters may be empty. The optional group is lazy
+# so that empty frontmatter is tried first: otherwise ``---``/``---`` would
+# extend to the next ``---`` rule in the body.
+FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)", re.DOTALL)
 # The anchor group deliberately accepts any non-brace run: a malformed id
 # (e.g. {#Bad_ID}) must reach the validator to be reported as anchor-format
 # rather than silently remaining part of the title.
@@ -55,6 +54,8 @@ def _split_frontmatter(source: str) -> tuple[dict[str, Any], str]:
     if not match:
         return {}, source
     metadata = yaml.load(match.group(1) or "", Loader=_StrDateSafeLoader) or {}
+    if not isinstance(metadata, dict):
+        raise ValueError("Frontmatter must be a YAML mapping of fields.")
     body = source[match.end():]
     return metadata, body
 
@@ -246,7 +247,8 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     says (a bare ``unit=M`` surfaces as duration-invalid-unit rather than being
     silently corrected).
     """
-    metadata, body = _split_frontmatter(source or "")
+    # A byte-order mark is an encoding artifact, not content.
+    metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
     payload: dict[str, Any] = {
         "metadata": metadata,
         "sections": [],

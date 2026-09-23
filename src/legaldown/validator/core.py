@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from functools import cache
 
 from ..directives import (
     DIRECTIVE_PARAMS,
@@ -434,6 +435,12 @@ def validate_document(
         text_fragments,
     )
 
+    # Each fragment is lexed once per validation and shared by the passes below.
+    lex_fragment = cache(lex)
+
+    # An anchor resolves to its section's index entry. result.sections is
+    # paired with document.sections by position (see the numbering above), so
+    # the walk pairs them the same way; the preamble has no entry.
     bodies = [
         (None, document.preamble),
         *zip(result.sections, (s.blocks for s in document.sections), strict=True),
@@ -443,14 +450,16 @@ def validate_document(
             for fragment, anchor_position in block_fragments(block):
                 if "{#" not in fragment:
                     continue
-                lexed = lex(fragment)
-                end_of_text = len(lexed.view.rstrip())
+                lexed = lex_fragment(fragment)
                 for m in _ANCHOR_MARKER_RE.finditer(lexed.view):
                     if is_escaped(fragment, m.start()) or any(
                         d.start <= m.start() < d.end for d in lexed.directives
                     ):
                         continue  # literal: escaped, or part of a directive's value
-                    if entry is None or not anchor_position or m.end() != end_of_text:
+                    # The end of the source, not of the view: a code span or
+                    # comment after the marker is literal text that follows it.
+                    at_end = not fragment[m.end():].strip()
+                    if entry is None or not anchor_position or not at_end:
                         result.warning(
                             "anchor-misplaced",
                             f"'{m.group(0)}' is not in an anchor position and is literal "
@@ -515,7 +524,7 @@ def validate_document(
     for _section, _index, block in document.iter_blocks():
         for fragment in text_fragments(block):
             for anchor in find_definition_anchors(
-                fragment, language=document.metadata.language
+                fragment, language=document.metadata.language, lexed=lex_fragment(fragment)
             ):
                 if anchor.term is None:
                     result.error(
@@ -639,7 +648,7 @@ def validate_document(
         if block.kind == "term" and block.target.strip():
             term_targets.append(block.target.strip())
         for fragment in text_fragments(block):
-            lexed = lex(fragment)
+            lexed = lex_fragment(fragment)
             for _offset in lexed.stray_braces:
                 result.warning(
                     "brace-stray",

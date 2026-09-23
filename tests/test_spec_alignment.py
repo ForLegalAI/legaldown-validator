@@ -822,9 +822,26 @@ def test_paragraph_anchor_colliding_with_an_attachment_id_is_reported():
 
 @pytest.mark.parametrize(
     "source",
-    ["---\n---\n# A {#a}\n\nText.\n", "﻿---\ntitle: T\n---\n# A {#a}\n\nText.\n"],
+    [
+        "---\n---\n# A {#a}\n\nText.\n",
+        "---\n---\n# A {#a}\n\nText.\n\n---\n\n## B {#b}\n",
+        "\ufeff---\ntitle: T\n---\n# A {#a}\n\nText.\n",
+        "\ufeff# A {#a}\n\nText.\n",
+    ],
 )
-def test_empty_or_bom_prefixed_frontmatter_is_not_preamble(source):
+def test_empty_frontmatter_and_byte_order_mark_are_not_body(source):
+    """Empty frontmatter stops at its own closing ---, not at a later rule,
+    and a byte-order mark never hides the first heading."""
     document = parse_document(source)
     assert document.preamble == []
-    assert "---" not in serialize_document(document).split("---", 2)[2]
+    assert document.sections[0].identifier == "a"
+
+
+def test_frontmatter_that_is_not_a_mapping_is_rejected():
+    with pytest.raises(ValueError, match="mapping"):
+        parse_document("---\njust text\n---\n# A\n")
+
+
+def test_marker_followed_by_a_code_span_is_not_at_the_end():
+    result = _validate("See {#a} `code`\n\nAnd {#b} <!-- note -->")
+    assert [d.rule for d in result.diagnostics] == ["anchor-misplaced"] * 2
