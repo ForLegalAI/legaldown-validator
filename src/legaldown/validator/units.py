@@ -75,6 +75,10 @@ PREAMBLE_CONDITION = (
     "a condition on a preamble paragraph, which applies only in a template (§5.7, "
     "§15.3); in this document it is literal text"
 )
+_PREAMBLE_ITEM = (
+    "in the preamble, where only a paragraph may carry a condition (§5.7, §15.3); "
+    "on a list item it is literal text"
+)
 _PREAMBLE_ANCHOR = (
     "in the preamble, which carries no anchors (§4.4); it is literal text. A "
     "preamble paragraph in a template may carry a condition alone (§15.3)"
@@ -139,6 +143,8 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
                     misplaced = _PREAMBLE_ANCHOR
                 elif preamble_condition and not include_only:
                     misplaced = PREAMBLE_CONDITION
+                elif section is None and block.kind in _LISTS and marker.condition:
+                    misplaced = _PREAMBLE_ITEM
                 elif section is None and not include_only:
                     misplaced = _ANYWHERE
                 else:

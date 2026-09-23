@@ -359,3 +359,21 @@ def test_a_question_used_by_a_placeholder_in_a_heading_is_used():
 
 def test_a_preamble_list_item_carries_no_condition():
     assert "anchor-misplaced" in _rules("- item {when=vat}\n\n# A\n\nText.")
+
+
+def test_a_term_redefined_under_a_condition_stays_defined_by_the_original():
+    frontmatter = _QUESTIONS + "amends:\n  title: Original\n  file: original.lgd\n"
+    body = '# A\n\n"Services" {{def: services}} means x. {when=vat}\n\nWe provide {{term: services}}.'
+    result = validate_document(_parse(body, frontmatter), import_definitions=lambda *_: {"services": "Services"})
+    assert "condition-reference-unsafe" not in result.rules()
+
+
+def test_a_preamble_list_items_condition_is_explained():
+    result = validate_document(_parse("- item {when=vat}\n\n# A\n\nText."))
+    [message] = [d.message for d in result.diagnostics if d.rule == "anchor-misplaced"]
+    assert "only a paragraph may carry a condition" in message
+
+
+def test_alternative_attachments_are_unreferenced_once():
+    result = validate_document(_parse("# A\n\nText.", _ALTERNATIVE_ATTACHMENTS))
+    assert [d.rule for d in result.diagnostics].count("attachment-unreferenced") == 1

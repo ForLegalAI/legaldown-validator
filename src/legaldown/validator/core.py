@@ -912,10 +912,10 @@ def validate_document(
                                 f"Amendment redefines '{def_id}' which exists in the original document.",
                             )
                     for def_id, term_text in _imported_definitions.items():
-                        if def_id not in result.definition_lookup:
-                            result.definition_lookup[def_id] = term_text
-                            # The original is always in force (§7.5).
-                            declared_terms[def_id] = [(term_text, False, ALWAYS)]
+                        result.definition_lookup.setdefault(def_id, term_text)
+                        # The original is always in force (§7.5), even where
+                        # the amendment redefines the term under a condition.
+                        declared_terms.setdefault(def_id, []).append((term_text, False, ALWAYS))
 
     # ── Attachment definition import (§7, §12.4) ──
     # A {{def:}} inside an attachment file registers a document-wide term; ids
@@ -1245,12 +1245,13 @@ def validate_document(
     if final:
         _check_final(placeholders, chooses, notes, conditions, questions, result)
 
-    # Warn about declared but unreferenced attachments (§16.10).
-    for att in document.metadata.attachments:
-        if att.id and att.id not in referenced_attachments:
+    # Warn about declared but unreferenced attachments (§16.10): once per id,
+    # which alternatives share (§15.3).
+    for att_id in dict.fromkeys(att.id for att in document.metadata.attachments):
+        if att_id and att_id not in referenced_attachments:
             result.warning(
                 "attachment-unreferenced",
-                f"Attachment '{att.id}' is declared but never referenced via {{{{attach:}}}}.",
+                f"Attachment '{att_id}' is declared but never referenced via {{{{attach:}}}}.",
             )
 
     # Warn about declared but never-referenced definitions (§7). May
