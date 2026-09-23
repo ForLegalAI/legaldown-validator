@@ -11,6 +11,7 @@ import yaml
 
 from .directives import format_value
 from .markdown import FENCE_OPEN_RE, close_fences
+from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata
 from .parser import HEADING_RE
 
@@ -237,8 +238,9 @@ def serialize_document(document: Document) -> str:
     parts.extend(_render_blocks(document.preamble))
     for section in document.sections:
         heading = f"{'#' * section.level} {section.title.strip()}"
-        if section.identifier.strip():
-            heading += f" {{#{section.identifier.strip()}}}"
+        marker = format_marker(Marker(section.identifier.strip(), section.condition.strip()))
+        if marker:
+            heading += " " + marker
         parts.extend(["", heading])
         parts.extend(_render_blocks(section.blocks))
     return "\n".join(parts).strip() + "\n"

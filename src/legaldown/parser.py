@@ -25,8 +25,8 @@ from .markdown import (
     fence_end,
     indent_width,
 )
+from .markers import Marker, split_heading
 from .models import Block, Document, document_from_dict
-from .validator import slugify_identifier
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -111,12 +111,9 @@ def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
 # so that empty frontmatter is tried first: otherwise ``---``/``---`` would
 # extend to the next ``---`` rule in the body.
 FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)", re.DOTALL)
-# The anchor group deliberately accepts any non-brace run: a malformed id
-# (e.g. {#Bad_ID}) must reach the validator to be reported as anchor-format
-# rather than silently remaining part of the title.
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
-# Setext heading text (§4.1), with the same optional trailing anchor.
-SETEXT_TEXT_RE = re.compile(r"^(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
+# An ATX heading: its level and its text, which may end in a marker (split
+# off by markers.split_heading).
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 # A setext underline under a paragraph: ``===`` makes a level-1 heading,
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
@@ -483,7 +480,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     return end, 0
 
 
-_Heading = tuple[str, int, str | None]  # title, level, explicit identifier
+_Heading = tuple[str, Marker, int]  # title, marker, level
 
 
 def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
@@ -514,8 +511,8 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             index = end
             lazy = False
         elif atx:
-            hashes, title, identifier = atx.groups()
-            heading = (title.strip(), len(hashes), identifier)
+            hashes, text = atx.groups()
+            heading = (*split_heading(text), len(hashes))
             index += 1
         elif RULE_RE.match(line):
             blocks.append(Block(kind="rule"))
@@ -560,14 +557,13 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             end, setext_level = _paragraph_end(lines, index, lazy)
             if setext_level:
                 text = " ".join(part.strip() for part in lines[index:end - 1])
-                title, identifier = SETEXT_TEXT_RE.match(text).groups()
-                heading = (title.strip(), setext_level, identifier)
+                heading = (*split_heading(text), setext_level)
             else:
                 blocks.append(_parse_paragraph(" ".join(lines[index:end])))
             index = end
             lazy = False
         if heading is not None:
-            if heading[0] == "Signature Block" and heading[2] == "signature-block":
+            if heading[0] == "Signature Block" and heading[1].identifier == "signature-block":
                 break
             blocks = []
             sections.append((heading, blocks))
@@ -594,10 +590,13 @@ def parse_document(source: str, *, filename: str = "") -> Document:
             {
                 "title": title,
                 "level": level,
-                "identifier": identifier or slugify_identifier(title),
+                # An omitted identifier stays empty: the validator generates
+                # it (§5.3, §5.5), knowing which headings can appear together.
+                "identifier": marker.identifier,
+                "condition": marker.condition,
                 "blocks": [asdict(block) for block in blocks],
             }
-            for (title, level, identifier), blocks in sections
+            for (title, marker, level), blocks in sections
         ],
         "filename": filename,
         "preamble": [asdict(block) for block in preamble],

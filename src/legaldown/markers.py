@@ -1,0 +1,81 @@
+"""Anchor and condition markers (spec §5.2, §5.7, §15.3).
+
+A marker follows a heading's text, or ends a list item's first paragraph or
+a top-level paragraph::
+
+    marker    ::= "{" attribute ( ws+ attribute )* "}"
+    attribute ::= "#" identifier | "when=" condition
+
+Shared by the parser, which splits a heading's marker from its text, and the
+validator, which finds markers in body text.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+# Something that looks like a marker: a brace opening with ``#`` or ``when=``,
+# up to the next closing brace on the line. Whether it is one is decided by
+# parse_marker; a look-alike is literal text (anchor-misplaced).
+MARKER_RE = re.compile(r"\{(?:#|when=)[^{}\n]*\}")
+
+_ATTRIBUTE_RE = re.compile(r"#(?P<id>\S+)|when=(?P<when>\S+)")
+
+
+@dataclass(frozen=True, slots=True)
+class Marker:
+    """A marker's attributes, as written: ``identifier`` for ``#id`` and
+    ``condition`` for ``when=``, each ``""`` when absent. Their format is
+    checked by the validator (anchor-format, condition-invalid)."""
+
+    identifier: str = ""
+    condition: str = ""
+
+
+def parse_marker(text: str) -> Marker | None:
+    """The marker *text* (braces included) holds, or None when it is not a
+    marker: an attribute other than ``#id`` and ``when=``, one written
+    twice, or none at all."""
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    words = text[1:-1].split()
+    identifier = condition = ""
+    for word in words:
+        attribute = _ATTRIBUTE_RE.fullmatch(word)
+        if attribute is None:
+            return None
+        if attribute.group("id") is not None:
+            if identifier:
+                return None
+            identifier = attribute.group("id")
+        else:
+            if condition:
+                return None
+            condition = attribute.group("when")
+    if not words:
+        return None
+    return Marker(identifier, condition)
+
+
+# A heading's trailing marker, after its text and at least one space.
+_TRAILING_MARKER_RE = re.compile(r"\s+(\{(?:#|when=)[^{}\n]*\})\s*$")
+
+
+def split_heading(text: str) -> tuple[str, Marker]:
+    """A heading's text without its trailing marker, and the marker (empty
+    when there is none). A trailing look-alike that is not a marker stays in
+    the text, where the validator reports it (anchor-misplaced)."""
+    trailing = _TRAILING_MARKER_RE.search(text)
+    if trailing:
+        marker = parse_marker(trailing.group(1))
+        if marker is not None:
+            return text[: trailing.start()].strip(), marker
+    return text.strip(), Marker()
+
+
+def format_marker(marker: Marker) -> str:
+    """The source of *marker*, ``#id`` first (§15.3); ``""`` when empty."""
+    attributes = [f"#{marker.identifier}"] if marker.identifier else []
+    if marker.condition:
+        attributes.append(f"when={marker.condition}")
+    return "{" + " ".join(attributes) + "}" if attributes else ""

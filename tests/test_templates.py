@@ -545,7 +545,8 @@ _CHOICES = _QUESTIONS + "  vat:\n    type: boolean\n"
     ],
 )
 def test_a_choose_listing_every_answer_is_valid(body):
-    assert _validate(_CHOICES, body).diagnostics == []
+    # The other declared questions are unused here.
+    assert _validate(_CHOICES, body).rules() == {"question-unused"}
 
 
 @pytest.mark.parametrize(
