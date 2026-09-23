@@ -274,31 +274,62 @@ class Quote:
         return _ALERT_RE.match(self.first_line) is not None and not self.is_drafting_note
 
 
-def block_quotes(block: Block) -> list[Quote]:
-    """The block quotes in *block*: a quote block itself, or a run of ``>``
-    lines in a list item outside its fenced code, where the parser keeps a
-    quote's lines — lazy continuation lines included — each with its ``>``."""
-    if block.kind == "quote":
-        return [Quote(block.text, 0, len(block.text), block.text.split("\n", 1)[0].strip())]
+_QUOTE_MARKER_RE = re.compile(r"[ \t]*>[ \t]?")
+
+
+def _strip_markers(line: str, count: int) -> tuple[int, str]:
+    """Remove up to *count* leading ``>`` markers from *line*; return how
+    many there were and what follows them."""
+    removed = 0
+    while removed < count and (marker := _QUOTE_MARKER_RE.match(line)):
+        line = line[marker.end():]
+        removed += 1
+    return removed, line
+
+
+def _quotes_in(text: str, outer: int) -> list[Quote]:
+    """The block quotes in *text*, nested ones included. *outer* is how many
+    quotes *text* is already inside: 1 for a quote block's text, whose own
+    markers the parser removed, else 0. A quote at depth *d* is a run of
+    lines at depth *d* or deeper; lines in fenced code at the text's own
+    level are code, whatever they begin with."""
+    lines = text.split("\n")
+    depths: list[int] = []
+    fence: str | None = None
+    for line in lines:
+        if fence is not None:
+            depths.append(outer)
+            if closes_fence(line, fence):
+                fence = None
+            continue
+        markers, _content = _strip_markers(line, len(line))
+        if not markers and (opening := FENCE_OPEN_RE.match(line)):
+            fence = opening.group("fence")
+        depths.append(outer + markers)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line) + 1)
     quotes: list[Quote] = []
-    for item in block.items:
-        offset = 0
-        fence: str | None = None
-        run: tuple[int, str] | None = None  # the open run's start and first line
-        for line in [*item.split("\n"), ""]:
-            quoted = fence is None and line.startswith(">")
-            if quoted and run is None:
-                run = (offset, line[1:].strip())
-            elif not quoted and run is not None:
-                quotes.append(Quote(item, run[0], offset - 1, run[1]))
+    for depth in range(1, max(depths, default=0) + 1):
+        run: int | None = None  # the open run's first line
+        for index, line_depth in enumerate([*depths, 0]):
+            if line_depth >= depth and run is None:
+                run = index
+            elif line_depth < depth and run is not None:
+                first = _strip_markers(lines[run], depth - outer)[1].strip()
+                quotes.append(Quote(text, starts[run], starts[index] - 1, first))
                 run = None
-            if fence is not None:
-                if closes_fence(line, fence):
-                    fence = None
-            elif not quoted and (opening := FENCE_OPEN_RE.match(line)):
-                fence = opening.group("fence")
-            offset += len(line) + 1
     return quotes
+
+
+def block_quotes(block: Block) -> list[Quote]:
+    """The block quotes in *block*, nested ones included: a quote block and
+    the quotes in it, or runs of ``>`` lines in a list item, where the parser
+    keeps a quote's lines — lazy continuation lines included — each with its
+    ``>``."""
+    if block.kind == "quote":
+        return _quotes_in(block.text, 1)
+    return [quote for item in block.items for quote in _quotes_in(item, 0)]
 
 
 # ── Insertion boundaries (§15.7.3) ────────────────────────────────
@@ -312,16 +343,25 @@ _AFTER_INSERTION = frozenset(".,;:)!?\"'”’»/-")
 _COMBINING = "&<\\"
 # A line's container markers: block quote markers, then a list item marker.
 _CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+)?")
-_LINK_REFERENCE_RE = re.compile(r" {0,3}\[[^\]]+\]:")
+# A link reference definition: its label, destination, and optional title.
+# The parser joins a paragraph's lines, so only this span is the definition.
+_LINK_REFERENCE_RE = re.compile(
+    r" {0,3}\[[^\]]+\]:[ \t]*\S*(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
+)
+
+
+# Stands in for a directive's text in template text: neither spacing nor
+# Markdown punctuation.
+_OPAQUE = "\x00"
 
 
 def template_text(text: str, directives: list[Directive]) -> str:
-    """*text* with its *directives* blanked: the template text around them.
-    That is the source as written, comments and code spans included, which
-    stay next to inserted text in the assembled source."""
+    """*text* with its *directives* made opaque: the template text around
+    them. That is the source as written, comments and code spans included,
+    which stay next to inserted text in the assembled source."""
     chars = list(text)
     for directive in directives:
-        chars[directive.start:directive.end] = " " * (directive.end - directive.start)
+        chars[directive.start:directive.end] = _OPAQUE * (directive.end - directive.start)
     return "".join(chars)
 
 
@@ -365,8 +405,9 @@ def insertion_boundary_problem(
             or after in _AFTER_INSERTION
         ):
             return f"'{after}' directly after it"
-    if _LINK_REFERENCE_RE.match(template, content_start):
-        return "it is on a link reference definition line"
+    reference = _LINK_REFERENCE_RE.match(template, content_start)
+    if reference and start < reference.end():
+        return "it is in a link reference definition"
     destination = template.rfind("](", line_start, start)
     if destination >= 0 and template.find(")", destination + 2, start) < 0:
         return "it is inside a link or image destination"
@@ -390,7 +431,7 @@ def check_choose(directive: Directive, questions: Any, result: ValidationResult)
             "choose-invalid",
             f"'{directive.source}' must name a declared boolean or choice question (§15.5).",
         )
-    elif qtype == "boolean" or isinstance(questions[qid].get("choices"), dict):
+    elif qtype == "boolean" or _choices_problem(questions[qid].get("choices")) is None:
         # Malformed choices are question-invalid; there is nothing to match.
         answers = (
             ["true", "false"] if qtype == "boolean" else [str(value) for value in questions[qid]["choices"]]
@@ -442,6 +483,12 @@ def check_template_body(
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, text_fragments
 
+    for section in document.sections:  # headings are body text too
+        lexed = lex_fragment(section.title)
+        for directive in lexed.directives:
+            if directive.name in _INSERTIONS and not directive.malformed:
+                masked = template_text(section.title, lexed.directives)
+                _check_insertion(section.title, masked, directive, lexed.directives, result)
     includes: list[str] = []
     for _section, _index, block in document.iter_blocks():
         notes: list[Quote] = []
@@ -484,15 +531,7 @@ def check_template_body(
                 # (§15.7.2 step 2), so a blank in one is never filled.
                 if directive.name in _INSERTIONS and not in_note:
                     masked = masked or template_text(fragment, lexed.directives)
-                    problem = insertion_boundary_problem(
-                        fragment, masked, directive, lexed.directives
-                    )
-                    if problem:
-                        result.error(
-                            "insertion-boundary",
-                            f"'{directive.source}' is not kept apart from the text around it: "
-                            f"{problem} (§15.7.3).",
-                        )
+                    _check_insertion(fragment, masked, directive, lexed.directives, result)
             for anchor in find_definition_anchors(
                 fragment, language=document.metadata.language, lexed=lexed
             ):
@@ -508,6 +547,18 @@ def check_template_body(
                         )
     if template:
         _check_fragments(document, includes, result)
+
+
+def _check_insertion(
+    text: str, masked: str, insertion: Directive, directives: list[Directive], result: ValidationResult
+) -> None:
+    """Report *insertion* if it is not kept apart from template text."""
+    problem = insertion_boundary_problem(text, masked, insertion, directives)
+    if problem:
+        result.error(
+            "insertion-boundary",
+            f"'{insertion.source}' is not kept apart from the text around it: {problem} (§15.7.3).",
+        )
 
 
 def _check_fragments(document: Document, includes: list[str], result: ValidationResult) -> None:

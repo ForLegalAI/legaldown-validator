@@ -297,15 +297,20 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
         elif items and (indented or (lazy and _is_lazy_line(line))):
             content = dedent(line, content_indent) if indented else line.strip()
             if quote is not None and not content.startswith(">"):
+                # A lazy line (unindented) always continues the quote here:
+                # the list is lazy only while the quote's paragraph is open.
                 if quote.continues(content):
                     content = "> " + content
-                elif not indented:
-                    break  # the quote holds no paragraph for it to continue
                 else:
                     quote = None
             # An item holding code or a block quote keeps its lines; other
             # continuation lines join the item's text.
-            if FENCE_OPEN_RE.match(content) or content.startswith(">") or "\n" in items[-1]:
+            if (
+                FENCE_OPEN_RE.match(content)
+                or content.startswith(">")
+                or "\n" in items[-1]
+                or items[-1].startswith(">")
+            ):
                 items[-1] += "\n" + content
             else:
                 items[-1] += " " + content.strip()
@@ -518,12 +523,14 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             # indentation belongs to the quoted content (CommonMark). A lazy
             # continuation line is quoted content as it stands.
             quoted = (
-                quote.lstrip()[1:].removeprefix(" ") if quote.lstrip().startswith(">") else quote.strip()
-                for quote in lines[index:end]
+                source.lstrip()[1:].removeprefix(" ") if source.lstrip().startswith(">") else source.strip()
+                for source in lines[index:end]
             )
             blocks.append(Block(kind="quote", text="\n".join(quoted)))
             index = end
-            lazy = True
+            # The quote took every line it could continue; a paragraph after
+            # it is lazy only if the quote's is still open.
+            lazy = quote.paragraph
         elif line.lstrip().startswith("|") and lines[index + 1:index + 2] and (
             lines[index + 1].lstrip().startswith("|")
         ):

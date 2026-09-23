@@ -925,3 +925,68 @@ def test_an_empty_questions_key_is_a_template_construct():
     document = parse_document(f"---\ntitle: T\n{_SIDES}questions:\n---\n\n# A\n\nText.\n")
     assert document.metadata.questions == {}
     assert "template-construct-present" in validate_document(document, final=True).rules()
+
+
+# ── Third review ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("first", ["> # T", ">", "> ---", "> <!-- c -->"])
+def test_an_items_text_after_a_closed_quote_is_not_quoted(first):
+    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n- {first}\n  text after quote\n")
+    item = document.sections[0].blocks[0].items[0]
+    assert item.split("\n")[-1] == "text after quote"
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+@pytest.mark.parametrize(
+    ("text", "flagged"),
+    [
+        ("[label]: https://example.com The Client is {{placeholder: client}}.", False),
+        ("[label]: https://example.com/{{placeholder: path}}", True),
+        ('[label]: https://example.com "Title {{placeholder: t}}"', True),
+    ],
+)
+def test_only_a_link_reference_definition_itself_is_off_limits(text, flagged):
+    assert ("insertion-boundary" in _validate(body=text).rules()) == flagged
+
+
+def test_insertions_in_headings_are_checked():
+    source = f"---\ntitle: T\n{_SIDES}---\n\n# Agreement {{{{placeholder: party}}}}(x)\n\nText.\n"
+    assert "insertion-boundary" in validate_document(parse_document(source)).rules("error")
+
+
+@pytest.mark.parametrize(
+    ("body", "rule"),
+    [
+        ("> > [!DRAFTING]\n> > note", "template-construct-present"),
+        ("> > [!NOTE]\n> > note", "drafting-note-unrecognized"),
+        ("- > > [!NOTE]\n  > > note", "drafting-note-unrecognized"),
+    ],
+)
+def test_nested_quotes_are_checked(body, rule):
+    source = f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n"
+    assert rule in validate_document(parse_document(source), final=True).rules()
+
+
+def test_a_nested_drafting_note_holds_no_definition():
+    body = '> Quoted.\n>\n> > [!DRAFTING]\n> > "Fee" {{def: fee}} means money.\n\nPay the {{term: fee}}.'
+    assert "drafting-note-def" in _validate(body=body).rules("error")
+
+
+def test_a_setext_heading_may_follow_a_quote_with_no_open_paragraph():
+    body = "> [!DRAFTING]\n> ```\n> code\n> ```\nClause heading\n--------------\n\nText.\n"
+    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n{body}")
+    assert [s.title for s in document.sections] == ["A", "Clause heading"]
+
+
+def test_malformed_choices_draw_no_choose_errors():
+    frontmatter = "questions:\n  forum:\n    type: choice\n    choices:\n      Courts: A\n      Arb: B\n"
+    result = _validate(frontmatter, "{{choose: forum, courts=a, arb=b}}")
+    assert "question-invalid" in result.rules()
+    assert "choose-invalid" not in result.rules()
+
+
+def test_a_malformed_choose_still_makes_a_template():
+    source = f"---\ntitle: T\n{_SIDES}---\n\n# A\n\nPay {{{{choose: vat, true=x\n"
+    result = validate_document(parse_document(source), final=True)
+    assert {"directive-malformed", "template-construct-present"} <= result.rules("error")

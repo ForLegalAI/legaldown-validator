@@ -885,22 +885,15 @@ def validate_document(
     # {{choose:}} belongs in body text: never in frontmatter or a heading
     # (§15.5). Wherever it is, it makes the document a template (§15.1).
     chooses: list[Directive] = []
-    for text in frontmatter_texts:
-        for directive in iter_directives(text or ""):
-            if directive.name == "choose":
-                chooses.append(directive)
-                result.error(
-                    "choose-invalid",
-                    f"'{directive.source}' is in frontmatter; it belongs in body text (§15.5).",
-                )
-    for section in document.sections:
-        for directive in iter_directives(section.title):
-            if directive.name == "choose":
-                chooses.append(directive)
-                result.error(
-                    "choose-invalid",
-                    f"'{directive.source}' is in a heading, where §4.2 allows plain text only (§15.5).",
-                )
+    for texts, where in (
+        (frontmatter_texts, "in frontmatter; it belongs in body text"),
+        ([section.title for section in document.sections], "in a heading, where §4.2 allows plain text only"),
+    ):
+        for text in texts:
+            for directive in iter_directives(text or ""):
+                if directive.name == "choose":
+                    chooses.append(directive)
+                    result.error("choose-invalid", f"'{directive.source}' is {where} (§15.5).")
 
     for _section, _index, block in document.iter_blocks():
         # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
@@ -917,6 +910,8 @@ def validate_document(
                 result.warning("brace-stray", BRACE_STRAY)
             for directive in lexed.directives:
                 name = directive.name
+                if name == "choose":
+                    chooses.append(directive)  # a template even when malformed
                 if name == "placeholder":
                     placeholders.append(directive)
                     # Its effective type decides which parameters it defines.
@@ -1025,7 +1020,6 @@ def validate_document(
                         )
                     result.inline_fields.append((value, ftype))
                 elif name == "choose":
-                    chooses.append(directive)
                     check_choose(directive, questions, result)
                 elif name == "attach":
                     referenced_attachments.add(value)
