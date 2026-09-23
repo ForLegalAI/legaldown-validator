@@ -756,7 +756,7 @@ def test_preamble_survives_the_dict_round_trip():
     document = parse_document(_PREAMBLE_SOURCE)
     assert document_from_dict(document_to_dict(document)) == document
     ref = next(r for r in collect_definitions(document) if r.id == "agreement")
-    assert ref.section_identifier is None
+    assert ref.section_index is None
 
 
 # ── Item and paragraph anchor positions (§5.7) ────────────────────
@@ -866,7 +866,9 @@ _BARE = _FRONTMATTER.replace("# Terms {#terms}\n\n", "")
 
 
 def _outline(source: str) -> list[tuple[str, int, str]]:
-    return [(s.title, s.level, s.identifier) for s in parse_document(source).sections]
+    """Each heading's text, level, and identifier: explicit or generated."""
+    entries = validate_document(parse_document(source)).sections
+    return [(entry.title, entry.level, entry.identifier) for entry in entries]
 
 
 def test_setext_headings_are_headings():
@@ -887,8 +889,9 @@ def test_dashes_not_under_a_paragraph_are_a_rule(body):
 
 
 def test_setext_heading_round_trips_as_an_atx_heading():
+    """Its generated identifier is not written: it stays generated."""
     source = _BARE + "Scope\n=====\n\nText.\n"
-    assert "# Scope {#scope}" in serialize_document(parse_document(source))
+    assert "\n# Scope\n" in serialize_document(parse_document(source))
 
 
 def test_fenced_code_is_one_literal_block():

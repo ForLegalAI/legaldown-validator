@@ -129,8 +129,13 @@ class Section:
     """A headed section of the document."""
     title: str = "New Section"
     level: int = 1
+    #: The explicit identifier (§5.2), or ``""`` when the heading has none
+    #: and one is generated (§5.3).
     identifier: str = ""
     blocks: list[Block] = field(default_factory=list)
+    #: In a template, the condition under which the section is present
+    #: (§15.3), as written.
+    condition: str = ""
 
 
 @dataclass(slots=True)
@@ -145,14 +150,20 @@ class Document:
     filename: str = ""
     preamble: list[Block] = field(default_factory=list)
 
+    def iter_indexed_blocks(self) -> Iterator[tuple[int | None, int, Block]]:
+        """Every body block in document order, as ``(section_index, index,
+        block)``: the preamble first, with ``section_index`` ``None``."""
+        for index, block in enumerate(self.preamble):
+            yield None, index, block
+        for section_index, section in enumerate(self.sections):
+            for index, block in enumerate(section.blocks):
+                yield section_index, index, block
+
     def iter_blocks(self) -> Iterator[tuple[Section | None, int, Block]]:
         """Every body block in document order, as ``(section, index, block)``:
         the preamble first, with ``section`` ``None``, then each section's."""
-        for index, block in enumerate(self.preamble):
-            yield None, index, block
-        for section in self.sections:
-            for index, block in enumerate(section.blocks):
-                yield section, index, block
+        for section_index, index, block in self.iter_indexed_blocks():
+            yield (None if section_index is None else self.sections[section_index]), index, block
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +272,7 @@ def section_from_dict(data: dict[str, Any] | None) -> Section:
         level=max(1, min(6, int(payload.get("level") or 1))),
         identifier=_str(payload.get("identifier")),
         blocks=[block_from_dict(b) for b in list(payload.get("blocks") or [])],
+        condition=_str(payload.get("condition")),
     )
 
 

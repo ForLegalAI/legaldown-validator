@@ -47,6 +47,7 @@ IMPLEMENTED_RULES = {
     "amend-term-unresolvable",
     "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",
     "attachment-title-empty", "attachment-unreferenced", "brace-stray", "choose-invalid",
+    "condition-invalid", "condition-never-true", "condition-reference-unsafe",
     "date-invalid", "date-of-birth-invalid",
     "def-autogen-collision", "def-duplicate-id", "def-emphasis", "def-term-variable",
     "def-no-quoted-span", "def-single-quote-ambiguous", "def-unreferenced",
@@ -65,7 +66,7 @@ IMPLEMENTED_RULES = {
     "placeholder-id-malformed", "placeholder-in-structural-field",
     "placeholder-question-mismatch", "placeholder-type-inconsistent",
     "placeholder-type-invalid", "placeholder-unfilled", "placeholder-unknown-currency",
-    "question-invalid",
+    "question-invalid", "question-unused",
     "ref-broken", "ref-targets-attachment", "representative-name-empty",
     "side-name-duplicate", "side-name-malformed", "side-party-name-format",
     "side-unknown", "sides-absent", "sides-minimum", "supersedes-title-empty",
@@ -168,3 +169,28 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         assert want in produced, (
             f"expected {want} not produced; got {sorted(produced)}"
         )
+
+
+def _iter_assembly_templates():
+    root = Path(FIXTURES_DIR) / "assembly"
+    if not root.is_dir():
+        return
+    for case in sorted(p for p in root.iterdir() if p.is_dir()):
+        yield pytest.param(case, id=case.name)
+
+
+@pytest.mark.parametrize("case", list(_iter_assembly_templates()))
+def test_assembly_template_validates_without_errors(case: Path):
+    """Each assembly case's template MUST produce no Errors (fixtures README,
+    step 3); assembling it needs the Assembly capability, not claimed here."""
+    level = "core"
+    if (case / "case.json").exists():
+        level = json.loads((case / "case.json").read_text(encoding="utf-8")).get(
+            "requires_level", "core"
+        )
+    if level != "core":
+        pytest.skip(f"requires conformance level {level}")
+    result = _validate_file(case / "template.lgd", {})
+    assert not result.errors, (
+        f"template produced errors: {[d for d in result.diagnostics if d.level == 'error']}"
+    )

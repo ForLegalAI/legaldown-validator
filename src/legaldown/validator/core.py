@@ -17,14 +17,13 @@ from ..directives import (
     KNOWN_DIRECTIVES,
     PLACEHOLDER_TYPE_PARAMS,
     Directive,
-    is_escaped,
     iter_directives,
     lex,
 )
 from ..models import Amends, Document
 from ..specification import SPEC_VERSION, parse_version
+from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
 from .helpers import (
-    ensure_unique_identifier,
     format_section_number,
     is_positive_numeric,
     is_valid_iso_date,
@@ -47,11 +46,13 @@ from .templates import (
     DECISION_QUESTION_TYPES,
     Blank,
     Quote,
+    block_quotes,
     check_choose,
     check_questions,
     check_template_body,
     question_type,
 )
+from .units import HTML_COMMENT_RE, FoundMarker, Units, find_markers, marker_matches, own_presence
 
 # Type aliases for the optional definitions-import callbacks.
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
@@ -97,6 +98,61 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
         and (directive.start, directive.end) == (0, len(value))
         and _placeholder_type(directive, declared) == "date"
     )
+
+
+def _frontmatter_fields(meta: Any) -> tuple[list[tuple[str, str]], list[str]]:
+    """The frontmatter fields that may hold text: ``(label, value)`` of each
+    identifier, structural, or format-checked field, where a placeholder is
+    not allowed, and the value fields, where it is (§3.10)."""
+    structural: list[tuple[str, str]] = [
+        ("document_type", meta.document_type),
+        ("legaldown", meta.legaldown),
+        ("language", meta.language),
+        ("authoritative", meta.authoritative),
+    ]
+    for side in meta.sides:
+        structural.append((f"side name '{side.name}'", side.name))
+        for party in side.parties:
+            structural.append((f"party name '{party.name}'", party.name))
+            structural.append((f"party type for '{party.name}'", party.type))
+    for code, path in meta.translations.items():
+        structural.append(("a translations language code", code))
+        structural.append((f"translations file for '{code}'", path))
+    for key, description in meta.field_types.items():
+        structural.append(("a field_types key", key))
+        structural.append((f"field_types entry '{key}'", description))
+    for att in meta.attachments:
+        structural.append(("attachment id", att.id))
+        structural.append((f"file of attachment '{att.id}'", att.file))
+        structural.append((f"when of attachment '{att.id}'", att.when))
+    if meta.amends:
+        structural.append(("amends.file", meta.amends.file))
+    if isinstance(meta.supersedes, Amends):
+        structural.append(("supersedes.file", meta.supersedes.file))
+    structural.extend(("questions", text) for text in _strings(meta.questions))
+
+    values: list[str] = [
+        meta.title, meta.subtitle, meta.version, meta.effective_date,
+        meta.governing_law, meta.adopted_by, meta.adoption_date,
+    ]
+    if meta.amends:
+        values.append(meta.amends.title)
+    if isinstance(meta.supersedes, Amends):
+        values.append(meta.supersedes.title)
+    else:
+        values.append(meta.supersedes)
+    values.extend(att.title for att in meta.attachments)
+    for side in meta.sides:
+        values.append(side.label)
+        for party in side.parties:
+            values.extend([
+                party.label, party.legal_name, party.identification_number,
+                party.address, party.date_of_birth,
+            ])
+            values.extend(rep.name for rep in party.representatives)
+            values.extend(rep.title for rep in party.representatives)
+            values.extend(cf.value for cf in party.custom_fields)
+    return structural, values
 
 
 def _check_date_field(
@@ -274,15 +330,17 @@ def _check_blank_codes(blanks: dict[str, Blank], result: ValidationResult) -> No
 
 
 def _check_final(
-    document: Document,
     placeholders: list[Directive],
     chooses: list[Directive],
     notes: list[Quote],
+    conditions: list[tuple[str, str]],
+    questions: Any,
     result: ValidationResult,
 ) -> None:
     """The final check (§15.9): no blank and no template construct remains
-    in a document meant for signature. *placeholders*, *chooses*, and
-    drafting *notes* are every one in the document."""
+    in a document meant for signature. The arguments are every one in the
+    document: blanks, choices, drafting notes, and conditions (where, as
+    written)."""
     for directive in placeholders:
         result.error(
             "placeholder-unfilled",
@@ -295,34 +353,56 @@ def _check_final(
             f"{what} remains in a document meant to be final (§15.9).",
         )
 
-    if document.metadata.questions is not None:
+    if questions is not None:
         construct("The 'questions' key")
-    for att in document.metadata.attachments:
-        if att.when:
-            construct(f"The condition 'when: {att.when}' of attachment '{att.id}'")
+    for where, text in conditions:
+        construct(f"The condition '{text}' on {where}")
     for directive in chooses:
         construct(f"'{directive.source}'")
     for _note in notes:
         construct("A drafting note")
 
 
-def _is_include_only(text: str, directives: list[Directive]) -> bool:
-    """True if *text* holds a single ``{{include:}}`` directive and nothing
-    else but comments, which are not rendered (§8.6). *directives* are lexed
-    from a string that begins with *text*."""
-    inside = [d for d in directives if d.end <= len(text)]
-    return (
-        len(inside) == 1
-        and inside[0].name == "include"
-        and not inside[0].malformed
-        and not _HTML_COMMENT_RE.sub("", text[: inside[0].start]).strip()
-        and not _HTML_COMMENT_RE.sub("", text[inside[0].end:]).strip()
-    )
+def _clashes(presence: Presence, others: list[Presence], questions: Any) -> bool:
+    """True if a declaration with *presence* can appear together with one of
+    the earlier declarations of the same identifier (§15.4)."""
+    return any(not exclusive(presence, other, questions) for other in others)
 
 
-# A {#id}-like marker (§5.7), in body text as opposed to a heading.
-_ANCHOR_MARKER_RE = re.compile(r"\{#([^}\s]+)\}")
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+def _check_never_true(
+    document: Document,
+    markers: list[FoundMarker],
+    units: Units,
+    questions: Any,
+    result: ValidationResult,
+) -> None:
+    """Report each conditional unit that can never appear: its own condition
+    contradicts those of the units enclosing it (condition-never-true,
+    §15.4). A unit inside one already reported is not reported again."""
+    for index, section in enumerate(document.sections):
+        if (
+            own_presence(section.condition, questions)
+            and satisfiable(units.enclosing(index), questions)
+            and not satisfiable(units.presence(index), questions)
+        ):
+            result.warning(
+                "condition-never-true",
+                f"The heading '{section.title}' can never appear: its condition "
+                f"'{section.condition}' contradicts those of the sections enclosing it (§15.4).",
+            )
+    for found in markers:
+        if found.misplaced or found.section is None:
+            continue  # literal text, or a preamble paragraph (no enclosing section)
+        if not units.own(found.section, found.block, found.fragment):
+            continue
+        if satisfiable(units.presence(found.section), questions) and not satisfiable(
+            units.presence(found.section, found.block, found.fragment), questions
+        ):
+            result.warning(
+                "condition-never-true",
+                f"'{found.source}' marks a unit that can never appear: its condition "
+                f"contradicts those of the sections enclosing it (§15.4).",
+            )
 
 
 def validate_document(
@@ -366,6 +446,61 @@ def validate_document(
     if not title:
         result.error("title-missing", "The document title is required.")
 
+    # Imported here to avoid a module-level import cycle (definitions ->
+    # validator.helpers -> validator/__init__ -> core).
+    from ..definitions import (
+        block_fragments,
+        collect_definitions,
+        find_definition_anchors,
+        text_fragments,
+    )
+
+    # Each text is lexed once per validation and shared by the passes below.
+    lex_fragment = cache(lex)
+    meta = document.metadata
+    questions = meta.questions
+    structural_fields, value_fields = _frontmatter_fields(meta)
+    frontmatter_texts = [text for _label, text in structural_fields] + value_fields
+    headings = [section.title for section in document.sections]
+
+    def named(text: str, name: str) -> list[Directive]:
+        """The *name* directives in a frontmatter value or heading, each text
+        lexed once per validation."""
+        return [d for d in lex_fragment(text or "").directives if d.name == name]
+
+    # {{choose:}} belongs in body text: never in frontmatter or a heading
+    # (§15.5). Wherever it is, it makes the document a template (§15.1).
+    misplaced_chooses = [
+        (directive, where)
+        for texts, where in (
+            (frontmatter_texts, "in frontmatter; it belongs in body text"),
+            (headings, "in a heading, where §4.2 allows plain text only"),
+        )
+        for text in texts
+        for directive in named(text, "choose")
+    ]
+
+    # ── Templates and the presence of units (§15.1, §15.3) ──
+    # A document declaring questions, carrying a condition, or containing a
+    # {{choose:}} is a template. Its markers are found first: only a template
+    # gives a preamble paragraph's condition its place (§5.7).
+    markers = find_markers(document, lex_fragment)
+    body_directives = {
+        directive.name
+        for _s, _i, block in document.iter_indexed_blocks()
+        for text in text_fragments(block)
+        for directive in lex_fragment(text).directives
+    }
+    template = (
+        questions is not None
+        or any(att.when for att in meta.attachments)
+        or any(section.condition for section in document.sections)
+        or any(found.marker and found.marker.condition and not found.misplaced for found in markers)
+        or "choose" in body_directives
+        or bool(misplaced_chooses)
+    )
+    units = Units(document, markers, questions, template=template)
+
     # ── Validate document_type (§16.6) ──
     doc_type = document.metadata.document_type or "contract"
     if doc_type not in VALID_DOC_TYPES:
@@ -387,8 +522,6 @@ def validate_document(
                 f"field_types key '{ft_key}' collides with a reserved value-type "
                 f"name (date, money, duration, party, text).",
             )
-
-    questions = document.metadata.questions
 
     # ── Metadata dates (§16.6) ──
     for field_name, field_value in (
@@ -491,8 +624,11 @@ def validate_document(
             )
 
     # ── Attachment id validation (§16.10) ──
-    attachment_ids: set[str] = set()
+    # An id is unique among attachments that can be present together; an
+    # attachment's presence is its `when` condition (§3.9, §15.4).
+    attachment_presence: dict[str, list[Presence]] = {}
     for att in document.metadata.attachments:
+        presence = own_presence(att.when, questions)
         if not att.id:
             result.error("anchor-format", "Attachment is missing required 'id'.")
         elif not IDENTIFIER_RE.fullmatch(att.id):
@@ -500,11 +636,11 @@ def validate_document(
                 "anchor-format",
                 f"Attachment id '{att.id}' must match [a-z][a-z0-9-]*.",
             )
-        elif att.id in attachment_ids:
+        elif _clashes(presence, attachment_presence.get(att.id, []), questions):
             result.error("attachment-id-duplicate", f"Duplicate attachment id '{att.id}'.")
         else:
-            attachment_ids.add(att.id)
-            result.attachment_lookup[att.id] = att.title or att.id
+            attachment_presence.setdefault(att.id, []).append(presence)
+            result.attachment_lookup.setdefault(att.id, att.title or att.id)
         if not att.title:
             result.error(
                 "attachment-title-empty",
@@ -515,6 +651,7 @@ def validate_document(
                 "attachment-file-missing",
                 f"Attachment '{att.id}' is missing required 'file'.",
             )
+    attachment_ids = set(attachment_presence)
 
     # ── Amendment validation (§16.8) ──
     if document.metadata.amends and not document.metadata.amends.title.strip():
@@ -529,12 +666,42 @@ def validate_document(
         )
 
     # ── Section numbering and identifiers ──
-    used_identifiers: set[str] = set()
+    # Explicit identifiers share the anchor namespace with attachment ids
+    # (§5.6). Two declarations of one identifier are duplicates only when
+    # they can appear together (§15.4); `anchors` holds each identifier's
+    # presences, which are also where a {{ref:}} to it can resolve.
+    placed_anchors = [
+        found
+        for found in markers
+        if not found.misplaced and found.marker.identifier and not found.include_only
+    ]
+    explicit_ids = (
+        {s.identifier.strip() for s in document.sections if s.identifier.strip()}
+        | {found.marker.identifier for found in placed_anchors}
+        | attachment_ids
+    )
+    # Each anchor's declarations, by presence. While sections are numbered,
+    # it holds only earlier headings' identifiers.
+    anchors: dict[str, list[Presence]] = {}
+
+    def free_identifier(base: str, presence: Presence) -> str:
+        """The lowest suffix of *base* — none, -2, -3, … — not taken by an
+        explicit identifier or by an earlier heading that can appear with
+        this one (§5.5)."""
+        candidate, suffix = base, 1
+        while candidate in explicit_ids or _clashes(presence, anchors.get(candidate, []), questions):
+            suffix += 1
+            candidate = f"{base}-{suffix}"
+        return candidate
+
     counters = [0] * 7
     path_stack: list[str] = []
     last_level = 0
+    # The last section at each open level: (identifier, presence). An
+    # alternative to it shares its number (§15.8).
+    previous_sibling: dict[int, tuple[str, Presence]] = {}
 
-    for section in document.sections:
+    for section_index, section in enumerate(document.sections):
         # An out-of-range level is an Error, but the section still gets an
         # index entry: `result.sections` is positionally paired with
         # `document.sections` by callers (renderers, the editor), so skipping
@@ -563,39 +730,49 @@ def validate_document(
                 f"Section '{section.title}' appears to include hardcoded numbering. LegalDown headings should be plain text.",
             )
 
-        explicit_identifier = bool(section.identifier.strip())
-        identifier = section.identifier.strip() or slugify_identifier(section.title)
-        if not IDENTIFIER_RE.fullmatch(identifier):
+        presence = units.presence(section_index)
+        identifier = section.identifier.strip()
+        if identifier and not IDENTIFIER_RE.fullmatch(identifier):
             result.error(
                 "anchor-format",
                 f"Identifier '{identifier}' on section '{section.title}' is invalid. Use lowercase letters, numbers, and hyphens only.",
             )
-            identifier = slugify_identifier(identifier or section.title)
-        identifier, deduped = ensure_unique_identifier(identifier, used_identifiers)
-        if deduped:
-            if explicit_identifier:
-                # Duplicate explicit anchors are an Error (§16.2); the id is
-                # still adjusted so downstream indices stay usable.
-                result.error(
-                    "anchor-duplicate",
-                    f"Duplicate section identifier on '{section.title}'. It was adjusted to '{identifier}'.",
-                )
-            else:
+            identifier = free_identifier(slugify_identifier(identifier), presence)
+        elif identifier and _clashes(presence, anchors.get(identifier, []), questions):
+            # Duplicate explicit anchors are an Error (§16.2); the identifier
+            # is still adjusted so downstream indices stay usable.
+            identifier = free_identifier(identifier, presence)
+            result.error(
+                "anchor-duplicate",
+                f"Duplicate section identifier on '{section.title}'. It was adjusted to "
+                f"'{identifier}'.",
+            )
+        elif not identifier:
+            # A comment is not part of the rendered heading (§8.6).
+            base = slugify_identifier(HTML_COMMENT_RE.sub("", section.title))
+            identifier = free_identifier(base, presence)
+            if identifier != base:
                 result.warning(
                     "anchor-autogen-collision",
-                    f"Auto-generated identifier on '{section.title}' collides with an earlier section. It was adjusted to '{identifier}'.",
+                    f"Auto-generated identifier on '{section.title}' collides with another "
+                    f"identifier. It was adjusted to '{identifier}'; give the heading an "
+                    f"explicit identifier (§5.5).",
                 )
-        section.identifier = identifier
+        anchors.setdefault(identifier, []).append(presence)
 
-        if identifier in attachment_ids:
+        if _clashes(presence, attachment_presence.get(identifier, []), questions):
             result.error(
                 "attachment-id-collision",
                 f"Section identifier '{identifier}' collides with an attachment id.",
             )
 
+        sibling_id, sibling_presence = previous_sibling.get(level, ("", ALWAYS))
+        alternative = sibling_id == identifier and exclusive(presence, sibling_presence, questions)
+        previous_sibling = {lvl: v for lvl, v in previous_sibling.items() if lvl < level}
+        previous_sibling[level] = (identifier, presence)
         for idx in range(level, 7):
             if idx == level:
-                counters[idx] += 1
+                counters[idx] += 0 if alternative else 1
             elif idx > level:
                 counters[idx] = 0
         path_stack = path_stack[: max(level - 1, 0)]
@@ -609,95 +786,56 @@ def validate_document(
             number=number,
         )
         result.sections.append(entry)
-        result.section_lookup[identifier] = entry
-        result.section_lookup[entry.path] = entry
+        # Alternatives share an identifier: a reference resolves to
+        # whichever is present after assembly; the index keeps the first.
+        result.section_lookup.setdefault(identifier, entry)
         last_level = level
 
-    # ── Item and paragraph anchors (§5.7) ──
-    # A {#id} at the very end of a top-level paragraph or of a list item joins
-    # the shared anchor namespace and is a valid {{ref:}} target. It resolves
-    # to its containing section (the §13.2 enumeration-path refinement is a
-    # Rendering-level concern; §6.3 falls back to the containing section's
-    # number). A marker anywhere else, including the preamble (§4.4), is
-    # literal text (anchor-misplaced). The definitions module is imported
-    # lazily to avoid a module-level import cycle (definitions ->
-    # validator.helpers -> validator/__init__ -> core).
-    from ..definitions import (
-        block_fragments,
-        collect_definitions,
-        find_definition_anchors,
-        text_fragments,
-    )
-
-    # Each fragment is lexed once per validation and shared by the passes below.
-    lex_fragment = cache(lex)
-
-    # An anchor resolves to its section's index entry. result.sections is
-    # paired with document.sections by position (see the numbering above), so
-    # the walk pairs them the same way; the preamble has no entry.
-    bodies = [
-        (None, document.preamble),
-        *zip(result.sections, (s.blocks for s in document.sections), strict=True),
-    ]
-    for entry, blocks in bodies:
-        for block in blocks:
-            for fragment, anchor_position in block_fragments(block):
-                if "{#" not in fragment:
-                    continue
-                lexed = lex_fragment(fragment)
-                for m in _ANCHOR_MARKER_RE.finditer(lexed.view):
-                    if is_escaped(fragment, m.start()) or any(
-                        d.start <= m.start() < d.end
-                        for d in lexed.directives
-                        if not d.malformed
-                    ):
-                        continue  # literal: escaped, or part of a directive's value
-                    # Only whitespace and comments may follow an anchor: a
-                    # comment is not rendered (§8.6), but a code span is text.
-                    # An item anchor ends the item's first paragraph, its
-                    # first line here: a note or code may follow (§5.7).
-                    line_end = fragment.find("\n", m.end())
-                    rest = fragment[m.end():line_end] if line_end >= 0 else fragment[m.end():]
-                    at_end = "\n" not in fragment[:m.start()] and not _HTML_COMMENT_RE.sub(
-                        "", rest
-                    ).strip()
-                    if entry is None or not anchor_position or not at_end:
-                        result.warning(
-                            "anchor-misplaced",
-                            f"'{m.group(0)}' is not in an anchor position and is literal "
-                            f"text: anchors go at the end of a list item or of a paragraph "
-                            f"directly inside a section (§5.7).",
-                        )
-                        continue
-                    if block.kind == "paragraph" and _is_include_only(
-                        fragment[: m.start()], lexed.directives
-                    ):
-                        result.warning(
-                            "anchor-misplaced",
-                            f"'{m.group(0)}' is ignored: a paragraph holding only an "
-                            f"{{{{include:}}}} is replaced by its fragment, so it is not a "
-                            f"reference target. Anchor a heading inside the fragment (§12.2).",
-                        )
-                        continue
-                    anchor_id = m.group(1)
-                    if not IDENTIFIER_RE.fullmatch(anchor_id):
-                        result.error(
-                            "anchor-format",
-                            f"Anchor '{{#{anchor_id}}}' is invalid. Use lowercase letters, numbers, and hyphens only.",
-                        )
-                    elif anchor_id in used_identifiers:
-                        result.error(
-                            "anchor-duplicate",
-                            f"Anchor '{{#{anchor_id}}}' duplicates an existing anchor in the document.",
-                        )
-                    elif anchor_id in attachment_ids:
-                        result.error(
-                            "attachment-id-collision",
-                            f"Anchor '{{#{anchor_id}}}' collides with an attachment id.",
-                        )
-                    else:
-                        used_identifiers.add(anchor_id)
-                        result.section_lookup[anchor_id] = entry
+    # ── Markers in the body (§5.7, §12.2, §15.3) ──
+    # A marker at the end of a top-level paragraph or of a list item's first
+    # paragraph is in a marker position: its #id joins the anchor namespace
+    # and resolves to its containing section (the §13.2 enumeration-path
+    # refinement is a Rendering-level concern; §6.3 falls back to the
+    # section's number). Anything else is literal text (anchor-misplaced).
+    for title in headings:
+        for look_alike in marker_matches(title, lex_fragment(title)):
+            result.warning(
+                "anchor-misplaced",
+                f"'{look_alike.group(0)}' in the heading '{title}' is literal text: a heading's "
+                f"marker ends it and holds '#id', 'when=condition', or both, each at most "
+                f"once (§5.2, §15.3).",
+            )
+    for found in markers:
+        if not found.placed(template):
+            result.warning("anchor-misplaced", f"'{found.source}' is {found.misplaced}.")
+        elif found.include_only and found.marker.identifier:
+            result.warning(
+                "anchor-misplaced",
+                f"'#{found.marker.identifier}' in '{found.source}' is ignored: a paragraph "
+                f"holding only an {{{{include:}}}} is replaced by its fragment, so it is not a "
+                f"reference target. Anchor a heading inside the fragment (§12.2).",
+            )
+    for found in placed_anchors:
+        anchor_id = found.marker.identifier
+        presence = units.presence(found.section, found.block, found.fragment)
+        if not IDENTIFIER_RE.fullmatch(anchor_id):
+            result.error(
+                "anchor-format",
+                f"Anchor '{{#{anchor_id}}}' is invalid. Use lowercase letters, numbers, and hyphens only.",
+            )
+        elif _clashes(presence, anchors.get(anchor_id, []), questions):
+            result.error(
+                "anchor-duplicate",
+                f"Anchor '{{#{anchor_id}}}' duplicates an existing anchor in the document.",
+            )
+        elif _clashes(presence, attachment_presence.get(anchor_id, []), questions):
+            result.error(
+                "attachment-id-collision",
+                f"Anchor '{{#{anchor_id}}}' collides with an attachment id.",
+            )
+        else:
+            anchors.setdefault(anchor_id, []).append(presence)
+            result.section_lookup.setdefault(anchor_id, result.sections[found.section])
 
     # ── Definitions (§7) ──
     # The mandatory, first-positioned Definitions section is gone (§7.2). A
@@ -707,7 +845,8 @@ def validate_document(
     definition_refs = collect_definitions(
         document, language=document.metadata.language, lex_fragment=lex_fragment
     )
-    auto_ids_seen: dict[str, str] = {}
+    # Each identifier's declarations: (term, auto-generated, presence).
+    declared_terms: dict[str, list[tuple[str, bool, Presence]]] = {}
     for ref in definition_refs:
         def_id = ref.id
         if not IDENTIFIER_RE.fullmatch(def_id):
@@ -717,8 +856,16 @@ def validate_document(
                 f"Use lowercase letters, numbers, and hyphens only.",
             )
             continue
-        if def_id in result.definition_lookup:
-            if ref.auto_id and auto_ids_seen.get(def_id, ref.term) != ref.term:
+        presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
+        # Uniqueness applies between definitions that can appear together
+        # (§7.2, §15.4); alternatives may share an identifier.
+        together = [
+            (term, auto)
+            for term, auto, other in declared_terms.get(def_id, [])
+            if not exclusive(presence, other, questions)
+        ]
+        if together:
+            if ref.auto_id and any(auto and term != ref.term for term, auto in together):
                 result.error(
                     "def-autogen-collision",
                     f"Two definitions auto-generate the same id '{def_id}'. "
@@ -730,9 +877,8 @@ def validate_document(
                     f"Definition identifier '{def_id}' is duplicated.",
                 )
             continue
-        result.definition_lookup[def_id] = ref.term or def_id.replace("-", " ").title()
-        if ref.auto_id:
-            auto_ids_seen[def_id] = ref.term
+        declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
+        result.definition_lookup.setdefault(def_id, ref.term or def_id.replace("-", " ").title())
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for _section, _index, block in document.iter_blocks():
@@ -782,8 +928,10 @@ def validate_document(
                                 f"Amendment redefines '{def_id}' which exists in the original document.",
                             )
                     for def_id, term_text in _imported_definitions.items():
-                        if def_id not in result.definition_lookup:
-                            result.definition_lookup[def_id] = term_text
+                        result.definition_lookup.setdefault(def_id, term_text)
+                        # The original is always in force (§7.5), even where
+                        # the amendment redefines the term under a condition.
+                        declared_terms.setdefault(def_id, []).append((term_text, False, ALWAYS))
 
     # ── Attachment definition import (§7, §12.4) ──
     # A {{def:}} inside an attachment file registers a document-wide term; ids
@@ -795,15 +943,19 @@ def validate_document(
             att_defs = import_attachment_definitions(att.file)
             if not att_defs:
                 continue
+            # Its definitions are present when the attachment is (§15.3).
+            presence = own_presence(att.when, questions)
             for def_id, term_text in att_defs.items():
-                if def_id in result.definition_lookup:
+                earlier = [other for _term, _auto, other in declared_terms.get(def_id, [])]
+                if _clashes(presence, earlier, questions):
                     result.error(
                         "def-duplicate-id",
                         f"Definition id '{def_id}' from attachment '{att.id}' collides with "
-                        f"a definition in the main document (ids must be unique, §16.10).",
+                        f"another definition that can appear with it (§16.10, §15.4).",
                     )
                 else:
-                    result.definition_lookup[def_id] = term_text
+                    declared_terms.setdefault(def_id, []).append((term_text, False, presence))
+                    result.definition_lookup.setdefault(def_id, term_text)
 
     # ── Inline directive validation ──
     blanks: dict[str, Blank] = {}
@@ -814,39 +966,6 @@ def validate_document(
     # in identifier, structural, or format-checked fields, which a filled-in
     # value could break. Placeholders collected here share the same blank
     # (id, type, currency, unit) with any matching body placeholder.
-    meta = document.metadata
-    structural_fields: list[tuple[str, str]] = [
-        ("document_type", meta.document_type),
-        ("legaldown", meta.legaldown),
-        ("language", meta.language),
-        ("authoritative", meta.authoritative),
-    ]
-    for side in meta.sides:
-        structural_fields.append((f"side name '{side.name}'", side.name))
-        for party in side.parties:
-            structural_fields.append((f"party name '{party.name}'", party.name))
-            structural_fields.append((f"party type for '{party.name}'", party.type))
-    for code, path in meta.translations.items():
-        structural_fields.append(("a translations language code", code))
-        structural_fields.append((f"translations file for '{code}'", path))
-    for key, description in meta.field_types.items():
-        structural_fields.append(("a field_types key", key))
-        structural_fields.append((f"field_types entry '{key}'", description))
-    for att in meta.attachments:
-        structural_fields.append(("attachment id", att.id))
-        structural_fields.append((f"file of attachment '{att.id}'", att.file))
-        structural_fields.append((f"when of attachment '{att.id}'", att.when))
-    if meta.amends:
-        structural_fields.append(("amends.file", meta.amends.file))
-    if isinstance(meta.supersedes, Amends):
-        structural_fields.append(("supersedes.file", meta.supersedes.file))
-    structural_fields.extend(("questions", text) for text in _strings(meta.questions))
-
-    def named(text: str, name: str) -> list[Directive]:
-        """The *name* directives in a frontmatter value or heading, each text
-        lexed once per validation."""
-        return [d for d in lex_fragment(text or "").directives if d.name == name]
-
     for field_label, field_value in structural_fields:
         if named(field_value, "placeholder"):
             result.error(
@@ -856,32 +975,9 @@ def validate_document(
                 f"value fields (§3.10).",
             )
 
-    value_fields: list[str] = [
-        meta.title, meta.subtitle, meta.version, meta.effective_date,
-        meta.governing_law, meta.adopted_by, meta.adoption_date,
-    ]
-    if meta.amends:
-        value_fields.append(meta.amends.title)
-    if isinstance(meta.supersedes, Amends):
-        value_fields.append(meta.supersedes.title)
-    else:
-        value_fields.append(meta.supersedes)
-    value_fields.extend(att.title for att in meta.attachments)
-    for side in meta.sides:
-        value_fields.append(side.label)
-        for party in side.parties:
-            value_fields.extend([
-                party.label, party.legal_name, party.identification_number,
-                party.address, party.date_of_birth,
-            ])
-            value_fields.extend(rep.name for rep in party.representatives)
-            value_fields.extend(rep.title for rep in party.representatives)
-            value_fields.extend(cf.value for cf in party.custom_fields)
     for field_value in value_fields:
         for directive in named(field_value, "placeholder"):
             _check_placeholder(directive, result, blanks, questions, in_frontmatter=True)
-    frontmatter_texts = [text for _label, text in structural_fields] + value_fields
-    headings = [section.title for section in document.sections]
     # Every blank, wherever it is, for the final check (§15.9).
     placeholders = [
         directive
@@ -889,29 +985,27 @@ def validate_document(
         for directive in named(text, "placeholder")
     ]
 
-    # {{choose:}} belongs in body text: never in frontmatter or a heading
-    # (§15.5). Wherever it is, it makes the document a template (§15.1).
     chooses: list[Directive] = []
-    for texts, where in (
-        (frontmatter_texts, "in frontmatter; it belongs in body text"),
-        (headings, "in a heading, where §4.2 allows plain text only"),
-    ):
-        for text in texts:
-            for directive in named(text, "choose"):
-                chooses.append(directive)
-                result.error("choose-invalid", f"'{directive.source}' is {where} (§15.5).")
+    for directive, where in misplaced_chooses:
+        chooses.append(directive)
+        result.error("choose-invalid", f"'{directive.source}' is {where} (§15.5).")
 
-    for _section, _index, block in document.iter_blocks():
+    # Every {{ref:}}, {{term:}}, and {{attach:}}: (target, presence, in a
+    # drafting note), for reference safety (§15.4).
+    references: dict[str, list[tuple[str, Presence, bool]]] = {"ref": [], "term": [], "attach": []}
+    for section_index, block_index, block in document.iter_indexed_blocks():
         # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
         # block fields when they hold it without loss (no other parameters).
         ref_targets: list[str] = []
         term_targets: list[str] = []
-        if block.kind == "ref" and block.target.strip():
-            ref_targets.append(block.target.strip())
-        if block.kind == "term" and block.target.strip():
-            term_targets.append(block.target.strip())
-        for fragment in text_fragments(block):
+        block_presence = units.presence(section_index, block_index)
+        if block.kind in ("ref", "term") and block.target.strip():
+            (ref_targets if block.kind == "ref" else term_targets).append(block.target.strip())
+            references[block.kind].append((block.target.strip(), block_presence, False))
+        notes = [quote for quote in block_quotes(block) if quote.is_drafting_note]
+        for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
+            presence = units.presence(section_index, block_index, fragment_index)
             for _offset in lexed.stray_braces:
                 result.warning("brace-stray", BRACE_STRAY)
             for directive in lexed.directives:
@@ -937,6 +1031,12 @@ def validate_document(
                     continue
                 value = directive.positional or ""
                 params = directive.params
+                if name in references and value:
+                    in_note = any(
+                        note.fragment == fragment and note.start <= directive.start < note.end
+                        for note in notes
+                    )
+                    references[name].append((value, presence, in_note))
                 if name in ("ref", "term") and not value:
                     result.error(
                         "ref-broken" if name == "ref" else "term-undefined",
@@ -1074,9 +1174,74 @@ def validate_document(
     _check_blank_codes(blanks, result)
 
     # ── Templates (§15) ──
-    # A document declaring questions, carrying a condition, or containing a
-    # {{choose:}} is a template (§15.1).
-    template = questions is not None or any(att.when for att in meta.attachments) or bool(chooses)
+    # Every condition in a condition position (§15.3): where, and as written.
+    conditions: list[tuple[str, str]] = [
+        (f"the heading '{section.title}'", section.condition)
+        for section in document.sections
+        if section.condition
+    ]
+    conditions.extend(
+        (f"'{found.source}'", found.marker.condition)
+        for found in markers
+        if found.marker
+        and found.marker.condition
+        and found.placed(template)
+    )
+    conditions.extend(
+        (f"attachment '{att.id}'", att.when) for att in meta.attachments if att.when
+    )
+    for where, text in conditions:
+        problem = condition_problem(text, questions)
+        if problem:
+            result.error("condition-invalid", f"The condition '{text}' on {where}: {problem} (§15.3).")
+    _check_never_true(document, markers, units, questions, result)
+
+    # Reference safety (§15.4): a reference resolves in every assembled
+    # document it is in. References in drafting notes are exempt: assembly
+    # removes every note. An amendment's terms are not checked when its
+    # original was not read: the original may define them (§16.8).
+    original_unread = bool(meta.amends) and not (_amends_is_legaldown and _amends_import_succeeded)
+    term_presences = {
+        def_id: [presence for _term, _auto, presence in declarations]
+        for def_id, declarations in declared_terms.items()
+    }
+    targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
+    for kind, uses in references.items():
+        for target, presence, in_note in uses:
+            declared = targets_of[kind].get(target)
+            if in_note or not declared or (kind == "term" and original_unread):
+                continue
+            if always_covered(presence, declared, questions):
+                continue
+            result.error(
+                "condition-reference-unsafe",
+                f"'{{{{{kind}: {target}}}}}' can be present when '{target}' is not: under some "
+                f"answers that keep the reference, no declaration of its target remains (§15.4).",
+            )
+
+    used_questions = (
+        {directive.positional for directive in placeholders if directive.positional}
+        | {
+            condition.question
+            for _where, text in conditions
+            if (condition := parse_condition(text)) is not None
+        }
+        | {directive.positional for directive in chooses if directive.positional}
+    )
+    # A question may be used in an include fragment or a LegalDown attachment
+    # file, which a single-document validator does not read (Full, §17.4).
+    reads_other_files = "include" in body_directives or any(
+        att.file.endswith(LEGALDOWN_EXTENSIONS) for att in meta.attachments
+    )
+    if isinstance(questions, dict) and not reads_other_files:
+        for qid in questions:
+            if qid not in used_questions:
+                result.warning(
+                    "question-unused",
+                    f"Question '{qid}' is declared but no placeholder, condition, or "
+                    f"{{{{choose:}}}} uses it (§15.2).",
+                )
+
     check_questions(
         questions,
         blanks,
@@ -1086,14 +1251,15 @@ def validate_document(
     )
     notes = check_template_body(document, lex_fragment, result, template=template)
     if final:
-        _check_final(document, placeholders, chooses, notes, result)
+        _check_final(placeholders, chooses, notes, conditions, questions, result)
 
-    # Warn about declared but unreferenced attachments (§16.10).
-    for att in document.metadata.attachments:
-        if att.id and att.id not in referenced_attachments:
+    # Warn about declared but unreferenced attachments (§16.10): once per id,
+    # which alternatives share (§15.3).
+    for att_id in dict.fromkeys(att.id for att in document.metadata.attachments):
+        if att_id and att_id not in referenced_attachments:
             result.warning(
                 "attachment-unreferenced",
-                f"Attachment '{att.id}' is declared but never referenced via {{{{attach:}}}}.",
+                f"Attachment '{att_id}' is declared but never referenced via {{{{attach:}}}}.",
             )
 
     # Warn about declared but never-referenced definitions (§7). May

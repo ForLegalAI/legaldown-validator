@@ -161,8 +161,11 @@ class DefinitionRef:
 
     id: str
     term: str
-    section_identifier: str | None  # None for the preamble (§4.4)
+    section_index: int | None  # index in document.sections; None for the preamble (§4.4)
     block_index: int
+    #: Index of the text it is in, in block_fragments(block); None for the
+    #: term and id a definition block holds in its own fields.
+    fragment_index: int | None
     inline: bool       # True: mid-text anchor; False: leading anchor of a definition block
     auto_id: bool      # True if the id was derived from the term (omitted in source)
 
@@ -210,8 +213,7 @@ def collect_definitions(
     """
     lang = language or document.metadata.language or "en"
     refs: list[DefinitionRef] = []
-    for section, block_index, block in document.iter_blocks():
-        section_identifier = section.identifier if section else None
+    for section_index, block_index, block in document.iter_indexed_blocks():
         if block.kind == "definition":
             term = (block.term or "").strip()
             raw_id = (block.definition_id or "").strip()
@@ -220,13 +222,14 @@ def collect_definitions(
                 DefinitionRef(
                     id=did,
                     term=term or did.replace("-", " ").title(),
-                    section_identifier=section_identifier,
+                    section_index=section_index,
                     block_index=block_index,
+                    fragment_index=None,
                     inline=False,
                     auto_id=not raw_id,
                 )
             )
-        for fragment in text_fragments(block):
+        for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             for anchor in find_definition_anchors(
                 fragment, language=lang, lexed=lex_fragment(fragment)
             ):
@@ -241,8 +244,9 @@ def collect_definitions(
                     DefinitionRef(
                         id=did,
                         term=term,
-                        section_identifier=section_identifier,
+                        section_index=section_index,
                         block_index=block_index,
+                        fragment_index=fragment_index,
                         inline=True,
                         auto_id=not raw_id,
                     )

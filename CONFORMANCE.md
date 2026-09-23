@@ -5,7 +5,7 @@ parse and validate a single document in memory.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **73 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **77 of the
 corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes.**
 
 The specification defines 116 rules. The corpus has no fixture for three of them, since a
@@ -34,7 +34,6 @@ files other than the document itself.
 | Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`, `path-not-relative`, `path-outside-root` |
 | Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip` |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
-| Template conditions (§15.3, §15.4) — not yet implemented | `question-unused`, `condition-invalid`, `condition-never-true`, `condition-reference-unsafe` |
 | Assembly capability (§17.6) — not claimed | `answer-invalid`, `answer-missing`, `answer-unknown` |
 | Rendering (§17.3) | `ref-not-enumerated` |
 | Lexer-level grammar (§11.2–11.4) | `value-curly-quote`, `raw-html` |
@@ -42,15 +41,21 @@ files other than the document itself.
 
 In practice this means multi-file processing is out of scope: includes, attachment file contents,
 and bilingual document sets are not resolved or cross-checked. Single-document authoring, editing,
-and CI validation are fully covered for documents that are not templates.
+and CI validation are fully covered.
 
-Of the template constructs specification 0.2 adds (§15), questions, `{{choose:}}`, drafting
-notes, insertion boundaries, and the final option (§15.9, `validate_document(final=True)` or
-`legaldown validate --final`) are validated. Conditions (`when=`) are not recognized yet: a
-heading's `{#id when=...}` marker is read as part of the heading text, a paragraph's is literal
-text, alternatives sharing an identifier are reported as duplicates, and the final option does
-not yet report a remaining `when=` marker as `template-construct-present`. Validate templates with
-conditions with that in mind until the condition rows above are implemented.
+The template constructs of specification 0.2 (§15) are validated within the document: questions,
+conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, insertion
+boundaries, and the final option (§15.9, `validate_document(final=True)` or
+`legaldown validate --final`). Assembly itself (§15.7) is a capability this implementation does not
+claim. Four limits apply:
+
+- A template's include fragments and LegalDown attachment files are not read (Full, §17.4), so
+  `question-unused` is not reported for a template that has either: a question may be used there.
+- The parser flattens nested lists ([#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)),
+  so a nested list item's presence does not include the conditions of the items it is nested in.
+- A LegalDown attachment file or include fragment validated on its own is checked as a
+  standalone document: conditions, placeholders, and terms that refer to its template's
+  questions and definitions are reported as undeclared.
 
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy
@@ -77,10 +82,11 @@ git clone https://github.com/ForLegalAI/LegalDown ../LegalDown
 LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
-Cases for the rules above are skipped by name, so the 40 `not implemented` skips reproduce this
-table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 48 skips in
-total: the remaining eight are the implemented rules named above, skipped as `multi-file case` or
-`requires conformance level full`. Cases that need the final option run with it. CI runs this on every push and pull request.
+Cases for the rules above are skipped by name, so the 36 `not implemented` skips reproduce this
+table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 45 skips in
+total: eight are the implemented rules named above, skipped as `multi-file case` or
+`requires conformance level full`, and one is the multi-file assembly case, whose template the
+harness would otherwise check for Errors. Cases that need the final option run with it. CI runs this on every push and pull request.
 
 ## Declaring conformance in code
 

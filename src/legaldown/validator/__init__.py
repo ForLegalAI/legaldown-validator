@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from .core import AttachmentDefinitionsImporter, DefinitionsImporter, validate_document
 from .helpers import (
-    ensure_unique_identifier,
     format_section_number,
     is_positive_numeric,
     is_valid_iso_date,
@@ -32,7 +31,6 @@ __all__ = [
     "Diagnostic",
     # Helpers
     "slugify_identifier",
-    "ensure_unique_identifier",
     "format_section_number",
     "is_valid_iso_date",
     "is_valid_numeric",
