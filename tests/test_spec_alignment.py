@@ -267,6 +267,73 @@ def test_collect_source_directives_sees_every_parameter_shape():
     assert collect_source_directives(document) == ({"a"}, {"b"})
 
 
+def test_explicitly_empty_label_round_trips():
+    source = _FRONTMATTER + '"X" {{def: x}} y.\n\nSee {{term: x, label=""}}.\n'
+    assert '{{term: x, label=""}}' in serialize_document(parse_document(source))
+
+
+def test_malformed_directive_with_unknown_name_is_malformed():
+    """§11.5 reserves directive-unknown for well-formed directives."""
+    rules = _validate("See {{foo: bar").rules()
+    assert "directive-malformed" in rules
+    assert "directive-unknown" not in rules
+
+
+def test_explicitly_empty_placeholder_type_is_invalid():
+    assert "placeholder-type-invalid" in _validate("{{placeholder: p, type=}}").rules("error")
+
+
+def test_missing_ref_and_term_targets_are_reported_as_missing():
+    result = _validate("See {{ref:}} and {{term:}}.")
+    messages = {d.rule: d.message for d in result.diagnostics}
+    assert "has no target" in messages["ref-broken"]
+    assert "has no target" in messages["term-undefined"]
+    assert "" not in result.used_terms
+
+
+@pytest.mark.parametrize(
+    ("text", "reason", "source"),
+    [
+        ("{{money: 5, currency=USD,}}.", "empty argument", "{{money: 5, currency=USD,}}"),
+        ('{{term: x, label="a"', "not closed", '{{term: x, label="a"'),
+        ('{{term: x, label="a" b}}', "text after a quoted value", '{{term: x, label="a" b}}'),
+        ("{{date: a, b}}", "more than one positional value", "{{date: a, b}}"),
+    ],
+)
+def test_malformed_directive_reason_and_source(text, reason, source):
+    (directive,) = iter_directives(text)
+    assert reason in directive.malformed
+    assert directive.source == source
+
+
+def test_escaped_opener_is_literal_text():
+    """§11.4: \\{{ is a literal brace; \\\\{{ is a literal backslash, then a directive."""
+    escaped = _validate(r"Literal \{{ref: nope}} here.")
+    assert escaped.diagnostics == []
+    assert "ref-broken" in _validate(r"Path C:\\{{ref: nope}}.").rules("error")
+
+
+def test_definition_in_code_span_or_comment_is_not_registered():
+    """§11.4: a {{def:}} in literal text neither defines a term nor is checked."""
+    result = _validate(
+        'Example: `"Foo" {{def: foo}}` shows syntax. <!-- {{def:}} --> Use {{term: foo}}.'
+    )
+    assert "term-undefined" in result.rules("error")
+    assert "def-no-quoted-span" not in result.rules()
+
+
+def test_def_opener_with_inner_whitespace_is_not_a_definition():
+    """§11.2: no whitespace between {{ and the directive name."""
+    result = _validate('"Foo" {{ def: foo}} means x. Use {{term: foo}}.')
+    assert "foo" not in result.definition_lookup
+
+
+def test_defined_term_is_the_nearest_quoted_span():
+    """§7.2: scan back from the closing mark to the nearest opening mark."""
+    result = _validate('Between "A" and "B" {{def: b}} use {{term: b}}.')
+    assert result.definition_lookup["b"] == "B"
+
+
 def test_iter_directives_decodes_escapes():
     (directive,) = iter_directives(r'{{field: "say \"hi\" C:\path\\", type=t}}')
     assert directive.positional == 'say "hi" C:\\path\\'

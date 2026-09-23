@@ -14,14 +14,8 @@ from typing import Any
 
 import yaml
 
-from .definitions import (
-    DEF_ANCHOR_RE,
-    EMPHASIS_DEF_RE,
-    extract_def,
-    is_single_quoted,
-    text_fragments,
-)
-from .directives import Directive, iter_directives, parse_def_id, strip_uninterpreted
+from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
+from .directives import Directive, iter_directives, strip_uninterpreted
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -87,26 +81,20 @@ def _parse_paragraph(paragraph: str) -> Block:
     stripped = paragraph.strip()
     # Definition: a paragraph whose leading token is a quoted term followed by a
     # ``{{def: id}}`` anchor. The id may be omitted (derived at validation time).
-    # Non-canonical source forms — emphasis-wrapped or single-quoted terms —
-    # stay paragraphs so the validator can see the raw text and report
-    # def-emphasis / def-single-quote-ambiguous (the definition itself is still
-    # collected from the paragraph by collect_definitions).
-    def_match = DEF_ANCHOR_RE.match(stripped)
-    if def_match and (
-        EMPHASIS_DEF_RE.match(stripped) or is_single_quoted(def_match)
-    ):
-        def_match = None
-    if def_match:
-        term, raw_id = extract_def(def_match)
-        # Only a bare id fits the block fields; a {{def:}} with parameters or
-        # malformed arguments stays paragraph text for the validator to report.
-        if parse_def_id(raw_id) == raw_id:
-            return Block(
-                kind="definition",
-                definition_id=raw_id,
-                term=term,
-                text=stripped[def_match.end():].strip(),
-            )
+    # Anything the block fields cannot hold exactly stays paragraph text so the
+    # validator sees the source: emphasis-wrapped or single-quoted terms
+    # (def-emphasis / def-single-quote-ambiguous) and a {{def:}} with
+    # parameters or malformed arguments. The definition is still collected
+    # from the paragraph by collect_definitions.
+    anchors = find_definition_anchors(stripped)
+    if anchors and _is_liftable_definition(anchors[0]):
+        anchor = anchors[0]
+        return Block(
+            kind="definition",
+            definition_id=anchor.directive.positional or "",
+            term=anchor.term,
+            text=stripped[anchor.directive.end:].strip(),
+        )
     directives = list(iter_directives(strip_uninterpreted(stripped)))
     ref_directive = _first_liftable(directives, "ref")
     if ref_directive is not None:
@@ -128,6 +116,21 @@ def _parse_paragraph(paragraph: str) -> Block:
     return Block(kind="paragraph", text=stripped)
 
 
+def _is_liftable_definition(anchor: DefinitionAnchor) -> bool:
+    """True if the definition block fields represent *anchor* exactly: it
+    leads the paragraph, with a plain quoted term and a bare or omitted id."""
+    directive = anchor.directive
+    return (
+        anchor.start == 0
+        and anchor.term is not None
+        and not anchor.emphasis
+        and not anchor.single_quoted
+        and not directive.malformed
+        and not directive.params
+        and directive.positional != ""
+    )
+
+
 def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
     """The first *name* directive that the ref/term block fields represent
     exactly: well-formed, with a target and only the parameters it defines."""
@@ -138,6 +141,9 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
             and directive.positional
             and not directive.duplicates
             and not directive.unknown_params()
+            # Block fields hold "" for an absent parameter, so an explicitly
+            # empty one (label=) would be dropped on serialization.
+            and all(directive.params.values())
         ):
             return directive
     return None

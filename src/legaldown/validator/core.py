@@ -87,7 +87,7 @@ def _check_directive_arguments(directive: Directive, result: ValidationResult) -
             f"'{directive.source}'.",
         )
     note = directive.params.get("note")
-    if note is not None and "note" in DIRECTIVE_PARAMS[name] and _MARKDOWN_RE.search(note):
+    if note is not None and "note" in DIRECTIVE_PARAMS.get(name, ()) and _MARKDOWN_RE.search(note):
         result.error(
             "note-invalid",
             "Note parameter must be plain text without Markdown formatting.",
@@ -107,7 +107,7 @@ def _check_placeholder(
     semantics per §3.10).
     """
     pid = directive.positional or ""
-    ptype = directive.params.get("type") or "text"
+    ptype = directive.params.get("type", "text")
     pcurrency = directive.params.get("currency", "")
     if not pid or not IDENTIFIER_RE.match(pid):
         result.error(
@@ -462,15 +462,7 @@ def validate_document(
     # either as a leading-anchor "definition" block or inline at first use, and
     # may appear anywhere. Imported lazily to avoid a module-level import cycle
     # (definitions -> validator.helpers -> validator/__init__ -> core).
-    from ..definitions import (
-        DEF_ANCHOR_RE,
-        DEF_TAG_RE,
-        EMPHASIS_DEF_RE,
-        collect_definitions,
-        extract_def,
-        is_single_quoted,
-        text_fragments,
-    )
+    from ..definitions import collect_definitions, find_definition_anchors, text_fragments
 
     definition_refs = collect_definitions(document, language=document.metadata.language)
     auto_ids_seen: dict[str, str] = {}
@@ -504,24 +496,25 @@ def validate_document(
     for section in document.sections:
         for block in section.blocks:
             for fragment in text_fragments(block):
-                if EMPHASIS_DEF_RE.search(fragment):
-                    result.warning(
-                        "def-emphasis",
-                        "Defined term wrapped in emphasis markers in source. Quotation marks "
-                        "alone delimit a defined term; emphasis is a render-time style.",
-                    )
-                anchored_ends = {m.end() for m in DEF_ANCHOR_RE.finditer(fragment)}
-                for tag in DEF_TAG_RE.finditer(fragment):
-                    if tag.end() not in anchored_ends:
+                for anchor in find_definition_anchors(
+                    fragment, language=document.metadata.language
+                ):
+                    if anchor.term is None:
                         result.error(
                             "def-no-quoted-span",
                             "A {{def:}} anchor must immediately follow a quoted defined term.",
                         )
-                for m in DEF_ANCHOR_RE.finditer(fragment):
-                    if is_single_quoted(m):
+                        continue
+                    if anchor.emphasis:
+                        result.warning(
+                            "def-emphasis",
+                            "Defined term wrapped in emphasis markers in source. Quotation marks "
+                            "alone delimit a defined term; emphasis is a render-time style.",
+                        )
+                    if anchor.single_quoted:
                         result.warning(
                             "def-single-quote-ambiguous",
-                            f"Single-quoted defined term '{extract_def(m)[0]}' may be ambiguous "
+                            f"Single-quoted defined term '{anchor.term}' may be ambiguous "
                             f"with an apostrophe (U+2019); prefer double-quote delimiters.",
                         )
 
@@ -634,7 +627,9 @@ def validate_document(
             for fragment in (strip_uninterpreted(f) for f in text_fragments(block)):
                 for directive in iter_directives(fragment):
                     name = directive.name
-                    # ── Unknown directive names (§11.5) ──
+                    if not _check_directive_arguments(directive, result):
+                        continue
+                    # ── Unknown directive names (§11.5): well-formed only ──
                     if name not in KNOWN_DIRECTIVES:
                         result.error(
                             "directive-unknown",
@@ -642,11 +637,14 @@ def validate_document(
                             f"with [UNKNOWN DIRECTIVE: {name}] (§11.5).",
                         )
                         continue
-                    if not _check_directive_arguments(directive, result):
-                        continue
                     value = directive.positional or ""
                     params = directive.params
-                    if name == "ref":
+                    if name in ("ref", "term") and not value:
+                        result.error(
+                            "ref-broken" if name == "ref" else "term-undefined",
+                            f"'{directive.source}' has no target.",
+                        )
+                    elif name == "ref":
                         ref_targets.append(value)
                     elif name == "term":
                         term_targets.append(value)

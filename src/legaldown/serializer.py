@@ -117,8 +117,12 @@ def _render_block(block: Block) -> str:
         return block.text.strip()
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
-        did = format_value(block.definition_id.strip(), positional=True)
-        anchor = f'"{term}" {{{{def: {did}}}}}' if did else f'"{term}" {{{{def:}}}}'
+        did = block.definition_id.strip()
+        anchor = (
+            f'"{term}" {{{{def: {format_value(did, positional=True)}}}}}'
+            if did
+            else f'"{term}" {{{{def:}}}}'
+        )
         body = block.text.strip()
         return f"{anchor} {body}" if body else anchor
     if block.kind == "ref":

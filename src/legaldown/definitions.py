@@ -13,11 +13,9 @@ analysis, and the editor glossary.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-from functools import lru_cache
 
-from .directives import parse_def_id
+from .directives import Directive, iter_directives, strip_uninterpreted
 from .models import Block, Document
 from .validator.helpers import slugify_identifier
 
@@ -44,9 +42,6 @@ DELIMITER_PAIRS: list[tuple[str, str, str, bool]] = [
 # Per-language accepted delimiter names. Empty / missing -> all pairs accepted.
 DELIMITERS_BY_LANGUAGE: dict[str, list[str]] = {}
 
-# The apostrophe code point that single-quote close marks collide with.
-APOSTROPHE = "’"
-
 
 def accepted_delimiters(language: str | None) -> list[tuple[str, str, str, bool]]:
     """Return the delimiter pairs accepted for *language* (all by default)."""
@@ -56,72 +51,78 @@ def accepted_delimiters(language: str | None) -> list[tuple[str, str, str, bool]
     return [p for p in DELIMITER_PAIRS if p[2] in names]
 
 
-def _build_anchor_re(pairs: tuple[tuple[str, str, str, bool], ...]) -> re.Pattern[str]:
-    """Build a regex matching ``<quoted term> {{def: id}}`` for *pairs*.
+# Emphasis markers a defined term must not carry in source (§7.2); the term
+# is still recognized, and the validator warns (def-emphasis).
+_EMPHASIS_MARKERS = ("**", "__", "++", "*")
 
-    Optional ``**``/``*``/``++`` emphasis markers around the quoted term are
-    tolerated (the term is still recognised); the validator warns about them.
+
+def _trailing_emphasis(text: str, start: int, end: int) -> int:
+    """Length of an emphasis marker ending at *end* (not before *start*)."""
+    for marker in _EMPHASIS_MARKERS:
+        if end - len(marker) >= start and text.startswith(marker, end - len(marker)):
+            return len(marker)
+    return 0
+
+
+@dataclass(frozen=True, slots=True)
+class DefinitionAnchor:
+    """A ``{{def:}}`` directive and the quoted term it anchors (§7.2).
+
+    ``term`` is ``None`` when no recognized quoted span immediately precedes
+    the directive. ``start`` is the offset of the anchored span (its opening
+    quotation mark or emphasis marker), or of the directive when there is no
+    term.
     """
-    emphasis = r"(?:\*\*|\*|\+\+)?"
-    alternation = "|".join(
-        f"{emphasis}{re.escape(open_)}(?P<t{i}>.*?){re.escape(close)}{emphasis}"
-        for i, (open_, close, _name, _single) in enumerate(pairs)
-    )
-    return re.compile(
-        rf"(?:{alternation})[ \t ]*\{{\{{\s*def:\s*(?P<defid>[^}}]*?)\s*\}}\}}"
-    )
+
+    directive: Directive
+    term: str | None
+    pair: tuple[str, str, str, bool] | None
+    emphasis: bool
+    start: int
+
+    @property
+    def single_quoted(self) -> bool:
+        return self.pair is not None and self.pair[3]
 
 
-@lru_cache(maxsize=16)
-def _anchor_re_for_names(names: tuple[str, ...]) -> re.Pattern[str]:
-    pairs = tuple(p for p in DELIMITER_PAIRS if p[2] in names)
-    return _build_anchor_re(pairs)
+def find_definition_anchors(
+    text: str, *, language: str | None = None
+) -> list[DefinitionAnchor]:
+    """Every ``{{def:}}`` in *text*, each with the quoted term preceding it.
 
-
-def def_anchor_re(language: str | None = None) -> re.Pattern[str]:
-    """Return the (cached) def-anchor regex for *language*."""
-    names = tuple(p[2] for p in accepted_delimiters(language))
-    return _anchor_re_for_names(names)
-
-
-# All-pairs anchor regex -- convenient default for language-agnostic callers.
-DEF_ANCHOR_RE: re.Pattern[str] = _build_anchor_re(tuple(DELIMITER_PAIRS))
-
-# A bare ``{{def: id}}`` tag (used to detect anchors with no preceding term).
-DEF_TAG_RE: re.Pattern[str] = re.compile(r"\{\{\s*def:\s*[^}]*\}\}")
-
-# A defined term wrapped in emphasis markers right before a def anchor
-# (e.g. **"Term"** {{def: id}}) — accepted but discouraged (validator warns).
-_EMPHASIS = r"(?:\*\*|\*|\+\+)"
-_BARE_PAIRS = "|".join(
-    f"{re.escape(o)}.*?{re.escape(c)}" for o, c, _n, _s in DELIMITER_PAIRS
-)
-EMPHASIS_DEF_RE: re.Pattern[str] = re.compile(
-    rf"{_EMPHASIS}\s*(?:{_BARE_PAIRS})\s*{_EMPHASIS}?[ \t]*\{{\{{\s*def:"
-)
-
-
-def _matched_pair_index(match: re.Match[str]) -> int:
-    """Index into ``DELIMITER_PAIRS`` of the delimiter pair that matched."""
-    for i in range(len(DELIMITER_PAIRS)):
-        group_name = f"t{i}"
-        if group_name in match.re.groupindex and match.group(group_name) is not None:
-            return i
-    return -1
-
-
-def extract_def(match: re.Match[str]) -> tuple[str, str]:
-    """Return ``(term, raw_id)`` from a ``DEF_ANCHOR_RE`` match (id may be '')."""
-    i = _matched_pair_index(match)
-    term = match.group(f"t{i}").strip() if i >= 0 else ""
-    raw_id = (match.group("defid") or "").strip()
-    return term, raw_id
-
-
-def is_single_quoted(match: re.Match[str]) -> bool:
-    """True if the matched anchor used a single-quote delimiter pair."""
-    i = _matched_pair_index(match)
-    return i >= 0 and DELIMITER_PAIRS[i][3]
+    Per §7.2 the term is found by scanning back from the directive: only
+    spaces or tabs may separate it from the closing quotation mark, and the
+    span opens at the nearest prior matching opening mark on the same line.
+    Directives in code spans, code blocks, and comments are literal (§11.4).
+    """
+    closing = {pair[1]: pair for pair in accepted_delimiters(language)}
+    scan = strip_uninterpreted(text)
+    anchors: list[DefinitionAnchor] = []
+    for directive in iter_directives(scan):
+        if directive.name != "def":
+            continue
+        line_start = scan.rfind("\n", 0, directive.start) + 1
+        end = directive.start
+        while end > line_start and scan[end - 1] in " \t":
+            end -= 1
+        trailing = _trailing_emphasis(scan, line_start, end)
+        end -= trailing
+        pair = closing.get(scan[end - 1]) if end > line_start else None
+        opening = scan.rfind(pair[0], line_start, end - 1) if pair else -1
+        if pair is None or opening < 0:
+            anchors.append(DefinitionAnchor(directive, None, None, False, directive.start))
+            continue
+        leading = _trailing_emphasis(scan, line_start, opening)
+        anchors.append(
+            DefinitionAnchor(
+                directive=directive,
+                term=text[opening + 1:end - 1].strip(),
+                pair=pair,
+                emphasis=bool(leading or trailing),
+                start=opening - leading,
+            )
+        )
+    return anchors
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +165,6 @@ def collect_definitions(
     definition anchor) and inline anchors inside any text fragment.
     """
     lang = language or document.metadata.language or "en"
-    rx = def_anchor_re(lang)
     refs: list[DefinitionRef] = []
     for section in document.sections:
         for block_index, block in enumerate(section.blocks):
@@ -183,12 +183,13 @@ def collect_definitions(
                     )
                 )
             for fragment in text_fragments(block):
-                for match in rx.finditer(fragment):
-                    term, raw_args = extract_def(match)
-                    # Parameters are not part of the id; a malformed argument
-                    # is kept whole so the identifier checks report it.
-                    parsed_id = parse_def_id(raw_args)
-                    raw_id = raw_args if parsed_id is None else parsed_id
+                for anchor in find_definition_anchors(fragment, language=lang):
+                    # A malformed {{def:}} has no id to register; the validator
+                    # reports it as directive-malformed.
+                    if anchor.term is None or anchor.directive.malformed:
+                        continue
+                    term = anchor.term
+                    raw_id = anchor.directive.positional or ""
                     did = raw_id or slugify_identifier(term, fallback="term")
                     refs.append(
                         DefinitionRef(

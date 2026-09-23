@@ -98,6 +98,9 @@ class _Malformed(Exception):
     pass
 
 
+_UNCLOSED = "not closed with '}}' on the same line"
+
+
 def _skip_ws(text: str, pos: int) -> int:
     while pos < len(text) and text[pos] in _WS:
         pos += 1
@@ -124,14 +127,29 @@ def _lex_value(text: str, pos: int) -> tuple[str, int]:
                 pos += 1
         pos = _skip_ws(text, pos + 1)
         if not text.startswith((",", "}}"), pos):
+            if pos >= len(text) or text[pos] == "\n":
+                raise _Malformed(_UNCLOSED)
             raise _Malformed("text after a quoted value")
         return "".join(chars), pos
     start = pos
     while not text.startswith((",", "}}"), pos):
         if pos >= len(text) or text[pos] == "\n":
-            raise _Malformed("not closed with '}}' on the same line")
+            raise _Malformed(_UNCLOSED)
         pos += 1
-    return text[start:pos].strip(_WS), pos
+    value = text[start:pos].strip(_WS)
+    if not value:
+        # An argument must have content; ``label=`` names its parameter, so
+        # only a bare empty argument (a stray comma) gets here.
+        raise _Malformed("empty argument")
+    return value, pos
+
+
+def _lex_named_value(text: str, pos: int) -> tuple[str, int]:
+    """Lex a named parameter's value, which may be empty (``label=``)."""
+    end = _skip_ws(text, pos)
+    if text.startswith((",", "}}"), end):
+        return "", end
+    return _lex_value(text, pos)
 
 
 def _lex_arguments(
@@ -153,7 +171,7 @@ def _lex_arguments(
         named = _PARAM_NAME_RE.match(text, pos)
         if named:
             param = named.group(0)[:-1]
-            value, pos = _lex_value(text, named.end())
+            value, pos = _lex_named_value(text, named.end())
             if param in params:
                 duplicates.append(param)
             else:
@@ -170,6 +188,25 @@ def _lex_arguments(
         pos += 1  # past the comma
 
 
+def _is_escaped(text: str, pos: int) -> bool:
+    """True if the brace at *pos* is backslash-escaped (§11.4): preceded by an
+    odd number of backslashes, as ``\\\\`` is itself a literal backslash."""
+    backslashes = 0
+    while pos - backslashes > 0 and text[pos - backslashes - 1] == "\\":
+        backslashes += 1
+    return backslashes % 2 == 1
+
+
+def _malformed_source(text: str, start: int) -> str:
+    """The span to quote for a malformed directive: through the first ``}}``
+    on its line, else to the end of the line."""
+    line_end = text.find("\n", start)
+    if line_end < 0:
+        line_end = len(text)
+    close = text.find("}}", start, line_end)
+    return text[start:close + 2 if close >= 0 else line_end]
+
+
 def iter_directives(text: str) -> Iterator[Directive]:
     """Yield every directive in *text* in order, well-formed or malformed.
 
@@ -179,10 +216,12 @@ def iter_directives(text: str) -> Iterator[Directive]:
     pos = 0
     while opener := _OPENER_RE.search(text, pos):
         start = opener.start()
+        if _is_escaped(text, start):
+            pos = start + 1
+            continue
         try:
             positional, params, duplicates, end = _lex_arguments(text, opener.end())
         except _Malformed as exc:
-            line_end = text.find("\n", start)
             yield Directive(
                 name=opener.group(1),
                 positional=None,
@@ -191,7 +230,7 @@ def iter_directives(text: str) -> Iterator[Directive]:
                 malformed=str(exc),
                 start=start,
                 end=opener.end(),
-                source=text[start:line_end if line_end >= 0 else len(text)],
+                source=_malformed_source(text, start),
             )
             pos = opener.end()
             continue
@@ -208,19 +247,6 @@ def iter_directives(text: str) -> Iterator[Directive]:
         pos = end
 
 
-def parse_def_id(raw: str) -> str | None:
-    """Return the identifier of a ``{{def:}}`` from the text between ``def:``
-    and ``}}``: ``''`` when it is omitted, ``None`` when the arguments are
-    malformed.
-
-    Parameters, which ``{{def:}}`` does not define, are not part of the id.
-    """
-    directive = next(iter_directives("{{def:" + raw + "}}"))
-    if directive.malformed:
-        return None
-    return directive.positional or ""
-
-
 def format_value(value: str, *, positional: bool = False) -> str:
     """Spell *value* as directive source, quoting it only where §11.3 must.
 
@@ -228,7 +254,8 @@ def format_value(value: str, *, positional: bool = False) -> str:
     *value*.
     """
     needs_quotes = (
-        "," in value
+        (positional and not value)
+        or "," in value
         or "}" in value
         or value.startswith('"')
         or value != value.strip(_WS)
