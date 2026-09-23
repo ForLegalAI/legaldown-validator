@@ -219,6 +219,18 @@ def _parse_str_dict(raw: Any) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _block_text(kind: str, value: Any) -> str:
+    """A block's text. A code block's is literal source, indentation
+    included. A block quote keeps a leading blank line, which decides whether
+    it is a drafting note (§15.6)."""
+    text = str(value or "")
+    if kind == "code":
+        return text
+    if kind == "quote":
+        return text.rstrip().lstrip(" \t")
+    return text.strip()
+
+
 def block_from_dict(data: dict[str, Any] | None) -> Block:
     """Construct a Block from a dict, applying defaults for missing fields."""
     payload = data or {}
@@ -227,8 +239,7 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
     merged = {**defaults, **payload}
     return Block(
         kind=kind,
-        # A code block's text is literal source, indentation included.
-        text=str(merged.get("text") or "") if kind == "code" else _str(merged.get("text")),
+        text=_block_text(kind, merged.get("text")),
         definition_id=_str(merged.get("definition_id")),
         term=_str(merged.get("term")),
         prefix=str(merged.get("prefix") or ""),

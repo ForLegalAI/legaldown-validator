@@ -46,16 +46,17 @@ IMPLEMENTED_RULES = {
     "amends-title-empty", "amend-def-override", "amend-term-undefined",
     "amend-term-unresolvable",
     "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",
-    "attachment-title-empty", "attachment-unreferenced", "brace-stray",
+    "attachment-title-empty", "attachment-unreferenced", "brace-stray", "choose-invalid",
     "date-invalid", "date-of-birth-invalid",
-    "def-autogen-collision", "def-duplicate-id", "def-emphasis",
+    "def-autogen-collision", "def-duplicate-id", "def-emphasis", "def-term-variable",
     "def-no-quoted-span", "def-single-quote-ambiguous", "def-unreferenced",
     "directive-duplicate-param", "directive-malformed", "directive-unknown",
-    "directive-unknown-param", "document-type-invalid",
+    "directive-unknown-param", "document-type-invalid", "drafting-note-def",
+    "drafting-note-unrecognized",
     "duration-invalid-unit", "duration-invalid-value",
     "field-type-key-format", "field-type-key-reserved", "field-type-missing",
     "field-type-undeclared",
-    "heading-depth", "heading-hardcoded-number", "heading-skip",
+    "heading-depth", "heading-hardcoded-number", "heading-skip", "insertion-boundary",
     "issuer-side-required", "legaldown-version-newer", "metadata-date-invalid",
     "money-invalid-amount", "money-missing-currency", "money-unknown-currency",
     "note-invalid", "parties-minimum",
@@ -63,11 +64,12 @@ IMPLEMENTED_RULES = {
     "party-unknown",
     "placeholder-id-malformed", "placeholder-in-structural-field",
     "placeholder-question-mismatch", "placeholder-type-inconsistent",
-    "placeholder-type-invalid", "placeholder-unknown-currency", "question-invalid",
+    "placeholder-type-invalid", "placeholder-unfilled", "placeholder-unknown-currency",
+    "question-invalid",
     "ref-broken", "ref-targets-attachment", "representative-name-empty",
     "side-name-duplicate", "side-name-malformed", "side-party-name-format",
     "side-unknown", "sides-absent", "sides-minimum", "supersedes-title-empty",
-    "term-undefined", "title-missing",
+    "template-construct-present", "template-fragment-invalid", "term-undefined", "title-missing",
 }
 
 
@@ -110,9 +112,14 @@ def _iter_valid_cases():
         yield pytest.param(lgd, id=lgd.stem)
 
 
-def _validate_file(path: Path):
+# Runner configuration this harness can supply (fixtures README): the final
+# option (§15.9). Cases needing anything else are skipped.
+_SUPPORTED_CONFIG = {"final"}
+
+
+def _validate_file(path: Path, config: dict):
     document = parse_document(path.read_text(encoding="utf-8"), filename=path.name)
-    return validate_document(document)
+    return validate_document(document, final=bool(config.get("final")))
 
 
 @pytest.mark.parametrize("case", list(_iter_valid_cases()))
@@ -127,9 +134,10 @@ def test_valid_fixture_produces_no_errors(case: Path):
         pytest.skip(f"requires conformance level {expected['requires_level']}")
     if expected.get("requires_capability"):
         pytest.skip(f"requires the {expected['requires_capability']} capability")
-    if expected.get("requires_config"):
+    config = expected.get("requires_config") or {}
+    if not set(config) <= _SUPPORTED_CONFIG:
         pytest.skip("requires runner configuration")
-    result = _validate_file(case)
+    result = _validate_file(case, config)
     assert not result.errors, (
         f"valid fixture produced errors: {[d for d in result.diagnostics if d.level == 'error']}"
     )
@@ -145,12 +153,13 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         pytest.skip(f"requires conformance level {expected['requires_level']}")
     if expected.get("requires_capability"):
         pytest.skip(f"requires the {expected['requires_capability']} capability")
-    if expected.get("requires_config"):
+    config = expected.get("requires_config") or {}
+    if not set(config) <= _SUPPORTED_CONFIG:
         pytest.skip("requires runner configuration")
     if case.is_dir() and len(list(case.glob("*.lgd"))) > 1:
         pytest.skip("multi-file case (single-document harness)")
 
-    result = _validate_file(entry)
+    result = _validate_file(entry, config)
     produced = {(d.rule, d.level) for d in result.diagnostics}
     for diag in expected.get("diagnostics", []):
         want = (diag["rule"], diag["level"])

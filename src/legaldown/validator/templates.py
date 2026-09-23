@@ -5,16 +5,22 @@ answer rules live here, next to the declarations they apply to.
 """
 from __future__ import annotations
 
+import posixpath
 import re
+from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from ..directives import PLACEHOLDER_TYPE_PARAMS
+from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
+from ..markdown import FENCE_OPEN_RE, closes_fence
+from ..models import Block, Document
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
 from .patterns import (
     DURATION_UNITS,
     IDENTIFIER_RE,
+    LEGALDOWN_EXTENSIONS,
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
@@ -236,3 +242,349 @@ def check_questions(
                     f"Placeholder id '{pid}' is read by YAML as a boolean or null, so it "
                     f"cannot be answered portably in a template (§15.2)."
                 )
+
+
+# ── Drafting notes (§15.6) ────────────────────────────────────────
+
+#: The first line of a quote that looks like a GitHub-flavoured alert.
+_ALERT_RE = re.compile(r"\[![A-Za-z]+\]")
+_DRAFTING_MARKER = "[!DRAFTING]"
+
+
+@dataclass(frozen=True, slots=True)
+class Quote:
+    """A block quote in a block's text: ``fragment[start:end]``, and its
+    first line without the ``>`` marker."""
+    fragment: str
+    start: int
+    end: int
+    first_line: str
+
+    @property
+    def is_drafting_note(self) -> bool:
+        """True if the quote is a drafting note: its first line is exactly
+        ``[!DRAFTING]``, letters in any case (§15.6)."""
+        return self.first_line.upper() == _DRAFTING_MARKER
+
+    @property
+    def is_unrecognized_alert(self) -> bool:
+        """True if the first line looks like an alert marker (``[!`` letters
+        ``]``) but is not a drafting note's: an ordinary quote, whose
+        guidance would reach the finished document (§15.6)."""
+        return _ALERT_RE.match(self.first_line) is not None and not self.is_drafting_note
+
+
+_QUOTE_MARKER_RE = re.compile(r"[ \t]*>[ \t]?")
+
+
+def _strip_markers(line: str, count: int) -> tuple[int, str]:
+    """Remove up to *count* leading ``>`` markers from *line*; return how
+    many there were and what follows them."""
+    removed = 0
+    while removed < count and (marker := _QUOTE_MARKER_RE.match(line)):
+        line = line[marker.end():]
+        removed += 1
+    return removed, line
+
+
+def _quotes_in(text: str, outer: int) -> list[Quote]:
+    """The block quotes in *text*, nested ones included. *outer* is how many
+    quotes *text* is already inside: 1 for a quote block's text, whose own
+    markers the parser removed, else 0. A quote at depth *d* is a run of
+    lines at depth *d* or deeper; lines in fenced code at the text's own
+    level are code, whatever they begin with."""
+    lines = text.split("\n")
+    depths: list[int] = []
+    fence: str | None = None
+    for line in lines:
+        if fence is not None:
+            depths.append(outer)
+            if closes_fence(line, fence):
+                fence = None
+            continue
+        markers, _content = _strip_markers(line, len(line))
+        if not markers and (opening := FENCE_OPEN_RE.match(line)):
+            fence = opening.group("fence")
+        depths.append(outer + markers)
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line) + 1)
+    quotes: list[Quote] = []
+    for depth in range(1, max(depths, default=0) + 1):
+        run: int | None = None  # the open run's first line
+        for index, line_depth in enumerate([*depths, 0]):
+            if line_depth >= depth and run is None:
+                run = index
+            elif line_depth < depth and run is not None:
+                first = _strip_markers(lines[run], depth - outer)[1].strip()
+                quotes.append(Quote(text, starts[run], starts[index] - 1, first))
+                run = None
+    return quotes
+
+
+def block_quotes(block: Block) -> list[Quote]:
+    """The block quotes in *block*, nested ones included: a quote block and
+    the quotes in it, or runs of ``>`` lines in a list item, where the parser
+    keeps a quote's lines — lazy continuation lines included — each with its
+    ``>``."""
+    if block.kind == "quote":
+        return _quotes_in(block.text, 1)
+    return [quote for item in block.items for quote in _quotes_in(item, 0)]
+
+
+# ── Insertion boundaries (§15.7.3) ────────────────────────────────
+
+# What may directly precede and follow an insertion besides a letter, a
+# digit, a space or tab, a line start or end, and another directive.
+_BEFORE_INSERTION = frozenset("(\"'“‘„«/-")
+_AFTER_INSERTION = frozenset(".,;:)!?\"'”’»/-")
+# Characters that could combine with an insertion into a character
+# reference, an autolink, or an escape.
+_COMBINING = "&<\\"
+# A line's container markers: block quote markers, then a list item marker.
+_CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+)?")
+# A link reference definition: its label, destination, and optional title.
+# The parser joins a paragraph's lines, so only this span is the definition.
+_LINK_REFERENCE_RE = re.compile(
+    r" {0,3}\[[^\]]+\]:[ \t]*\S*(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
+)
+
+
+def template_text(text: str, directives: list[Directive]) -> str:
+    """The template text of *text*: the source as written — comments and
+    code spans included, which stay next to inserted text in the assembled
+    source — with its *directives* made opaque."""
+    return mask_directives(text, directives)
+
+
+def insertion_boundary_problem(
+    text: str, template: str, insertion: Directive, directives: list[Directive]
+) -> str | None:
+    """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in body
+    *text* — is not kept apart from template text as §15.7.3 requires, or
+    None. *directives* are all the directives lexed from *text*, and
+    *template* is ``template_text(text, directives)``."""
+    start, end = insertion.start, insertion.end
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    line_end = len(text) if line_end < 0 else line_end
+    # The line's content begins after its container markers.
+    content_start = min(_CONTAINER_RE.match(text, line_start).end(), start)
+
+    if start > content_start:
+        before = text[start - 1]
+        if not (
+            before.isalnum()
+            or before in " \t"
+            or any(directive.end == start for directive in directives)
+            or (before in _BEFORE_INSERTION and not (before == "(" and text[start - 2:start - 1] == "]"))
+        ):
+            return f"'{before}' directly before it"
+        run_start = max(
+            template.rfind(" ", content_start, start),
+            template.rfind("\t", content_start, start),
+            content_start - 1,
+        ) + 1
+        combining = next((ch for ch in template[run_start:start] if ch in _COMBINING), None)
+        if combining:
+            return f"'{combining}' in the text just before it"
+    if end < line_end:
+        after = text[end]
+        if not (
+            after.isalnum()
+            or after in " \t"
+            or text.startswith("{{", end)
+            or after in _AFTER_INSERTION
+        ):
+            return f"'{after}' directly after it"
+    reference = _LINK_REFERENCE_RE.match(template, content_start)
+    # A definition is the whole line; text after it makes the line a
+    # paragraph (the parser joins a paragraph's lines, so a definition
+    # followed by more text is not told apart, and is not flagged).
+    if reference and start < reference.end() and not template[reference.end():line_end].strip():
+        return "it is in a link reference definition"
+    destination = template.rfind("](", line_start, start)
+    if destination >= 0 and template.find(")", destination + 2, start) < 0:
+        return "it is inside a link or image destination"
+    return None
+
+
+# ── Inline choices (§15.5) ────────────────────────────────────────
+
+#: The brace-stray message, shared with the lexer's own strays.
+BRACE_STRAY = "'{{' does not begin a directive and is literal text; write '\\{{' if that is intended (§11.4)."
+
+
+def check_choose(directive: Directive, questions: Any, result: ValidationResult) -> None:
+    """Report a ``{{choose:}}`` that does not list exactly the answers of a
+    declared decision question (choose-invalid, §15.5), and any ``{{`` in
+    its phrases, which is literal text (brace-stray)."""
+    qid = directive.positional or ""
+    qtype = question_type(questions, qid)
+    if qtype not in DECISION_QUESTION_TYPES:
+        result.error(
+            "choose-invalid",
+            f"'{directive.source}' must name a declared boolean or choice question (§15.5).",
+        )
+    elif qtype == "boolean" or _choices_problem(questions[qid].get("choices")) is None:
+        # Malformed choices are question-invalid; there is nothing to match.
+        answers = (
+            ["true", "false"] if qtype == "boolean" else [str(value) for value in questions[qid]["choices"]]
+        )
+        missing = [answer for answer in answers if answer not in directive.params]
+        extra = [param for param in directive.params if param not in answers]
+        repeated = [param for param in dict.fromkeys(directive.duplicates) if param in answers]
+        if missing:
+            result.error(
+                "choose-invalid",
+                f"'{directive.source}' lists no phrase for {', '.join(missing)}: every answer "
+                f"to '{qid}' needs one (§15.5).",
+            )
+        if extra:
+            result.error(
+                "choose-invalid",
+                f"'{directive.source}' lists {', '.join(extra)}, which "
+                f"{'is not an answer' if len(extra) == 1 else 'are not answers'} to '{qid}' (§15.5).",
+            )
+        if repeated:
+            result.error(
+                "choose-invalid",
+                f"'{directive.source}' lists {', '.join(repeated)} more than once; each answer "
+                f"has one phrase (§15.5).",
+            )
+    for offset in range(2, len(directive.source) - 1):
+        if directive.source.startswith("{{", offset) and not is_escaped(directive.source, offset):
+            result.warning("brace-stray", BRACE_STRAY)
+
+
+# ── Template constructs in the body (§15.3, §15.5–§15.7) ──────────
+
+_INSERTIONS = ("placeholder", "choose")
+
+
+def check_template_body(
+    document: Document,
+    lex_fragment: Callable[[str], Lexed],
+    result: ValidationResult,
+    *,
+    template: bool,
+) -> list[Quote]:
+    """Report what §16.12 checks in the body of a document: drafting notes
+    (drafting-note-unrecognized, drafting-note-def), a blank or choice in a
+    defined term (def-term-variable) or against template text
+    (insertion-boundary), and, in a *template*, the Core parts of
+    template-fragment-invalid. Return the document's drafting notes."""
+    # Imported here, as in core.py: definitions -> validator.helpers ->
+    # validator/__init__ -> core -> templates would otherwise be a cycle.
+    from ..definitions import find_definition_anchors, text_fragments
+
+    for section in document.sections:  # headings are body text too
+        lexed = lex_fragment(section.title)
+        for directive in lexed.directives:
+            if directive.name in _INSERTIONS and not directive.malformed:
+                masked = template_text(section.title, lexed.directives)
+                _check_insertion(section.title, masked, directive, lexed.directives, result)
+    includes: list[str] = []
+    all_notes: list[Quote] = []
+    for _section, _index, block in document.iter_blocks():
+        notes: list[Quote] = []
+        for quote in block_quotes(block):
+            if quote.is_unrecognized_alert:
+                result.warning(
+                    "drafting-note-unrecognized",
+                    f"The quote begins '{quote.first_line}', which looks like an alert marker "
+                    f"but is not [!DRAFTING]: it is an ordinary quote and would reach the "
+                    f"finished document (§15.6).",
+                )
+            elif quote.is_drafting_note:
+                notes.append(quote)
+        all_notes.extend(notes)
+        for fragment in text_fragments(block):
+            lexed = lex_fragment(fragment)
+            masked: str | None = None  # template text, for the fragment's first insertion
+            for directive in lexed.directives:
+                if directive.malformed:
+                    continue
+                in_note = any(
+                    note.fragment == fragment and note.start <= directive.start < note.end
+                    for note in notes
+                )
+                if in_note and directive.name == "def":
+                    result.error(
+                        "drafting-note-def",
+                        f"'{directive.source}' is inside a drafting note, which assembly removes "
+                        f"with the definition (§15.6).",
+                    )
+                if directive.name == "include" and directive.positional:
+                    if not in_note:
+                        includes.append(posixpath.normpath(directive.positional))
+                    elif template:
+                        result.error(
+                            "template-fragment-invalid",
+                            f"'{directive.source}' is inside a drafting note; in a template an "
+                            f"include belongs in the template's own body (§15.3).",
+                        )
+                # A drafting note is removed before anything is inserted
+                # (§15.7.2 step 2), so a blank in one is never filled.
+                if directive.name in _INSERTIONS and not in_note:
+                    masked = masked or template_text(fragment, lexed.directives)
+                    _check_insertion(fragment, masked, directive, lexed.directives, result)
+            for anchor in find_definition_anchors(
+                fragment, language=document.metadata.language, lexed=lexed
+            ):
+                if anchor.term is None:
+                    continue
+                for directive in lexed.directives:
+                    if directive.name in _INSERTIONS and anchor.start < directive.start < anchor.directive.start:
+                        result.error(
+                            "def-term-variable",
+                            f"'{directive.source}' is inside the term that "
+                            f"'{anchor.directive.source}' defines: the term, and any id derived "
+                            f"from it, must be the same in every assembled document (§15.5).",
+                        )
+    if template:
+        _check_fragments(document, includes, result)
+    return all_notes
+
+
+def _check_insertion(
+    text: str, masked: str, insertion: Directive, directives: list[Directive], result: ValidationResult
+) -> None:
+    """Report *insertion* if it is not kept apart from template text."""
+    problem = insertion_boundary_problem(text, masked, insertion, directives)
+    if problem:
+        result.error(
+            "insertion-boundary",
+            f"'{insertion.source}' is not kept apart from the text around it: {problem} (§15.7.3).",
+        )
+
+
+def _check_fragments(document: Document, includes: list[str], result: ValidationResult) -> None:
+    """The Core parts of template-fragment-invalid (§15.3): each fragment is
+    included once, and each LegalDown attachment file is declared by one
+    entry and is not also a fragment."""
+    included = Counter(includes)
+    for path in sorted(path for path, count in included.items() if count > 1):
+        result.error(
+            "template-fragment-invalid",
+            f"Fragment '{path}' is included more than once; in a template each fragment has "
+            f"one place (§15.3).",
+        )
+    files = [
+        posixpath.normpath(att.file)
+        for att in document.metadata.attachments
+        if att.file.endswith(LEGALDOWN_EXTENSIONS)
+    ]
+    declared = Counter(files)
+    for path in sorted(declared):
+        if declared[path] > 1:
+            result.error(
+                "template-fragment-invalid",
+                f"Attachment file '{path}' is declared by more than one attachment; in a "
+                f"template each LegalDown attachment file has one entry (§15.3).",
+            )
+        if path in included:
+            result.error(
+                "template-fragment-invalid",
+                f"Attachment file '{path}' is also included as a fragment (§15.3).",
+            )

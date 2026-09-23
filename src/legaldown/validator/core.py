@@ -35,6 +35,7 @@ from .patterns import (
     DURATION_UNITS,
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
+    LEGALDOWN_EXTENSIONS,
     RESERVED_VALUE_TYPES,
     VALID_DOC_TYPES,
     VALID_DURATION_UNITS,
@@ -42,20 +43,19 @@ from .patterns import (
 )
 from .result import SectionIndexEntry, ValidationResult
 from .templates import (
+    BRACE_STRAY,
     DECISION_QUESTION_TYPES,
     Blank,
+    Quote,
+    check_choose,
     check_questions,
+    check_template_body,
     question_type,
 )
 
 # Type aliases for the optional definitions-import callbacks.
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
 AttachmentDefinitionsImporter = Callable[[str], dict[str, str] | None]
-
-
-def _placeholders(value: str) -> list[Directive]:
-    """The ``{{placeholder:}}`` directives in a frontmatter value (§3.10)."""
-    return [d for d in iter_directives(value or "") if d.name == "placeholder"]
 
 
 def _strings(value: Any) -> Iterator[str]:
@@ -273,6 +273,39 @@ def _check_blank_codes(blanks: dict[str, Blank], result: ValidationResult) -> No
             )
 
 
+def _check_final(
+    document: Document,
+    placeholders: list[Directive],
+    chooses: list[Directive],
+    notes: list[Quote],
+    result: ValidationResult,
+) -> None:
+    """The final check (§15.9): no blank and no template construct remains
+    in a document meant for signature. *placeholders*, *chooses*, and
+    drafting *notes* are every one in the document."""
+    for directive in placeholders:
+        result.error(
+            "placeholder-unfilled",
+            f"'{directive.source}' is an unfilled blank in a document meant to be final (§15.9).",
+        )
+
+    def construct(what: str) -> None:
+        result.error(
+            "template-construct-present",
+            f"{what} remains in a document meant to be final (§15.9).",
+        )
+
+    if document.metadata.questions is not None:
+        construct("The 'questions' key")
+    for att in document.metadata.attachments:
+        if att.when:
+            construct(f"The condition 'when: {att.when}' of attachment '{att.id}'")
+    for directive in chooses:
+        construct(f"'{directive.source}'")
+    for _note in notes:
+        construct("A drafting note")
+
+
 def _is_include_only(text: str, directives: list[Directive]) -> bool:
     """True if *text* holds a single ``{{include:}}`` directive and nothing
     else but comments, which are not rendered (§8.6). *directives* are lexed
@@ -297,6 +330,7 @@ def validate_document(
     *,
     import_definitions: DefinitionsImporter | None = None,
     import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
+    final: bool = False,
 ) -> ValidationResult:
     """Validate a LegalDown document and build lookup indices.
 
@@ -310,6 +344,9 @@ def validate_document(
     import_attachment_definitions:
         Optional callback ``(attachment_file) -> dict | None`` used to resolve
         document-wide definitions declared inside an attachment file (§12.4).
+    final:
+        Apply the final check (§15.9): the document is meant for signature,
+        so a remaining blank or template construct is an Error.
     """
     result = ValidationResult()
     # §3.2: a newer declared version draws a Warning, never a failure, and
@@ -617,7 +654,13 @@ def validate_document(
                         continue  # literal: escaped, or part of a directive's value
                     # Only whitespace and comments may follow an anchor: a
                     # comment is not rendered (§8.6), but a code span is text.
-                    at_end = not _HTML_COMMENT_RE.sub("", fragment[m.end():]).strip()
+                    # An item anchor ends the item's first paragraph, its
+                    # first line here: a note or code may follow (§5.7).
+                    line_end = fragment.find("\n", m.end())
+                    rest = fragment[m.end():line_end] if line_end >= 0 else fragment[m.end():]
+                    at_end = "\n" not in fragment[:m.start()] and not _HTML_COMMENT_RE.sub(
+                        "", rest
+                    ).strip()
                     if entry is None or not anchor_position or not at_end:
                         result.warning(
                             "anchor-misplaced",
@@ -725,8 +768,7 @@ def validate_document(
     _imported_definitions: dict[str, str] = {}
     if document.metadata.amends and document.metadata.amends.file:
         amends_file = document.metadata.amends.file
-        _legaldown_exts = (".lgd", ".legaldown", ".legal.md")
-        if any(amends_file.endswith(ext) for ext in _legaldown_exts):
+        if amends_file.endswith(LEGALDOWN_EXTENSIONS):
             _amends_is_legaldown = True
             if import_definitions is not None:
                 imported = import_definitions(amends_file, document.filename)
@@ -747,9 +789,8 @@ def validate_document(
     # A {{def:}} inside an attachment file registers a document-wide term; ids
     # must remain unique across the combined document (§16.10).
     if import_attachment_definitions is not None:
-        _legaldown_exts = (".lgd", ".legaldown", ".legal.md")
         for att in document.metadata.attachments:
-            if not att.file or not any(att.file.endswith(ext) for ext in _legaldown_exts):
+            if not att.file.endswith(LEGALDOWN_EXTENSIONS):
                 continue
             att_defs = import_attachment_definitions(att.file)
             if not att_defs:
@@ -800,8 +841,14 @@ def validate_document(
     if isinstance(meta.supersedes, Amends):
         structural_fields.append(("supersedes.file", meta.supersedes.file))
     structural_fields.extend(("questions", text) for text in _strings(meta.questions))
+
+    def named(text: str, name: str) -> list[Directive]:
+        """The *name* directives in a frontmatter value or heading, each text
+        lexed once per validation."""
+        return [d for d in lex_fragment(text or "").directives if d.name == name]
+
     for field_label, field_value in structural_fields:
-        if _placeholders(field_value):
+        if named(field_value, "placeholder"):
             result.error(
                 "placeholder-in-structural-field",
                 f"A {{{{placeholder:}}}} is not allowed in {field_label}: an identifier, "
@@ -831,8 +878,28 @@ def validate_document(
             value_fields.extend(rep.title for rep in party.representatives)
             value_fields.extend(cf.value for cf in party.custom_fields)
     for field_value in value_fields:
-        for directive in _placeholders(field_value):
+        for directive in named(field_value, "placeholder"):
             _check_placeholder(directive, result, blanks, questions, in_frontmatter=True)
+    frontmatter_texts = [text for _label, text in structural_fields] + value_fields
+    headings = [section.title for section in document.sections]
+    # Every blank, wherever it is, for the final check (§15.9).
+    placeholders = [
+        directive
+        for text in [*frontmatter_texts, *headings]
+        for directive in named(text, "placeholder")
+    ]
+
+    # {{choose:}} belongs in body text: never in frontmatter or a heading
+    # (§15.5). Wherever it is, it makes the document a template (§15.1).
+    chooses: list[Directive] = []
+    for texts, where in (
+        (frontmatter_texts, "in frontmatter; it belongs in body text"),
+        (headings, "in a heading, where §4.2 allows plain text only"),
+    ):
+        for text in texts:
+            for directive in named(text, "choose"):
+                chooses.append(directive)
+                result.error("choose-invalid", f"'{directive.source}' is {where} (§15.5).")
 
     for _section, _index, block in document.iter_blocks():
         # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
@@ -846,14 +913,13 @@ def validate_document(
         for fragment in text_fragments(block):
             lexed = lex_fragment(fragment)
             for _offset in lexed.stray_braces:
-                result.warning(
-                    "brace-stray",
-                    "'{{' does not begin a directive and is literal text; "
-                    "write '\\{{' if that is intended (§11.4).",
-                )
+                result.warning("brace-stray", BRACE_STRAY)
             for directive in lexed.directives:
                 name = directive.name
+                if name == "choose":
+                    chooses.append(directive)  # a template even when malformed
                 if name == "placeholder":
+                    placeholders.append(directive)
                     # Its effective type decides which parameters it defines.
                     _check_placeholder(directive, result, blanks, questions)
                     continue
@@ -959,6 +1025,8 @@ def validate_document(
                             f"Field type '{ftype}' is not declared in field_types.",
                         )
                     result.inline_fields.append((value, ftype))
+                elif name == "choose":
+                    check_choose(directive, questions, result)
                 elif name == "attach":
                     referenced_attachments.add(value)
                     if value not in attachment_ids:
@@ -1005,16 +1073,20 @@ def validate_document(
 
     _check_blank_codes(blanks, result)
 
-    # ── Template questions (§15.2) ──
-    # A document declaring questions or a conditional attachment is a
-    # template (§15.1).
+    # ── Templates (§15) ──
+    # A document declaring questions, carrying a condition, or containing a
+    # {{choose:}} is a template (§15.1).
+    template = questions is not None or any(att.when for att in meta.attachments) or bool(chooses)
     check_questions(
         questions,
         blanks,
         result,
-        template=questions is not None or any(att.when for att in meta.attachments),
+        template=template,
         not_line_editable=meta.not_line_editable,
     )
+    notes = check_template_body(document, lex_fragment, result, template=template)
+    if final:
+        _check_final(document, placeholders, chooses, notes, result)
 
     # Warn about declared but unreferenced attachments (§16.10).
     for att in document.metadata.attachments:

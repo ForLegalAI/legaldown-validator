@@ -98,3 +98,11 @@ def test_malformed_frontmatter_is_reported_not_raised(write, capsys):
     assert main(["validate", "--format", "json", str(path)]) == EXIT_DIAGNOSTICS
     payload = json.loads(capsys.readouterr().out)
     assert payload["diagnostics"][0]["rule"] == "frontmatter-invalid-yaml"
+
+
+def test_final_rejects_a_remaining_blank(write, capsys):
+    path = write("draft.lgd", _VALID + "\nThe fee is {{placeholder: fee, type=money}}.\n")
+    assert main(["validate", str(path)]) == EXIT_OK
+    capsys.readouterr()
+    assert main(["validate", "--final", str(path)]) == EXIT_DIAGNOSTICS
+    assert "[placeholder-unfilled]" in capsys.readouterr().out

@@ -105,12 +105,14 @@ legaldown validate contracts/                        # a whole directory, recurs
 legaldown validate --format json contract.lgd        # machine-readable output
 legaldown validate --ignore def-unreferenced doc.lgd # mute one rule
 legaldown validate --warnings-as-errors doc.lgd      # tighten a CI gate
+legaldown validate --final signed-contract.lgd       # nothing left to fill in
 ```
 
 | Option | Effect |
 |---|---|
 | `--format {text,json}` | Output format (default `text`) |
 | `--ignore RULE_ID` | Suppress a rule by its stable id — repeatable |
+| `--final` | Check a document is ready for signature: a remaining placeholder, drafting note, or template construct is an error (§15.9) |
 | `--warnings-as-errors` | Report warnings at error severity |
 | `--strict` | Exit non-zero on any diagnostic, not just errors |
 | `--quiet` | Drop the trailing summary line |
@@ -228,7 +230,7 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |
 | **Placeholders** | Malformed ids, invalid types, one blank with two types, currencies, or units, placeholders in structural and format-checked frontmatter fields |
-| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question |
+| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term or against Markdown punctuation, fragments included twice; with `--final`, anything left unfilled |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
 | **Metadata** | Invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2 |

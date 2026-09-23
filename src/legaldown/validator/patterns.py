@@ -7,6 +7,8 @@ import re
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
 # ── Domain constants ──────────────────────────────────────────────
+# File extensions of LegalDown source (§2.1).
+LEGALDOWN_EXTENSIONS: tuple[str, ...] = (".lgd", ".legaldown", ".legal.md")
 # Reserved value-type names (§3.2): field_types keys must not collide with
 # the built-in field specs or placeholder types.
 RESERVED_VALUE_TYPES: frozenset[str] = frozenset({"date", "money", "duration", "party", "text"})

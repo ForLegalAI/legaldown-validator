@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .directives import Directive, Lexed, lex
+from .directives import Directive, Lexed, lex, mask_directives
 from .models import Block, Document
 from .validator.helpers import slugify_identifier
 
@@ -119,7 +119,9 @@ def find_definition_anchors(
     """
     closing = {pair[1]: pair for pair in accepted_delimiters(language)}
     lexed = lexed or lex(text)
-    scan = lexed.view
+    # A directive in the term is opaque: its quoted values are not the
+    # term's quotation marks.
+    scan = mask_directives(lexed.view, lexed.directives)
     anchors: list[DefinitionAnchor] = []
     for directive in lexed.directives:
         if directive.name != "def":
