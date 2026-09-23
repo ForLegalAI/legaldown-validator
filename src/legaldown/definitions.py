@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .directives import Directive, Lexed, lex
+from .directives import Directive, Lexed, lex, mask_directives
 from .models import Block, Document
 from .validator.helpers import slugify_identifier
 
@@ -103,10 +103,6 @@ class DefinitionAnchor:
         return self.pair is not None and self.pair[3]
 
 
-# Stands in for a directive's text while scanning for a defined term.
-_OPAQUE = "\x00"
-
-
 def find_definition_anchors(
     text: str,
     *,
@@ -124,12 +120,8 @@ def find_definition_anchors(
     closing = {pair[1]: pair for pair in accepted_delimiters(language)}
     lexed = lexed or lex(text)
     # A directive in the term is opaque: its quoted values are not the
-    # term's quotation marks. Its span keeps its length, filled with a
-    # character that is neither a quotation mark, spacing, nor emphasis.
-    chars = list(lexed.view)
-    for other in lexed.directives:
-        chars[other.start:other.end] = _OPAQUE * (other.end - other.start)
-    scan = "".join(chars)
+    # term's quotation marks.
+    scan = mask_directives(lexed.view, lexed.directives)
     anchors: list[DefinitionAnchor] = []
     for directive in lexed.directives:
         if directive.name != "def":

@@ -139,6 +139,17 @@ class Directive:
         return required_type is None or directive_type == required_type
 
 
+def mask_directives(text: str, directives: list[Directive]) -> str:
+    """*text* with each of *directives* made opaque: the same length, filled
+    with a character that is neither spacing, a quotation mark, nor
+    Markdown punctuation, so a scan of the text around them cannot mistake
+    their contents (a quoted value, a space) for the surrounding text's."""
+    chars = list(text)
+    for directive in directives:
+        chars[directive.start:directive.end] = "\x00" * (directive.end - directive.start)
+    return "".join(chars)
+
+
 class _Malformed(Exception):
     pass
 

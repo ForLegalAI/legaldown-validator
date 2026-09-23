@@ -48,8 +48,13 @@ Of the template constructs specification 0.2 adds (§15), questions, `{{choose:}
 notes, insertion boundaries, and the final option (§15.9, `validate_document(final=True)` or
 `legaldown validate --final`) are validated. Conditions (`when=`) are not recognized yet: a
 heading's `{#id when=...}` marker is read as part of the heading text, a paragraph's is literal
-text, and alternatives sharing an identifier are reported as duplicates. Validate templates with
+text, alternatives sharing an identifier are reported as duplicates, and the final option does
+not yet report a remaining `when=` marker as `template-construct-present`. Validate templates with
 conditions with that in mind until the condition rows above are implemented.
+
+Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
+are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy
+continuation line of a nested quote. Either needs a full CommonMark container parser.
 
 One id appears on both sides of that line. `attachment-file-missing` is defined as *the attachment
 `file` path exists*, which needs the filesystem and is therefore unimplemented — but the validator

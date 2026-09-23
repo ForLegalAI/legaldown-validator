@@ -15,6 +15,20 @@ import re
 # backtick.
 FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
 
+# The start of an HTML block that may interrupt a paragraph (CommonMark
+# kinds 1–6): script, pre, style, or textarea; a comment; a processing
+# instruction; a declaration; CDATA; or a block-level tag. A line starting
+# with any other ``<`` — an autolink, an inline tag — is paragraph text.
+HTML_BLOCK_START_RE = re.compile(
+    r" {0,3}(?:<(?:script|pre|style|textarea)(?:[ \t>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\["
+    r"|</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup"
+    r"|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset"
+    r"|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol"
+    r"|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr"
+    r"|track|ul)(?:[ \t]|/?>|$))",
+    re.IGNORECASE,
+)
+
 _TAB = 4  # a tab advances to the next multiple of four columns
 
 

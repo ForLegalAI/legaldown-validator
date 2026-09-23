@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped
+from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
 from ..markdown import FENCE_OPEN_RE, closes_fence
 from ..models import Block, Document
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
@@ -350,19 +350,11 @@ _LINK_REFERENCE_RE = re.compile(
 )
 
 
-# Stands in for a directive's text in template text: neither spacing nor
-# Markdown punctuation.
-_OPAQUE = "\x00"
-
-
 def template_text(text: str, directives: list[Directive]) -> str:
-    """*text* with its *directives* made opaque: the template text around
-    them. That is the source as written, comments and code spans included,
-    which stay next to inserted text in the assembled source."""
-    chars = list(text)
-    for directive in directives:
-        chars[directive.start:directive.end] = _OPAQUE * (directive.end - directive.start)
-    return "".join(chars)
+    """The template text of *text*: the source as written — comments and
+    code spans included, which stay next to inserted text in the assembled
+    source — with its *directives* made opaque."""
+    return mask_directives(text, directives)
 
 
 def insertion_boundary_problem(
@@ -406,7 +398,10 @@ def insertion_boundary_problem(
         ):
             return f"'{after}' directly after it"
     reference = _LINK_REFERENCE_RE.match(template, content_start)
-    if reference and start < reference.end():
+    # A definition is the whole line; text after it makes the line a
+    # paragraph (the parser joins a paragraph's lines, so a definition
+    # followed by more text is not told apart, and is not flagged).
+    if reference and start < reference.end() and not template[reference.end():line_end].strip():
         return "it is in a link reference definition"
     destination = template.rfind("](", line_start, start)
     if destination >= 0 and template.find(")", destination + 2, start) < 0:
@@ -473,12 +468,12 @@ def check_template_body(
     result: ValidationResult,
     *,
     template: bool,
-) -> None:
+) -> list[Quote]:
     """Report what §16.12 checks in the body of a document: drafting notes
     (drafting-note-unrecognized, drafting-note-def), a blank or choice in a
     defined term (def-term-variable) or against template text
     (insertion-boundary), and, in a *template*, the Core parts of
-    template-fragment-invalid."""
+    template-fragment-invalid. Return the document's drafting notes."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, text_fragments
@@ -490,6 +485,7 @@ def check_template_body(
                 masked = template_text(section.title, lexed.directives)
                 _check_insertion(section.title, masked, directive, lexed.directives, result)
     includes: list[str] = []
+    all_notes: list[Quote] = []
     for _section, _index, block in document.iter_blocks():
         notes: list[Quote] = []
         for quote in block_quotes(block):
@@ -502,6 +498,7 @@ def check_template_body(
                 )
             elif quote.is_drafting_note:
                 notes.append(quote)
+        all_notes.extend(notes)
         for fragment in text_fragments(block):
             lexed = lex_fragment(fragment)
             masked: str | None = None  # template text, for the fragment's first insertion
@@ -547,6 +544,7 @@ def check_template_body(
                         )
     if template:
         _check_fragments(document, includes, result)
+    return all_notes
 
 
 def _check_insertion(

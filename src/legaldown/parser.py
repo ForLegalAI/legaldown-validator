@@ -17,7 +17,14 @@ import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
 from .directives import Directive, iter_directives, lex
-from .markdown import FENCE_OPEN_RE, closes_fence, dedent, fence_end, indent_width
+from .markdown import (
+    FENCE_OPEN_RE,
+    HTML_BLOCK_START_RE,
+    closes_fence,
+    dedent,
+    fence_end,
+    indent_width,
+)
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -191,24 +198,24 @@ def _is_lazy_line(line: str) -> bool:
     """True if *line* would continue an open paragraph rather than start a
     block of its own: a *lazy continuation line* (CommonMark), which joins
     the list item or block quote whose paragraph it continues. Any list item
-    marker is taken to start a list, and any line opening with ``<`` (an
-    HTML block or comment may interrupt a paragraph) a block of its own, as
-    this parser has always read them."""
+    marker is taken to start a list, and a ``|`` line a table, as this
+    parser has always read them."""
     return (
         bool(line.strip())
         and not FENCE_OPEN_RE.match(line)
         and not HEADING_RE.match(line)
         and not RULE_RE.match(line)
         and not LIST_ITEM_RE.match(line)
-        and not line.lstrip().startswith((">", "|", "<"))
+        and not HTML_BLOCK_START_RE.match(line)
+        and not line.lstrip().startswith((">", "|"))
     )
 
 
 def _opens_paragraph(content: str) -> bool:
     """True if a quoted line's *content* leaves paragraph text open — its
     own, or that of a list item or nested quote it starts — which a lazy
-    line may continue. A heading, a thematic break, a comment, or an empty
-    list item or quote leaves none."""
+    line may continue. A heading, a thematic break, an HTML block, or an
+    empty list item or quote leaves none."""
     inner = content.lstrip()
     while inner.startswith(">"):
         inner = inner[1:].lstrip()
@@ -219,7 +226,7 @@ def _opens_paragraph(content: str) -> bool:
         bool(inner.strip())
         and not HEADING_RE.match(inner)
         and not RULE_RE.match(inner)
-        and not inner.startswith("<!--")
+        and not HTML_BLOCK_START_RE.match(inner)
     )
 
 
@@ -350,6 +357,10 @@ def _parse_paragraph(paragraph: str) -> Block:
     # parameters or malformed arguments. The definition is still collected
     # from the paragraph by collect_definitions.
     lexed = lex(stripped)
+    if any(d.name in ("placeholder", "choose") for d in lexed.directives):
+        # Text around a blank or choice is checked against it (§15.7.3), so
+        # the paragraph is kept whole.
+        return Block(kind="paragraph", text=stripped)
     anchors = find_definition_anchors(stripped, lexed=lexed)
     if anchors and _is_liftable_definition(anchors[0], stripped, lexed.directives):
         anchor = anchors[0]

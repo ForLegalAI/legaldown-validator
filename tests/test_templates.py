@@ -990,3 +990,36 @@ def test_a_malformed_choose_still_makes_a_template():
     source = f"---\ntitle: T\n{_SIDES}---\n\n# A\n\nPay {{{{choose: vat, true=x\n"
     result = validate_document(parse_document(source), final=True)
     assert {"directive-malformed", "template-construct-present"} <= result.rules("error")
+
+
+# ── Fourth review ─────────────────────────────────────────────────
+
+
+def test_a_paragraph_holding_a_blank_is_checked_whole():
+    """Not split around a lifted {{ref:}}: the `&` before it is in the run."""
+    assert "insertion-boundary" in _validate(body="See x &{{ref: terms}}{{placeholder: x}} now.").rules()
+
+
+def test_an_item_anchor_may_precede_a_note_in_the_item():
+    body = "- Pay the fee. {#fee}\n  > [!DRAFTING]\n  > Negotiable.\n\nSee {{ref: fee}}."
+    result = _validate(body=body)
+    assert not {"anchor-misplaced", "ref-broken"} & result.rules()
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    ["<https://intranet/policy> and", "<b>bold</b> text and"],
+)
+def test_an_autolink_or_inline_tag_continues_a_drafting_note(continuation):
+    body = f'> [!DRAFTING]\n> See the policy at\n{continuation} "Foo" {{{{def: foo}}}} x\n\nUse {{{{term: foo}}}}.'
+    assert "drafting-note-def" in _validate(body=body).rules("error")
+
+
+@pytest.mark.parametrize("html", ["<div>", "<!-- note -->", "</table>"])
+def test_an_html_block_start_ends_a_quote(html):
+    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n> quote\n{html}\n")
+    assert [b.kind for b in document.sections[0].blocks] == ["quote", "paragraph"]
+
+
+def test_text_after_a_link_reference_label_is_a_paragraph():
+    assert "insertion-boundary" not in _validate(body="[Note]: {{placeholder: x}} shall pay.").rules()
