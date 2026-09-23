@@ -17,7 +17,6 @@ from ..directives import (
     KNOWN_DIRECTIVES,
     PLACEHOLDER_TYPE_PARAMS,
     Directive,
-    Lexed,
     is_escaped,
     iter_directives,
     lex,
@@ -281,25 +280,13 @@ def _check_blank_codes(blanks: dict[str, Blank], result: ValidationResult) -> No
 
 def _check_final(
     document: Document,
-    frontmatter_texts: list[str],
+    placeholders: list[Directive],
     chooses: list[Directive],
-    lex_fragment: Callable[[str], Lexed],
     result: ValidationResult,
 ) -> None:
     """The final check (§15.9): no blank and no template construct remains
-    in a document meant for signature."""
-    from ..definitions import text_fragments  # lazily, as in validate_document
-
-    placeholders = [
-        d
-        for text in [*frontmatter_texts, *(section.title for section in document.sections)]
-        for d in _placeholders(text)
-    ]
-    for _section, _index, block in document.iter_blocks():
-        for fragment in text_fragments(block):
-            placeholders.extend(
-                d for d in lex_fragment(fragment).directives if d.name == "placeholder"
-            )
+    in a document meant for signature. *placeholders* and *chooses* are every
+    one in the document: frontmatter, headings, and body."""
     for directive in placeholders:
         result.error(
             "placeholder-unfilled",
@@ -888,6 +875,12 @@ def validate_document(
         for directive in _placeholders(field_value):
             _check_placeholder(directive, result, blanks, questions, in_frontmatter=True)
     frontmatter_texts = [text for _label, text in structural_fields] + value_fields
+    # Every blank, wherever it is, for the final check (§15.9).
+    placeholders = [
+        directive
+        for text in [*frontmatter_texts, *(section.title for section in document.sections)]
+        for directive in _placeholders(text)
+    ]
 
     # {{choose:}} belongs in body text: never in frontmatter or a heading
     # (§15.5). Wherever it is, it makes the document a template (§15.1).
@@ -925,6 +918,7 @@ def validate_document(
             for directive in lexed.directives:
                 name = directive.name
                 if name == "placeholder":
+                    placeholders.append(directive)
                     # Its effective type decides which parameters it defines.
                     _check_placeholder(directive, result, blanks, questions)
                     continue
@@ -1092,7 +1086,7 @@ def validate_document(
     )
     check_template_body(document, lex_fragment, result, template=template)
     if final:
-        _check_final(document, frontmatter_texts, chooses, lex_fragment, result)
+        _check_final(document, placeholders, chooses, result)
 
     # Warn about declared but unreferenced attachments (§16.10).
     for att in document.metadata.attachments:

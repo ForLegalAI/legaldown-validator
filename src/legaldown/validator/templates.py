@@ -14,6 +14,7 @@ from datetime import date
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped
+from ..markdown import FENCE_OPEN_RE, closes_fence
 from ..models import Block, Document
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
 from .patterns import (
@@ -275,20 +276,27 @@ class Quote:
 
 def block_quotes(block: Block) -> list[Quote]:
     """The block quotes in *block*: a quote block itself, or a run of ``>``
-    lines in a list item, where the parser keeps them on lines of their own."""
+    lines in a list item outside its fenced code, where the parser keeps a
+    quote's lines — lazy continuation lines included — each with its ``>``."""
     if block.kind == "quote":
         return [Quote(block.text, 0, len(block.text), block.text.split("\n", 1)[0].strip())]
     quotes: list[Quote] = []
     for item in block.items:
         offset = 0
+        fence: str | None = None
         run: tuple[int, str] | None = None  # the open run's start and first line
         for line in [*item.split("\n"), ""]:
-            quoted = line.lstrip().startswith(">")
+            quoted = fence is None and line.startswith(">")
             if quoted and run is None:
-                run = (offset, line.lstrip()[1:].strip())
+                run = (offset, line[1:].strip())
             elif not quoted and run is not None:
                 quotes.append(Quote(item, run[0], offset - 1, run[1]))
                 run = None
+            if fence is not None:
+                if closes_fence(line, fence):
+                    fence = None
+            elif not quoted and (opening := FENCE_OPEN_RE.match(line)):
+                fence = opening.group("fence")
             offset += len(line) + 1
     return quotes
 
@@ -307,25 +315,29 @@ _CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]+[.)])[ \t
 _LINK_REFERENCE_RE = re.compile(r" {0,3}\[[^\]]+\]:")
 
 
+def template_text(text: str, directives: list[Directive]) -> str:
+    """*text* with its *directives* blanked: the template text around them.
+    That is the source as written, comments and code spans included, which
+    stay next to inserted text in the assembled source."""
+    chars = list(text)
+    for directive in directives:
+        chars[directive.start:directive.end] = " " * (directive.end - directive.start)
+    return "".join(chars)
+
+
 def insertion_boundary_problem(
-    text: str, insertion: Directive, directives: list[Directive]
+    text: str, template: str, insertion: Directive, directives: list[Directive]
 ) -> str | None:
     """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in body
     *text* — is not kept apart from template text as §15.7.3 requires, or
-    None. *directives* are all the directives lexed from *text*. Template
-    text is the source as written, comments and code spans included: they
-    stay next to the inserted text in the assembled source."""
+    None. *directives* are all the directives lexed from *text*, and
+    *template* is ``template_text(text, directives)``."""
     start, end = insertion.start, insertion.end
     line_start = text.rfind("\n", 0, start) + 1
     line_end = text.find("\n", end)
     line_end = len(text) if line_end < 0 else line_end
     # The line's content begins after its container markers.
     content_start = min(_CONTAINER_RE.match(text, line_start).end(), start)
-    # Template text: directives are not part of it.
-    template = list(text)
-    for directive in directives:
-        template[directive.start:directive.end] = " " * (directive.end - directive.start)
-    template_text = "".join(template)
 
     if start > content_start:
         before = text[start - 1]
@@ -337,11 +349,11 @@ def insertion_boundary_problem(
         ):
             return f"'{before}' directly before it"
         run_start = max(
-            template_text.rfind(" ", content_start, start),
-            template_text.rfind("\t", content_start, start),
+            template.rfind(" ", content_start, start),
+            template.rfind("\t", content_start, start),
             content_start - 1,
         ) + 1
-        combining = next((ch for ch in template_text[run_start:start] if ch in _COMBINING), None)
+        combining = next((ch for ch in template[run_start:start] if ch in _COMBINING), None)
         if combining:
             return f"'{combining}' in the text just before it"
     if end < line_end:
@@ -353,10 +365,10 @@ def insertion_boundary_problem(
             or after in _AFTER_INSERTION
         ):
             return f"'{after}' directly after it"
-    if _LINK_REFERENCE_RE.match(template_text, content_start):
+    if _LINK_REFERENCE_RE.match(template, content_start):
         return "it is on a link reference definition line"
-    destination = template_text.rfind("](", line_start, start)
-    if destination >= 0 and template_text.find(")", destination + 2, start) < 0:
+    destination = template.rfind("](", line_start, start)
+    if destination >= 0 and template.find(")", destination + 2, start) < 0:
         return "it is inside a link or image destination"
     return None
 
@@ -385,6 +397,7 @@ def check_choose(directive: Directive, questions: Any, result: ValidationResult)
         )
         missing = [answer for answer in answers if answer not in directive.params]
         extra = [param for param in directive.params if param not in answers]
+        repeated = [param for param in dict.fromkeys(directive.duplicates) if param in answers]
         if missing:
             result.error(
                 "choose-invalid",
@@ -396,6 +409,12 @@ def check_choose(directive: Directive, questions: Any, result: ValidationResult)
                 "choose-invalid",
                 f"'{directive.source}' lists {', '.join(extra)}, which "
                 f"{'is not an answer' if len(extra) == 1 else 'are not answers'} to '{qid}' (§15.5).",
+            )
+        if repeated:
+            result.error(
+                "choose-invalid",
+                f"'{directive.source}' lists {', '.join(repeated)} more than once; each answer "
+                f"has one phrase (§15.5).",
             )
     for offset in range(2, len(directive.source) - 1):
         if directive.source.startswith("{{", offset) and not is_escaped(directive.source, offset):
@@ -438,6 +457,7 @@ def check_template_body(
                 notes.append(quote)
         for fragment in text_fragments(block):
             lexed = lex_fragment(fragment)
+            masked: str | None = None  # template text, for the fragment's first insertion
             for directive in lexed.directives:
                 if directive.malformed:
                     continue
@@ -460,8 +480,13 @@ def check_template_body(
                             f"'{directive.source}' is inside a drafting note; in a template an "
                             f"include belongs in the template's own body (§15.3).",
                         )
-                if directive.name in _INSERTIONS:
-                    problem = insertion_boundary_problem(fragment, directive, lexed.directives)
+                # A drafting note is removed before anything is inserted
+                # (§15.7.2 step 2), so a blank in one is never filled.
+                if directive.name in _INSERTIONS and not in_note:
+                    masked = masked or template_text(fragment, lexed.directives)
+                    problem = insertion_boundary_problem(
+                        fragment, masked, directive, lexed.directives
+                    )
                     if problem:
                         result.error(
                             "insertion-boundary",

@@ -875,3 +875,53 @@ def test_a_lazy_line_after_a_quote_in_a_list_item_stays_in_the_quote():
     document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
     assert "drafting-note-def" in validate_document(document).rules("error")
     assert parse_document(serialize_document(document)).sections == document.sections
+
+
+# ── Quote extents, one scanner for every quote (second review) ────
+
+_DEF_LINE = '"Fee" {{def: fee}} means money.'
+
+
+@pytest.mark.parametrize(
+    ("body", "in_note"),
+    [
+        # A closed quote paragraph: the line ends the list and stands alone.
+        (f"- Item\n  > [!DRAFTING]\n  >\n{_DEF_LINE}", False),
+        # An indented line continues the item's quote paragraph.
+        (f"- Item\n  > [!DRAFTING]\n  > note line\n  {_DEF_LINE}", True),
+        # A lazy line continues a list item's or a nested quote's paragraph.
+        (f"> [!DRAFTING]\n> - keep twelve\n{_DEF_LINE}", True),
+        (f"> [!DRAFTING]\n> > nested\n{_DEF_LINE}", True),
+        # A heading or quoted code holds no paragraph to continue.
+        (f"> [!DRAFTING]\n> # Heading\n{_DEF_LINE}", False),
+        (f"> [!DRAFTING]\n> ```\n> code\n> ```\n{_DEF_LINE}", False),
+    ],
+)
+def test_a_drafting_note_extends_as_its_quote_does(body, in_note):
+    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n\nPay the {{{{term: fee}}}}.\n")
+    assert ("drafting-note-def" in validate_document(document).rules()) == in_note
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+def test_quote_lines_in_an_items_code_are_code():
+    body = "- Example:\n  ```\n  > [!NOTE]\n  > [!DRAFTING]\n  ```"
+    result = validate_document(
+        parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n"), final=True
+    )
+    assert not {"drafting-note-unrecognized", "template-construct-present"} & result.rules()
+
+
+def test_blanks_in_a_drafting_note_are_never_inserted():
+    body = "> [!DRAFTING]\n> Use **{{placeholder: x}}** here."
+    assert "insertion-boundary" not in _validate(body=body).rules()
+
+
+def test_a_repeated_answer_is_choose_invalid():
+    result = _validate(_CHOICES, '{{choose: forum, courts="a", courts="b", arbitration="c"}}')
+    assert {"choose-invalid", "directive-duplicate-param"} <= result.rules("error")
+
+
+def test_an_empty_questions_key_is_a_template_construct():
+    document = parse_document(f"---\ntitle: T\n{_SIDES}questions:\n---\n\n# A\n\nText.\n")
+    assert document.metadata.questions == {}
+    assert "template-construct-present" in validate_document(document, final=True).rules()

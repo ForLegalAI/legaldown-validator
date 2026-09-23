@@ -143,6 +143,8 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str]:
         loader.dispose()
     if not isinstance(metadata, dict):
         raise ValueError("Frontmatter must be a YAML mapping of fields.")
+    if "questions" in metadata and metadata["questions"] is None:
+        metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
     return not_line_editable, metadata, source[match.end():]
 
 
@@ -202,21 +204,72 @@ def _is_lazy_line(line: str) -> bool:
     )
 
 
+def _opens_paragraph(content: str) -> bool:
+    """True if a quoted line's *content* leaves paragraph text open — its
+    own, or that of a list item or nested quote it starts — which a lazy
+    line may continue. A heading, a thematic break, a comment, or an empty
+    list item or quote leaves none."""
+    inner = content.lstrip()
+    while inner.startswith(">"):
+        inner = inner[1:].lstrip()
+    marker = LIST_ITEM_RE.match(inner)
+    if marker:
+        inner = inner[marker.end():]
+    return (
+        bool(inner.strip())
+        and not HEADING_RE.match(inner)
+        and not RULE_RE.match(inner)
+        and not inner.startswith("<!--")
+    )
+
+
+class _Quote:
+    """A block quote read line by line (CommonMark), for what a line without
+    ``>`` needs to know: whether a paragraph is open that it lazily
+    continues. Quoted code, fenced or indented, is not a paragraph."""
+
+    def __init__(self) -> None:
+        self.paragraph = False
+        self._fence: str | None = None
+
+    def read(self, content: str) -> None:
+        """Take one quoted line: its *content* after ``>`` and the one
+        optional space."""
+        if self._fence is not None:
+            if closes_fence(content, self._fence):
+                self._fence = None
+            self.paragraph = False
+        elif opening := FENCE_OPEN_RE.match(content):
+            self._fence = opening.group("fence")
+            self.paragraph = False
+        elif self.paragraph or indent_width(content) < 4:  # else indented code
+            self.paragraph = _opens_paragraph(content)
+
+    def continues(self, line: str) -> bool:
+        """True if *line*, which has no ``>``, is a lazy continuation line of
+        the quote."""
+        return self.paragraph and _is_lazy_line(line)
+
+
 def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int, bool]:
     """Parse the list starting at ``lines[index]``.
 
     Returns ``(block, end, lazy)``: *end* is the index just past the list,
-    and *lazy* is True when it ends in item text, which a following
-    unindented line would lazily continue (it cannot continue a code block).
+    and *lazy* is True when it ends in paragraph text, which a following
+    unindented line would lazily continue (it cannot continue code).
 
     The list runs through its items, their continuation lines (indented two
     or more columns, or lazy continuation lines after item text), and nested
-    items; an unindented item of the other kind ends it. A fenced code block in an item stays in that item, one line per
-    line, indented relative to the item, blank lines included, until it
-    closes or an unindented line ends the item (and the fence with it).
+    items; an unindented item of the other kind ends it. A fenced code block
+    in an item stays in that item, one line per line, indented relative to
+    the item, blank lines included, until it closes or an unindented line
+    ends the item (and the fence with it). A block quote in an item (a
+    drafting note, §15.6) keeps its lines too, each with its ``>``: a lazy
+    continuation line of the quote is kept as the quoted line it means.
     """
     items: list[str] = []
     fence: str | None = None  # the open fence inside the current item
+    quote: _Quote | None = None  # the block quote the current item ends with
     content_indent = 0  # columns before the current item's text
     lazy = False
     end = index
@@ -240,23 +293,32 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
             content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
             content = line[marker.end():].strip()
             items.append(content)
+            quote = None
         elif items and (indented or (lazy and _is_lazy_line(line))):
             content = dedent(line, content_indent) if indented else line.strip()
-            if not indented and items[-1].rsplit("\n", 1)[-1].startswith(">"):
-                # A lazy line continues the quote's paragraph (CommonMark),
-                # so it is kept as the quoted line it means.
-                content = "> " + content
-            # An item holding code or a block quote (a drafting note, §15.6)
-            # keeps its lines; other continuation lines join the item's text.
+            if quote is not None and not content.startswith(">"):
+                if quote.continues(content):
+                    content = "> " + content
+                elif not indented:
+                    break  # the quote holds no paragraph for it to continue
+                else:
+                    quote = None
+            # An item holding code or a block quote keeps its lines; other
+            # continuation lines join the item's text.
             if FENCE_OPEN_RE.match(content) or content.startswith(">") or "\n" in items[-1]:
                 items[-1] += "\n" + content
             else:
                 items[-1] += " " + content.strip()
         else:
             break
-        opening = FENCE_OPEN_RE.match(content)
-        fence = opening.group("fence") if opening else None
-        lazy = fence is None and bool(content.strip())  # an empty item has no text
+        if content.startswith(">"):
+            quote = quote or _Quote()
+            quote.read(content[1:].removeprefix(" "))
+            lazy = quote.paragraph
+        else:
+            opening = FENCE_OPEN_RE.match(content)
+            fence = opening.group("fence") if opening else None
+            lazy = fence is None and bool(content.strip())  # an empty item has no text
         end += 1
     kind = "ordered_list" if ordered else "unordered_list"
     return Block(kind=kind, items=items), end, lazy
@@ -445,23 +507,11 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             lazy = False
         elif line.lstrip().startswith(">"):
             end = index
-            in_paragraph = False  # the last quoted line was paragraph text
-            fence: str | None = None  # the open fence inside the quote
+            quote = _Quote()
             while end < len(lines):
                 if lines[end].lstrip().startswith(">"):
-                    content = lines[end].lstrip()[1:].removeprefix(" ")
-                    if fence is not None:  # quoted code, not a paragraph
-                        if closes_fence(content, fence):
-                            fence = None
-                        in_paragraph = False
-                    elif opening := FENCE_OPEN_RE.match(content):
-                        fence = opening.group("fence")
-                        in_paragraph = False
-                    elif not in_paragraph and indent_width(content) >= 4:
-                        pass  # indented code, not a paragraph
-                    else:
-                        in_paragraph = _is_lazy_line(content.lstrip())
-                elif not (in_paragraph and _is_lazy_line(lines[end])):
+                    quote.read(lines[end].lstrip()[1:].removeprefix(" "))
+                elif not quote.continues(lines[end]):
                     break
                 end += 1
             # After ">", one optional space is syntax; any further
