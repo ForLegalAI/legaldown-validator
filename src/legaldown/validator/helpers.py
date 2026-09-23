@@ -6,6 +6,8 @@ import re
 import unicodedata
 from datetime import date as date_type
 
+from ..markers import HTML_COMMENT_RE
+
 # The §5.3 transliteration table, exhaustive: exactly these mappings.
 _TRANSLITERATION = str.maketrans({
     "ß": "ss", "ẞ": "ss",
@@ -31,26 +33,29 @@ def _ascii_text(value: str) -> tuple[str, bool]:
     return "".join(c for c in text if c.isascii()), lossy
 
 
-def slugify_identifier(value: str) -> str:
+def generate_identifier(value: str) -> tuple[str, bool]:
     """The identifier §5.3 generates from heading or term text *value*
-    (without its trailing marker): deterministic, so that every conformant
-    implementation generates the same one."""
-    text, _lossy = _ascii_text(value or "")
+    (without its trailing marker), and whether a letter or digit without an
+    ASCII form, such as Cyrillic or CJK text, was dropped: the identifier
+    then lost information, and an explicit one is recommended.
+
+    Deterministic, so that every conformant implementation generates the
+    same identifier. Comments are not part of the rendered text (§8.6).
+    """
+    text, lossy = _ascii_text(HTML_COMMENT_RE.sub("", value or ""))
     text = re.sub(r"[ \t_]", "-", text.lower())
     text = re.sub(r"[^a-z0-9-]", "", text)
     text = re.sub(r"-{2,}", "-", text).strip("-")
     text = text[:64].rstrip("-")
     if not text:
-        return "section"
+        return "section", lossy
     # The prefix is exempt from the 64-character maximum: no re-truncation.
-    return text if "a" <= text[0] <= "z" else f"section-{text}"
+    return (text if "a" <= text[0] <= "z" else f"section-{text}"), lossy
 
 
-def is_lossy_slug(value: str) -> bool:
-    """True if generating an identifier from *value* drops a letter or digit
-    that has no ASCII form, such as Cyrillic or CJK text (§5.3): the
-    identifier has lost information, and an explicit one is recommended."""
-    return _ascii_text(value or "")[1]
+def slugify_identifier(value: str) -> str:
+    """The identifier §5.3 generates from *value* (see generate_identifier)."""
+    return generate_identifier(value)[0]
 
 
 def format_section_number(counters: list[int], level: int) -> str:

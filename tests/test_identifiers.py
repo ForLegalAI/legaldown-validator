@@ -5,7 +5,7 @@ import pytest
 
 from legaldown.parser import parse_document
 from legaldown.validator import validate_document
-from legaldown.validator.helpers import is_lossy_slug, slugify_identifier
+from legaldown.validator.helpers import generate_identifier, slugify_identifier
 
 
 @pytest.mark.parametrize(
@@ -52,7 +52,7 @@ def test_the_section_5_3_algorithm(text, identifier):
     ],
 )
 def test_a_slug_is_lossy_when_a_letter_or_digit_is_dropped(text, lossy):
-    assert is_lossy_slug(text) is lossy
+    assert generate_identifier(text)[1] is lossy
 
 
 def _rules(body: str) -> list[str]:
@@ -69,6 +69,12 @@ def test_a_heading_that_loses_letters_is_a_warning():
 def test_a_defined_term_that_loses_letters_is_a_warning():
     assert "def-lossy-slug" in _rules('# A\n\n"Определения" {{def:}} means x.')
     assert "def-lossy-slug" not in _rules('# A\n\n"Определения" {{def: definitions}} means x.')
+
+
+def test_a_comment_is_not_part_of_a_generated_identifier():
+    assert generate_identifier("Scope <!-- Определения -->") == ("scope", False)
+    rules = _rules('# A\n\n"Services <!-- Определения -->" {{def:}} means x. The {{term: services}}.')
+    assert "def-lossy-slug" not in rules and "term-undefined" not in rules
 
 
 def test_a_reference_to_a_transliterated_heading_resolves():

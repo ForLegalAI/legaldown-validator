@@ -25,7 +25,7 @@ from ..specification import SPEC_VERSION, parse_version
 from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
 from .helpers import (
     format_section_number,
-    is_lossy_slug,
+    generate_identifier,
     is_positive_numeric,
     is_valid_iso_date,
     is_valid_money_amount,
@@ -53,7 +53,7 @@ from .templates import (
     check_template_body,
     question_type,
 )
-from .units import HTML_COMMENT_RE, FoundMarker, Units, find_markers, marker_matches, own_presence
+from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
 
 # Type aliases for the optional definitions-import callbacks.
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
@@ -749,11 +749,9 @@ def validate_document(
                 f"'{identifier}'.",
             )
         elif not identifier:
-            # A comment is not part of the rendered heading (§8.6).
-            text = HTML_COMMENT_RE.sub("", section.title)
-            base = slugify_identifier(text)
+            base, lossy = generate_identifier(section.title)
             identifier = free_identifier(base, presence)
-            if is_lossy_slug(text):
+            if lossy:
                 result.warning(
                     "anchor-lossy-slug",
                     f"The identifier generated for '{section.title}' is '{base}': letters or "
@@ -865,7 +863,7 @@ def validate_document(
                 f"Use lowercase letters, numbers, and hyphens only.",
             )
             continue
-        if ref.auto_id and is_lossy_slug(ref.term):
+        if ref.lossy_id:
             result.warning(
                 "def-lossy-slug",
                 f"The id generated for the defined term '{ref.term}' is '{def_id}': letters or "
