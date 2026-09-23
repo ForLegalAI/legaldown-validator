@@ -56,7 +56,7 @@ def test_json_format_is_machine_readable(write, capsys):
     path = write("broken.lgd", _BROKEN)
     main(["validate", "--format", "json", str(path)])
     payload = json.loads(capsys.readouterr().out)
-    assert payload["legaldown_spec"] == "0.1"
+    assert payload["legaldown_spec"] == "0.2"
     assert any(d["rule"] == "ref-broken" and d["level"] == "error"
                for d in payload["diagnostics"])
 

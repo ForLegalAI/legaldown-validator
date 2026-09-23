@@ -11,15 +11,16 @@ import yaml
 
 from .directives import format_value
 from .markdown import FENCE_OPEN_RE, close_fences
-from .models import Block, Document, Metadata
+from .models import Amends, Block, Document, Metadata
 from .parser import HEADING_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
 
 def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "title": metadata.title,
-    }
+    payload: dict[str, Any] = {}
+    if metadata.legaldown:
+        payload["legaldown"] = metadata.legaldown
+    payload["title"] = metadata.title
     if metadata.subtitle:
         payload["subtitle"] = metadata.subtitle
     if metadata.version:
@@ -101,14 +102,22 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
         payload["adopted_by"] = metadata.adopted_by
     if metadata.adoption_date:
         payload["adoption_date"] = metadata.adoption_date
-    if metadata.supersedes:
+    if isinstance(metadata.supersedes, Amends):
+        supersedes_obj: dict[str, Any] = {"title": metadata.supersedes.title}
+        if metadata.supersedes.file:
+            supersedes_obj["file"] = metadata.supersedes.file
+        payload["supersedes"] = supersedes_obj
+    elif metadata.supersedes:
         payload["supersedes"] = metadata.supersedes
     if metadata.attachments:
         payload["attachments"] = [
             {"id": att.id, "title": att.title, "file": att.file}
+            | ({"when": att.when} if att.when else {})
             for att in metadata.attachments
             if att.id and att.title and att.file
         ]
+    if metadata.questions is not None:
+        payload["questions"] = metadata.questions
     if metadata.tags:
         payload["tags"] = metadata.tags
     return payload

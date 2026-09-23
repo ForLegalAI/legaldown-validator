@@ -30,7 +30,8 @@ class CustomField:
 
 @dataclass(slots=True)
 class Amends:
-    """Reference to the document this one amends."""
+    """Reference to the document this one amends (§3.8); also the object form
+    of ``supersedes``, which has the same fields."""
     title: str = ""
     file: str = ""
 
@@ -41,6 +42,9 @@ class Attachment:
     id: str = ""
     title: str = ""
     file: str = ""
+    #: In a template, the condition under which the attachment is present
+    #: (§15.3), as written.
+    when: str = ""
 
 
 @dataclass(slots=True)
@@ -86,9 +90,20 @@ class Metadata:
     authoritative: str = ""
     adopted_by: str = ""
     adoption_date: str = ""
-    supersedes: str = ""
+    #: A description of the superseded document, or the object form (§3.2).
+    supersedes: str | Amends = ""
     amends: Amends | None = None
     attachments: list[Attachment] = field(default_factory=list)
+    #: The specification version the document targets (§3.2).
+    legaldown: str = ""
+    #: The template questions (§15.2) as written — kept raw so the validator
+    #: can report a malformed declaration — with top-level ids read as
+    #: strings (see ``yaml_key``). ``None`` when the document declares none.
+    questions: Any = None
+    #: Frontmatter keys (``questions``, ``attachments``) not written as
+    #: §15.2 requires for assembly to edit them line by line: in YAML block
+    #: style, each attachment entry beginning with ``id``. Set by the parser.
+    not_line_editable: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -190,6 +205,18 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def yaml_key(key: Any) -> str:
+    """A YAML mapping key as a string. A YAML 1.1 reader turns ``yes``,
+    ``on``, ``true`` (and their negations) into booleans and ``null`` into
+    ``None``; they come back as ``"true"``, ``"false"``, and ``"null"``, which
+    §15.2 forbids as ids, so the validator can still report them."""
+    if isinstance(key, bool):
+        return "true" if key else "false"
+    if key is None:
+        return "null"
+    return str(key)
+
+
 def _parse_str_dict(raw: Any) -> dict[str, str]:
     """Parse a dict with string keys and values, skipping empty entries."""
     if not isinstance(raw, dict):
@@ -242,7 +269,7 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
     Values are taken verbatim: an unknown ``type`` or a non-identifier ``name``
     is preserved, and a missing ``type`` stays empty even though §3.4 requires
     it, so the validator reports party-type-invalid or side-party-name-format
-    (§15.6) instead of the model silently repairing the document.
+    (§16.6) instead of the model silently repairing the document.
     """
     payload = data or {}
 
@@ -271,7 +298,7 @@ def side_from_dict(data: dict[str, Any] | None) -> Side:
     """Construct a Side and its parties from a frontmatter dict (§3.3).
 
     A non-identifier side name is preserved verbatim so the validator can
-    report side-party-name-format (§15.6) instead of a silent repair.
+    report side-party-name-format (§16.6) instead of a silent repair.
     """
     payload = data or {}
 
@@ -310,18 +337,34 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         if isinstance(raw_amends, dict)
         else None
     )
+    raw_supersedes = payload.get("supersedes")
+    supersedes: str | Amends = (
+        Amends(title=_str(raw_supersedes.get("title")), file=_str(raw_supersedes.get("file")))
+        if isinstance(raw_supersedes, dict)
+        else _str(raw_supersedes)
+    )
 
     # Attachments
     attachments = [
-        Attachment(id=_str(a.get("id")), title=_str(a.get("title")), file=_str(a.get("file")))
+        Attachment(
+            id=_str(a.get("id")),
+            title=_str(a.get("title")),
+            file=_str(a.get("file")),
+            when=_str(a.get("when")),
+        )
         for a in (payload.get("attachments") or [])
         if isinstance(a, dict)
     ]
 
+    questions = payload.get("questions")
+    if isinstance(questions, dict):
+        questions = {yaml_key(qid): declaration for qid, declaration in questions.items()}
+
     return Metadata(
-        # No default title: a missing title is a validation error (§15.6,
+        # No default title: a missing title is a validation error (§16.6,
         # title-missing); app flows that create fresh documents supply one.
         title=_str(payload.get("title")),
+        legaldown=_str(payload.get("legaldown")),
         subtitle=_str(payload.get("subtitle")),
         version=_str(payload.get("version")),
         document_type=_str(payload.get("document_type"), "contract"),
@@ -336,9 +379,10 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         authoritative=_str(payload.get("authoritative")),
         adopted_by=_str(payload.get("adopted_by")),
         adoption_date=_str(payload.get("adoption_date")),
-        supersedes=_str(payload.get("supersedes")),
+        supersedes=supersedes,
         amends=amends,
         attachments=attachments,
+        questions=questions,
     )
 
 

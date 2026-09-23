@@ -14,7 +14,8 @@ VALID_DOC_TYPES: frozenset[str] = frozenset({"contract", "unilateral_act", "coll
 # §10.5: the bare unit "M" is deliberately undefined (ISO 8601 ambiguity);
 # validators reject it with a hint suggesting MIN (minutes) or MO (months).
 VALID_DURATION_UNITS: frozenset[str] = frozenset({"S", "MIN", "H", "D", "W", "MO", "Y"})
-VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money"})
+# §10.7 placeholder types — also the value question types of §15.2.
+VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 
 KNOWN_CURRENCIES: frozenset[str] = frozenset({
     "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN",

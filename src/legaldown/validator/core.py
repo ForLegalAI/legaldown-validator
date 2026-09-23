@@ -1,15 +1,16 @@
 """Core validation logic for LegalDown documents.
 
 Every diagnostic is recorded under the **stable rule id** the specification
-assigns to its check (§15.1) via ``ValidationResult.error/warning/info``,
+assigns to its check (§16.1) via ``ValidationResult.error/warning/info``,
 so tooling can filter, suppress, or escalate specific rules consistently
-across implementations (§15.9).
+across implementations (§16.9).
 """
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import cache
+from typing import Any
 
 from ..directives import (
     DIRECTIVE_PARAMS,
@@ -19,7 +20,7 @@ from ..directives import (
     iter_directives,
     lex,
 )
-from ..models import Document
+from ..models import Amends, Document
 from .helpers import (
     ensure_unique_identifier,
     format_section_number,
@@ -37,6 +38,12 @@ from .patterns import (
     VALID_PLACEHOLDER_TYPES,
 )
 from .result import SectionIndexEntry, ValidationResult
+from .templates import (
+    DECISION_QUESTION_TYPES,
+    Blank,
+    check_questions,
+    question_type,
+)
 
 # Type aliases for the optional definitions-import callbacks.
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
@@ -48,10 +55,73 @@ def _placeholders(value: str) -> list[Directive]:
     return [d for d in iter_directives(value or "") if d.name == "placeholder"]
 
 
-# §15.6: a metadata value that is itself a placeholder satisfies presence and
-# is exempt from the field's format checks; the placeholder's own checks apply.
-def _is_placeholder_value(value: str) -> bool:
-    return bool(_placeholders(value))
+def _strings(value: Any) -> Iterator[str]:
+    """Every string in a YAML value, mapping keys included."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _strings(key)
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+def _placeholder_type(directive: Directive, questions: Any) -> str:
+    """A placeholder's effective type (§10.7, §15.2): the type of the value
+    question declared with its id, else its ``type`` parameter, else text."""
+    declared = question_type(questions, directive.positional or "")
+    if declared in VALID_PLACEHOLDER_TYPES:
+        return declared
+    return directive.params.get("type", "text")
+
+
+def _is_date_placeholder(value: str, questions: Any) -> bool:
+    """True if a frontmatter date field holds a placeholder that is its whole
+    value and has effective type ``date`` — the one case §3.10 exempts from
+    the field's date check (§16.6)."""
+    directives = list(iter_directives(value))
+    return (
+        len(directives) == 1
+        and directives[0].name == "placeholder"
+        and not directives[0].malformed
+        and (directives[0].start, directives[0].end) == (0, len(value))
+        and _placeholder_type(directives[0], questions) == "date"
+    )
+
+
+def _check_date_field(
+    label: str, value: str, questions: Any, rule: str, result: ValidationResult
+) -> None:
+    """Report a frontmatter date field that is neither an ISO 8601 date nor a
+    whole-value ``date`` placeholder (§3.10, §16.6)."""
+    if not value or _is_date_placeholder(value, questions) or is_valid_iso_date(value):
+        return
+    hint = (
+        " A placeholder in a date field must be the whole value and of type date (§3.10)."
+        if _placeholders(value)
+        else ""
+    )
+    result.error(rule, f"{label} '{value}' must be a valid ISO 8601 date (YYYY-MM-DD).{hint}")
+
+
+def _check_duration_unit(unit: str, result: ValidationResult) -> None:
+    """Report a duration ``unit`` that §10.5 does not define."""
+    if not unit:
+        result.error("duration-invalid-unit", "A duration needs a unit parameter.")
+    elif unit == "M":
+        # §10.5: bare "M" is deliberately undefined (ISO 8601 would read it
+        # as months; earlier drafts as minutes).
+        result.error(
+            "duration-invalid-unit",
+            "Duration unit 'M' is not defined. Use 'MIN' for minutes or 'MO' for months.",
+        )
+    elif unit not in VALID_DURATION_UNITS:
+        result.error(
+            "duration-invalid-unit",
+            f"Invalid duration unit '{unit}'. Must be one of: S, MIN, H, D, W, MO, Y.",
+        )
 
 
 # §10.1: notes are plain text — Markdown formatting would leak markers into
@@ -59,13 +129,16 @@ def _is_placeholder_value(value: str) -> bool:
 _MARKDOWN_RE = re.compile(r"\*\*|__|\+\+|`|(?<!\w)\*(?!\s)")
 
 
-def _check_directive_arguments(directive: Directive, result: ValidationResult) -> bool:
+def _check_directive_arguments(
+    directive: Directive, result: ValidationResult, *, effective_type: str | None = None
+) -> bool:
     """Report the argument problems any directive can have; False if malformed.
 
     A malformed directive (§11.2) has no reliable arguments, so its own checks
     are skipped; its Error keeps the document from passing. An unknown
     parameter is ignored (§11.2) and a repeated one keeps its first value, so
-    the directive's own checks still run.
+    the directive's own checks still run. *effective_type* is a placeholder's
+    effective type, which decides its type-specific parameters.
     """
     name = directive.name
     if directive.malformed:
@@ -84,7 +157,7 @@ def _check_directive_arguments(directive: Directive, result: ValidationResult) -
             "directive-duplicate-param",
             f"Parameter '{param}' is given more than once in '{directive.source}'.",
         )
-    for param in directive.unknown_params():
+    for param in directive.unknown_params(effective_type=effective_type):
         result.warning(
             "directive-unknown-param",
             f"Parameter '{param}' is not defined for {{{{{name}:}}}} and is ignored: "
@@ -102,43 +175,92 @@ def _check_directive_arguments(directive: Directive, result: ValidationResult) -
 def _check_placeholder(
     directive: Directive,
     result: ValidationResult,
-    placeholder_types: dict[str, str],
+    blanks: dict[str, Blank],
+    questions: Any,
+    *,
+    in_frontmatter: bool = False,
 ) -> None:
-    """Validate one ``{{placeholder:}}`` directive and record it.
+    """Validate one ``{{placeholder:}}`` directive and record it in *blanks*.
 
     Shared by the body-block scan and the frontmatter scan so a placeholder id
-    used in both is treated as the *same* blank (consistent type, single entry
-    semantics per §3.10).
+    used in both is treated as the *same* blank (consistent type, currency,
+    and unit, §3.10, §10.7).
     """
     pid = directive.positional or ""
-    ptype = directive.params.get("type", "text")
-    pcurrency = directive.params.get("currency", "")
+    params = directive.params
+    written_type = params.get("type")
+    declared = question_type(questions, pid)
+    ptype = _placeholder_type(directive, questions)
     if not pid or not IDENTIFIER_RE.match(pid):
         result.error(
             "placeholder-id-malformed",
             f"Placeholder id '{pid}' is invalid — must match [a-z][a-z0-9-]*.",
         )
-    elif ptype not in VALID_PLACEHOLDER_TYPES:
+    elif written_type is not None and written_type not in VALID_PLACEHOLDER_TYPES:
         result.error(
             "placeholder-type-invalid",
-            f"Placeholder type '{ptype}' is unsupported. Must be one of: text, date, money.",
+            f"Placeholder type '{written_type}' is unsupported. "
+            f"Must be one of: text, date, money, duration.",
+        )
+    elif declared in DECISION_QUESTION_TYPES:
+        result.error(
+            "placeholder-question-mismatch",
+            f"Placeholder '{pid}' uses the id of {declared} question '{pid}'; a decision "
+            f"question is answered by conditions and {{{{choose:}}}}, never by a blank (§15.2).",
         )
     else:
-        if pid in placeholder_types:
-            if placeholder_types[pid] != ptype:
-                result.error(
-                    "placeholder-type-inconsistent",
-                    f"Placeholder '{pid}' used with inconsistent types: "
-                    f"'{placeholder_types[pid]}' and '{ptype}'.",
-                )
+        if declared is not None and written_type is not None and written_type != declared:
+            result.error(
+                "placeholder-question-mismatch",
+                f"Placeholder '{pid}' is written with type '{written_type}', but its "
+                f"question is declared with type '{declared}' (§15.2).",
+            )
+        currency = params.get("currency", "") if ptype == "money" else ""
+        unit = params.get("unit", "") if ptype == "duration" else ""
+        blank = blanks.setdefault(pid, Blank(type=ptype))
+        if blank.type != ptype:
+            result.error(
+                "placeholder-type-inconsistent",
+                f"Placeholder '{pid}' used with inconsistent types: "
+                f"'{blank.type}' and '{ptype}'.",
+            )
         else:
-            placeholder_types[pid] = ptype
-        if ptype == "money" and pcurrency and pcurrency not in KNOWN_CURRENCIES:
+            for kind, code, codes in (
+                ("currency", currency, blank.currencies),
+                ("unit", unit, blank.units),
+            ):
+                clash = next((c for c in codes if c and code and c != code), None)
+                if clash:
+                    result.error(
+                        "placeholder-type-inconsistent",
+                        f"Placeholder '{pid}' fixes {kind} '{code}' where another occurrence "
+                        f"fixes '{clash}'; one blank cannot hold two (§10.7).",
+                    )
+            blank.currencies.append(currency)
+            blank.units.append(unit)
+            blank.in_frontmatter |= in_frontmatter
+        if currency and currency not in KNOWN_CURRENCIES:
             result.warning(
                 "placeholder-unknown-currency",
-                f"Placeholder '{pid}' has unrecognized currency code '{pcurrency}'.",
+                f"Placeholder '{pid}' has unrecognized currency code '{currency}'.",
             )
+        if ptype == "duration" and "unit" in params:
+            _check_duration_unit(unit, result)
     result.inline_placeholders.append((pid, ptype))
+
+
+def _is_include_only(text: str, directives: list[Directive]) -> bool:
+    """True if *text* holds a single ``{{include:}}`` directive and nothing
+    else but comments, which are not rendered (§8.6). *directives* are lexed
+    from a string that begins with *text*."""
+    inside = [d for d in directives if d.end <= len(text)]
+    return (
+        len(inside) == 1
+        and inside[0].name == "include"
+        and not inside[0].malformed
+        and not _HTML_COMMENT_RE.sub("", text[: inside[0].start]).strip()
+        and not _HTML_COMMENT_RE.sub("", text[inside[0].end:]).strip()
+    )
 
 
 # A {#id}-like marker (§5.7), in body text as opposed to a heading.
@@ -170,7 +292,7 @@ def validate_document(
     if not title:
         result.error("title-missing", "The document title is required.")
 
-    # ── Validate document_type (§15.6) ──
+    # ── Validate document_type (§16.6) ──
     doc_type = document.metadata.document_type or "contract"
     if doc_type not in VALID_DOC_TYPES:
         result.error(
@@ -178,7 +300,7 @@ def validate_document(
             f"Invalid document_type '{doc_type}'. Must be one of: contract, unilateral_act, collective_act.",
         )
 
-    # ── Validate field_types keys (§15.5) ──
+    # ── Validate field_types keys (§16.5) ──
     for ft_key in document.metadata.field_types:
         if not IDENTIFIER_RE.fullmatch(ft_key):
             result.error(
@@ -192,20 +314,14 @@ def validate_document(
                 f"name (date, money, duration, party, text).",
             )
 
-    # ── Metadata dates (§15.6) ──
+    questions = document.metadata.questions
+
+    # ── Metadata dates (§16.6) ──
     for field_name, field_value in (
         ("effective_date", document.metadata.effective_date),
         ("adoption_date", document.metadata.adoption_date),
     ):
-        if (
-            field_value
-            and not _is_placeholder_value(field_value)
-            and not is_valid_iso_date(field_value.strip())
-        ):
-            result.error(
-                "metadata-date-invalid",
-                f"{field_name} '{field_value}' must be a valid ISO 8601 date (YYYY-MM-DD).",
-            )
+        _check_date_field(field_name, field_value, questions, "metadata-date-invalid", result)
 
     # ── Build party lookup from metadata ──
     seen_side_names: set[str] = set()
@@ -249,16 +365,13 @@ def validate_document(
                     "party-type-invalid",
                     f"Party '{party_name}' has invalid type '{party.type}'. Must be 'legal_entity' or 'natural_person'.",
                 )
-            if (
-                party.date_of_birth
-                and not _is_placeholder_value(party.date_of_birth)
-                and not is_valid_iso_date(party.date_of_birth.strip())
-            ):
-                result.error(
-                    "date-of-birth-invalid",
-                    f"Party '{party_name}' date_of_birth '{party.date_of_birth}' "
-                    f"must be a valid ISO 8601 date (YYYY-MM-DD).",
-                )
+            _check_date_field(
+                f"Party '{party_name}' date_of_birth",
+                party.date_of_birth,
+                questions,
+                "date-of-birth-invalid",
+                result,
+            )
             for rep in party.representatives:
                 if not (rep.name or "").strip():
                     result.error(
@@ -269,9 +382,9 @@ def validate_document(
                 party.label or party.legal_name or party_name
             )
 
-    # ── Document type party/side constraints (§15.6) ──
+    # ── Document type party/side constraints (§16.6) ──
     # When sides is absent entirely the structural rows cannot be verified:
-    # emit a single Warning instead of reporting them as violated (§15.6).
+    # emit a single Warning instead of reporting them as violated (§16.6).
     total_sides = len(document.metadata.sides)
     total_parties = sum(len(s.parties) for s in document.metadata.sides)
     if total_sides == 0:
@@ -303,7 +416,7 @@ def validate_document(
                 f"Document type '{doc_type}' requires a side named 'issuer'.",
             )
 
-    # ── Attachment id validation (§15.10) ──
+    # ── Attachment id validation (§16.10) ──
     attachment_ids: set[str] = set()
     for att in document.metadata.attachments:
         if not att.id:
@@ -329,10 +442,16 @@ def validate_document(
                 f"Attachment '{att.id}' is missing required 'file'.",
             )
 
-    # ── Amendment validation (§15.8) ──
+    # ── Amendment validation (§16.8) ──
     if document.metadata.amends and not document.metadata.amends.title.strip():
         result.error(
             "amends-title-empty", "amends.title is required when amends is present."
+        )
+    supersedes = document.metadata.supersedes
+    if isinstance(supersedes, Amends) and not supersedes.title.strip():
+        result.error(
+            "supersedes-title-empty",
+            "supersedes.title is required when supersedes is written as an object (§3.2).",
         )
 
     # ── Section numbering and identifiers ──
@@ -381,7 +500,7 @@ def validate_document(
         identifier, deduped = ensure_unique_identifier(identifier, used_identifiers)
         if deduped:
             if explicit_identifier:
-                # Duplicate explicit anchors are an Error (§15.2); the id is
+                # Duplicate explicit anchors are an Error (§16.2); the id is
                 # still adjusted so downstream indices stay usable.
                 result.error(
                     "anchor-duplicate",
@@ -470,6 +589,16 @@ def validate_document(
                             f"directly inside a section (§5.7).",
                         )
                         continue
+                    if block.kind == "paragraph" and _is_include_only(
+                        fragment[: m.start()], lexed.directives
+                    ):
+                        result.warning(
+                            "anchor-misplaced",
+                            f"'{m.group(0)}' is ignored: a paragraph holding only an "
+                            f"{{{{include:}}}} is replaced by its fragment, so it is not a "
+                            f"reference target. Anchor a heading inside the fragment (§12.2).",
+                        )
+                        continue
                     anchor_id = m.group(1)
                     if not IDENTIFIER_RE.match(anchor_id):
                         result.error(
@@ -554,7 +683,7 @@ def validate_document(
     _amends_is_legaldown = False
     # Distinct from "imported something": an original that legitimately
     # declares no definitions still counts as consulted, so a missing term is
-    # an Error (§15.8) rather than being downgraded to Info.
+    # an Error (§16.8) rather than being downgraded to Info.
     _amends_import_succeeded = False
     _imported_definitions: dict[str, str] = {}
     if document.metadata.amends and document.metadata.amends.file:
@@ -579,7 +708,7 @@ def validate_document(
 
     # ── Attachment definition import (§7, §12.4) ──
     # A {{def:}} inside an attachment file registers a document-wide term; ids
-    # must remain unique across the combined document (§15.10).
+    # must remain unique across the combined document (§16.10).
     if import_attachment_definitions is not None:
         _legaldown_exts = (".lgd", ".legaldown", ".legal.md")
         for att in document.metadata.attachments:
@@ -593,41 +722,67 @@ def validate_document(
                     result.error(
                         "def-duplicate-id",
                         f"Definition id '{def_id}' from attachment '{att.id}' collides with "
-                        f"a definition in the main document (ids must be unique, §15.10).",
+                        f"a definition in the main document (ids must be unique, §16.10).",
                     )
                 else:
                     result.definition_lookup[def_id] = term_text
 
     # ── Inline directive validation ──
-    placeholder_types: dict[str, str] = {}
+    blanks: dict[str, Blank] = {}
     referenced_attachments: set[str] = set()
 
     # ── Frontmatter placeholders (§3.10) ──
     # A {{placeholder:}} is allowed only as a quoted value in *value* fields, not
-    # in identifier/structural fields. Placeholders collected here share the same
-    # blank (id + type) with any matching body placeholder.
+    # in identifier, structural, or format-checked fields, which a filled-in
+    # value could break. Placeholders collected here share the same blank
+    # (id, type, currency, unit) with any matching body placeholder.
     meta = document.metadata
-    structural_fields: list[tuple[str, str]] = [("document_type", meta.document_type)]
+    structural_fields: list[tuple[str, str]] = [
+        ("document_type", meta.document_type),
+        ("legaldown", meta.legaldown),
+        ("language", meta.language),
+        ("authoritative", meta.authoritative),
+    ]
     for side in meta.sides:
         structural_fields.append((f"side name '{side.name}'", side.name))
         for party in side.parties:
             structural_fields.append((f"party name '{party.name}'", party.name))
             structural_fields.append((f"party type for '{party.name}'", party.type))
-    # A {{placeholder:}} is an error in identifier/structural fields (§3.10);
-    # value fields (title, legal_name, address, …) allow it.
+    for code, path in meta.translations.items():
+        structural_fields.append(("a translations language code", code))
+        structural_fields.append((f"translations file for '{code}'", path))
+    for key, description in meta.field_types.items():
+        structural_fields.append(("a field_types key", key))
+        structural_fields.append((f"field_types entry '{key}'", description))
+    for att in meta.attachments:
+        structural_fields.append(("attachment id", att.id))
+        structural_fields.append((f"file of attachment '{att.id}'", att.file))
+        structural_fields.append((f"when of attachment '{att.id}'", att.when))
+    if meta.amends:
+        structural_fields.append(("amends.file", meta.amends.file))
+    if isinstance(meta.supersedes, Amends):
+        structural_fields.append(("supersedes.file", meta.supersedes.file))
+    structural_fields.extend(("questions", text) for text in _strings(meta.questions))
     for field_label, field_value in structural_fields:
         if _placeholders(field_value):
             result.error(
                 "placeholder-in-structural-field",
-                f"A {{{{placeholder:}}}} is not allowed in the identifier/structural "
-                f"field ({field_label}); placeholders are only valid in value fields (§3.10).",
+                f"A {{{{placeholder:}}}} is not allowed in {field_label}: an identifier, "
+                f"structural, or format-checked field; placeholders are only valid in "
+                f"value fields (§3.10).",
             )
 
     value_fields: list[str] = [
         meta.title, meta.subtitle, meta.version, meta.effective_date,
-        meta.governing_law, meta.authoritative, meta.adopted_by,
-        meta.adoption_date, meta.supersedes,
+        meta.governing_law, meta.adopted_by, meta.adoption_date,
     ]
+    if meta.amends:
+        value_fields.append(meta.amends.title)
+    if isinstance(meta.supersedes, Amends):
+        value_fields.append(meta.supersedes.title)
+    else:
+        value_fields.append(meta.supersedes)
+    value_fields.extend(att.title for att in meta.attachments)
     for side in meta.sides:
         value_fields.append(side.label)
         for party in side.parties:
@@ -640,8 +795,10 @@ def validate_document(
             value_fields.extend(cf.value for cf in party.custom_fields)
     for field_value in value_fields:
         for directive in _placeholders(field_value):
-            if _check_directive_arguments(directive, result):
-                _check_placeholder(directive, result, placeholder_types)
+            if _check_directive_arguments(
+                directive, result, effective_type=_placeholder_type(directive, questions)
+            ):
+                _check_placeholder(directive, result, blanks, questions, in_frontmatter=True)
 
     for _section, _index, block in document.iter_blocks():
         # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
@@ -662,7 +819,12 @@ def validate_document(
                 )
             for directive in lexed.directives:
                 name = directive.name
-                if not _check_directive_arguments(directive, result):
+                effective_type = (
+                    _placeholder_type(directive, questions) if name == "placeholder" else None
+                )
+                if not _check_directive_arguments(
+                    directive, result, effective_type=effective_type
+                ):
                     continue
                 # ── Unknown directive names (§11.5): well-formed only ──
                 if name not in KNOWN_DIRECTIVES:
@@ -717,23 +879,7 @@ def validate_document(
                             "duration-invalid-value",
                             f"Invalid duration value '{value}'. Must be a positive numeric value.",
                         )
-                    if not dur_unit:
-                        result.error(
-                            "duration-invalid-unit",
-                            "Duration directive missing required unit parameter.",
-                        )
-                    elif dur_unit == "M":
-                        # §10.5: bare "M" is deliberately undefined (ISO 8601
-                        # would read it as months; earlier drafts as minutes).
-                        result.error(
-                            "duration-invalid-unit",
-                            "Duration unit 'M' is not defined. Use 'MIN' for minutes or 'MO' for months.",
-                        )
-                    elif dur_unit not in VALID_DURATION_UNITS:
-                        result.error(
-                            "duration-invalid-unit",
-                            f"Invalid duration unit '{dur_unit}'. Must be one of: S, MIN, H, D, W, MO, Y.",
-                        )
+                    _check_duration_unit(dur_unit, result)
                 elif name == "party":
                     if not value or not IDENTIFIER_RE.fullmatch(value):
                         result.error(
@@ -778,7 +924,7 @@ def validate_document(
                         )
                     result.inline_fields.append((value, ftype))
                 elif name == "placeholder":
-                    _check_placeholder(directive, result, placeholder_types)
+                    _check_placeholder(directive, result, blanks, questions)
                 elif name == "attach":
                     referenced_attachments.add(value)
                     if value not in attachment_ids:
@@ -811,7 +957,7 @@ def validate_document(
                         )
                     else:
                         # Original unavailable or not LegalDown source:
-                        # the reference may resolve there (§15.8).
+                        # the reference may resolve there (§16.8).
                         result.info(
                             "amend-term-unresolvable",
                             f"Term reference '{target}' is not defined in the "
@@ -823,7 +969,18 @@ def validate_document(
                         "term-undefined", f"Undefined term reference: '{target}'."
                     )
 
-    # Warn about declared but unreferenced attachments (§15.10).
+    # ── Template questions (§15.2) ──
+    # A document declaring questions or a conditional attachment is a
+    # template (§15.1).
+    check_questions(
+        questions,
+        blanks,
+        result,
+        template=questions is not None or any(att.when for att in meta.attachments),
+        not_line_editable=meta.not_line_editable,
+    )
+
+    # Warn about declared but unreferenced attachments (§16.10).
     for att in document.metadata.attachments:
         if att.id and att.id not in referenced_attachments:
             result.warning(

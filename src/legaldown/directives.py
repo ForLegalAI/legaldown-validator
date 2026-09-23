@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from .markdown import FENCE_OPEN_RE, fence_end
 
 # Named parameters each directive defines (§6, §7, §10, §12). ``note`` is
-# defined for every field spec (§10.1). Placeholder ``currency`` is
-# type-specific: it is defined only when the effective type is ``money``
-# (§10.7, §13.5 rule 7), which the validator checks.
+# defined for every field spec (§10.1). Placeholder ``currency`` and ``unit``
+# are type-specific: they are defined only when the effective type is
+# ``money`` or ``duration`` (§10.7, §13.5 rule 7), which the validator checks.
 DIRECTIVE_PARAMS: dict[str, frozenset[str]] = {
     "ref": frozenset(),
     "def": frozenset(),
@@ -33,14 +33,18 @@ DIRECTIVE_PARAMS: dict[str, frozenset[str]] = {
     "party": frozenset({"label", "note"}),
     "side": frozenset({"label", "note"}),
     "field": frozenset({"type", "note"}),
-    "placeholder": frozenset({"type", "currency", "note"}),
+    "placeholder": frozenset({"type", "currency", "unit", "note"}),
     "include": frozenset(),
     "attach": frozenset({"label"}),
 }
 
 # Parameters defined only for one value of the directive's ``type`` (§10.7):
-# a placeholder takes ``currency`` only when its effective type is ``money``.
-_TYPE_SPECIFIC_PARAMS: dict[tuple[str, str], str] = {("placeholder", "currency"): "money"}
+# a placeholder takes ``currency`` only when its effective type is ``money``,
+# and ``unit`` only when it is ``duration``.
+_TYPE_SPECIFIC_PARAMS: dict[tuple[str, str], str] = {
+    ("placeholder", "currency"): "money",
+    ("placeholder", "unit"): "duration",
+}
 
 # Directive vocabulary defined by §11.1.
 KNOWN_DIRECTIVES: frozenset[str] = frozenset(DIRECTIVE_PARAMS)
@@ -104,21 +108,26 @@ class Directive:
     end: int
     source: str
 
-    def unknown_params(self) -> list[str]:
+    def unknown_params(self, *, effective_type: str | None = None) -> list[str]:
         """Named parameters this directive does not define, in source order.
 
-        Empty for a directive name outside the vocabulary, which is reported
-        as an unknown directive instead.
+        A type-specific parameter is defined only for its type: the
+        *effective_type* when the caller knows it (a placeholder's type can
+        come from its declared question, §15.2), else the ``type`` written in
+        the directive, defaulting to ``text``. Empty for a directive name
+        outside the vocabulary, which is reported as an unknown directive
+        instead.
         """
         if self.name not in DIRECTIVE_PARAMS:
             return []
-        return [param for param in self.params if not self._defines(param)]
+        directive_type = effective_type or self.params.get("type", "text")
+        return [param for param in self.params if not self._defines(param, directive_type)]
 
-    def _defines(self, param: str) -> bool:
+    def _defines(self, param: str, directive_type: str) -> bool:
         if param not in DIRECTIVE_PARAMS[self.name]:
             return False
         required_type = _TYPE_SPECIFIC_PARAMS.get((self.name, param))
-        return required_type is None or self.params.get("type", "text") == required_type
+        return required_type is None or directive_type == required_type
 
 
 class _Malformed(Exception):

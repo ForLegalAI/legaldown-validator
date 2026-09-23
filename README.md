@@ -6,7 +6,7 @@
 
 **Parse, validate, and serialize LegalDown documents — from the command line or from Python.**
 
-Targets specification **v0.1** · Every diagnostic carries a **stable rule id** · One dependency: PyYAML
+Targets specification **v0.2** · Every diagnostic carries a **stable rule id** · One dependency: PyYAML
 
 </div>
 
@@ -20,13 +20,13 @@ documents. This package is the toolkit for working with those documents in code:
 📥 **Parses** a `.lgd` file into a typed document model — frontmatter, sections, blocks, parties,
 definitions, anchors.
 
-✅ **Validates** it against the specification's rule set (§15): broken cross-references, undefined
+✅ **Validates** it against the specification's rule set (§16): broken cross-references, undefined
 terms, duplicate identifiers, malformed party metadata, bad dates and money values, and more.
 
 📤 **Serializes** the model back to LegalDown source, so you can edit documents programmatically
 and write them out again.
 
-🏷️ **Names every finding.** Each diagnostic carries the specification's stable rule id (§15.1)
+🏷️ **Names every finding.** Each diagnostic carries the specification's stable rule id (§16.1)
 alongside its severity and message, so you can suppress one check, escalate another, or gate a
 build on exactly the rules you care about. Rule ids survive specification renumbering — they are
 the part of a diagnostic that is safe to depend on.
@@ -123,12 +123,12 @@ Directories are searched recursively for `*.lgd`, `*.legaldown`, and `*.legal.md
 
 ### JSON output
 
-`--format json` emits the structured shape described in §15.9 — ideal for CI annotations, editor
+`--format json` emits the structured shape described in §16.9 — ideal for CI annotations, editor
 integrations, and dashboards:
 
 ```json
 {
-  "legaldown_spec": "0.1",
+  "legaldown_spec": "0.2",
   "validator_version": "0.1.0",
   "diagnostics": [
     {
@@ -216,7 +216,7 @@ formatting-normalized file rather than a byte-for-byte copy.
 
 ## What gets checked
 
-The full rule set with severities and examples lives in the specification (§15); this is the map:
+The full rule set with severities and examples lives in the specification (§16); this is the map:
 
 | Area | Checks include |
 |---|---|
@@ -227,23 +227,24 @@ The full rule set with severities and examples lives in the specification (§15)
 | **Definitions** | Undefined `{{term:}}`, duplicate ids, missing quoted span, ambiguous quoting, unreferenced definitions |
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |
-| **Placeholders** | Malformed ids, invalid or inconsistent types, placeholders in structural fields |
+| **Placeholders** | Malformed ids, invalid types, one blank with two types, currencies, or units, placeholders in structural and format-checked frontmatter fields |
+| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
-| **Metadata** | Invalid document type, invalid dates, missing sides, issuer side requirements |
+| **Metadata** | Invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title |
 
 Each check reports at the severity the specification assigns it — Error, Warning, or Info.
 
 ## Scope
 
-This implementation claims **Level 1 — Core** (§16.2): everything above applies to a single
+This implementation claims **Level 1 — Core** (§17.2): everything above applies to a single
 document, in memory, with no filesystem access beyond reading the file you point it at. That
 covers authoring, editing, and CI validation of individual documents.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — every rule it
 implements passes, bar seven whose fixtures span several files and are covered by unit tests
-instead. The specification (§16.5) requires an implementation to be explicit about the
+instead. The specification (§17.5) requires an implementation to be explicit about the
 checks it does not perform, so those are listed in
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md) rather than left to be discovered.
 

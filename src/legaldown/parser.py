@@ -58,15 +58,55 @@ LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)\.|-)\s+")
 
 # ── Internal helpers ──────────────────────────────────────────────
 
-def _split_frontmatter(source: str) -> tuple[dict[str, Any], str]:
+def _split_frontmatter(source: str) -> tuple[str, dict[str, Any], str]:
+    """Split *source* into ``(frontmatter YAML, parsed frontmatter, body)``."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return {}, source
-    metadata = yaml.load(match.group(1) or "", Loader=_StrDateSafeLoader) or {}
+        return "", {}, source
+    frontmatter = match.group(1) or ""
+    metadata = yaml.load(frontmatter, Loader=_StrDateSafeLoader) or {}
     if not isinstance(metadata, dict):
         raise ValueError("Frontmatter must be a YAML mapping of fields.")
     body = source[match.end():]
-    return metadata, body
+    return frontmatter, metadata, body
+
+
+def _has_flow_style(node: yaml.Node) -> bool:
+    """True if *node* or anything inside it is written in YAML flow style."""
+    if isinstance(node, yaml.MappingNode):
+        return node.flow_style or any(
+            _has_flow_style(key) or _has_flow_style(value) for key, value in node.value
+        )
+    if isinstance(node, yaml.SequenceNode):
+        return node.flow_style or any(_has_flow_style(item) for item in node.value)
+    return False
+
+
+def _not_line_editable(frontmatter: str) -> list[str]:
+    """The keys among ``questions`` and ``attachments`` that are not written
+    as §15.2 requires for assembly to edit them line by line: in YAML block
+    style, and each attachment entry beginning with ``id``."""
+    if "questions" not in frontmatter and "attachments" not in frontmatter:
+        return []
+    root = yaml.compose(frontmatter, Loader=_StrDateSafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    keys: list[str] = []
+    for key, value in root.value:
+        if key.value == "questions" and _has_flow_style(value):
+            keys.append("questions")
+        elif key.value == "attachments" and (
+            _has_flow_style(value)
+            or not isinstance(value, yaml.SequenceNode)
+            or any(
+                not isinstance(entry, yaml.MappingNode)
+                or not entry.value
+                or entry.value[0][0].value != "id"
+                for entry in value.value
+            )
+        ):
+            keys.append("attachments")
+    return keys
 
 
 def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int, bool]:
@@ -355,7 +395,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     silently corrected).
     """
     # A byte-order mark is an encoding artifact, not content.
-    metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
+    frontmatter, metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
     preamble, sections = _parse_body(body.splitlines())
     payload: dict[str, Any] = {
         "metadata": metadata,
@@ -371,7 +411,9 @@ def parse_document(source: str, *, filename: str = "") -> Document:
         "filename": filename,
         "preamble": [asdict(block) for block in preamble],
     }
-    return document_from_dict(payload)
+    document = document_from_dict(payload)
+    document.metadata.not_line_editable = _not_line_editable(frontmatter)
+    return document
 
 
 def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:

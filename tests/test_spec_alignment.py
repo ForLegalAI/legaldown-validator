@@ -55,7 +55,7 @@ def test_parser_does_not_silently_correct_an_invalid_duration_unit():
 
 
 def test_parser_does_not_silently_correct_party_metadata():
-    """Display names and unknown types survive the parse so §15.6 can report them.
+    """Display names and unknown types survive the parse so §16.6 can report them.
 
     The party carrying the malformed name and the one carrying the bad type are
     deliberately separate: the validator stops checking a party once its name is
@@ -539,7 +539,7 @@ def test_item_anchor_is_a_valid_ref_target():
     assert "ref-broken" not in result.rules()
 
 
-# ── Diagnostics carry stable rule ids (§15.1/§15.9) ───────────────
+# ── Diagnostics carry stable rule ids (§16.1/§16.9) ───────────────
 
 
 def test_diagnostics_expose_rule_ids_and_levels():
@@ -595,7 +595,7 @@ def test_inline_value_indices_collect_field_spec_values():
     assert ("5000", "EUR") in result.inline_money
 
 
-# ── Attachments (§15.10) ──────────────────────────────────────────
+# ── Attachments (§16.10) ──────────────────────────────────────────
 #
 # The corpus fixtures for these rules span several files, so the
 # single-document conformance harness skips them; they are exercised here.
@@ -660,7 +660,7 @@ def test_declared_but_unreferenced_attachment_is_a_warning():
     assert "attachment-unreferenced" in result.rules("warning")
 
 
-# ── Amendments (§15.8) ────────────────────────────────────────────
+# ── Amendments (§16.8) ────────────────────────────────────────────
 
 
 def test_amendment_redefining_an_imported_term_is_a_warning():

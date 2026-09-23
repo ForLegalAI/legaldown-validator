@@ -18,9 +18,9 @@ class SectionIndexEntry:
 class Diagnostic:
     """A single validation finding.
 
-    Carries the **stable rule id** defined by specification §15.1 — the only
+    Carries the **stable rule id** defined by specification §16.1 — the only
     part of a diagnostic that is stable across implementations and spec
-    revisions (§15.9) — plus the severity level and human-readable message.
+    revisions (§16.9) — plus the severity level and human-readable message.
     """
     rule: str
     level: str  # "error" | "warning" | "info"
@@ -32,7 +32,7 @@ class ValidationResult:
     """Output of ``validate_document``: collected diagnostics and indices.
 
     ``diagnostics`` is the authoritative record (rule id + severity +
-    message, §15.9). ``errors`` / ``warnings`` / ``infos`` remain as plain
+    message, §16.9). ``errors`` / ``warnings`` / ``infos`` remain as plain
     message lists for existing callers and stay in sync with it.
     """
     diagnostics: list[Diagnostic] = field(default_factory=list)

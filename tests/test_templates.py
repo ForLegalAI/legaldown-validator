@@ -1,0 +1,300 @@
+"""Specification 0.2: template questions (§15.2) and the placeholder and
+frontmatter rules they tightened (§3.10, §10.7, §12.2)."""
+from __future__ import annotations
+
+import pytest
+
+from legaldown import Amends, serialize_document
+from legaldown.parser import parse_document
+from legaldown.validator import validate_document
+
+_SIDES = """sides:
+  - name: providers
+    parties:
+      - name: acme
+        type: legal_entity
+  - name: clients
+    parties:
+      - name: beta
+        type: legal_entity
+"""
+
+
+def _validate(frontmatter: str = "", body: str = "Text."):
+    source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n# Terms {{#terms}}\n\n{body}\n"
+    return validate_document(parse_document(source, filename="t.lgd"))
+
+
+# ── Placeholders (§10.7) ──────────────────────────────────────────
+
+
+def test_duration_placeholder_is_valid():
+    result = _validate(body="For {{placeholder: term, type=duration, unit=MO}}.")
+    assert result.diagnostics == []
+
+
+@pytest.mark.parametrize("unit", ["M", "MONTHS", ""])
+def test_duration_placeholder_unit_follows_the_duration_rule(unit):
+    result = _validate(body=f"For {{{{placeholder: term, type=duration, unit={unit}}}}}.")
+    assert "duration-invalid-unit" in result.rules("error")
+
+
+def test_unit_is_defined_only_for_duration_placeholders():
+    result = _validate(body="For {{placeholder: term, type=money, unit=MO}}.")
+    assert result.rules() == {"directive-unknown-param"}
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("type=money, currency=EUR", "type=money, currency=USD"),
+        ("type=duration, unit=MO", "type=duration, unit=Y"),
+    ],
+)
+def test_one_blank_cannot_fix_two_currencies_or_units(first, second):
+    result = _validate(body=f"{{{{placeholder: fee, {first}}}}} and {{{{placeholder: fee, {second}}}}}.")
+    assert "placeholder-type-inconsistent" in result.rules("error")
+
+
+def test_a_frontmatter_currency_counts_for_consistency():
+    result = _validate(
+        'subtitle: "Fee {{placeholder: fee, type=money, currency=EUR}}"\n',
+        "Pay {{placeholder: fee, type=money, currency=USD}}.",
+    )
+    assert "placeholder-type-inconsistent" in result.rules("error")
+
+
+def test_an_occurrence_may_leave_the_currency_open():
+    result = _validate(
+        body="{{placeholder: fee, type=money, currency=EUR}} and {{placeholder: fee, type=money}}."
+    )
+    assert result.diagnostics == []
+
+
+# ── Questions and placeholder types (§15.2) ───────────────────────
+
+_QUESTIONS = """questions:
+  fee:
+    type: money
+    prompt: Fixed fee
+  start:
+    type: date
+  forum:
+    type: choice
+    choices:
+      courts: State courts
+      arbitration: ICC arbitration
+"""
+
+
+def test_a_declared_value_question_gives_the_placeholder_its_type():
+    """The declared type is the effective type, so a money placeholder
+    takes currency without writing type=money."""
+    result = _validate(_QUESTIONS, "Pay {{placeholder: fee, currency=EUR}} from {{placeholder: start}}.")
+    assert "directive-unknown-param" not in result.rules()
+    assert ("fee", "money") in result.inline_placeholders
+    assert ("start", "date") in result.inline_placeholders
+
+
+def test_inline_type_must_equal_the_declared_type():
+    result = _validate(_QUESTIONS, "Pay {{placeholder: fee, type=date}}.")
+    assert "placeholder-question-mismatch" in result.rules("error")
+
+
+def test_a_placeholder_cannot_use_a_decision_question():
+    result = _validate(_QUESTIONS, "Disputes go to {{placeholder: forum}}.")
+    assert "placeholder-question-mismatch" in result.rules("error")
+
+
+def test_well_formed_questions_are_valid():
+    frontmatter = _QUESTIONS + """  vat:
+    type: boolean
+    default: false
+  term:
+    type: duration
+    default:
+      value: 12
+      unit: MO
+  client:
+    type: text
+    default: Beta Industries Inc.
+"""
+    result = _validate(frontmatter, "{{placeholder: fee}} {{placeholder: term}} {{placeholder: client}}")
+    assert "question-invalid" not in result.rules()
+
+
+@pytest.mark.parametrize(
+    "questions",
+    [
+        "questions:\n  - fee\n",  # not a map
+        "questions:\n  Fee:\n    type: text\n",  # not an identifier
+        "questions:\n  yes:\n    type: boolean\n",  # read as a boolean
+        "questions:\n  y:\n    type: boolean\n",
+        "questions:\n  fee: money\n",  # not a declaration
+        "questions:\n  fee:\n    prompt: Fee\n",  # no type
+        "questions:\n  fee:\n    type: number\n",
+        "questions:\n  forum:\n    type: choice\n    choices:\n      courts: Courts\n",
+        "questions:\n  forum:\n    type: choice\n    choices:\n      Courts: A\n      b: B\n",
+        "questions:\n  forum:\n    type: choice\n    choices:\n      on: A\n      b: B\n",
+        "questions:\n  forum:\n    type: choice\n    choices:\n      a: A\n      b: ''\n",
+        "questions:\n  vat:\n    type: boolean\n    choices:\n      a: A\n      b: B\n",
+        "questions:\n  vat:\n    type: boolean\n    default: 'yes'\n",
+        "questions:\n  forum:\n    type: choice\n    choices:\n      a: A\n      b: B\n    default: c\n",
+        "questions:\n  client:\n    type: text\n    default: ' Beta'\n",
+        "questions:\n  client:\n    type: text\n    default: ''\n",
+        "questions:\n  start:\n    type: date\n    default: 2026-13-01\n",
+        "questions:\n  fee:\n    type: money\n    default: '100.00'\n",  # no fixed currency
+        "questions:\n  fee:\n    type: money\n    default:\n      amount: 100\n      currency: EUR\n",
+        "questions:\n  fee:\n    type: money\n    default:\n      amount: '100'\n      currency: XXQ\n",
+        "questions:\n  term:\n    type: duration\n    default:\n      value: 12\n      unit: M\n",
+        "questions: {fee: {type: text}}\n",  # flow style
+        "questions:\n  forum:\n    type: choice\n    choices: {a: A, b: B}\n",
+    ],
+)
+def test_malformed_questions_are_reported(questions):
+    assert "question-invalid" in _validate(questions).rules("error")
+
+
+def test_a_money_default_may_be_the_amount_when_every_placeholder_fixes_the_currency():
+    frontmatter = "questions:\n  fee:\n    type: money\n    default: '100.00'\n"
+    fixed = _validate(frontmatter, "{{placeholder: fee, currency=EUR}}")
+    assert "question-invalid" not in fixed.rules()
+    partly = _validate(frontmatter, "{{placeholder: fee, currency=EUR}} {{placeholder: fee}}")
+    assert "question-invalid" in partly.rules("error")
+
+
+def test_a_default_must_agree_with_the_fixed_currency():
+    frontmatter = (
+        "questions:\n  fee:\n    type: money\n    default:\n"
+        "      amount: '100.00'\n      currency: USD\n"
+    )
+    result = _validate(frontmatter, "{{placeholder: fee, currency=EUR}}")
+    assert "question-invalid" in result.rules("error")
+
+
+def test_a_text_default_filling_frontmatter_cannot_hold_an_opener():
+    frontmatter = (
+        'subtitle: "For {{placeholder: client}}"\n'
+        "questions:\n  client:\n    type: text\n    default: 'A {{b'\n"
+    )
+    assert "question-invalid" in _validate(frontmatter).rules("error")
+    body_only = frontmatter.replace('subtitle: "For {{placeholder: client}}"\n', "")
+    assert "question-invalid" not in _validate(body_only, "{{placeholder: client}}").rules()
+
+
+def test_a_templates_attachments_must_be_line_editable():
+    attachments = "attachments:\n  - title: Schedule\n    id: schedule\n    file: s.pdf\n"
+    body = "See {{attach: schedule}}."
+    assert "question-invalid" not in _validate(attachments, body).rules()
+    template = attachments + "questions:\n  client:\n    type: text\n"
+    assert "question-invalid" in _validate(template, body).rules("error")
+
+
+def test_a_templates_undeclared_placeholder_id_cannot_be_a_yaml_word():
+    body = "Answer: {{placeholder: no}}."
+    assert "question-invalid" not in _validate(body=body).rules()
+    template = "questions:\n  client:\n    type: text\n"
+    assert "question-invalid" in _validate(template, body).rules("error")
+
+
+def test_questions_and_conditional_attachments_round_trip():
+    frontmatter = (
+        'legaldown: "0.2"\n' + _QUESTIONS
+        + "attachments:\n  - id: dpa\n    title: DPA\n    file: dpa.lgd\n    when: personal-data\n"
+    )
+    source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n# Terms {{#terms}}\n\nText.\n"
+    document = parse_document(source)
+    again = parse_document(serialize_document(document))
+    assert again.metadata == document.metadata
+    assert again.metadata.legaldown == "0.2"
+    assert again.metadata.attachments[0].when == "personal-data"
+
+
+# ── Frontmatter placeholders (§3.10) ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        'legaldown: "{{placeholder: v}}"\n',
+        'language: "{{placeholder: lang}}"\n',
+        'authoritative: "{{placeholder: lang}}"\n',
+        'translations:\n  fr: "{{placeholder: path}}"\n',
+        'translations:\n  "{{placeholder: lang}}": doc-fr.lgd\n',
+        'field_types:\n  invoice-id: "{{placeholder: kind}}"\n',
+        'amends:\n  title: MSA\n  file: "{{placeholder: path}}"\n',
+        'supersedes:\n  title: MSA\n  file: "{{placeholder: path}}"\n',
+        'attachments:\n  - id: "{{placeholder: a}}"\n    title: A\n    file: a.pdf\n',
+        'attachments:\n  - id: a\n    title: A\n    file: "{{placeholder: path}}"\n',
+        'questions:\n  fee:\n    type: text\n    prompt: "{{placeholder: p}}"\n',
+    ],
+)
+def test_placeholders_in_format_checked_fields_are_errors(frontmatter):
+    result = _validate(frontmatter)
+    assert "placeholder-in-structural-field" in result.rules("error")
+
+
+def test_placeholders_in_titles_of_references_are_checked_value_fields():
+    frontmatter = (
+        'amends:\n  title: "{{placeholder: msa, type=bogus}}"\n'
+        'supersedes:\n  title: "{{placeholder: nda, type=bogus}}"\n'
+    )
+    result = _validate(frontmatter)
+    assert "placeholder-in-structural-field" not in result.rules()
+    assert [d.rule for d in result.diagnostics if d.level == "error"] == [
+        "placeholder-type-invalid",
+        "placeholder-type-invalid",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "valid"),
+    [
+        ('effective_date: "{{placeholder: start, type=date}}"\n', True),
+        ('effective_date: "{{placeholder: start}}"\nquestions:\n  start:\n    type: date\n', True),
+        ('effective_date: "{{placeholder: start}}"\n', False),  # text
+        ('effective_date: "From {{placeholder: start, type=date}}"\n', False),
+        ('adoption_date: "{{placeholder: start, type=money}}"\n', False),
+    ],
+)
+def test_a_date_field_placeholder_is_the_whole_value_and_a_date(frontmatter, valid):
+    result = _validate(frontmatter)
+    assert ("metadata-date-invalid" not in result.rules()) == valid
+
+
+def test_date_of_birth_placeholder_must_be_a_date():
+    source = _SIDES.replace(
+        "        type: legal_entity\n  - name: clients",
+        '        type: natural_person\n        date_of_birth: "{{placeholder: dob}}"\n'
+        "  - name: clients",
+    )
+    document = parse_document(f"---\ntitle: Fixture\n{source}---\n\n# Terms\n")
+    assert "date-of-birth-invalid" in validate_document(document).rules("error")
+
+
+def test_supersedes_object_form_is_modelled_and_its_title_required():
+    result = _validate("supersedes:\n  file: old.pdf\n")
+    assert "supersedes-title-empty" in result.rules("error")
+    document = parse_document(
+        f"---\ntitle: Fixture\n{_SIDES}supersedes:\n  title: Old NDA\n  file: old.pdf\n---\n"
+    )
+    assert document.metadata.supersedes == Amends(title="Old NDA", file="old.pdf")
+    assert parse_document(serialize_document(document)).metadata == document.metadata
+
+
+# ── Include-only paragraphs (§12.2) ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    ["{{include: parts/a.lgd}} {#part-a}", "{{include: parts/a.lgd}} <!-- A --> {#part-a}"],
+)
+def test_an_anchor_on_an_include_only_paragraph_is_ignored(paragraph):
+    result = _validate(body=f"{paragraph}\n\nSee {{{{ref: part-a}}}}.")
+    assert "anchor-misplaced" in result.rules("warning")
+    assert "ref-broken" in result.rules("error")
+
+
+def test_an_anchor_on_a_list_item_holding_an_include_is_kept():
+    result = _validate(body="- {{include: parts/a.lgd}} {#part-a}\n\nSee {{ref: part-a}}.")
+    assert result.diagnostics == []
