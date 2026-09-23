@@ -9,6 +9,7 @@ Usage::
     legaldown validate contract.lgd
     legaldown validate --format json *.lgd
     legaldown validate --ignore def-unreferenced --warnings-as-errors doc.lgd
+    legaldown validate --final signed-contract.lgd
 """
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ EXIT_ERROR = 2
 _LEVEL_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 
-def _validate_path(path: Path) -> tuple[list[dict], str | None]:
+def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str | None]:
     """Validate one file; return (diagnostics, read/parse failure message)."""
     try:
         source = path.read_text(encoding="utf-8")
@@ -48,7 +49,7 @@ def _validate_path(path: Path) -> tuple[list[dict], str | None]:
             }
         ], None
 
-    result = validate_document(document)
+    result = validate_document(document, final=final)
     return [
         {
             "file": str(path),
@@ -88,7 +89,7 @@ def _run_validate(args: argparse.Namespace) -> int:
         else:
             targets = [path]
         for target in targets:
-            diagnostics, failure = _validate_path(target)
+            diagnostics, failure = _validate_path(target, final=args.final)
             if failure:
                 failures.append(failure)
                 continue
@@ -155,6 +156,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="RULE_ID",
         help="Suppress a rule by its stable id (repeatable), e.g. --ignore def-unreferenced.",
+    )
+    validate.add_argument(
+        "--final",
+        action="store_true",
+        help=(
+            "Check that documents are ready for signature: a remaining placeholder, "
+            "drafting note, or template construct is an error (§15.9)."
+        ),
     )
     validate.add_argument(
         "--warnings-as-errors",

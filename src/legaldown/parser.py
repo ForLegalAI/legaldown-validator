@@ -185,6 +185,21 @@ def _not_line_editable(root: yaml.Node) -> list[str]:
     return keys
 
 
+def _is_lazy_line(line: str) -> bool:
+    """True if *line* would continue an open paragraph rather than start a
+    block of its own: a *lazy continuation line* (CommonMark), which joins
+    the list item or block quote whose paragraph it continues. Any list item
+    marker is taken to start a list, as this parser has always read it."""
+    return (
+        bool(line.strip())
+        and not FENCE_OPEN_RE.match(line)
+        and not HEADING_RE.match(line)
+        and not RULE_RE.match(line)
+        and not LIST_ITEM_RE.match(line)
+        and not line.lstrip().startswith((">", "|"))
+    )
+
+
 def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int, bool]:
     """Parse the list starting at ``lines[index]``.
 
@@ -193,8 +208,8 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
     unindented line would lazily continue (it cannot continue a code block).
 
     The list runs through its items, their continuation lines (indented two
-    or more columns), and nested items; an unindented item of the other kind
-    ends it. A fenced code block in an item stays in that item, one line per
+    or more columns, or lazy continuation lines after item text), and nested
+    items; an unindented item of the other kind ends it. A fenced code block in an item stays in that item, one line per
     line, indented relative to the item, blank lines included, until it
     closes or an unindented line ends the item (and the fence with it).
     """
@@ -223,8 +238,8 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
             content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
             content = line[marker.end():].strip()
             items.append(content)
-        elif items and indented:
-            content = dedent(line, content_indent)
+        elif items and (indented or (lazy and _is_lazy_line(line))):
+            content = dedent(line, content_indent) if indented else line.strip()
             # An item holding code keeps its lines; other continuation lines
             # join the item's text.
             if FENCE_OPEN_RE.match(content) or "\n" in items[-1]:
@@ -263,7 +278,7 @@ def _parse_paragraph(paragraph: str) -> Block:
     # from the paragraph by collect_definitions.
     lexed = lex(stripped)
     anchors = find_definition_anchors(stripped, lexed=lexed)
-    if anchors and _is_liftable_definition(anchors[0], stripped):
+    if anchors and _is_liftable_definition(anchors[0], stripped, lexed.directives):
         anchor = anchors[0]
         return Block(
             kind="definition",
@@ -299,9 +314,13 @@ def _parse_paragraph(paragraph: str) -> Block:
     return Block(kind="paragraph", text=stripped)
 
 
-def _is_liftable_definition(anchor: DefinitionAnchor, paragraph: str) -> bool:
+def _is_liftable_definition(
+    anchor: DefinitionAnchor, paragraph: str, directives: list[Directive]
+) -> bool:
     """True if the definition block fields hold *anchor* without loss: it
     leads the paragraph, with a plain quoted term and a bare or omitted id.
+    A term holding a directive stays paragraph text, where it is checked
+    (def-term-variable, §15.5); *directives* are the paragraph's.
 
     The serializer writes a non-empty term in straight double quotes, so only
     a paragraph that begins exactly that way keeps its term and delimiters.
@@ -312,6 +331,7 @@ def _is_liftable_definition(anchor: DefinitionAnchor, paragraph: str) -> bool:
         and anchor.start == 0
         and paragraph.startswith(f'"{anchor.term}"')
         and not anchor.emphasis
+        and not any(anchor.start < d.start < directive.start for d in directives)
         and not directive.malformed
         and not directive.params
         and directive.positional != ""
@@ -419,11 +439,20 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             lazy = False
         elif line.lstrip().startswith(">"):
             end = index
-            while end < len(lines) and lines[end].lstrip().startswith(">"):
+            in_paragraph = False  # the last quoted line was paragraph text
+            while end < len(lines):
+                if lines[end].lstrip().startswith(">"):
+                    in_paragraph = _is_lazy_line(lines[end].lstrip()[1:].lstrip())
+                elif not (in_paragraph and _is_lazy_line(lines[end])):
+                    break
                 end += 1
             # After ">", one optional space is syntax; any further
-            # indentation belongs to the quoted content (CommonMark).
-            quoted = (quote.lstrip()[1:].removeprefix(" ") for quote in lines[index:end])
+            # indentation belongs to the quoted content (CommonMark). A lazy
+            # continuation line is quoted content as it stands.
+            quoted = (
+                quote.lstrip()[1:].removeprefix(" ") if quote.lstrip().startswith(">") else quote.strip()
+                for quote in lines[index:end]
+            )
             blocks.append(Block(kind="quote", text="\n".join(quoted).strip()))
             index = end
             lazy = True

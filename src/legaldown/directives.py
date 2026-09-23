@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from .markdown import FENCE_OPEN_RE, fence_end
 
-# Named parameters each directive defines (§6, §7, §10, §12). ``note`` is
+# Named parameters each directive defines (§6, §7, §10, §12, §15.5). ``note`` is
 # defined for every field spec (§10.1). Placeholder ``currency`` and ``unit``
 # are type-specific: they are defined only when the effective type is
 # ``money`` or ``duration`` (§10.7, §13.5 rule 7), which the validator checks.
@@ -36,7 +36,14 @@ DIRECTIVE_PARAMS: dict[str, frozenset[str]] = {
     "placeholder": frozenset({"type", "currency", "unit", "note"}),
     "include": frozenset(),
     "attach": frozenset({"label"}),
+    # Its parameters are the answers of the question it names (§15.5), so
+    # the document, not this vocabulary, defines them.
+    "choose": frozenset(),
 }
+
+# Directives whose named parameters the document defines: they are checked
+# against it (choose-invalid), never reported as unknown parameters.
+_DOCUMENT_DEFINED_PARAMS: frozenset[str] = frozenset({"choose"})
 
 # Parameters defined only for one value of the directive's ``type`` (§10.7):
 # a placeholder takes ``currency`` only when its effective type is ``money``,
@@ -117,9 +124,10 @@ class Directive:
         come from its declared question, §15.2), else the ``type`` written in
         the directive, defaulting to ``text``. Empty for a directive name
         outside the vocabulary, which is reported as an unknown directive
-        instead.
+        instead, and for ``{{choose:}}``, whose parameters are the answers
+        to its question (§15.5).
         """
-        if self.name not in DIRECTIVE_PARAMS:
+        if self.name not in DIRECTIVE_PARAMS or self.name in _DOCUMENT_DEFINED_PARAMS:
             return []
         directive_type = effective_type or self.params.get("type", "text")
         return [param for param in self.params if not self._defines(param, directive_type)]

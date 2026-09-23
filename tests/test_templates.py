@@ -529,3 +529,273 @@ def test_the_serializer_writes_shared_declarations_in_full():
 def test_an_invalid_type_on_a_declared_blank_is_one_error():
     result = _validate(_QUESTIONS, "Pay {{placeholder: fee, type=number}}.")
     assert [d.rule for d in result.diagnostics if d.level == "error"] == ["placeholder-type-invalid"]
+
+
+# ── Inline choices (§15.5) ────────────────────────────────────────
+
+_CHOICES = _QUESTIONS + "  vat:\n    type: boolean\n"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'Pay{{choose: vat, true=", plus VAT", false=""}}.',
+        "Before {{choose: forum, courts=a court, arbitration=an arbitrator}}.",
+        "Before {{choose: forum, arbitration=an arbitrator, courts=a court}}.",
+    ],
+)
+def test_a_choose_listing_every_answer_is_valid(body):
+    assert _validate(_CHOICES, body).diagnostics == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "{{choose: forum, courts=a court}}",  # an answer missing
+        "{{choose: vat, true=x, false=y, maybe=z}}",  # not an answer
+        "{{choose: forum, courts=a, arbitration=b, note=c}}",
+        "{{choose: fee, a=x, b=y}}",  # a value question
+        "{{choose: missing, true=x, false=y}}",  # not declared
+        "{{choose: vat}}",
+    ],
+)
+def test_a_choose_must_list_exactly_the_answers(body):
+    result = _validate(_CHOICES, body)
+    assert "choose-invalid" in result.rules("error")
+    assert "directive-unknown-param" not in result.rules()
+
+
+def test_a_choose_repeating_an_answer_is_a_duplicate_parameter():
+    result = _validate(_CHOICES, "{{choose: vat, true=x, false=y, true=z}}")
+    assert "directive-duplicate-param" in result.rules("error")
+
+
+def test_a_choose_in_a_heading_or_frontmatter_is_invalid():
+    source = (
+        f"---\ntitle: Fixture\n{_SIDES}{_CHOICES}"
+        'subtitle: "{{choose: vat, true=a, false=b}}"\n---\n\n'
+        "# Fees {{choose: vat, true=a, false=b}}\n\nText.\n"
+    )
+    result = validate_document(parse_document(source))
+    messages = [d.message for d in result.diagnostics if d.rule == "choose-invalid"]
+    assert len(messages) == 2
+
+
+def test_braces_in_a_choose_phrase_are_literal():
+    result = _validate(_CHOICES, 'A {{choose: vat, true="{{ref: fees}}", false=""}}.')
+    assert "brace-stray" in result.rules("warning")
+
+
+def test_a_choose_makes_the_document_a_template():
+    body = '{{choose: vat, true=a, false=b}} {{placeholder: no}}'
+    frontmatter = "questions:\n  vat:\n    type: boolean\n"
+    assert "question-invalid" in _validate(frontmatter, body).rules("error")
+
+
+# ── Drafting notes (§15.6) ────────────────────────────────────────
+
+
+@pytest.mark.parametrize("marker", ["[!DRAFTING]", "[!drafting]", "  [!Drafting]  "])
+def test_a_drafting_note_takes_its_marker_in_any_case(marker):
+    body = f'>{marker}\n> "Fee" {{{{def: fee}}}} means the fee.\n\nPay the {{{{term: fee}}}}.'
+    assert "drafting-note-def" in _validate(body=body).rules("error")
+
+
+@pytest.mark.parametrize("first_line", ["[!DRAFT]", "[!NOTE]", "[!DRAFTING] Use with care."])
+def test_a_look_alike_marker_is_an_ordinary_quote(first_line):
+    body = f'> {first_line}\n> "Fee" {{{{def: fee}}}} means the fee.\n\nPay the {{{{term: fee}}}}.'
+    result = _validate(body=body)
+    assert "drafting-note-unrecognized" in result.rules("warning")
+    assert "drafting-note-def" not in result.rules()
+
+
+def test_a_drafting_note_extends_over_lazy_continuation_lines():
+    body = '> [!DRAFTING]\n> Guidance.\n"Fee" {{def: fee}} means the fee.\n\nPay the {{term: fee}}.'
+    assert "drafting-note-def" in _validate(body=body).rules("error")
+
+
+def test_references_in_a_drafting_note_are_checked():
+    body = "> [!DRAFTING]\n> See {{ref: nowhere}}."
+    assert "ref-broken" in _validate(body=body).rules("error")
+
+
+# ── Terms, insertions, and fragments (§15.3, §15.5, §15.7.3) ─────
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        'The "{{placeholder: short}}" {{def: client}} is the Client.',
+        'The "Client {{choose: vat, true=A, false=B}}" {{def: client}} is the Client.',
+    ],
+)
+def test_a_blank_or_choice_in_a_defined_term_is_an_error(paragraph):
+    result = _validate("questions:\n  vat:\n    type: boolean\n", paragraph + " {{term: client}}")
+    assert "def-term-variable" in result.rules("error")
+
+
+def test_a_blank_after_the_defined_term_is_fine():
+    body = 'The "Client" {{def: client}} is {{placeholder: short}}. See {{term: client}}.'
+    assert "def-term-variable" not in _validate(body=body).rules()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Pay {{placeholder: p}}.",
+        "Pay ({{placeholder: p}}), then",
+        "“{{placeholder: p}}”",
+        "«{{placeholder: p}}»",
+        "a/{{placeholder: p}}/b",
+        "x-{{placeholder: p}}-y",
+        "{{placeholder: p}}{{placeholder: q}}",
+        "Smith{{placeholder: p}}son",
+        "A&B {{placeholder: p}}",  # the & is not in the run before it
+        "[link](url) {{placeholder: p}}",
+        "See [link]({{ref: terms}}) and {{placeholder: p}}",
+    ],
+)
+def test_insertions_kept_apart_from_markdown_are_fine(text):
+    assert "insertion-boundary" not in _validate(body=text).rules()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "AT&{{placeholder: p}}",
+        "*{{placeholder: p}}*",
+        "_{{placeholder: p}}",
+        "[{{placeholder: p}}]",
+        "<{{placeholder: p}}",
+        "a\\b{{placeholder: p}}",
+        "a&b{{placeholder: p}}",
+        "x]({{placeholder: p}}",
+        "[text]({{placeholder: p}})",
+        "[text](https://x.test/{{placeholder: p}})",
+        "![alt](img/{{placeholder: p}}.png)",
+        "{{placeholder: p}}*",
+        "{{placeholder: p}}]",
+        "[label]: {{placeholder: p}}",
+        "`{{placeholder: p}}",
+    ],
+)
+def test_insertions_touching_markdown_punctuation_are_errors(text):
+    assert "insertion-boundary" in _validate(body=text).rules("error")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- {{placeholder: p}} is due.",
+        "1. {{placeholder: p}} is due.",
+        "> {{placeholder: p}} is due.",
+        "| A | B |\n|---|---|\n| {{placeholder: p}} | x |",
+    ],
+)
+def test_container_content_starts_are_line_starts(body):
+    assert "insertion-boundary" not in _validate(body=body).rules()
+
+
+def test_choose_insertions_are_checked_too():
+    result = _validate(_CHOICES, "*{{choose: vat, true=a, false=b}}")
+    assert "insertion-boundary" in result.rules("error")
+
+
+_TEMPLATE = "questions:\n  vat:\n    type: boolean\n"
+
+
+def test_a_fragment_is_included_once_in_a_template():
+    body = "{{include: parts/a.lgd}}\n\n{{include: ./parts/a.lgd}}"
+    assert "template-fragment-invalid" in _validate(_TEMPLATE, body).rules("error")
+    assert "template-fragment-invalid" not in _validate(body=body).rules()
+
+
+def test_an_include_in_a_templates_drafting_note_is_invalid():
+    body = "> [!DRAFTING]\n> {{include: parts/a.lgd}}"
+    assert "template-fragment-invalid" in _validate(_TEMPLATE, body).rules("error")
+    assert "template-fragment-invalid" not in _validate(body=body).rules()
+
+
+@pytest.mark.parametrize(
+    ("attachments", "body"),
+    [
+        (
+            "  - id: a\n    title: A\n    file: s.lgd\n  - id: b\n    title: B\n    file: ./s.lgd\n",
+            "{{attach: a}} {{attach: b}}",
+        ),
+        ("  - id: a\n    title: A\n    file: parts/s.lgd\n", "{{attach: a}}\n\n{{include: parts/s.lgd}}"),
+    ],
+)
+def test_an_attachment_file_has_one_place_in_a_template(attachments, body):
+    frontmatter = _TEMPLATE + "attachments:\n" + attachments
+    assert "template-fragment-invalid" in _validate(frontmatter, body).rules("error")
+
+
+# ── The final check (§15.9) ───────────────────────────────────────
+
+
+def test_the_final_check_rejects_blanks_and_template_constructs():
+    frontmatter = (
+        'subtitle: "For {{placeholder: client}}"\n' + _CHOICES
+        + "attachments:\n  - id: dpa\n    title: DPA\n    file: dpa.pdf\n    when: vat\n"
+    )
+    body = (
+        "Pay {{placeholder: fee, currency=EUR}}{{choose: vat, true=a, false=b}} under "
+        "{{attach: dpa}}.\n\n> [!DRAFTING]\n> Check the fee."
+    )
+    source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n# Terms {{#terms}}\n\n{body}\n"
+    document = parse_document(source)
+    assert not {"placeholder-unfilled", "template-construct-present"} & validate_document(document).rules()
+    final = [d.rule for d in validate_document(document, final=True).diagnostics]
+    assert final.count("placeholder-unfilled") == 2
+    # questions, the attachment condition, the choose, the drafting note
+    assert final.count("template-construct-present") == 4
+
+
+def test_a_final_document_passes_the_final_check():
+    result = validate_document(
+        parse_document(f"---\ntitle: Fixture\n{_SIDES}---\n\n# Terms\n\nText.\n"), final=True
+    )
+    assert result.diagnostics == []
+
+
+# ── Lazy continuation lines (CommonMark) ──────────────────────────
+
+
+def test_a_lazy_line_continues_its_list_item():
+    document = parse_document("---\ntitle: T\n---\n\n# A\n\n- item\ncontinued {#item}\n")
+    assert [b.items for b in document.sections[0].blocks] == [["item continued {#item}"]]
+    result = validate_document(document)
+    assert "anchor-misplaced" not in result.rules()
+    assert "item" in result.section_lookup
+
+
+def test_a_lazy_line_continues_its_quote():
+    document = parse_document("---\ntitle: T\n---\n\n# A\n\n> quoted\ncontinued\n\nAfter.\n")
+    assert [(b.kind, b.text) for b in document.sections[0].blocks] == [
+        ("quote", "quoted\ncontinued"),
+        ("paragraph", "After."),
+    ]
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("- item\n---\n", ["unordered_list", "rule"]),
+        ("- item\n# B\n", ["unordered_list"]),
+        ("> quote\n- item\n", ["quote", "unordered_list"]),
+        ("> # Heading\ntext\n", ["quote", "paragraph"]),
+        (">\ntext\n", ["quote", "paragraph"]),
+    ],
+)
+def test_block_starts_are_not_lazy_lines(body, kinds):
+    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n{body}")
+    assert [b.kind for b in document.sections[0].blocks] == kinds
+
+
+def test_a_directive_in_a_leading_defined_term_stays_checked():
+    body = '"{{placeholder: short}}" {{def: client}} means the Client. See {{term: client}}.'
+    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# Terms\n\n{body}\n")
+    assert document.sections[0].blocks[0].kind != "definition"
+    assert "def-term-variable" in validate_document(document).rules("error")
