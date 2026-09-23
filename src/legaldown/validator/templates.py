@@ -96,7 +96,10 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
             valid_amount=lambda v: (
                 isinstance(v, (int, str)) and not isinstance(v, bool) and is_positive_numeric(str(v))
             ),
-            amount_rule="a positive integer or decimal (§10.5)",
+            amount_rule=(
+                "a positive integer, or a string holding a positive integer or decimal — "
+                "not a YAML float, which can alter the digits"
+            ),
             valid_code=lambda u: u in VALID_DURATION_UNITS,
             code_rule=f"one of {', '.join(VALID_DURATION_UNITS)}",
         )

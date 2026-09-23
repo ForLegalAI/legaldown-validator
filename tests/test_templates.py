@@ -354,3 +354,60 @@ def test_a_newer_declared_version_is_a_warning_and_softens_unknown_directives(ve
     assert ("legaldown-version-newer" in result.rules("warning")) == newer
     assert ("directive-unknown" in result.rules("warning" if newer else "error"))
     assert ("directive-unknown" in result.rules("error")) != newer
+
+
+def test_yaml_merge_keys_still_merge():
+    source = (
+        "---\ntitle: Fixture\nbase: &base\n  name: acme\n  type: legal_entity\n"
+        "sides:\n  - name: providers\n    parties:\n      - <<: *base\n---\n"
+    )
+    party = parse_document(source).metadata.sides[0].parties[0]
+    assert (party.name, party.type) == ("acme", "legal_entity")
+
+
+def test_an_unquoted_version_is_read_as_written():
+    result = _validate("legaldown: 0.10\n")
+    assert "legaldown-version-newer" in result.rules("warning")
+    source = f"---\ntitle: Fixture\n{_SIDES}legaldown: 0.10\n---\n"
+    assert parse_document(source).metadata.legaldown == "0.10"
+
+
+@pytest.mark.parametrize("frontmatter", ["questions: {}\n", "attachments: []\nquestions: {}\n"])
+def test_empty_flow_collections_have_nothing_to_edit(frontmatter):
+    assert "question-invalid" not in _validate(frontmatter).rules()
+
+
+def test_two_currencies_on_one_blank_are_reported_once():
+    body = (
+        "{{placeholder: fee, type=money, currency=USD}} {{placeholder: fee, type=money, currency=EUR}}"
+        " {{placeholder: fee, type=money, currency=EUR}}"
+    )
+    rules = [d.rule for d in _validate(body=body).diagnostics]
+    assert rules.count("placeholder-type-inconsistent") == 1
+
+
+def test_a_frontmatter_occurrence_counts_even_with_the_wrong_type():
+    frontmatter = (
+        'subtitle: "{{placeholder: client, type=date}}"\n'
+        "questions:\n  client:\n    type: text\n    default: 'A {{b'\n"
+    )
+    result = _validate(frontmatter, "{{placeholder: client}}")
+    assert "question-invalid" in result.rules("error")
+
+
+@pytest.mark.parametrize(
+    ("body", "rule"),
+    [
+        ("{{duration: ٣, unit=D}}", "duration-invalid-value"),
+        ("{{money: ١٠٠, currency=USD}}", "money-invalid-amount"),
+        ("{{date: ٢٠٢٦-01-01}}", "date-invalid"),
+    ],
+)
+def test_numbers_and_dates_take_ascii_digits_only(body, rule):
+    assert rule in _validate(body=body).rules("error")
+
+
+def test_a_float_duration_default_is_rejected_with_the_reason():
+    frontmatter = "questions:\n  term:\n    type: duration\n    default:\n      value: 1.5\n      unit: D\n"
+    result = _validate(frontmatter, "{{placeholder: term}}")
+    assert any("YAML float" in d.message for d in result.diagnostics if d.rule == "question-invalid")

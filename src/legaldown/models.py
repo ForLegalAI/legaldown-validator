@@ -369,7 +369,11 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         amends=amends,
         attachments=attachments,
         questions=payload.get("questions"),
-        not_line_editable=_clean_list(list(payload.get("not_line_editable") or [])),
+        # Carried by a model-shaped dict (document_to_dict); parse_document
+        # sets it from the source instead.
+        not_line_editable=_clean_list(
+            payload["not_line_editable"] if isinstance(payload.get("not_line_editable"), list) else []
+        ),
     )
 
 

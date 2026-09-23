@@ -113,7 +113,7 @@ def _check_date_field(
 def _check_duration_unit(unit: str, result: ValidationResult) -> None:
     """Report a duration ``unit`` that §10.5 does not define."""
     if not unit:
-        result.error("duration-invalid-unit", "A duration needs a unit parameter.")
+        result.error("duration-invalid-unit", "The duration unit is missing or empty.")
     elif unit == "M":
         # §10.5: bare "M" is deliberately undefined (ISO 8601 would read it
         # as months; earlier drafts as minutes).
@@ -225,6 +225,7 @@ def _check_placeholder(
         currency = params.get("currency", "") if ptype == "money" else ""
         unit = params.get("unit", "") if ptype == "duration" else ""
         blank = blanks.setdefault(pid, Blank(type=ptype))
+        blank.in_frontmatter |= in_frontmatter
         if blank.type != ptype:
             result.error(
                 "placeholder-type-inconsistent",
@@ -232,20 +233,8 @@ def _check_placeholder(
                 f"'{blank.type}' and '{ptype}'.",
             )
         else:
-            for kind, code, codes in (
-                ("currency", currency, blank.currencies),
-                ("unit", unit, blank.units),
-            ):
-                clash = next((c for c in codes if c and code and c != code), None)
-                if clash:
-                    result.error(
-                        "placeholder-type-inconsistent",
-                        f"Placeholder '{pid}' fixes {kind} '{code}' where another occurrence "
-                        f"fixes '{clash}'; one blank cannot hold two (§10.7).",
-                    )
             blank.currencies.append(currency)
             blank.units.append(unit)
-            blank.in_frontmatter |= in_frontmatter
         if currency and currency not in KNOWN_CURRENCIES:
             result.warning(
                 "placeholder-unknown-currency",
@@ -254,6 +243,20 @@ def _check_placeholder(
         if ptype == "duration" and "unit" in params:
             _check_duration_unit(unit, result)
     result.inline_placeholders.append((pid, ptype))
+
+
+def _check_blank_codes(blanks: dict[str, Blank], result: ValidationResult) -> None:
+    """Report each blank whose occurrences fix two currencies or units: one
+    blank cannot hold two (§10.7)."""
+    for pid, blank in blanks.items():
+        for kind, codes in (("currencies", blank.currencies), ("units", blank.units)):
+            fixed = sorted(set(filter(None, codes)))
+            if len(fixed) > 1:
+                result.error(
+                    "placeholder-type-inconsistent",
+                    f"Placeholder '{pid}' fixes different {kind} in different occurrences "
+                    f"({', '.join(fixed)}); one blank cannot hold two (§10.7).",
+                )
 
 
 def _is_include_only(text: str, directives: list[Directive]) -> bool:
@@ -985,6 +988,8 @@ def validate_document(
                     result.error(
                         "term-undefined", f"Undefined term reference: '{target}'."
                     )
+
+    _check_blank_codes(blanks, result)
 
     # ── Template questions (§15.2) ──
     # A document declaring questions or a conditional attachment is a

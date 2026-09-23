@@ -27,17 +27,31 @@ from .validator import slugify_identifier
 # load them as plain scalars.
 
 _STR_TAG = "tag:yaml.org,2002:str"
+# Implicit tags that change what was written: ``yes`` becomes True, ``0.10``
+# becomes 0.1. The merge key ``<<`` is not among them.
+_CONVERTED_TAGS = frozenset(
+    f"tag:yaml.org,2002:{name}" for name in ("bool", "null", "int", "float", "timestamp")
+)
+
+
+def _as_written(node: yaml.Node) -> None:
+    """Read a plain scalar *node* as the string written."""
+    if isinstance(node, yaml.ScalarNode) and node.style is None and node.tag in _CONVERTED_TAGS:
+        node.tag = _STR_TAG
 
 
 class _StrDateSafeLoader(yaml.SafeLoader):
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
-        """Read every plain mapping key as the string written. A YAML 1.1
-        reader would turn ``yes``/``on``/``true`` into one boolean key and
-        ``null`` into ``None``, collapsing distinct keys and hiding the ids
-        §15.2 forbids behind a value the author never wrote."""
-        for key, _value in node.value:
-            if isinstance(key, yaml.ScalarNode) and key.style is None and key.tag != _STR_TAG:
-                key.tag = _STR_TAG
+        """Read plain mapping keys as the strings written: a YAML 1.1 reader
+        would turn ``yes``/``on``/``true`` into one boolean key and ``null``
+        into ``None``, collapsing distinct keys and hiding the ids §15.2
+        forbids behind a value the author never wrote. The ``legaldown``
+        version is read as written too, so ``0.10`` does not become ``0.1``
+        (§3.2)."""
+        for key, value in node.value:
+            _as_written(key)
+            if key.value == "legaldown":
+                _as_written(value)
         return super().construct_mapping(node, deep=deep)
 
 
@@ -87,13 +101,17 @@ def _split_frontmatter(source: str) -> tuple[yaml.Node | None, dict[str, Any], s
 
 
 def _has_flow_style(node: yaml.Node) -> bool:
-    """True if *node* or anything inside it is written in YAML flow style."""
+    """True if *node* or anything inside it has entries written in YAML flow
+    style. An empty ``{}`` or ``[]`` has none to edit."""
     if isinstance(node, yaml.MappingNode):
-        return node.flow_style or any(
-            _has_flow_style(key) or _has_flow_style(value) for key, value in node.value
+        return bool(node.value) and (
+            node.flow_style
+            or any(_has_flow_style(key) or _has_flow_style(value) for key, value in node.value)
         )
     if isinstance(node, yaml.SequenceNode):
-        return node.flow_style or any(_has_flow_style(item) for item in node.value)
+        return bool(node.value) and (
+            node.flow_style or any(_has_flow_style(item) for item in node.value)
+        )
     return False
 
 
