@@ -40,14 +40,15 @@ from .result import SectionIndexEntry, ValidationResult
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
 AttachmentDefinitionsImporter = Callable[[str], dict[str, str] | None]
 
-# Frontmatter fields that are identifiers/structural — a {{placeholder:}} here is
-# an error (§3.10). Value fields (title, legal_name, address, …) are allowed.
-_PLACEHOLDER_LITERAL = "{{placeholder:"
+def _placeholders(value: str) -> list[Directive]:
+    """The ``{{placeholder:}}`` directives in a frontmatter value (§3.10)."""
+    return [d for d in iter_directives(value or "") if d.name == "placeholder"]
+
 
 # §15.6: a metadata value that is itself a placeholder satisfies presence and
 # is exempt from the field's format checks; the placeholder's own checks apply.
 def _is_placeholder_value(value: str) -> bool:
-    return _PLACEHOLDER_LITERAL in (value or "")
+    return bool(_placeholders(value))
 
 
 # §10.1: notes are plain text — Markdown formatting would leak markers into
@@ -573,8 +574,10 @@ def validate_document(
         for party in side.parties:
             structural_fields.append((f"party name '{party.name}'", party.name))
             structural_fields.append((f"party type for '{party.name}'", party.type))
+    # A {{placeholder:}} is an error in identifier/structural fields (§3.10);
+    # value fields (title, legal_name, address, …) allow it.
     for field_label, field_value in structural_fields:
-        if field_value and _PLACEHOLDER_LITERAL in field_value:
+        if _placeholders(field_value):
             result.error(
                 "placeholder-in-structural-field",
                 f"A {{{{placeholder:}}}} is not allowed in the identifier/structural "
@@ -597,12 +600,9 @@ def validate_document(
             value_fields.extend(rep.title for rep in party.representatives)
             value_fields.extend(cf.value for cf in party.custom_fields)
     for field_value in value_fields:
-        if field_value and _PLACEHOLDER_LITERAL in field_value:
-            for directive in iter_directives(field_value):
-                if directive.name == "placeholder" and _check_directive_arguments(
-                    directive, result
-                ):
-                    _check_placeholder(directive, result, placeholder_types)
+        for directive in _placeholders(field_value):
+            if _check_directive_arguments(directive, result):
+                _check_placeholder(directive, result, placeholder_types)
 
     for section in document.sections:
         for block in section.blocks:

@@ -48,11 +48,16 @@ _OPENER_RE = re.compile(r"\{\{([a-z]+):")
 _PARAM_NAME_RE = re.compile(r"[a-z][a-z0-9-]*=")
 _WS = " \t"
 
-# §11.4: directives and anchor markers are not recognized inside inline code
-# spans, fenced code blocks, or HTML comments.
-_CODE_SPAN_RE = re.compile(r"``.*?``|`[^`\n]*`", re.DOTALL)
-_FENCED_CODE_RE = re.compile(r"^(?P<fence>```|~~~).*?^(?P=fence)", re.DOTALL | re.MULTILINE)
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+# §11.4: directives and anchor markers are not recognized inside fenced code
+# blocks, HTML comments, or inline code spans. One alternation, so whichever
+# construct opens first wins: a `<!--` inside a code span is code, not the
+# start of a comment.
+_LITERAL_RE = re.compile(
+    r"^(?P<fence>```|~~~).*?^(?P=fence)"
+    r"|<!--.*?-->"
+    r"|``.*?``|`[^`\n]*`",
+    re.DOTALL | re.MULTILINE,
+)
 
 
 def strip_uninterpreted(text: str) -> str:
@@ -64,9 +69,7 @@ def strip_uninterpreted(text: str) -> str:
     def _blank(match: re.Match) -> str:
         return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
 
-    text = _FENCED_CODE_RE.sub(_blank, text or "")
-    text = _HTML_COMMENT_RE.sub(_blank, text)
-    return _CODE_SPAN_RE.sub(_blank, text)
+    return _LITERAL_RE.sub(_blank, text or "")
 
 
 @dataclass(slots=True)
@@ -109,7 +112,12 @@ class Directive:
 
 
 class _Malformed(Exception):
-    pass
+    """A §11.2 violation. *stop* is where the malformed directive ends, when
+    that is known; otherwise it runs through the first ``}}`` on its line."""
+
+    def __init__(self, reason: str, stop: int | None = None) -> None:
+        super().__init__(reason)
+        self.stop = stop
 
 
 _UNCLOSED = "not closed with '}}' on the same line"
@@ -149,6 +157,10 @@ def _lex_value(text: str, pos: int) -> tuple[str, int]:
     while not text.startswith((",", "}}"), pos):
         if pos >= len(text) or text[pos] == "\n":
             raise _Malformed(_UNCLOSED)
+        if _OPENER_RE.match(text, pos) and not _is_escaped(text, pos):
+            # §11.4 opener commitment: the next directive begins here, so
+            # this one was never closed.
+            raise _Malformed("not closed before the next directive", stop=pos)
         pos += 1
     value = text[start:pos].strip(_WS)
     if not value:
@@ -211,24 +223,25 @@ def _is_escaped(text: str, pos: int) -> bool:
     return backslashes % 2 == 1
 
 
-def _malformed_source(text: str, start: int) -> str:
-    """The span to quote for a malformed directive: through the first ``}}``
-    on its line, else to the end of the line."""
+def _malformed_end(text: str, start: int) -> int:
+    """End of a malformed directive whose extent the lexer could not tell:
+    through the first ``}}`` on its line, else the end of the line."""
     line_end = text.find("\n", start)
     if line_end < 0:
         line_end = len(text)
     close = text.find("}}", start, line_end)
-    return text[start:close + 2 if close >= 0 else line_end]
+    return close + 2 if close >= 0 else line_end
 
 
-def iter_directives(text: str) -> Iterator[Directive]:
-    """Yield every directive in *text* in order, well-formed or malformed.
+def scan_directives(text: str) -> Iterator[tuple[Directive, str]]:
+    """Yield each directive in *text* with the text as the lexer saw it.
 
-    Openers inside code spans, code blocks, and comments are literal (§11.4)
-    and skipped. Once a directive opens, its arguments are lexed from the
-    source as written, so a quoted value may contain backticks.
+    The second item has the same offsets as *text*, with code spans, code
+    blocks, and comments blanked as they stood when the directive was found.
+    Callers that look around a directive (the defined term before a
+    ``{{def:}}``) use it so they agree with the lexer about what is literal.
     """
-    scan = strip_uninterpreted(text)  # same offsets as text
+    scan = strip_uninterpreted(text)
     pos = 0
     while opener := _OPENER_RE.search(scan, pos):
         start = opener.start()
@@ -238,9 +251,8 @@ def iter_directives(text: str) -> Iterator[Directive]:
         try:
             positional, params, duplicates, end = _lex_arguments(text, opener.end())
         except _Malformed as exc:
-            source = _malformed_source(text, start)
-            end = start + len(source)
-            yield Directive(
+            end = exc.stop if exc.stop is not None else _malformed_end(text, start)
+            directive = Directive(
                 name=opener.group(1),
                 positional=None,
                 params={},
@@ -248,10 +260,10 @@ def iter_directives(text: str) -> Iterator[Directive]:
                 malformed=str(exc),
                 start=start,
                 end=end,
-                source=source,
+                source=text[start:end].rstrip(_WS),
             )
         else:
-            yield Directive(
+            directive = Directive(
                 name=opener.group(1),
                 positional=positional,
                 params=params,
@@ -261,6 +273,7 @@ def iter_directives(text: str) -> Iterator[Directive]:
                 end=end,
                 source=text[start:end],
             )
+        yield directive, scan
         if scan[start:end] != text[start:end]:
             # A backtick or comment marker inside the directive was taken
             # for literal-region syntax; recompute the regions after it.
@@ -268,14 +281,29 @@ def iter_directives(text: str) -> Iterator[Directive]:
         pos = end
 
 
+def iter_directives(text: str) -> Iterator[Directive]:
+    """Yield every directive in *text* in order, well-formed or malformed.
+
+    Openers inside code spans, code blocks, and comments are literal (§11.4)
+    and skipped. Once a directive opens, its arguments are lexed from the
+    source as written, so a quoted value may contain backticks.
+    """
+    for directive, _scan in scan_directives(text):
+        yield directive
+
+
 def format_value(value: str, *, positional: bool = False) -> str:
     """Spell *value* as directive source, quoting it only where §11.3 must.
 
     The inverse of the lexer: ``iter_directives`` decodes the result back to
-    *value*.
+    *value*. Raises ``ValueError`` for a line break, which no directive value
+    can hold.
     """
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"A directive value cannot contain a line break (§11.3): {value!r}")
     needs_quotes = (
         (positional and not value)
+        or "{{" in value
         or "," in value
         or "}" in value
         or value.startswith('"')

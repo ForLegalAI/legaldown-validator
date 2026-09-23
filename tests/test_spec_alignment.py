@@ -389,6 +389,53 @@ def test_directive_is_unhashable_like_other_models():
         hash(directive)
 
 
+def test_definition_after_a_backtick_in_a_quoted_value_is_registered():
+    """The defined-term scan sees literal regions exactly as the lexer does."""
+    result = _validate(
+        'Pay {{field: "a`b", type=code}} where "Fee" {{def: fee}} per `x` rule. '
+        "The {{term: fee}} applies."
+    )
+    assert result.diagnostics == []
+
+
+def test_unclosed_directive_does_not_swallow_the_next():
+    """§11.4 opener commitment: a new opener ends an unclosed unquoted value."""
+    result = _validate("See {{ref: s and {{term: undefined-thing}} here.")
+    assert {"directive-malformed", "term-undefined"} <= result.rules("error")
+    assert "ref-broken" not in result.rules()
+
+
+@pytest.mark.parametrize("paragraph", ['"" {{def: foo}} means x.', '" Foo " {{def: foo}} means x.'])
+def test_definition_the_block_cannot_hold_stays_text(paragraph):
+    source = _FRONTMATTER + paragraph + "\n"
+    assert paragraph in serialize_document(parse_document(source))
+
+
+def test_escaped_placeholder_in_metadata_is_not_a_placeholder():
+    source = _FRONTMATTER.replace(
+        "title: Fixture", 'title: Fixture\neffective_date: "\\\\{{placeholder: d}} soon"'
+    )
+    result = validate_document(parse_document(source + "Text.\n"))
+    assert "metadata-date-invalid" in result.rules("error")
+
+
+def test_comment_opener_inside_code_span_is_code():
+    result = _validate("Use `<!--` to open. {{ref: nope}} and `-->` closes.")
+    assert "ref-broken" in result.rules("error")
+
+
+def test_format_value_rejects_line_breaks_and_quotes_openers():
+    with pytest.raises(ValueError):
+        format_value("a\nb")
+    (directive,) = iter_directives(f"{{{{term: x, label={format_value('see {{ref: y}}')}}}}}")
+    assert directive.params["label"] == "see {{ref: y}}"
+
+
+def test_underscore_emphasis_on_a_defined_term_is_a_warning():
+    result = _validate('_"Term"_ {{def: t}} means x. {{term: t}}')
+    assert result.rules() == {"def-emphasis"}
+
+
 def test_iter_directives_decodes_escapes():
     (directive,) = iter_directives(r'{{field: "say \"hi\" C:\path\\", type=t}}')
     assert directive.positional == 'say "hi" C:\\path\\'

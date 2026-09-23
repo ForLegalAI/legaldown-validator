@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .directives import Directive, iter_directives, strip_uninterpreted
+from .directives import Directive, scan_directives
 from .models import Block, Document
 from .validator.helpers import slugify_identifier
 
@@ -53,7 +53,7 @@ def accepted_delimiters(language: str | None) -> list[tuple[str, str, str, bool]
 
 # Emphasis markers a defined term must not carry in source (§7.2); the term
 # is still recognized, and the validator warns (def-emphasis).
-_EMPHASIS_MARKERS = ("**", "__", "++", "*")
+_EMPHASIS_MARKERS = ("**", "__", "++", "*", "_")
 
 
 def _trailing_emphasis(text: str, start: int, end: int) -> int:
@@ -102,9 +102,8 @@ def find_definition_anchors(
     Directives in code spans, code blocks, and comments are literal (§11.4).
     """
     closing = {pair[1]: pair for pair in accepted_delimiters(language)}
-    scan = strip_uninterpreted(text)
     anchors: list[DefinitionAnchor] = []
-    for directive in iter_directives(text):
+    for directive, scan in scan_directives(text):
         if directive.name != "def":
             continue
         line_start = scan.rfind("\n", 0, directive.start) + 1

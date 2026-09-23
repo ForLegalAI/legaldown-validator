@@ -87,7 +87,7 @@ def _parse_paragraph(paragraph: str) -> Block:
     # parameters or malformed arguments. The definition is still collected
     # from the paragraph by collect_definitions.
     anchors = find_definition_anchors(stripped)
-    if anchors and _is_liftable_definition(anchors[0]):
+    if anchors and _is_liftable_definition(anchors[0], stripped):
         anchor = anchors[0]
         return Block(
             kind="definition",
@@ -123,20 +123,18 @@ def _parse_paragraph(paragraph: str) -> Block:
     return Block(kind="paragraph", text=stripped)
 
 
-def _is_liftable_definition(anchor: DefinitionAnchor) -> bool:
+def _is_liftable_definition(anchor: DefinitionAnchor, paragraph: str) -> bool:
     """True if the definition block fields represent *anchor* exactly: it
     leads the paragraph, with a plain quoted term and a bare or omitted id.
 
-    The serializer writes the term in straight double quotes, so only that
-    delimiter, around a term that does not itself contain one, round-trips.
+    The serializer writes a non-empty term in straight double quotes, so only
+    a paragraph that begins exactly that way round-trips.
     """
     directive = anchor.directive
     return (
-        anchor.start == 0
-        and anchor.term is not None
-        and anchor.pair is not None
-        and anchor.pair[2] == "straight-double"
-        and '"' not in anchor.term
+        bool(anchor.term)
+        and anchor.start == 0
+        and paragraph.startswith(f'"{anchor.term}"')
         and not anchor.emphasis
         and not directive.malformed
         and not directive.params
