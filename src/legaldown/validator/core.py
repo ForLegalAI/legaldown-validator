@@ -468,15 +468,21 @@ def validate_document(
     # {{choose:}} is a template. Its markers are found first: only a template
     # gives a preamble paragraph's condition its place (§5.7).
     markers = find_markers(document, lex_fragment)
-    body_texts = [f for _s, _i, block in document.iter_blocks() for f in text_fragments(block)]
+    body_directives = {
+        directive.name
+        for _s, _i, block in document.iter_indexed_blocks()
+        for text in text_fragments(block)
+        for directive in lex_fragment(text).directives
+    }
     template = (
         questions is not None
         or any(att.when for att in meta.attachments)
         or any(section.condition for section in document.sections)
         or any(found.marker and found.marker.condition and not found.misplaced for found in markers)
+        or "choose" in body_directives
         or any(
             directive.name == "choose"
-            for text in [*frontmatter_texts, *headings, *body_texts]
+            for text in [*frontmatter_texts, *headings]
             for directive in lex_fragment(text or "").directives
         )
     )
@@ -908,6 +914,8 @@ def validate_document(
                     for def_id, term_text in _imported_definitions.items():
                         if def_id not in result.definition_lookup:
                             result.definition_lookup[def_id] = term_text
+                            # The original is always in force (§7.5).
+                            declared_terms[def_id] = [(term_text, False, ALWAYS)]
 
     # ── Attachment definition import (§7, §12.4) ──
     # A {{def:}} inside an attachment file registers a document-wide term; ids
@@ -1186,13 +1194,11 @@ def validate_document(
 
     # Reference safety (§15.4): a reference resolves in every assembled
     # document it is in. References in drafting notes are exempt: assembly
-    # removes every note. Imported definitions are always present.
+    # removes every note.
     term_targets = {
         def_id: [presence for _term, _auto, presence in declarations]
         for def_id, declarations in declared_terms.items()
     }
-    for def_id in result.definition_lookup:
-        term_targets.setdefault(def_id, [ALWAYS])
     targets_of = {"ref": anchors, "term": term_targets, "attach": attachment_presence}
     for kind, uses in references.items():
         for target, presence, in_note in uses:
@@ -1206,7 +1212,7 @@ def validate_document(
             )
 
     used_questions = (
-        set(blanks)
+        {directive.positional for directive in placeholders if directive.positional}
         | {
             condition.question
             for _where, text in conditions
@@ -1216,9 +1222,9 @@ def validate_document(
     )
     # A question may be used in an include fragment or a LegalDown attachment
     # file, which a single-document validator does not read (Full, §17.4).
-    reads_other_files = any(
-        directive.name == "include" for text in body_texts for directive in lex_fragment(text).directives
-    ) or any(att.file.endswith(LEGALDOWN_EXTENSIONS) for att in meta.attachments)
+    reads_other_files = "include" in body_directives or any(
+        att.file.endswith(LEGALDOWN_EXTENSIONS) for att in meta.attachments
+    )
     if isinstance(questions, dict) and not reads_other_files:
         for qid in questions:
             if qid not in used_questions:

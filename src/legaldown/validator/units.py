@@ -124,7 +124,12 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
                     and is_include_only(fragment[:m.start()], lexed.directives)
                 )
                 preamble_condition = bool(
-                    section is None and at_end and marker and marker.condition and not marker.identifier
+                    section is None
+                    and at_end
+                    and block.kind in _PARAGRAPHS
+                    and marker
+                    and marker.condition
+                    and not marker.identifier
                 )
                 if marker is None:
                     misplaced = _NOT_A_MARKER

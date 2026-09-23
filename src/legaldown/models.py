@@ -162,11 +162,8 @@ class Document:
     def iter_blocks(self) -> Iterator[tuple[Section | None, int, Block]]:
         """Every body block in document order, as ``(section, index, block)``:
         the preamble first, with ``section`` ``None``, then each section's."""
-        for index, block in enumerate(self.preamble):
-            yield None, index, block
-        for section in self.sections:
-            for index, block in enumerate(section.blocks):
-                yield section, index, block
+        for section_index, index, block in self.iter_indexed_blocks():
+            yield (None if section_index is None else self.sections[section_index]), index, block
 
 
 # ---------------------------------------------------------------------------

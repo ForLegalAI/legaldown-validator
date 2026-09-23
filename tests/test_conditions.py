@@ -337,3 +337,25 @@ def test_a_term_from_a_conditional_attachment_is_checked_for_safety():
 @pytest.mark.parametrize("heading", ["# Fees \\{#x}", '# Fees {{placeholder: p, note="{#x}"}}'])
 def test_escaped_or_quoted_markers_in_a_heading_are_not_look_alikes(heading):
     assert "anchor-misplaced" not in _rules(f"{heading}\n\nText.", "")
+
+
+def test_a_term_from_the_amended_original_is_always_present():
+    frontmatter = _QUESTIONS + (
+        "amends:\n  title: Original\n  file: original.lgd\n"
+        "attachments:\n  - id: s\n    title: S\n    file: s.lgd\n    when: vat\n"
+    )
+    result = validate_document(
+        _parse("# A\n\nSee {{attach: s}}. {when=vat}", frontmatter),
+        import_definitions=lambda *_: {"fee": "Fee"},
+        import_attachment_definitions=lambda path: {"fee": "Fee"},
+    )
+    assert "def-duplicate-id" in result.rules("error")
+
+
+def test_a_question_used_by_a_placeholder_in_a_heading_is_used():
+    frontmatter = "questions:\n  name:\n    type: text\n"
+    assert "question-unused" not in _rules("# Fees for {{placeholder: name}}\n\nText.", frontmatter)
+
+
+def test_a_preamble_list_item_carries_no_condition():
+    assert "anchor-misplaced" in _rules("- item {when=vat}\n\n# A\n\nText.")
