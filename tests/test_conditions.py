@@ -416,6 +416,8 @@ def test_alternatives_share_a_number():
         "# Services { #services }",
         "# Services {when= vat}",
         "# Services {when=}",
+        "# Services {#services when=vat x}",
+        "# Services {#services when = vat}",
     ],
 )
 def test_a_mistyped_heading_marker_is_reported(heading):
@@ -460,3 +462,9 @@ def test_a_marker_in_a_heading_comment_is_not_a_marker():
 def test_a_long_heading_is_parsed_quickly():
     [section] = _parse("# a" + " " * 100_000 + "{#b}\n\nText.").sections
     assert (section.title, section.identifier) == ("a", "b")
+
+
+def test_an_amendments_term_is_not_checked_when_its_original_is_unread():
+    frontmatter = _QUESTIONS + "amends:\n  title: Original\n  file: original.lgd\n"
+    body = '# A\n\n"Fee" {{def: fee}} means x. {when=vat}\n\nThe {{term: fee}} applies.'
+    assert "condition-reference-unsafe" not in _rules(body, frontmatter)

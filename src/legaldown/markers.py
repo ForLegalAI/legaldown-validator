@@ -14,19 +14,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# Something that looks like a marker: braces around a first word starting
-# with ``#`` or ``when=`` and further words each holding ``#`` or ``=``, such
-# as ``{#id}``, ``{#a #b}``, or ``{#id class=x}``. Whether it is one is
-# decided by parse_marker; a look-alike is literal text (anchor-misplaced).
-# Prose in braces, such as ``{#1 and #2}``, is not a look-alike; anything
-# opening with ``when=`` is. Each further word after ``#id`` is split at its
-# first '#' or '=' so that the pattern matches one way only: no backtracking
-# blow-up on text with no closing brace.
-_LOOK_ALIKE = (
-    r"\{[ \t]*(?:when=[^{}\n]*"
-    r"|#[^{}\s]+(?:[ \t]+[^{}\s#=]*[#=][^{}\s]*)*[ \t]*)\}"
-)
-MARKER_RE = re.compile(_LOOK_ALIKE)
+# A candidate marker: braces on one line opening with ``#`` or ``when=``.
+# Whether it looks like a marker is decided by is_look_alike, and whether it
+# is one by parse_marker. A single character class keeps the scan linear.
+_CANDIDATE = r"\{[ \t]*(?:#|when=)[^{}\n]*\}"
+MARKER_RE = re.compile(_CANDIDATE)
 
 _ATTRIBUTE_RE = re.compile(r"#(?P<id>\S+)|when=(?P<when>\S+)")
 
@@ -39,6 +31,28 @@ class Marker:
 
     identifier: str = ""
     condition: str = ""
+
+
+def is_look_alike(text: str) -> bool:
+    """True if the candidate *text* (braces included) looks like a marker:
+    it opens with ``when=``, or with ``#id`` followed only by words holding
+    ``#`` or ``=``, or by ``when`` in any spacing. A marker that is not one, such as
+    ``{#id class=x}``, is literal text (anchor-misplaced); prose in braces,
+    such as ``{#1 and #2}`` or ``{# note}``, is not a look-alike."""
+    words = text[1:-1].split()
+    if not words:
+        return False
+    first, rest = words[0], words[1:]
+    if first.startswith("when="):
+        return True
+    return (
+        first.startswith("#")
+        and len(first) > 1
+        and (
+            all("#" in word or "=" in word for word in rest)
+            or any(word.split("=")[0] == "when" for word in rest)
+        )
+    )
 
 
 def parse_marker(text: str) -> Marker | None:
@@ -74,7 +88,7 @@ HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 # comment may follow the marker, since it is not rendered (§8.6). The
 # look-behind starts a match only at the start of a run of whitespace, which
 # keeps a long run from being rescanned at every position.
-_TRAILING_MARKER_RE = re.compile(rf"(?<!\s)\s+({_LOOK_ALIKE})\s*$")
+_TRAILING_MARKER_RE = re.compile(rf"(?<!\s)\s+({_CANDIDATE})\s*$")
 
 
 def split_heading(text: str) -> tuple[str, Marker]:

@@ -1198,7 +1198,9 @@ def validate_document(
 
     # Reference safety (§15.4): a reference resolves in every assembled
     # document it is in. References in drafting notes are exempt: assembly
-    # removes every note.
+    # removes every note. An amendment's terms are not checked when its
+    # original was not read: the original may define them (§16.8).
+    original_unread = bool(meta.amends) and not (_amends_is_legaldown and _amends_import_succeeded)
     term_presences = {
         def_id: [presence for _term, _auto, presence in declarations]
         for def_id, declarations in declared_terms.items()
@@ -1207,7 +1209,9 @@ def validate_document(
     for kind, uses in references.items():
         for target, presence, in_note in uses:
             declared = targets_of[kind].get(target)
-            if in_note or not declared or always_covered(presence, declared, questions):
+            if in_note or not declared or (kind == "term" and original_unread):
+                continue
+            if always_covered(presence, declared, questions):
                 continue
             result.error(
                 "condition-reference-unsafe",

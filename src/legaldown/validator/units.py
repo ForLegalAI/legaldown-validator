@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..directives import Directive, Lexed, is_escaped
-from ..markers import HTML_COMMENT_RE, MARKER_RE, Marker, parse_marker
+from ..markers import HTML_COMMENT_RE, MARKER_RE, Marker, is_look_alike, parse_marker
 from ..models import Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 
@@ -91,6 +91,8 @@ def marker_matches(text: str, lexed: Lexed) -> Iterator[re.Match[str]]:
     in code or comments (blanked in the lexer's view), not escaped, and not
     in a directive's value (§11.4)."""
     for match in MARKER_RE.finditer(lexed.view):
+        if not is_look_alike(match.group(0)):
+            continue
         if not is_escaped(text, match.start()) and not any(
             d.start <= match.start() < d.end for d in lexed.directives if not d.malformed
         ):
