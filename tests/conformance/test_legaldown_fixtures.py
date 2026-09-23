@@ -1,7 +1,7 @@
 """Conformance harness: run the validator over the LegalDown fixtures corpus.
 
 The LegalDown specification repository ships a validation fixtures corpus
-(``fixtures/`` — one directory per §15 rule id, each case paired with the
+(``fixtures/`` — one directory per §16 rule id, each case paired with the
 diagnostics a conforming validator must produce). This test drives our
 validator over that corpus and asserts:
 
@@ -38,7 +38,7 @@ pytestmark = [
     ),
 ]
 
-# §15 rules this implementation evaluates. Cases for other rules are skipped
+# §16 rules this implementation evaluates. Cases for other rules are skipped
 # (single-file, Core-level scope: no filesystem, include, bilingual, or
 # line-level lexer checks yet).
 IMPLEMENTED_RULES = {
@@ -56,17 +56,17 @@ IMPLEMENTED_RULES = {
     "field-type-key-format", "field-type-key-reserved", "field-type-missing",
     "field-type-undeclared",
     "heading-depth", "heading-hardcoded-number", "heading-skip",
-    "issuer-side-required", "metadata-date-invalid",
+    "issuer-side-required", "legaldown-version-newer", "metadata-date-invalid",
     "money-invalid-amount", "money-missing-currency", "money-unknown-currency",
     "note-invalid", "parties-minimum",
     "party-name-duplicate", "party-name-malformed", "party-type-invalid",
     "party-unknown",
     "placeholder-id-malformed", "placeholder-in-structural-field",
-    "placeholder-type-inconsistent", "placeholder-type-invalid",
-    "placeholder-unknown-currency",
+    "placeholder-question-mismatch", "placeholder-type-inconsistent",
+    "placeholder-type-invalid", "placeholder-unknown-currency", "question-invalid",
     "ref-broken", "ref-targets-attachment", "representative-name-empty",
     "side-name-duplicate", "side-name-malformed", "side-party-name-format",
-    "side-unknown", "sides-absent", "sides-minimum",
+    "side-unknown", "sides-absent", "sides-minimum", "supersedes-title-empty",
     "term-undefined", "title-missing",
 }
 
@@ -125,6 +125,8 @@ def test_valid_fixture_produces_no_errors(case: Path):
     )
     if expected.get("requires_level", "core") != "core":
         pytest.skip(f"requires conformance level {expected['requires_level']}")
+    if expected.get("requires_capability"):
+        pytest.skip(f"requires the {expected['requires_capability']} capability")
     if expected.get("requires_config"):
         pytest.skip("requires runner configuration")
     result = _validate_file(case)
@@ -141,6 +143,8 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         pytest.skip(f"rule {rule_id} not implemented")
     if expected.get("requires_level", "core") != "core":
         pytest.skip(f"requires conformance level {expected['requires_level']}")
+    if expected.get("requires_capability"):
+        pytest.skip(f"requires the {expected['requires_capability']} capability")
     if expected.get("requires_config"):
         pytest.skip("requires runner configuration")
     if case.is_dir() and len(list(case.glob("*.lgd"))) > 1:

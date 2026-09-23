@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ForLegalAI/LegalDown
-          ref: v0.1
+          ref: v0.2
           path: .legaldown-spec
           # A private specification repository needs a token with read access;
           # GITHUB_TOKEN cannot read another repository.

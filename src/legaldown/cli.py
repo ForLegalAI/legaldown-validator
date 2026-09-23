@@ -1,8 +1,8 @@
 """Command-line interface for the LegalDown reference validator.
 
-Specification §15.9 requires structured diagnostic output and recommends both
+Specification §16.9 requires structured diagnostic output and recommends both
 plain-text and JSON formats for tooling integration; both are provided here,
-each diagnostic carrying its stable rule id (§15.1).
+each diagnostic carrying its stable rule id (§16.1).
 
 Usage::
 

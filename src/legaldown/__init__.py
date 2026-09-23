@@ -1,7 +1,7 @@
 """legaldown — Reference implementation of the LegalDown document format.
 
 Parse, serialize, and validate LegalDown documents. Every diagnostic carries
-the specification's stable rule id (§15.1), so tooling can filter, suppress,
+the specification's stable rule id (§16.1), so tooling can filter, suppress,
 or escalate individual checks. Only external dependency: PyYAML.
 
 Quick start::
@@ -58,6 +58,9 @@ from .models import (
 from .parser import collect_source_directives, parse_document
 from .serializer import render_block, serialize_document
 
+# The LegalDown specification version this implementation targets.
+from .specification import SPEC_VERSION
+
 # Validator
 from .validator import (
     AttachmentDefinitionsImporter,
@@ -71,10 +74,7 @@ from .validator import (
 
 __version__ = "0.1.0"
 
-#: The LegalDown specification version this implementation targets.
-SPEC_VERSION = "0.1"
-
-#: Conformance level per specification §16. "core" — parse and validate a
+#: Conformance level per specification §17. "core" — parse and validate a
 #: single document. Rendering and Full (multi-file: includes, attachments,
 #: bilingual sets) are not claimed. Exact rule coverage:
 #: https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md

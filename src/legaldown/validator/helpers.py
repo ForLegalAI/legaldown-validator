@@ -45,7 +45,7 @@ def format_section_number(counters: list[int], level: int) -> str:
 
 def is_valid_iso_date(value: str) -> bool:
     """Return True if *value* is a valid ``YYYY-MM-DD`` calendar date."""
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
         return False
     try:
         y, m, d = (int(x) for x in value.split("-"))
@@ -63,6 +63,11 @@ def is_valid_numeric(value: str) -> bool:
         return False
 
 
+# An integer or a decimal with a period (§10.3, §10.5): ASCII digits only,
+# with no sign, exponent, grouping separators, currency symbols, or whitespace.
+_DECIMAL_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+
+
 def is_valid_money_amount(value: str) -> bool:
     """Return True if *value* is a valid ``{{money:}}`` amount (§10.3).
 
@@ -70,14 +75,10 @@ def is_valid_money_amount(value: str) -> bool:
     separators, currency symbols, or whitespace; negative amounts are
     invalid — reductions are expressed in the surrounding prose.
     """
-    if not re.fullmatch(r"\d+(?:\.\d+)?", value or ""):
-        return False
-    return is_valid_numeric(value)
+    return bool(_DECIMAL_RE.fullmatch(value or "")) and is_valid_numeric(value)
 
 
 def is_positive_numeric(value: str) -> bool:
-    """Return True if *value* parses as a number > 0."""
-    try:
-        return float(value) > 0
-    except ValueError:
-        return False
+    """Return True if *value* is a positive integer or decimal (§10.5): a
+    period as the decimal separator, and no sign or exponent."""
+    return bool(_DECIMAL_RE.fullmatch(value or "")) and float(value) > 0
