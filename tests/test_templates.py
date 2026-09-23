@@ -799,3 +799,79 @@ def test_a_directive_in_a_leading_defined_term_stays_checked():
     document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# Terms\n\n{body}\n")
     assert document.sections[0].blocks[0].kind != "definition"
     assert "def-term-variable" in validate_document(document).rules("error")
+
+
+# ── Review follow-ups (PR B) ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("quoted", ["> ```\n> code\n", ">     code\n"])
+def test_a_line_after_quoted_code_is_not_lazy(quoted):
+    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n{quoted}plain text\n")
+    assert [b.kind for b in document.sections[0].blocks] == ["quote", "paragraph"]
+
+
+@pytest.mark.parametrize(
+    "paragraph",
+    [
+        'The "{{placeholder: name, note="Party name"}}" {{def: party}} is here.',
+        'The "{{choose: vat, true="The Court", false="The Tribunal"}}" {{def: forum}} is here.',
+    ],
+)
+def test_def_term_variable_sees_through_quoted_values(paragraph):
+    result = _validate("questions:\n  vat:\n    type: boolean\n", paragraph)
+    assert "def-term-variable" in result.rules("error")
+
+
+def test_the_final_check_covers_headings():
+    source = f"---\ntitle: T\n{_SIDES}---\n\n# Lease of {{{{placeholder: premises}}}}\n\nText.\n"
+    result = validate_document(parse_document(source), final=True)
+    assert "placeholder-unfilled" in result.rules("error")
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("- \nlazy text\n", ["unordered_list", "paragraph"]),
+        ("> quote\n<!-- editor note -->\n", ["quote", "paragraph"]),
+    ],
+)
+def test_lines_that_cannot_continue_a_paragraph_are_not_lazy(body, kinds):
+    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n{body}")
+    assert [b.kind for b in document.sections[0].blocks] == kinds
+
+
+def test_a_drafting_note_in_a_list_item_is_recognized():
+    body = (
+        '- item\n  > [!DRAFTING]\n  > "Fee" {{def: fee}} means the fee.\n'
+        "- other\n  > [!DRAFT]\n  > guidance\n\nPay the {{term: fee}}."
+    )
+    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
+    result = validate_document(document, final=True)
+    assert "drafting-note-def" in result.rules("error")
+    assert "drafting-note-unrecognized" in result.rules("warning")
+    assert "template-construct-present" in result.rules("error")
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+def test_a_quote_whose_first_line_is_blank_is_not_a_drafting_note():
+    body = '>\n> [!DRAFTING]\n> "Fee" {{def: fee}} means the fee.\n\nPay the {{term: fee}}.'
+    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
+    assert not {"drafting-note-def", "template-construct-present"} & validate_document(
+        document, final=True
+    ).rules()
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Name: <!-- n -->{{placeholder: p}}.", "Name: a<!--n-->b{{placeholder: p}}.", "Name: `a&`b{{placeholder: p}}."],
+)
+def test_comments_and_code_are_template_text_at_a_boundary(text):
+    assert "insertion-boundary" in _validate(body=text).rules("error")
+
+
+def test_a_lazy_line_after_a_quote_in_a_list_item_stays_in_the_quote():
+    body = '- item\n  > [!DRAFTING]\n  > note\n"Fee" {{def: fee}} means the fee.\n\nPay the {{term: fee}}.'
+    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
+    assert "drafting-note-def" in validate_document(document).rules("error")
+    assert parse_document(serialize_document(document)).sections == document.sections

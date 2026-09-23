@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
@@ -249,25 +250,47 @@ _ALERT_RE = re.compile(r"\[![A-Za-z]+\]")
 _DRAFTING_MARKER = "[!DRAFTING]"
 
 
-def _first_line(block: Block) -> str:
-    return block.text.split("\n", 1)[0].strip()
+@dataclass(frozen=True, slots=True)
+class Quote:
+    """A block quote in a block's text: ``fragment[start:end]``, and its
+    first line without the ``>`` marker."""
+    fragment: str
+    start: int
+    end: int
+    first_line: str
+
+    @property
+    def is_drafting_note(self) -> bool:
+        """True if the quote is a drafting note: its first line is exactly
+        ``[!DRAFTING]``, letters in any case (§15.6)."""
+        return self.first_line.upper() == _DRAFTING_MARKER
+
+    @property
+    def is_unrecognized_alert(self) -> bool:
+        """True if the first line looks like an alert marker (``[!`` letters
+        ``]``) but is not a drafting note's: an ordinary quote, whose
+        guidance would reach the finished document (§15.6)."""
+        return _ALERT_RE.match(self.first_line) is not None and not self.is_drafting_note
 
 
-def is_drafting_note(block: Block) -> bool:
-    """True if *block* is a drafting note: a block quote whose first line is
-    exactly ``[!DRAFTING]``, letters in any case (§15.6)."""
-    return block.kind == "quote" and _first_line(block).upper() == _DRAFTING_MARKER
-
-
-def is_unrecognized_alert(block: Block) -> bool:
-    """True if *block* is a block quote whose first line looks like an alert
-    marker (``[!`` letters ``]``) but is not a drafting note's: an ordinary
-    quote, whose guidance would reach the finished document (§15.6)."""
-    return (
-        block.kind == "quote"
-        and _ALERT_RE.match(_first_line(block)) is not None
-        and not is_drafting_note(block)
-    )
+def block_quotes(block: Block) -> list[Quote]:
+    """The block quotes in *block*: a quote block itself, or a run of ``>``
+    lines in a list item, where the parser keeps them on lines of their own."""
+    if block.kind == "quote":
+        return [Quote(block.text, 0, len(block.text), block.text.split("\n", 1)[0].strip())]
+    quotes: list[Quote] = []
+    for item in block.items:
+        offset = 0
+        run: tuple[int, str] | None = None  # the open run's start and first line
+        for line in [*item.split("\n"), ""]:
+            quoted = line.lstrip().startswith(">")
+            if quoted and run is None:
+                run = (offset, line.lstrip()[1:].strip())
+            elif not quoted and run is not None:
+                quotes.append(Quote(item, run[0], offset - 1, run[1]))
+                run = None
+            offset += len(line) + 1
+    return quotes
 
 
 # ── Insertion boundaries (§15.7.3) ────────────────────────────────
@@ -285,12 +308,13 @@ _LINK_REFERENCE_RE = re.compile(r" {0,3}\[[^\]]+\]:")
 
 
 def insertion_boundary_problem(
-    text: str, view: str, insertion: Directive, directives: list[Directive]
+    text: str, insertion: Directive, directives: list[Directive]
 ) -> str | None:
     """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in body
     *text* — is not kept apart from template text as §15.7.3 requires, or
-    None. *view* is *text* as the lexer saw it, code and comments blanked;
-    *directives* are all the directives lexed from *text*."""
+    None. *directives* are all the directives lexed from *text*. Template
+    text is the source as written, comments and code spans included: they
+    stay next to the inserted text in the assembled source."""
     start, end = insertion.start, insertion.end
     line_start = text.rfind("\n", 0, start) + 1
     line_end = text.find("\n", end)
@@ -298,7 +322,7 @@ def insertion_boundary_problem(
     # The line's content begins after its container markers.
     content_start = min(_CONTAINER_RE.match(text, line_start).end(), start)
     # Template text: directives are not part of it.
-    template = list(view)
+    template = list(text)
     for directive in directives:
         template[directive.start:directive.end] = " " * (directive.end - directive.start)
     template_text = "".join(template)
@@ -401,27 +425,34 @@ def check_template_body(
 
     includes: list[str] = []
     for _section, _index, block in document.iter_blocks():
-        if is_unrecognized_alert(block):
-            result.warning(
-                "drafting-note-unrecognized",
-                f"The quote begins '{_first_line(block)}', which looks like an alert marker but "
-                f"is not [!DRAFTING]: it is an ordinary quote and would reach the finished "
-                f"document (§15.6).",
-            )
-        note = is_drafting_note(block)
+        notes: list[Quote] = []
+        for quote in block_quotes(block):
+            if quote.is_unrecognized_alert:
+                result.warning(
+                    "drafting-note-unrecognized",
+                    f"The quote begins '{quote.first_line}', which looks like an alert marker "
+                    f"but is not [!DRAFTING]: it is an ordinary quote and would reach the "
+                    f"finished document (§15.6).",
+                )
+            elif quote.is_drafting_note:
+                notes.append(quote)
         for fragment in text_fragments(block):
             lexed = lex_fragment(fragment)
             for directive in lexed.directives:
                 if directive.malformed:
                     continue
-                if note and directive.name == "def":
+                in_note = any(
+                    note.fragment == fragment and note.start <= directive.start < note.end
+                    for note in notes
+                )
+                if in_note and directive.name == "def":
                     result.error(
                         "drafting-note-def",
                         f"'{directive.source}' is inside a drafting note, which assembly removes "
                         f"with the definition (§15.6).",
                     )
                 if directive.name == "include" and directive.positional:
-                    if not note:
+                    if not in_note:
                         includes.append(posixpath.normpath(directive.positional))
                     elif template:
                         result.error(
@@ -430,9 +461,7 @@ def check_template_body(
                             f"include belongs in the template's own body (§15.3).",
                         )
                 if directive.name in _INSERTIONS:
-                    problem = insertion_boundary_problem(
-                        fragment, lexed.view, directive, lexed.directives
-                    )
+                    problem = insertion_boundary_problem(fragment, directive, lexed.directives)
                     if problem:
                         result.error(
                             "insertion-boundary",
@@ -460,7 +489,8 @@ def _check_fragments(document: Document, includes: list[str], result: Validation
     """The Core parts of template-fragment-invalid (§15.3): each fragment is
     included once, and each LegalDown attachment file is declared by one
     entry and is not also a fragment."""
-    for path in sorted({path for path in includes if includes.count(path) > 1}):
+    included = Counter(includes)
+    for path in sorted(path for path, count in included.items() if count > 1):
         result.error(
             "template-fragment-invalid",
             f"Fragment '{path}' is included more than once; in a template each fragment has "
@@ -471,14 +501,15 @@ def _check_fragments(document: Document, includes: list[str], result: Validation
         for att in document.metadata.attachments
         if att.file.endswith(LEGALDOWN_EXTENSIONS)
     ]
-    for path in sorted(set(files)):
-        if files.count(path) > 1:
+    declared = Counter(files)
+    for path in sorted(declared):
+        if declared[path] > 1:
             result.error(
                 "template-fragment-invalid",
                 f"Attachment file '{path}' is declared by more than one attachment; in a "
                 f"template each LegalDown attachment file has one entry (§15.3).",
             )
-        if path in includes:
+        if path in included:
             result.error(
                 "template-fragment-invalid",
                 f"Attachment file '{path}' is also included as a fragment (§15.3).",

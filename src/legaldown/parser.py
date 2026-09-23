@@ -189,14 +189,16 @@ def _is_lazy_line(line: str) -> bool:
     """True if *line* would continue an open paragraph rather than start a
     block of its own: a *lazy continuation line* (CommonMark), which joins
     the list item or block quote whose paragraph it continues. Any list item
-    marker is taken to start a list, as this parser has always read it."""
+    marker is taken to start a list, and any line opening with ``<`` (an
+    HTML block or comment may interrupt a paragraph) a block of its own, as
+    this parser has always read them."""
     return (
         bool(line.strip())
         and not FENCE_OPEN_RE.match(line)
         and not HEADING_RE.match(line)
         and not RULE_RE.match(line)
         and not LIST_ITEM_RE.match(line)
-        and not line.lstrip().startswith((">", "|"))
+        and not line.lstrip().startswith((">", "|", "<"))
     )
 
 
@@ -240,9 +242,13 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
             items.append(content)
         elif items and (indented or (lazy and _is_lazy_line(line))):
             content = dedent(line, content_indent) if indented else line.strip()
-            # An item holding code keeps its lines; other continuation lines
-            # join the item's text.
-            if FENCE_OPEN_RE.match(content) or "\n" in items[-1]:
+            if not indented and items[-1].rsplit("\n", 1)[-1].startswith(">"):
+                # A lazy line continues the quote's paragraph (CommonMark),
+                # so it is kept as the quoted line it means.
+                content = "> " + content
+            # An item holding code or a block quote (a drafting note, §15.6)
+            # keeps its lines; other continuation lines join the item's text.
+            if FENCE_OPEN_RE.match(content) or content.startswith(">") or "\n" in items[-1]:
                 items[-1] += "\n" + content
             else:
                 items[-1] += " " + content.strip()
@@ -250,7 +256,7 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
             break
         opening = FENCE_OPEN_RE.match(content)
         fence = opening.group("fence") if opening else None
-        lazy = fence is None
+        lazy = fence is None and bool(content.strip())  # an empty item has no text
         end += 1
     kind = "ordered_list" if ordered else "unordered_list"
     return Block(kind=kind, items=items), end, lazy
@@ -440,9 +446,21 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
         elif line.lstrip().startswith(">"):
             end = index
             in_paragraph = False  # the last quoted line was paragraph text
+            fence: str | None = None  # the open fence inside the quote
             while end < len(lines):
                 if lines[end].lstrip().startswith(">"):
-                    in_paragraph = _is_lazy_line(lines[end].lstrip()[1:].lstrip())
+                    content = lines[end].lstrip()[1:].removeprefix(" ")
+                    if fence is not None:  # quoted code, not a paragraph
+                        if closes_fence(content, fence):
+                            fence = None
+                        in_paragraph = False
+                    elif opening := FENCE_OPEN_RE.match(content):
+                        fence = opening.group("fence")
+                        in_paragraph = False
+                    elif not in_paragraph and indent_width(content) >= 4:
+                        pass  # indented code, not a paragraph
+                    else:
+                        in_paragraph = _is_lazy_line(content.lstrip())
                 elif not (in_paragraph and _is_lazy_line(lines[end])):
                     break
                 end += 1
@@ -453,7 +471,7 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
                 quote.lstrip()[1:].removeprefix(" ") if quote.lstrip().startswith(">") else quote.strip()
                 for quote in lines[index:end]
             )
-            blocks.append(Block(kind="quote", text="\n".join(quoted).strip()))
+            blocks.append(Block(kind="quote", text="\n".join(quoted)))
             index = end
             lazy = True
         elif line.lstrip().startswith("|") and lines[index + 1:index + 2] and (

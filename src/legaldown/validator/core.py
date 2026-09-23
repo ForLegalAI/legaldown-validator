@@ -47,10 +47,10 @@ from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
     Blank,
+    block_quotes,
     check_choose,
     check_questions,
     check_template_body,
-    is_drafting_note,
     question_type,
 )
 
@@ -290,7 +290,11 @@ def _check_final(
     in a document meant for signature."""
     from ..definitions import text_fragments  # lazily, as in validate_document
 
-    placeholders = [d for text in frontmatter_texts for d in _placeholders(text)]
+    placeholders = [
+        d
+        for text in [*frontmatter_texts, *(section.title for section in document.sections)]
+        for d in _placeholders(text)
+    ]
     for _section, _index, block in document.iter_blocks():
         for fragment in text_fragments(block):
             placeholders.extend(
@@ -316,8 +320,9 @@ def _check_final(
     for directive in chooses:
         construct(f"'{directive.source}'")
     for _section, _index, block in document.iter_blocks():
-        if is_drafting_note(block):
-            construct("A drafting note")
+        for quote in block_quotes(block):
+            if quote.is_drafting_note:
+                construct("A drafting note")
 
 
 def _is_include_only(text: str, directives: list[Directive]) -> bool:
