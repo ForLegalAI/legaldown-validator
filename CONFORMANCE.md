@@ -47,12 +47,15 @@ The template constructs of specification 0.2 (§15) are validated within the doc
 conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, insertion
 boundaries, and the final option (§15.9, `validate_document(final=True)` or
 `legaldown validate --final`). Assembly itself (§15.7) is a capability this implementation does not
-claim. Three limits apply:
+claim. Four limits apply:
 
 - A template's include fragments and LegalDown attachment files are not read (Full, §17.4), so
   `question-unused` is not reported for a template that has either: a question may be used there.
 - The parser flattens nested lists ([#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)),
   so a nested list item's presence does not include the conditions of the items it is nested in.
+- A LegalDown attachment file or include fragment validated on its own is checked as a
+  standalone document: conditions, placeholders, and terms that refer to its template's
+  questions and definitions are reported as undeclared.
 
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy

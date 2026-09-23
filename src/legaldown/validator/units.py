@@ -106,7 +106,7 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
     found: list[FoundMarker] = []
     for section, block_index, block in document.iter_indexed_blocks():
         for fragment_index, (fragment, position) in enumerate(block_fragments(block)):
-            if "{#" not in fragment and "{when=" not in fragment:
+            if "{" not in fragment or ("#" not in fragment and "when=" not in fragment):
                 continue
             lexed = lex_fragment(fragment)
             for m in marker_matches(fragment, lexed):

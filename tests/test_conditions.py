@@ -417,3 +417,13 @@ def test_a_mistyped_heading_marker_is_reported(heading):
 def test_an_out_of_range_heading_is_nested_as_it_is_numbered():
     body = "# A\n\n## B\n\n### C\n\n#### D\n\n##### E {when=vat}\n\nText.\n\n###### F {when=!vat}\n\nText."
     assert "condition-never-true" not in _rules(body)
+
+
+def test_a_look_alike_with_a_space_after_the_brace_is_reported():
+    assert "anchor-misplaced" in _rules("# A\n\nText. { when=vat}")
+
+
+def test_a_long_unclosed_look_alike_is_scanned_quickly():
+    from legaldown.markers import MARKER_RE
+
+    assert MARKER_RE.search("{#x " + " ".join(["a=b=c=d=e=f"] * 40)) is None
