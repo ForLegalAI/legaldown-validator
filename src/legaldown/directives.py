@@ -17,6 +17,8 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from .markdown import FENCE_OPEN_RE, fence_end
+
 # Named parameters each directive defines (§6, §7, §10, §12). ``note`` is
 # defined for every field spec (§10.1). Placeholder ``currency`` is
 # type-specific: it is defined only when the effective type is ``money``
@@ -49,38 +51,35 @@ _PARAM_NAME_RE = re.compile(r"[a-z][a-z0-9-]*=")
 _WS = " \t"
 
 # §11.4: directives and anchor markers are not recognized inside fenced code
-# blocks, HTML comments, or inline code spans. One alternation, so whichever
-# construct opens first wins: a `<!--` inside a code span is code, not the
-# start of a comment. A code span closes on a backtick run of its opening
-# run's length (CommonMark), so ```x``` is one span.
-_LITERAL_RE = re.compile(
-    r"^(?P<fence>`{3,}|~{3,})[^`\n]*\n.*?^(?P=fence)"
-    r"|<!--.*?-->"
-    r"|(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`)",
-    re.DOTALL | re.MULTILINE,
-)
-_BRACES_RE = re.compile(r"\{\{")
+# blocks, HTML comments, or inline code spans. Inline, the construct that
+# opens first wins (CommonMark): a directive, a comment, or a code span.
+_INLINE_START_RE = re.compile(r"\{\{|<!--|`+")
+_BACKTICKS_RE = re.compile(r"`+")
 
 
-def strip_uninterpreted(text: str) -> str:
-    """Blank out code spans, code blocks, and comments, preserving offsets.
+def _blank(text: str, start: int, end: int) -> str:
+    """*text* with ``text[start:end]`` blanked, line breaks kept."""
+    blanked = "".join("\n" if ch == "\n" else " " for ch in text[start:end])
+    return text[:start] + blanked + text[end:]
 
-    Directive-like text in those regions is literal (§11.4); blanking it keeps
-    it out of every scan without shifting the position of anything else.
-    """
-    text = text or ""
-    parts: list[str] = []
-    done = search = 0
-    while match := _LITERAL_RE.search(text, search):
-        if is_escaped(text, match.start()):
-            # A backslash-escaped backtick or ``<`` opens nothing.
-            search = match.start() + 1
+
+def _blank_fenced_code(text: str) -> str:
+    """*text* with its fenced code blocks blanked. A fence needs lines of its
+    own, so single-line text (a paragraph, which the parser joins onto one
+    line, or a table cell) has none."""
+    if "\n" not in text:
+        return text
+    lines = text.split("\n")
+    index = 0
+    while index < len(lines):
+        opening = FENCE_OPEN_RE.match(lines[index])
+        if opening is None:
+            index += 1
             continue
-        parts.append(text[done:match.start()])
-        parts.append("".join("\n" if ch == "\n" else " " for ch in match.group(0)))
-        done = search = match.end()
-    parts.append(text[done:])
-    return "".join(parts)
+        end = fence_end(lines, index, opening.group("fence"))
+        lines[index:end] = [" " * len(line) for line in lines[index:end]]
+        index = end
+    return "\n".join(lines)
 
 
 @dataclass(slots=True)
@@ -250,11 +249,10 @@ def _malformed_end(text: str, start: int, body: int) -> int:
 class Lexed:
     """What the lexer found in a piece of text.
 
-    ``view`` has the same offsets as the text, with code spans, code blocks,
-    and comments blanked as the lexer saw them: a backtick or comment marker
-    inside a directive's value does not open a literal region. Callers that
-    look around directives (the defined term before a ``{{def:}}``, anchor
-    markers) use it so they agree with the lexer about what is literal.
+    ``view`` has the same offsets as the text, with fenced code, comments,
+    and code spans blanked. Callers that look around directives (the defined
+    term before a ``{{def:}}``, anchor markers) use it so they agree with the
+    lexer about what is literal.
     """
 
     directives: list[Directive]
@@ -263,57 +261,81 @@ class Lexed:
 
 
 def lex(text: str) -> Lexed:
-    """Lex every ``{{`` in *text* outside literal regions (§11.4).
+    """Lex *text* for directives, outside literal regions (§11.4).
 
-    A ``{{`` followed by a name and ``:`` opens a directive, lexed from the
-    source as written, so a quoted value may contain backticks. Any other
+    Fenced code blocks are found first, by line, as block structure precedes
+    inline structure. The rest is read once, left to right, taking whichever
+    of a directive, a comment, or a code span opens first. A directive is
+    lexed from the source as written and consumes its own text, so a quoted
+    value may hold backticks or ``<!--`` without opening anything. Any other
     unescaped ``{{`` is literal text that is usually a typo (a stray brace).
     """
-    view = strip_uninterpreted(text)
+    view = _blank_fenced_code(text or "")
     directives: list[Directive] = []
     stray_braces: list[int] = []
     pos = 0
-    while braces := _BRACES_RE.search(view, pos):
-        start = braces.start()
-        if is_escaped(text, start):
+    while token := _INLINE_START_RE.search(view, pos):
+        start = token.start()
+        if is_escaped(view, start):
             pos = start + 1
+            continue
+        if token.group(0) == "<!--":
+            close = view.find("-->", start + 4)
+            if close < 0:
+                pos = start + 4  # an unclosed comment is literal text
+            else:
+                view = _blank(view, start, close + 3)
+                pos = close + 3
+            continue
+        if token.group(0).startswith("`"):
+            ticks = len(token.group(0))
+            close = next(
+                (m for m in _BACKTICKS_RE.finditer(view, token.end()) if len(m.group(0)) == ticks),
+                None,
+            )
+            if close is None:
+                pos = token.end()  # an unmatched backtick run is literal text
+            else:
+                view = _blank(view, start, close.end())
+                pos = close.end()
             continue
         opener = _OPENER_RE.match(view, start)
         if opener is None:
             stray_braces.append(start)
             pos = start + 1
             continue
-        try:
-            positional, params, duplicates, end = _lex_arguments(text, opener.end())
-        except _Malformed as exc:
-            end = _malformed_end(text, start, opener.end())
-            directives.append(Directive(
-                name=opener.group(1),
-                positional=None,
-                params={},
-                duplicates=(),
-                malformed=str(exc),
-                start=start,
-                end=end,
-                source=text[start:end].rstrip(_WS),
-            ))
-        else:
-            directives.append(Directive(
-                name=opener.group(1),
-                positional=positional,
-                params=params,
-                duplicates=tuple(duplicates),
-                malformed="",
-                start=start,
-                end=end,
-                source=text[start:end],
-            ))
-        if view[start:end] != text[start:end]:
-            # A backtick or comment marker inside the directive was taken
-            # for literal-region syntax; recompute the regions after it.
-            view = view[:end] + strip_uninterpreted(text[end:])
-        pos = end
+        directive = _lex_directive(text, start, opener)
+        directives.append(directive)
+        pos = directive.end
     return Lexed(directives, stray_braces, view)
+
+
+def _lex_directive(text: str, start: int, opener: re.Match[str]) -> Directive:
+    """Lex the directive whose opener (``{{name:``) is *opener*."""
+    try:
+        positional, params, duplicates, end = _lex_arguments(text, opener.end())
+    except _Malformed as exc:
+        end = _malformed_end(text, start, opener.end())
+        return Directive(
+            name=opener.group(1),
+            positional=None,
+            params={},
+            duplicates=(),
+            malformed=str(exc),
+            start=start,
+            end=end,
+            source=text[start:end].rstrip(_WS),
+        )
+    return Directive(
+        name=opener.group(1),
+        positional=positional,
+        params=params,
+        duplicates=tuple(duplicates),
+        malformed="",
+        start=start,
+        end=end,
+        source=text[start:end],
+    )
 
 
 def iter_directives(text: str) -> Iterator[Directive]:

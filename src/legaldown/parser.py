@@ -16,6 +16,7 @@ import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
 from .directives import Directive, iter_directives, lex
+from .markdown import FENCE_OPEN_RE, closes_fence, dedent, fence_end, indent_width
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -45,6 +46,14 @@ FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)",
 # (e.g. {#Bad_ID}) must reach the validator to be reported as anchor-format
 # rather than silently remaining part of the title.
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
+# Setext heading text (§4.1), with the same optional trailing anchor.
+SETEXT_TEXT_RE = re.compile(r"^(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
+# A setext underline under a paragraph: ``===`` makes a level-1 heading,
+# ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
+SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+RULE_RE = re.compile(r"^[ \t]*-{3,}[ \t]*$")
+# A list item marker: ``-`` for an unordered list, ``1.`` for an ordered one.
+LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)\.|-)\s+")
 
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -60,17 +69,60 @@ def _split_frontmatter(source: str) -> tuple[dict[str, Any], str]:
     return metadata, body
 
 
-def _parse_list(lines: list[str], *, ordered: bool) -> Block:
-    """Parse a sequence of list-item lines (including continuation lines)."""
-    marker = re.compile(r"^\s*(?:\d+\.|-)\s+(.*)$")
+def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int, bool]:
+    """Parse the list starting at ``lines[index]``.
+
+    Returns ``(block, end, lazy)``: *end* is the index just past the list,
+    and *lazy* is True when it ends in item text, which a following
+    unindented line would lazily continue (it cannot continue a code block).
+
+    The list runs through its items, their continuation lines (indented two
+    or more columns), and nested items; an unindented item of the other kind
+    ends it. A fenced code block in an item stays in that item, one line per
+    line, indented relative to the item, blank lines included, until it
+    closes or an unindented line ends the item (and the fence with it).
+    """
     items: list[str] = []
-    for line in lines:
-        m = marker.match(line)
-        if m:
-            items.append(m.group(1).strip())
-        elif items:
-            items[-1] = items[-1] + " " + line.strip()
-    return Block(kind="ordered_list" if ordered else "unordered_list", items=items)
+    fence: str | None = None  # the open fence inside the current item
+    content_indent = 0  # columns before the current item's text
+    lazy = False
+    end = index
+    while end < len(lines):
+        line = lines[end]
+        if fence is not None:
+            if not line.strip() or indent_width(line) >= 2:
+                code = dedent(line, content_indent)
+                items[-1] += "\n" + code
+                end += 1
+                if closes_fence(code, fence):
+                    fence = None
+                lazy = False
+                continue
+            fence = None
+        if not line.strip():
+            break
+        marker = LIST_ITEM_RE.match(line)
+        indented = indent_width(line) >= 2
+        if marker and ((marker.group("number") is not None) == ordered or indented):
+            content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
+            content = line[marker.end():].strip()
+            items.append(content)
+        elif items and indented:
+            content = dedent(line, content_indent)
+            # An item holding code keeps its lines; other continuation lines
+            # join the item's text.
+            if FENCE_OPEN_RE.match(content) or "\n" in items[-1]:
+                items[-1] += "\n" + content
+            else:
+                items[-1] += " " + content.strip()
+        else:
+            break
+        opening = FENCE_OPEN_RE.match(content)
+        fence = opening.group("fence") if opening else None
+        lazy = fence is None
+        end += 1
+    kind = "ordered_list" if ordered else "unordered_list"
+    return Block(kind=kind, items=items), end, lazy
 
 
 def _parse_table(lines: list[str]) -> Block:
@@ -168,73 +220,128 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
     return None
 
 
-def _parse_blocks(chunk: str) -> list[Block]:
-    lines = chunk.splitlines()
-    blocks: list[Block] = []
+def _starts_interrupting_item(line: str) -> bool:
+    """True if *line* is a list item that may interrupt a paragraph
+    (CommonMark): indented at most three columns, not empty, and, if
+    ordered, numbered 1."""
+    marker = LIST_ITEM_RE.match(line)
+    return (
+        marker is not None
+        and indent_width(line) <= 3
+        and bool(line[marker.end():].strip())
+        and marker.group("number") in (None, "1")
+    )
+
+
+def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
+    """Return ``(end, setext_level)`` for the paragraph starting at
+    ``lines[index]``. *setext_level* is 1 or 2 when the paragraph is the text
+    of a setext heading, whose underline is ``lines[end - 1]``, else 0.
+
+    A paragraph ends at a blank line or at a block that can interrupt it
+    (CommonMark): a fence, an ATX heading, a block quote, or a list item
+    (an ordered one only when numbered 1). A *lazy* paragraph continues a
+    list, block quote, or table (no blank line between), so it cannot be
+    setext text: ``---`` under it is a rule.
+    """
+    end = index + 1
+    while end < len(lines) and lines[end].strip():
+        line = lines[end]
+        if (
+            FENCE_OPEN_RE.match(line)
+            or HEADING_RE.match(line)
+            or line.lstrip().startswith(">")
+            or _starts_interrupting_item(line)
+        ):
+            break
+        underline = SETEXT_UNDERLINE_RE.match(line)
+        if underline and not lazy:
+            return end + 1, 1 if underline.group(1)[0] == "=" else 2
+        if underline and RULE_RE.match(line):
+            break
+        end += 1
+    return end, 0
+
+
+_Heading = tuple[str, int, str | None]  # title, level, explicit identifier
+
+
+def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
+    """Parse body lines into the preamble's blocks (§4.4) and the sections'.
+
+    Headings (ATX and setext, §4.1) and blocks are recognized in one pass, so
+    a fenced code block is literal everywhere (§11.4): no line inside one is
+    a heading or starts another block.
+    """
+    preamble: list[Block] = []
+    sections: list[tuple[_Heading, list[Block]]] = []
+    blocks = preamble
+    lazy = False  # the last block was a list, quote, or table, with no blank line since
     index = 0
     while index < len(lines):
         line = lines[index]
         if not line.strip():
             index += 1
+            lazy = False
             continue
-        if line.strip() == "---":
+        heading: _Heading | None = None
+        opening = FENCE_OPEN_RE.match(line)
+        atx = HEADING_RE.match(line)
+        marker = LIST_ITEM_RE.match(line)
+        if opening:
+            end = fence_end(lines, index, opening.group("fence"))
+            blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
+            index = end
+            lazy = False
+        elif atx:
+            hashes, title, identifier = atx.groups()
+            heading = (title.strip(), len(hashes), identifier)
+            index += 1
+        elif RULE_RE.match(line):
             blocks.append(Block(kind="rule"))
             index += 1
-            continue
-        if line.lstrip().startswith(">"):
-            quote_lines: list[str] = []
-            while index < len(lines) and lines[index].lstrip().startswith(">"):
-                quote_lines.append(lines[index].lstrip()[1:].lstrip())
-                index += 1
-            blocks.append(Block(kind="quote", text="\n".join(quote_lines).strip()))
-            continue
-        if line.lstrip().startswith("|"):
-            table_lines: list[str] = []
-            while index < len(lines) and lines[index].lstrip().startswith("|"):
-                table_lines.append(lines[index])
-                index += 1
-            if len(table_lines) >= 2:
-                blocks.append(_parse_table(table_lines))
-            continue
-        if re.match(r"^\s*-\s+", line):
-            list_lines: list[str] = []
-            while index < len(lines) and lines[index].strip():
-                cur = lines[index]
-                if (
-                    not re.match(r"^\s*-\s+", cur)
-                    and not cur.startswith("  ")
-                    and not cur.startswith("\t")
-                ):
-                    break
-                list_lines.append(cur)
-                index += 1
-            blocks.append(_parse_list(list_lines, ordered=False))
-            continue
-        if re.match(r"^\s*\d+\.\s+", line):
-            list_lines = []
-            while index < len(lines) and lines[index].strip():
-                cur = lines[index]
-                if (
-                    not re.match(r"^\s*\d+\.\s+", cur)
-                    and not cur.startswith("  ")
-                    and not cur.startswith("\t")
-                ):
-                    break
-                list_lines.append(cur)
-                index += 1
-            blocks.append(_parse_list(list_lines, ordered=True))
-            continue
-        paragraph_lines: list[str] = []
-        while index < len(lines) and lines[index].strip():
-            paragraph_lines.append(lines[index])
-            index += 1
-        blocks.append(_parse_paragraph(" ".join(paragraph_lines)))
-    return blocks
-
-
-def _block_dicts(lines: list[str]) -> list[dict[str, Any]]:
-    """Parse body lines into block dicts for ``document_from_dict``."""
-    return [asdict(block) for block in _parse_blocks("\n".join(lines).strip())]
+            lazy = False
+        elif line.lstrip().startswith(">"):
+            end = index
+            while end < len(lines) and lines[end].lstrip().startswith(">"):
+                end += 1
+            # After ">", one optional space is syntax; any further
+            # indentation belongs to the quoted content (CommonMark).
+            quoted = (quote.lstrip()[1:].removeprefix(" ") for quote in lines[index:end])
+            blocks.append(Block(kind="quote", text="\n".join(quoted).strip()))
+            index = end
+            lazy = True
+        elif line.lstrip().startswith("|") and lines[index + 1:index + 2] and (
+            lines[index + 1].lstrip().startswith("|")
+        ):
+            end = index
+            while end < len(lines) and lines[end].lstrip().startswith("|"):
+                end += 1
+            blocks.append(_parse_table(lines[index:end]))
+            index = end
+            lazy = True
+        elif marker:
+            block, index, lazy = _parse_list(
+                lines, index, ordered=marker.group("number") is not None
+            )
+            blocks.append(block)
+        else:
+            end, setext_level = _paragraph_end(lines, index, lazy)
+            if setext_level:
+                text = " ".join(part.strip() for part in lines[index:end - 1])
+                title, identifier = SETEXT_TEXT_RE.match(text).groups()
+                heading = (title.strip(), setext_level, identifier)
+            else:
+                blocks.append(_parse_paragraph(" ".join(lines[index:end])))
+            index = end
+            lazy = False
+        if heading is not None:
+            if heading[0] == "Signature Block" and heading[2] == "signature-block":
+                break
+            blocks = []
+            sections.append((heading, blocks))
+            lazy = False
+    return preamble, sections
 
 
 # ── Public API ────────────────────────────────────────────────────
@@ -249,40 +356,21 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     """
     # A byte-order mark is an encoding artifact, not content.
     metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
+    preamble, sections = _parse_body(body.splitlines())
     payload: dict[str, Any] = {
         "metadata": metadata,
-        "sections": [],
-        "filename": filename,
-    }
-    lines = body.splitlines()
-    current: dict[str, Any] | None = None
-    # Lines before the first heading are the preamble (§4.4).
-    preamble_lines: list[str] = []
-    current_lines = preamble_lines
-
-    for raw_line in lines:
-        match = HEADING_RE.match(raw_line)
-        if match:
-            hashes, title, identifier = match.groups()
-            level = len(hashes)
-            if title.strip() == "Signature Block" and identifier == "signature-block":
-                break
-            if current is not None:
-                current["blocks"] = _block_dicts(current_lines)
-                payload["sections"].append(current)
-            current = {
-                "title": title.strip(),
+        "sections": [
+            {
+                "title": title,
                 "level": level,
-                "identifier": identifier or slugify_identifier(title.strip()),
+                "identifier": identifier or slugify_identifier(title),
+                "blocks": [asdict(block) for block in blocks],
             }
-            current_lines = []
-        else:
-            current_lines.append(raw_line)
-
-    if current is not None:
-        current["blocks"] = _block_dicts(current_lines)
-        payload["sections"].append(current)
-    payload["preamble"] = _block_dicts(preamble_lines)
+            for (title, level, identifier), blocks in sections
+        ],
+        "filename": filename,
+        "preamble": [asdict(block) for block in preamble],
+    }
     return document_from_dict(payload)
 
 

@@ -210,8 +210,9 @@ grammar — parameters in any order, quoted values decoded — and is what the v
 
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it
 valid, so what you authored is exactly what the validator judges. The serializer, by contrast,
-normalizes: frontmatter is re-emitted as canonical YAML and paragraphs are written as single
-lines, so expect a formatting-normalized file rather than a byte-for-byte copy.
+normalizes: frontmatter is re-emitted as canonical YAML, paragraphs are written as single
+lines, and setext (underlined) headings are written as `#` headings, so expect a
+formatting-normalized file rather than a byte-for-byte copy.
 
 ## What gets checked
 

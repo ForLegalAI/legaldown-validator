@@ -150,6 +150,8 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     "unordered_list": {"kind": "unordered_list", "items": [""]},
     "ordered_list": {"kind": "ordered_list", "items": [""]},
     "quote": {"kind": "quote", "text": ""},
+    # A fenced code block, fences included; its content is literal (§11.4).
+    "code": {"kind": "code", "text": ""},
     "table": {"kind": "table", "headers": ["Column 1", "Column 2"], "rows": [["", ""]]},
     "rule": {"kind": "rule"},
 }
@@ -208,7 +210,8 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
     merged = {**defaults, **payload}
     return Block(
         kind=kind,
-        text=_str(merged.get("text")),
+        # A code block's text is literal source, indentation included.
+        text=str(merged.get("text") or "") if kind == "code" else _str(merged.get("text")),
         definition_id=_str(merged.get("definition_id")),
         term=_str(merged.get("term")),
         prefix=str(merged.get("prefix") or ""),

@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from legaldown import (
+    Block,
     collect_definitions,
     document_from_dict,
     document_to_dict,
@@ -857,3 +858,287 @@ def test_marker_after_a_malformed_directive_is_still_an_anchor():
     """A malformed directive has no value to hide the marker in."""
     result = _validate("Text {{ref: x more {#x}\n\nSee {{ref: x}}.")
     assert result.rules() == {"directive-malformed"}
+
+
+# ── Heading and code-block recognition (§4.1, §11.4) ──────────────
+
+_BARE = _FRONTMATTER.replace("# Terms {#terms}\n\n", "")
+
+
+def _outline(source: str) -> list[tuple[str, int, str]]:
+    return [(s.title, s.level, s.identifier) for s in parse_document(source).sections]
+
+
+def test_setext_headings_are_headings():
+    """§4.1: === and --- underlines make level-1 and level-2 headings."""
+    source = _BARE + "Intro.\n\nPayment\nTerms {#pay}\n=======\n\nText.\n\nLate Fees\n---\n\nMore.\n"
+    assert _outline(source) == [("Payment Terms", 1, "pay"), ("Late Fees", 2, "late-fees")]
+    assert len(parse_document(source).preamble) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["Text.\n\n---\n\nMore.\n", "- item\n---\n", "> quoted\n---\n", "| a | b |\n|---|---|\n| c | d |\n---\n"],
+)
+def test_dashes_not_under_a_paragraph_are_a_rule(body):
+    document = parse_document(_FRONTMATTER + body)
+    assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms")]
+    assert "rule" in [b.kind for b in document.sections[0].blocks]
+
+
+def test_setext_heading_round_trips_as_an_atx_heading():
+    source = _BARE + "Scope\n=====\n\nText.\n"
+    assert "# Scope {#scope}" in serialize_document(parse_document(source))
+
+
+def test_fenced_code_is_one_literal_block():
+    """§11.4: nothing inside a fence is a heading, directive, or anchor, and a
+    blank line inside it does not end it."""
+    fence = "```\n# not a heading\n\n{#z} {{ref: nope}} {{\n```"
+    source = _FRONTMATTER + fence + "\n\n# Next {#next}\n"
+    document = parse_document(source)
+    assert _outline(source) == [("Terms", 1, "terms"), ("Next", 1, "next")]
+    assert [(b.kind, b.text) for b in document.sections[0].blocks] == [("code", fence)]
+    assert validate_document(document).diagnostics == []
+    assert fence in serialize_document(document)
+
+
+@pytest.mark.parametrize(
+    ("fence", "closed"),
+    [
+        ("~~~~\n# x\n~~~\n# y\n~~~~", True),  # a shorter fence does not close it
+        ("```\n# x\n~~~\n# y\n```", True),  # nor does the other character
+        ("```\n# x\n# y", False),  # unclosed: runs to the end of the document
+    ],
+)
+def test_fence_closes_only_on_a_matching_fence(fence, closed):
+    source = _FRONTMATTER + fence + "\n\n# After {#after}\n"
+    expected = [("Terms", 1, "terms")] + ([("After", 1, "after")] if closed else [])
+    assert _outline(source) == expected
+
+
+def test_inline_triple_backticks_do_not_open_a_fence():
+    source = _FRONTMATTER + "```x``` and text\n\n# Next {#next}\n"
+    assert _outline(source) == [("Terms", 1, "terms"), ("Next", 1, "next")]
+
+
+def test_fence_interrupts_a_paragraph():
+    document = parse_document(_FRONTMATTER + "Example:\n```\n{{ref: nope}}\n```\n")
+    assert [b.kind for b in document.sections[0].blocks] == ["paragraph", "code"]
+    assert validate_document(document).diagnostics == []
+
+
+def _kinds(source: str) -> list[str]:
+    return [b.kind for b in parse_document(source).sections[0].blocks]
+
+
+@pytest.mark.parametrize(
+    ("after_fence", "kinds"),
+    [("---", ["code", "rule"]), ("===", ["code", "paragraph"])],
+)
+def test_underline_after_a_fence_is_not_a_setext_heading(after_fence, kinds):
+    """A setext underline needs a paragraph above it; a code block is not one."""
+    source = _FRONTMATTER + "```\ncode\n```\n" + after_fence + "\n"
+    assert _outline(source) == [("Terms", 1, "terms")]
+    assert _kinds(source) == kinds
+
+
+def test_rule_before_setext_text_stays_a_rule():
+    source = _FRONTMATTER + "Text.\n\n---\nFoo\n---\n"
+    assert _outline(source) == [("Terms", 1, "terms"), ("Foo", 2, "foo")]
+    assert _kinds(source) == ["paragraph", "rule"]
+
+
+@pytest.mark.parametrize("body", ["- item\ncontinued\n---\n", "> quoted\nlazy\n---\n"])
+def test_dashes_after_a_lazy_continuation_are_a_rule(body):
+    assert _kinds(_FRONTMATTER + body)[-1] == "rule"
+
+
+def test_fence_inside_a_list_item_does_not_swallow_the_section():
+    body = "- Example:\n  ```\n  code\n\n  code2\n  ```\n\nSee {{ref: nope}}.\n"
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == ["unordered_list", "ref"]
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+def test_tab_indented_backticks_neither_open_nor_close_a_fence():
+    """A tab is four columns (CommonMark), past a fence's three."""
+    assert "ref-broken" in _validate("\t```\n{{ref: nope}}\n").rules("error")
+    source = _FRONTMATTER + "```\n\t```\n# Inside\n```\n"
+    assert _outline(source) == [("Terms", 1, "terms")]
+
+
+def test_indented_fence_round_trips_unchanged():
+    fence = "  ```\n  code\n  ```"
+    assert fence in serialize_document(parse_document(_FRONTMATTER + "Para.\n\n" + fence + "\n"))
+
+
+def test_paragraph_directly_above_dashes_is_a_setext_heading():
+    """CommonMark, which §4.1 follows: a separator needs a blank line above it."""
+    source = _FRONTMATTER + '"Buyer" {{def: buyer}} means X.\n\n---\n\nText.\n'
+    assert "rule" in _kinds(source)
+    heading = _FRONTMATTER + "Closing words\n---\n"
+    assert _outline(heading)[-1] == ("Closing words", 2, "closing-words")
+
+
+def test_fence_opening_on_a_list_marker_line_stays_in_the_item():
+    body = "- ```\n  a\n\n  b\n  ```\n\n# Next {#next}\n\nSee {{ref: nope}}.\n"
+    document = parse_document(_FRONTMATTER + body)
+    assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms"), ("Next", 1, "next")]
+    assert document.sections[0].blocks[0].items == ["```\na\n\nb\n```"]
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+def test_fence_in_a_list_item_is_literal_and_round_trips():
+    body = "- Example:\n  ~~~\n  {{ref: nope}}\n\n  {#zz}\n  ~~~\n"
+    document = parse_document(_FRONTMATTER + body)
+    assert validate_document(document).diagnostics == []
+    assert body.strip() in serialize_document(document)
+
+
+def test_blank_line_ends_the_lazy_context_even_inside_a_list_fence():
+    source = _FRONTMATTER + "- a\n  ```\n  code\n\nHeading\n---\n"
+    assert _outline(source)[-1] == ("Heading", 2, "heading")
+
+
+def test_indented_dashes_are_still_a_rule():
+    assert _kinds(_FRONTMATTER + "Text.\n\n    ---\n\nMore.\n") == ["paragraph", "rule", "paragraph"]
+
+
+def test_a_single_pipe_line_is_a_paragraph_not_dropped():
+    document = parse_document(_FRONTMATTER + "| lone {{ref: nope}}\n")
+    assert _kinds(_FRONTMATTER + "| lone {{ref: nope}}\n") == ["ref"]
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+def test_fence_in_a_block_quote_is_literal():
+    assert _validate("> ```\n> {{ref: nope}}\n> ```\n").diagnostics == []
+
+
+def test_code_block_without_a_fence_is_checked_as_text():
+    """Only a fenced block is literal; a hand-built one is not taken on trust."""
+    document = parse_document(_FRONTMATTER + "Text.\n")
+    document.sections[0].blocks.append(Block(kind="code", text="See {{ref: nope}}."))
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("The parties agree:\n- one\n- two\n---\n", ["paragraph", "unordered_list", "rule"]),
+        ("Intro\n> quoted\n---\n", ["paragraph", "quote", "rule"]),
+        ("The parties agree:\n1. one\n", ["paragraph", "ordered_list"]),
+    ],
+)
+def test_list_or_quote_interrupts_a_paragraph(body, kinds):
+    """CommonMark: a list (ordered only from 1) or a block quote may start
+    without a blank line, so the paragraph above is not setext text."""
+    source = _FRONTMATTER + body
+    assert _outline(source) == [("Terms", 1, "terms")]
+    assert _kinds(source) == kinds
+
+
+def test_item_text_after_its_closed_fence_is_checked():
+    document = parse_document(_FRONTMATTER + "- ```\n  code\n  ```\n  more {{ref: nowhere}}\n")
+    assert document.sections[0].blocks[0].items == ["```\ncode\n```\nmore {{ref: nowhere}}"]
+    assert "ref-broken" in validate_document(document).rules("error")
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+def test_unclosed_fence_in_an_item_ends_at_the_next_item():
+    document = parse_document(_FRONTMATTER + "1. ```\n   x\n2. b\n3. c\n")
+    assert [(b.kind, b.items) for b in document.sections[0].blocks] == [
+        ("ordered_list", ["```\nx", "b", "c"])
+    ]
+
+
+def test_tab_after_a_list_marker_counts_as_columns():
+    document = parse_document(_FRONTMATTER + "-\t```\n\tx\n\t```\n")
+    assert document.sections[0].blocks[0].items == ["```\nx\n```"]
+
+
+def test_text_after_a_list_ending_in_a_fence_is_not_lazy():
+    source = _FRONTMATTER + "- ```\n  x\n  ```\ntext\n---\n"
+    assert _outline(source)[-1] == ("text", 2, "text")
+
+
+def test_rescan_after_a_directive_starts_at_its_line():
+    """Backticks right after a directive are not at a line start, so they do
+    not open a fence."""
+    text = 'a {{ref: x, label="`"}}```\n{{ref: nowhere}} `y`'
+    assert [d.positional for d in iter_directives(text)] == ["x", "nowhere"]
+
+
+def test_code_block_text_after_its_closing_fence_is_checked():
+    document = parse_document(_FRONTMATTER + "Text.\n")
+    document.sections[0].blocks.append(Block(kind="code", text="```\nx\n```\n{{ref: missing}}"))
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+def test_serializer_closes_an_unclosed_fence():
+    document = parse_document(_FRONTMATTER + "Text.\n\n# Next {#next}\n")
+    document.sections[0].blocks.append(Block(kind="code", text="```\nx"))
+    reparsed = parse_document(serialize_document(document))
+    assert [s.identifier for s in reparsed.sections] == ["terms", "next"]
+
+
+def test_code_in_a_list_item_keeps_trailing_spaces():
+    source = _FRONTMATTER + "- ```\n  keep  \n  ```\n"
+    item = parse_document(source).sections[0].blocks[0].items[0]
+    assert item == "```\nkeep  \n```"
+    assert parse_document(serialize_document(parse_document(source))).sections[0].blocks[0].items[0] == item
+
+
+@pytest.mark.parametrize(
+    ("text", "targets"),
+    [
+        ('```{{ref: "a`b"}}\n{{ref: hidden}} and `code`', ["a`b", "hidden"]),
+        ('{{ref: "a`b"}} {{ref: "c`d"}} {{ref: hidden}} `code`', ["a`b", "c`d", "hidden"]),
+    ],
+)
+def test_backticks_in_directive_values_open_nothing(text, targets):
+    """One left-to-right scan: a directive consumes its own backticks."""
+    assert [d.positional for d in iter_directives(text)] == targets
+
+
+@pytest.mark.parametrize("paragraph", ["    ~~~\n    x", "    # not a heading"])
+def test_paragraph_that_would_open_a_block_stays_indented(paragraph):
+    source = _FRONTMATTER + paragraph + "\n\n# Next {#next}\n\nBody.\n"
+    reparsed = parse_document(serialize_document(parse_document(source)))
+    assert reparsed.sections == parse_document(source).sections
+
+
+def test_tabs_inside_list_item_code_are_kept():
+    document = parse_document(_FRONTMATTER + "- item\n  ```\n  a\tb\n  ```\n")
+    assert document.sections[0].blocks[0].items == ["item\n```\na\tb\n```"]
+
+
+def test_serializer_closes_an_unclosed_fence_in_a_list_item():
+    document = parse_document(_FRONTMATTER + "Text.\n")
+    document.sections[0].blocks += [
+        Block(kind="unordered_list", items=["x\n```\ncode"]),
+        Block(kind="unordered_list", items=["y"]),
+    ]
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [b.items for b in blocks[1:]] == [["x\n```\ncode\n```"], ["y"]]
+
+
+def test_indentation_after_the_quote_marker_is_content():
+    """Only one space after > is syntax; a fence line indented four columns
+    inside quoted code is content, not a closing fence."""
+    document = parse_document(_FRONTMATTER + "> ```\n>     ```\n> {{ref: missing}}\n> ```\n")
+    assert validate_document(document).diagnostics == []
+
+
+@pytest.mark.parametrize(
+    ("second_line", "kinds", "headings"),
+    [
+        ("- ", [], ["Some paragraph"]),  # an empty item is a setext underline
+        ("    - x", ["paragraph"], []),  # indented four: paragraph text
+        ("2. two", ["paragraph"], []),  # ordered, not numbered 1
+    ],
+)
+def test_only_some_list_items_interrupt_a_paragraph(second_line, kinds, headings):
+    source = _FRONTMATTER + "Some paragraph\n" + second_line + "\n"
+    assert _kinds(source) == kinds
+    assert [title for title, _level, _id in _outline(source)[1:]] == headings
