@@ -217,7 +217,7 @@ def collect_definitions(
         if block.kind == "definition":
             term = (block.term or "").strip()
             raw_id = (block.definition_id or "").strip()
-            did = raw_id or slugify_identifier(term, fallback="term")
+            did = raw_id or slugify_identifier(term)
             refs.append(
                 DefinitionRef(
                     id=did,
@@ -239,7 +239,7 @@ def collect_definitions(
                     continue
                 term = anchor.term
                 raw_id = anchor.directive.positional or ""
-                did = raw_id or slugify_identifier(term, fallback="term")
+                did = raw_id or slugify_identifier(term)
                 refs.append(
                     DefinitionRef(
                         id=did,

@@ -25,6 +25,7 @@ from ..specification import SPEC_VERSION, parse_version
 from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
 from .helpers import (
     format_section_number,
+    is_lossy_slug,
     is_positive_numeric,
     is_valid_iso_date,
     is_valid_money_amount,
@@ -749,8 +750,16 @@ def validate_document(
             )
         elif not identifier:
             # A comment is not part of the rendered heading (§8.6).
-            base = slugify_identifier(HTML_COMMENT_RE.sub("", section.title))
+            text = HTML_COMMENT_RE.sub("", section.title)
+            base = slugify_identifier(text)
             identifier = free_identifier(base, presence)
+            if is_lossy_slug(text):
+                result.warning(
+                    "anchor-lossy-slug",
+                    f"The identifier generated for '{section.title}' is '{base}': letters or "
+                    f"digits without an ASCII form were dropped. Give the heading an explicit "
+                    f"identifier (§5.3).",
+                )
             if identifier != base:
                 result.warning(
                     "anchor-autogen-collision",
@@ -856,6 +865,13 @@ def validate_document(
                 f"Use lowercase letters, numbers, and hyphens only.",
             )
             continue
+        if ref.auto_id and is_lossy_slug(ref.term):
+            result.warning(
+                "def-lossy-slug",
+                f"The id generated for the defined term '{ref.term}' is '{def_id}': letters or "
+                f"digits without an ASCII form were dropped. Give the definition an explicit "
+                f"id (§5.3, §7.2).",
+            )
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.

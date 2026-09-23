@@ -229,8 +229,8 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title |
 | **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
-| **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions, markers outside an anchor position |
-| **Definitions** | Undefined `{{term:}}`, duplicate ids, missing quoted span, ambiguous quoting, unreferenced definitions |
+| **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions and lost letters, markers outside an anchor position |
+| **Definitions** | Undefined `{{term:}}`, duplicate ids, auto-generated ids that lost letters, missing quoted span, ambiguous quoting, unreferenced definitions |
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |
 | **Placeholders** | Malformed ids, invalid types, one blank with two types, currencies, or units, placeholders in structural and format-checked frontmatter fields |
