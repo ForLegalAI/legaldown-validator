@@ -14,11 +14,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# Something that looks like a marker: braces around words that each start
-# with ``#`` or ``when=``, such as ``{#id}`` or ``{#a #b}``. Whether it is one
-# is decided by parse_marker; a look-alike is literal text (anchor-misplaced).
+# Something that looks like a marker: braces around a first word starting
+# with ``#`` or ``when=`` and further words each holding ``#`` or ``=``, such
+# as ``{#id}``, ``{#a #b}``, or ``{#id class=x}``. Whether it is one is
+# decided by parse_marker; a look-alike is literal text (anchor-misplaced).
 # Prose in braces, such as ``{#1 and #2}``, is not a look-alike.
-_LOOK_ALIKE = r"\{(?:#|when=)[^{}\s]+(?:[ \t]+(?:#|when=)[^{}\s]+)*\}"
+_LOOK_ALIKE = (
+    r"\{[ \t]*(?:#|when=)[^{}\s]+(?:[ \t]+[^{}\s]*[#=][^{}\s]*)*[ \t]*\}"
+)
 MARKER_RE = re.compile(_LOOK_ALIKE)
 
 _ATTRIBUTE_RE = re.compile(r"#(?P<id>\S+)|when=(?P<when>\S+)")
@@ -38,9 +41,10 @@ def parse_marker(text: str) -> Marker | None:
     """The marker *text* (braces included) holds, or None when it is not a
     marker: an attribute other than ``#id`` and ``when=``, one written
     twice, or none at all."""
-    if not (text.startswith("{") and text.endswith("}")):
+    inner = text[1:-1]
+    if not (text.startswith("{") and text.endswith("}")) or inner != inner.strip():
         return None
-    words = text[1:-1].split()
+    words = inner.split()
     identifier = condition = ""
     for word in words:
         attribute = _ATTRIBUTE_RE.fullmatch(word)

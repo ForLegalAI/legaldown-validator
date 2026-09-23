@@ -190,13 +190,14 @@ class Units:
         self._section_enclosing: list[Presence] = []
         stack: list[tuple[int, Presence]] = []  # (level, presence) of open sections
         for section in document.sections:
-            while stack and stack[-1][0] >= section.level:
+            level = min(max(section.level, 1), 5)  # clamped, as numbering does
+            while stack and stack[-1][0] >= level:
                 stack.pop()
             enclosing = stack[-1][1] if stack else ALWAYS
             presence = enclosing | own_presence(section.condition, questions)
             self._section_enclosing.append(enclosing)
             self._section_presence.append(presence)
-            stack.append((section.level, presence))
+            stack.append((level, presence))
         self._own_conditions: dict[tuple[int | None, int, int | None], Presence] = {}
         for found in markers:
             if not found.placed(template):

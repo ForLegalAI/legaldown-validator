@@ -407,3 +407,13 @@ def test_alternatives_share_a_number():
     )
     result = validate_document(_parse(body))
     assert [s.number for s in result.sections] == ["1", "1.1", "1", "1.1", "2"]
+
+
+@pytest.mark.parametrize("heading", ["# Services {#services class=x}", "# Services { #services }"])
+def test_a_mistyped_heading_marker_is_reported(heading):
+    assert "anchor-misplaced" in _rules(f"{heading}\n\nText.", "")
+
+
+def test_an_out_of_range_heading_is_nested_as_it_is_numbered():
+    body = "# A\n\n## B\n\n### C\n\n#### D\n\n##### E {when=vat}\n\nText.\n\n###### F {when=!vat}\n\nText."
+    assert "condition-never-true" not in _rules(body)
