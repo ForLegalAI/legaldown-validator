@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from legaldown import iter_directives, serialize_document
+from legaldown import (
+    collect_definitions,
+    document_from_dict,
+    document_to_dict,
+    iter_directives,
+    serialize_document,
+)
 from legaldown.directives import format_value
 from legaldown.parser import collect_source_directives, parse_document
 from legaldown.validator import validate_document
@@ -688,3 +694,61 @@ The {{term: services}} are amended.
         document, import_definitions=lambda *_: {"services": "Services"}
     )
     assert "amend-def-override" in result.rules("warning")
+
+
+# ── Preamble (§4.4) ───────────────────────────────────────────────
+
+_PREAMBLE_SOURCE = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + (
+    'This Agreement (this "Agreement" {{def: agreement}}) is entered into\n'
+    "between {{party: acme}} and {{party: beta}}.\n"
+    "\n"
+    "# Confidentiality {#confidentiality}\n"
+    "\n"
+    "The {{term: agreement}} binds both sides.\n"
+)
+
+
+def test_preamble_is_kept_out_of_the_numbered_sections():
+    document = parse_document(_PREAMBLE_SOURCE)
+    assert [s.identifier for s in document.sections] == ["confidentiality"]
+    assert "entered into between" in document.preamble[0].text
+
+
+def test_definition_in_the_preamble_is_document_wide():
+    result = validate_document(parse_document(_PREAMBLE_SOURCE))
+    assert result.definition_lookup == {"agreement": "Agreement"}
+    assert result.diagnostics == []
+
+
+def test_directives_in_the_preamble_are_checked():
+    source = _PREAMBLE_SOURCE.replace("{{party: beta}}", "{{party: nobody}} on {{date: 2026-02-30}}")
+    assert {"party-unknown", "date-invalid"} <= validate_document(parse_document(source)).rules("error")
+
+
+def test_preamble_round_trips():
+    document = parse_document(_PREAMBLE_SOURCE)
+    reparsed = parse_document(serialize_document(document))
+    assert reparsed.preamble == document.preamble
+    assert reparsed.sections == document.sections
+
+
+def test_document_of_only_a_preamble():
+    source = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + "By {{party: nobody}}.\n"
+    document = parse_document(source)
+    assert document.sections == [] and len(document.preamble) == 1
+    assert "party-unknown" in validate_document(document).rules("error")
+
+
+def test_preamble_paragraph_anchor_is_not_a_ref_target():
+    """§4.4: preamble paragraphs cannot carry anchors or be referenced."""
+    source = _PREAMBLE_SOURCE.replace("{{party: beta}}.", "{{party: beta}}. {#intro}") + (
+        "See {{ref: intro}}.\n"
+    )
+    assert "ref-broken" in validate_document(parse_document(source)).rules("error")
+
+
+def test_preamble_survives_the_dict_round_trip():
+    document = parse_document(_PREAMBLE_SOURCE)
+    assert document_from_dict(document_to_dict(document)) == document
+    ref = next(r for r in collect_definitions(document) if r.id == "agreement")
+    assert ref.section_identifier == ""

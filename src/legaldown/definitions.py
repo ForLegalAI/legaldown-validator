@@ -156,7 +156,7 @@ class DefinitionRef:
 
     id: str
     term: str
-    section_identifier: str
+    section_identifier: str  # "" for the preamble (§4.4)
     block_index: int
     inline: bool       # True: mid-text anchor; False: leading anchor of a definition block
     auto_id: bool      # True if the id was derived from the term (omitted in source)
@@ -186,41 +186,41 @@ def collect_definitions(
     """
     lang = language or document.metadata.language or "en"
     refs: list[DefinitionRef] = []
-    for section in document.sections:
-        for block_index, block in enumerate(section.blocks):
-            if block.kind == "definition":
-                term = (block.term or "").strip()
-                raw_id = (block.definition_id or "").strip()
+    for section, block_index, block in document.blocks():
+        section_identifier = section.identifier if section else ""
+        if block.kind == "definition":
+            term = (block.term or "").strip()
+            raw_id = (block.definition_id or "").strip()
+            did = raw_id or slugify_identifier(term, fallback="term")
+            refs.append(
+                DefinitionRef(
+                    id=did,
+                    term=term or did.replace("-", " ").title(),
+                    section_identifier=section_identifier,
+                    block_index=block_index,
+                    inline=False,
+                    auto_id=not raw_id,
+                )
+            )
+        for fragment in text_fragments(block):
+            for anchor in find_definition_anchors(fragment, language=lang):
+                # A malformed {{def:}} has no id to register; the validator
+                # reports it as directive-malformed.
+                if anchor.term is None or anchor.directive.malformed:
+                    continue
+                term = anchor.term
+                raw_id = anchor.directive.positional or ""
                 did = raw_id or slugify_identifier(term, fallback="term")
                 refs.append(
                     DefinitionRef(
                         id=did,
-                        term=term or did.replace("-", " ").title(),
-                        section_identifier=section.identifier,
+                        term=term,
+                        section_identifier=section_identifier,
                         block_index=block_index,
-                        inline=False,
+                        inline=True,
                         auto_id=not raw_id,
                     )
                 )
-            for fragment in text_fragments(block):
-                for anchor in find_definition_anchors(fragment, language=lang):
-                    # A malformed {{def:}} has no id to register; the validator
-                    # reports it as directive-malformed.
-                    if anchor.term is None or anchor.directive.malformed:
-                        continue
-                    term = anchor.term
-                    raw_id = anchor.directive.positional or ""
-                    did = raw_id or slugify_identifier(term, fallback="term")
-                    refs.append(
-                        DefinitionRef(
-                            id=did,
-                            term=term,
-                            section_identifier=section.identifier,
-                            block_index=block_index,
-                            inline=True,
-                            auto_id=not raw_id,
-                        )
-                    )
     return refs
 
 

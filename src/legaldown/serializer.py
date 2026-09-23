@@ -182,6 +182,10 @@ def serialize_document(document: Document) -> str:
         frontmatter,
         "---",
     ]
+    for block in document.preamble:
+        rendered = _render_block(block)
+        if rendered:
+            parts.extend(["", rendered])
     for section in document.sections:
         heading = f"{'#' * section.level} {section.title.strip()}"
         if section.identifier.strip():

@@ -245,7 +245,9 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     }
     lines = body.splitlines()
     current: dict[str, Any] | None = None
-    current_lines: list[str] = []
+    # Lines before the first heading are the preamble (§4.4).
+    preamble_lines: list[str] = []
+    current_lines = preamble_lines
 
     for raw_line in lines:
         match = HEADING_RE.match(raw_line)
@@ -266,7 +268,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
                 "identifier": identifier or slugify_identifier(title.strip()),
             }
             current_lines = []
-        elif current is not None:
+        else:
             current_lines.append(raw_line)
 
     if current is not None:
@@ -274,13 +276,10 @@ def parse_document(source: str, *, filename: str = "") -> Document:
             asdict(block) for block in _parse_blocks("\n".join(current_lines).strip())
         ]
         payload["sections"].append(current)
-
-    if not payload.get("sections"):
-        payload["sections"] = []
-    document = document_from_dict(payload)
-    if not document.sections:
-        document.sections = []
-    return document
+    payload["preamble"] = [
+        asdict(block) for block in _parse_blocks("\n".join(preamble_lines).strip())
+    ]
+    return document_from_dict(payload)
 
 
 def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
@@ -290,18 +289,17 @@ def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
     """
     refs: set[str] = set()
     terms: set[str] = set()
-    for section in document.sections:
-        for block in section.blocks:
-            if block.kind == "ref" and block.target:
-                refs.add(block.target)
-            if block.kind == "term" and block.target:
-                terms.add(block.target)
-            for fragment in text_fragments(block):
-                for directive in iter_directives(fragment):
-                    if directive.malformed or not directive.positional:
-                        continue
-                    if directive.name == "ref":
-                        refs.add(directive.positional)
-                    elif directive.name == "term":
-                        terms.add(directive.positional)
+    for _section, _index, block in document.blocks():
+        if block.kind == "ref" and block.target:
+            refs.add(block.target)
+        if block.kind == "term" and block.target:
+            terms.add(block.target)
+        for fragment in text_fragments(block):
+            for directive in iter_directives(fragment):
+                if directive.malformed or not directive.positional:
+                    continue
+                if directive.name == "ref":
+                    refs.add(directive.positional)
+                elif directive.name == "term":
+                    terms.add(directive.positional)
     return refs, terms

@@ -488,30 +488,29 @@ def validate_document(
             auto_ids_seen[def_id] = ref.term
 
     # ── Definition source-form checks (§7.2 validation table) ──
-    for section in document.sections:
-        for block in section.blocks:
-            for fragment in text_fragments(block):
-                for anchor in find_definition_anchors(
-                    fragment, language=document.metadata.language
-                ):
-                    if anchor.term is None:
-                        result.error(
-                            "def-no-quoted-span",
-                            "A {{def:}} anchor must immediately follow a quoted defined term.",
-                        )
-                        continue
-                    if anchor.emphasis:
-                        result.warning(
-                            "def-emphasis",
-                            "Defined term wrapped in emphasis markers in source. Quotation marks "
-                            "alone delimit a defined term; emphasis is a render-time style.",
-                        )
-                    if anchor.single_quoted:
-                        result.warning(
-                            "def-single-quote-ambiguous",
-                            f"Single-quoted defined term '{anchor.term}' may be ambiguous "
-                            f"with an apostrophe (U+2019); prefer double-quote delimiters.",
-                        )
+    for _section, _index, block in document.blocks():
+        for fragment in text_fragments(block):
+            for anchor in find_definition_anchors(
+                fragment, language=document.metadata.language
+            ):
+                if anchor.term is None:
+                    result.error(
+                        "def-no-quoted-span",
+                        "A {{def:}} anchor must immediately follow a quoted defined term.",
+                    )
+                    continue
+                if anchor.emphasis:
+                    result.warning(
+                        "def-emphasis",
+                        "Defined term wrapped in emphasis markers in source. Quotation marks "
+                        "alone delimit a defined term; emphasis is a render-time style.",
+                    )
+                if anchor.single_quoted:
+                    result.warning(
+                        "def-single-quote-ambiguous",
+                        f"Single-quoted defined term '{anchor.term}' may be ambiguous "
+                        f"with an apostrophe (U+2019); prefer double-quote delimiters.",
+                    )
 
     # ── Amendment definition import (§7.5) ──
     _amends_is_legaldown = False
@@ -606,185 +605,184 @@ def validate_document(
             if _check_directive_arguments(directive, result):
                 _check_placeholder(directive, result, placeholder_types)
 
-    for section in document.sections:
-        for block in section.blocks:
-            # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
-            # block fields when they hold it without loss (no other parameters).
-            ref_targets: list[str] = []
-            term_targets: list[str] = []
-            if block.kind == "ref" and block.target.strip():
-                ref_targets.append(block.target.strip())
-            if block.kind == "term" and block.target.strip():
-                term_targets.append(block.target.strip())
-            for fragment in text_fragments(block):
-                for _offset in find_stray_braces(fragment):
-                    result.warning(
-                        "brace-stray",
-                        "'{{' does not begin a directive and is literal text; "
-                        "write '\\{{' if that is intended (§11.4).",
-                    )
-                for directive in iter_directives(fragment):
-                    name = directive.name
-                    if not _check_directive_arguments(directive, result):
-                        continue
-                    # ── Unknown directive names (§11.5): well-formed only ──
-                    if name not in KNOWN_DIRECTIVES:
-                        result.error(
-                            "directive-unknown",
-                            f"Unknown directive '{{{{{name}:}}}}'. Renderers replace it "
-                            f"with [UNKNOWN DIRECTIVE: {name}] (§11.5).",
-                        )
-                        continue
-                    value = directive.positional or ""
-                    params = directive.params
-                    if name in ("ref", "term") and not value:
-                        result.error(
-                            "ref-broken" if name == "ref" else "term-undefined",
-                            f"'{directive.source}' has no target.",
-                        )
-                    elif name == "ref":
-                        ref_targets.append(value)
-                    elif name == "term":
-                        term_targets.append(value)
-                    elif name == "date":
-                        result.inline_dates.append(value)
-                        if not is_valid_iso_date(value):
-                            result.error(
-                                "date-invalid",
-                                f"Invalid date value '{value}'. Must be a valid ISO 8601 date (YYYY-MM-DD).",
-                            )
-                    elif name == "money":
-                        currency = params.get("currency", "")
-                        result.inline_money.append((value, currency))
-                        if not is_valid_money_amount(value):
-                            result.error(
-                                "money-invalid-amount",
-                                f"Invalid money amount '{value}'. Must be a non-negative numeric value.",
-                            )
-                        if currency:
-                            if currency not in KNOWN_CURRENCIES:
-                                result.warning(
-                                    "money-unknown-currency",
-                                    f"Unrecognized currency code '{currency}'.",
-                                )
-                        else:
-                            result.warning(
-                                "money-missing-currency",
-                                "Money directive without currency parameter.",
-                            )
-                    elif name == "duration":
-                        dur_unit = params.get("unit", "")
-                        result.inline_durations.append((value, dur_unit))
-                        if not is_positive_numeric(value):
-                            result.error(
-                                "duration-invalid-value",
-                                f"Invalid duration value '{value}'. Must be a positive numeric value.",
-                            )
-                        if not dur_unit:
-                            result.error(
-                                "duration-invalid-unit",
-                                "Duration directive missing required unit parameter.",
-                            )
-                        elif dur_unit == "M":
-                            # §10.5: bare "M" is deliberately undefined (ISO 8601
-                            # would read it as months; earlier drafts as minutes).
-                            result.error(
-                                "duration-invalid-unit",
-                                "Duration unit 'M' is not defined. Use 'MIN' for minutes or 'MO' for months.",
-                            )
-                        elif dur_unit not in VALID_DURATION_UNITS:
-                            result.error(
-                                "duration-invalid-unit",
-                                f"Invalid duration unit '{dur_unit}'. Must be one of: S, MIN, H, D, W, MO, Y.",
-                            )
-                    elif name == "party":
-                        if not value or not IDENTIFIER_RE.fullmatch(value):
-                            result.error(
-                                "party-name-malformed",
-                                f"Party directive has invalid role value '{value}'. Must match [a-z][a-z0-9-]*.",
-                            )
-                        elif value not in result.party_lookup:
-                            result.error(
-                                "party-unknown",
-                                f"Party directive references unknown party: '{value}'.",
-                            )
-                    elif name == "side":
-                        if not value or not IDENTIFIER_RE.fullmatch(value):
-                            result.error(
-                                "side-name-malformed",
-                                f"Side directive has invalid value '{value}'. Must match [a-z][a-z0-9-]*.",
-                            )
-                        elif value not in seen_side_names:
-                            result.error(
-                                "side-unknown",
-                                f"Side directive references unknown side: '{value}'.",
-                            )
-                    elif name == "field":
-                        ftype = params.get("type", "")
-                        if not ftype:
-                            result.error(
-                                "field-type-missing",
-                                "Field directive is missing required type parameter.",
-                            )
-                        elif not IDENTIFIER_RE.match(ftype):
-                            result.error(
-                                "field-type-missing",
-                                f"Field type '{ftype}' is invalid — must match [a-z][a-z0-9-]*.",
-                            )
-                        elif (
-                            document.metadata.field_types
-                            and ftype not in document.metadata.field_types
-                        ):
-                            result.warning(
-                                "field-type-undeclared",
-                                f"Field type '{ftype}' is not declared in field_types.",
-                            )
-                        result.inline_fields.append((value, ftype))
-                    elif name == "placeholder":
-                        _check_placeholder(directive, result, placeholder_types)
-                    elif name == "attach":
-                        referenced_attachments.add(value)
-                        if value not in attachment_ids:
-                            result.error(
-                                "attach-undeclared",
-                                f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.",
-                            )
-            for target in ref_targets:
-                if target in result.section_lookup:
+    for _section, _index, block in document.blocks():
+        # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
+        # block fields when they hold it without loss (no other parameters).
+        ref_targets: list[str] = []
+        term_targets: list[str] = []
+        if block.kind == "ref" and block.target.strip():
+            ref_targets.append(block.target.strip())
+        if block.kind == "term" and block.target.strip():
+            term_targets.append(block.target.strip())
+        for fragment in text_fragments(block):
+            for _offset in find_stray_braces(fragment):
+                result.warning(
+                    "brace-stray",
+                    "'{{' does not begin a directive and is literal text; "
+                    "write '\\{{' if that is intended (§11.4).",
+                )
+            for directive in iter_directives(fragment):
+                name = directive.name
+                if not _check_directive_arguments(directive, result):
                     continue
-                if target in attachment_ids:
-                    # §5.6: attachments live in the anchor namespace but are
-                    # referenced with {{attach:}}, never {{ref:}}.
+                # ── Unknown directive names (§11.5): well-formed only ──
+                if name not in KNOWN_DIRECTIVES:
                     result.error(
-                        "ref-targets-attachment",
-                        f"Reference '{{{{ref: {target}}}}}' targets an attachment id. "
-                        f"Use '{{{{attach: {target}}}}}' instead.",
+                        "directive-unknown",
+                        f"Unknown directive '{{{{{name}:}}}}'. Renderers replace it "
+                        f"with [UNKNOWN DIRECTIVE: {name}] (§11.5).",
                     )
-                else:
-                    result.error("ref-broken", f"Broken section reference: '{target}'.")
-            for target in term_targets:
-                result.used_terms.add(target)
-                if target not in result.definition_lookup:
-                    if document.metadata.amends:
-                        if _amends_is_legaldown and _amends_import_succeeded:
-                            result.error(
-                                "amend-term-undefined",
-                                f"Undefined term reference: '{target}' (not found in "
-                                f"amendment or imported original).",
-                            )
-                        else:
-                            # Original unavailable or not LegalDown source:
-                            # the reference may resolve there (§15.8).
-                            result.info(
-                                "amend-term-unresolvable",
-                                f"Term reference '{target}' is not defined in the "
-                                f"amendment; the original document is not available "
-                                f"to verify it.",
+                    continue
+                value = directive.positional or ""
+                params = directive.params
+                if name in ("ref", "term") and not value:
+                    result.error(
+                        "ref-broken" if name == "ref" else "term-undefined",
+                        f"'{directive.source}' has no target.",
+                    )
+                elif name == "ref":
+                    ref_targets.append(value)
+                elif name == "term":
+                    term_targets.append(value)
+                elif name == "date":
+                    result.inline_dates.append(value)
+                    if not is_valid_iso_date(value):
+                        result.error(
+                            "date-invalid",
+                            f"Invalid date value '{value}'. Must be a valid ISO 8601 date (YYYY-MM-DD).",
+                        )
+                elif name == "money":
+                    currency = params.get("currency", "")
+                    result.inline_money.append((value, currency))
+                    if not is_valid_money_amount(value):
+                        result.error(
+                            "money-invalid-amount",
+                            f"Invalid money amount '{value}'. Must be a non-negative numeric value.",
+                        )
+                    if currency:
+                        if currency not in KNOWN_CURRENCIES:
+                            result.warning(
+                                "money-unknown-currency",
+                                f"Unrecognized currency code '{currency}'.",
                             )
                     else:
-                        result.error(
-                            "term-undefined", f"Undefined term reference: '{target}'."
+                        result.warning(
+                            "money-missing-currency",
+                            "Money directive without currency parameter.",
                         )
+                elif name == "duration":
+                    dur_unit = params.get("unit", "")
+                    result.inline_durations.append((value, dur_unit))
+                    if not is_positive_numeric(value):
+                        result.error(
+                            "duration-invalid-value",
+                            f"Invalid duration value '{value}'. Must be a positive numeric value.",
+                        )
+                    if not dur_unit:
+                        result.error(
+                            "duration-invalid-unit",
+                            "Duration directive missing required unit parameter.",
+                        )
+                    elif dur_unit == "M":
+                        # §10.5: bare "M" is deliberately undefined (ISO 8601
+                        # would read it as months; earlier drafts as minutes).
+                        result.error(
+                            "duration-invalid-unit",
+                            "Duration unit 'M' is not defined. Use 'MIN' for minutes or 'MO' for months.",
+                        )
+                    elif dur_unit not in VALID_DURATION_UNITS:
+                        result.error(
+                            "duration-invalid-unit",
+                            f"Invalid duration unit '{dur_unit}'. Must be one of: S, MIN, H, D, W, MO, Y.",
+                        )
+                elif name == "party":
+                    if not value or not IDENTIFIER_RE.fullmatch(value):
+                        result.error(
+                            "party-name-malformed",
+                            f"Party directive has invalid role value '{value}'. Must match [a-z][a-z0-9-]*.",
+                        )
+                    elif value not in result.party_lookup:
+                        result.error(
+                            "party-unknown",
+                            f"Party directive references unknown party: '{value}'.",
+                        )
+                elif name == "side":
+                    if not value or not IDENTIFIER_RE.fullmatch(value):
+                        result.error(
+                            "side-name-malformed",
+                            f"Side directive has invalid value '{value}'. Must match [a-z][a-z0-9-]*.",
+                        )
+                    elif value not in seen_side_names:
+                        result.error(
+                            "side-unknown",
+                            f"Side directive references unknown side: '{value}'.",
+                        )
+                elif name == "field":
+                    ftype = params.get("type", "")
+                    if not ftype:
+                        result.error(
+                            "field-type-missing",
+                            "Field directive is missing required type parameter.",
+                        )
+                    elif not IDENTIFIER_RE.match(ftype):
+                        result.error(
+                            "field-type-missing",
+                            f"Field type '{ftype}' is invalid — must match [a-z][a-z0-9-]*.",
+                        )
+                    elif (
+                        document.metadata.field_types
+                        and ftype not in document.metadata.field_types
+                    ):
+                        result.warning(
+                            "field-type-undeclared",
+                            f"Field type '{ftype}' is not declared in field_types.",
+                        )
+                    result.inline_fields.append((value, ftype))
+                elif name == "placeholder":
+                    _check_placeholder(directive, result, placeholder_types)
+                elif name == "attach":
+                    referenced_attachments.add(value)
+                    if value not in attachment_ids:
+                        result.error(
+                            "attach-undeclared",
+                            f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.",
+                        )
+        for target in ref_targets:
+            if target in result.section_lookup:
+                continue
+            if target in attachment_ids:
+                # §5.6: attachments live in the anchor namespace but are
+                # referenced with {{attach:}}, never {{ref:}}.
+                result.error(
+                    "ref-targets-attachment",
+                    f"Reference '{{{{ref: {target}}}}}' targets an attachment id. "
+                    f"Use '{{{{attach: {target}}}}}' instead.",
+                )
+            else:
+                result.error("ref-broken", f"Broken section reference: '{target}'.")
+        for target in term_targets:
+            result.used_terms.add(target)
+            if target not in result.definition_lookup:
+                if document.metadata.amends:
+                    if _amends_is_legaldown and _amends_import_succeeded:
+                        result.error(
+                            "amend-term-undefined",
+                            f"Undefined term reference: '{target}' (not found in "
+                            f"amendment or imported original).",
+                        )
+                    else:
+                        # Original unavailable or not LegalDown source:
+                        # the reference may resolve there (§15.8).
+                        result.info(
+                            "amend-term-unresolvable",
+                            f"Term reference '{target}' is not defined in the "
+                            f"amendment; the original document is not available "
+                            f"to verify it.",
+                        )
+                else:
+                    result.error(
+                        "term-undefined", f"Undefined term reference: '{target}'."
+                    )
 
     # Warn about declared but unreferenced attachments (§15.10).
     for att in document.metadata.attachments:

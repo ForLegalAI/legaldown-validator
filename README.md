@@ -199,6 +199,10 @@ with open("contract.lgd", "w", encoding="utf-8") as handle:
     handle.write(serialize_document(document))
 ```
 
+Content before the first heading — typically the sentence identifying the parties — is the
+document's preamble (§4.4): it is unnumbered, so it lives in `document.preamble` rather than in
+`sections`. `document.blocks()` walks every body block, preamble first.
+
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
 structures, and `render_block()` renders a single block when you are driving your own layout.
 `iter_directives()` lexes the directives in a piece of text by the §11.2
