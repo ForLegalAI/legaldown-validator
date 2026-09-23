@@ -216,7 +216,7 @@ The full rule set with severities and examples lives in the specification (§15)
 | Area | Checks include |
 |---|---|
 | **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title |
-| **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define |
+| **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
 | **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions |
 | **Definitions** | Undefined `{{term:}}`, duplicate ids, missing quoted span, ambiguous quoting, unreferenced definitions |

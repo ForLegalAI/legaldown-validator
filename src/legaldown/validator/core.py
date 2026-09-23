@@ -14,6 +14,7 @@ from ..directives import (
     DIRECTIVE_PARAMS,
     KNOWN_DIRECTIVES,
     Directive,
+    find_stray_braces,
     iter_directives,
     strip_uninterpreted,
 )
@@ -39,6 +40,7 @@ from .result import SectionIndexEntry, ValidationResult
 # Type aliases for the optional definitions-import callbacks.
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
 AttachmentDefinitionsImporter = Callable[[str], dict[str, str] | None]
+
 
 def _placeholders(value: str) -> list[Directive]:
     """The ``{{placeholder:}}`` directives in a frontmatter value (§3.10)."""
@@ -607,7 +609,7 @@ def validate_document(
     for section in document.sections:
         for block in section.blocks:
             # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
-            # block fields when they represent it exactly (no other parameters).
+            # block fields when they hold it without loss (no other parameters).
             ref_targets: list[str] = []
             term_targets: list[str] = []
             if block.kind == "ref" and block.target.strip():
@@ -615,6 +617,12 @@ def validate_document(
             if block.kind == "term" and block.target.strip():
                 term_targets.append(block.target.strip())
             for fragment in text_fragments(block):
+                for _offset in find_stray_braces(fragment):
+                    result.warning(
+                        "brace-stray",
+                        "'{{' does not begin a directive and is literal text; "
+                        "write '\\{{' if that is intended (§11.4).",
+                    )
                 for directive in iter_directives(fragment):
                     name = directive.name
                     if not _check_directive_arguments(directive, result):

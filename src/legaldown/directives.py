@@ -51,13 +51,15 @@ _WS = " \t"
 # §11.4: directives and anchor markers are not recognized inside fenced code
 # blocks, HTML comments, or inline code spans. One alternation, so whichever
 # construct opens first wins: a `<!--` inside a code span is code, not the
-# start of a comment.
+# start of a comment. A code span closes on a backtick run of its opening
+# run's length (CommonMark), so ```x``` is one span.
 _LITERAL_RE = re.compile(
-    r"^(?P<fence>```|~~~).*?^(?P=fence)"
+    r"^(?P<fence>`{3,}|~{3,})[^`\n]*\n.*?^(?P=fence)"
     r"|<!--.*?-->"
-    r"|``.*?``|`[^`\n]*`",
+    r"|(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`)",
     re.DOTALL | re.MULTILINE,
 )
+_BRACES_RE = re.compile(r"\{\{")
 
 
 def strip_uninterpreted(text: str) -> str:
@@ -66,10 +68,19 @@ def strip_uninterpreted(text: str) -> str:
     Directive-like text in those regions is literal (§11.4); blanking it keeps
     it out of every scan without shifting the position of anything else.
     """
-    def _blank(match: re.Match) -> str:
-        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
-
-    return _LITERAL_RE.sub(_blank, text or "")
+    text = text or ""
+    parts: list[str] = []
+    done = search = 0
+    while match := _LITERAL_RE.search(text, search):
+        if _is_escaped(text, match.start()):
+            # A backslash-escaped backtick or ``<`` opens nothing.
+            search = match.start() + 1
+            continue
+        parts.append(text[done:match.start()])
+        parts.append("".join("\n" if ch == "\n" else " " for ch in match.group(0)))
+        done = search = match.end()
+    parts.append(text[done:])
+    return "".join(parts)
 
 
 @dataclass(slots=True)
@@ -81,8 +92,8 @@ class Directive:
     value. A repeated parameter keeps its first value in ``params`` and is
     listed in ``duplicates``. ``malformed`` describes the §11.2 violation, or
     is empty for a well-formed directive; a malformed directive carries no
-    arguments, and ``source`` runs through the first ``}}`` on its line, or to
-    the end of the line.
+    arguments, and runs through the first ``}}`` on its line or up to the next
+    directive opener (§11.4 opener commitment), whichever comes first.
     """
 
     name: str
@@ -112,12 +123,7 @@ class Directive:
 
 
 class _Malformed(Exception):
-    """A §11.2 violation. *stop* is where the malformed directive ends, when
-    that is known; otherwise it runs through the first ``}}`` on its line."""
-
-    def __init__(self, reason: str, stop: int | None = None) -> None:
-        super().__init__(reason)
-        self.stop = stop
+    pass
 
 
 _UNCLOSED = "not closed with '}}' on the same line"
@@ -157,10 +163,10 @@ def _lex_value(text: str, pos: int) -> tuple[str, int]:
     while not text.startswith((",", "}}"), pos):
         if pos >= len(text) or text[pos] == "\n":
             raise _Malformed(_UNCLOSED)
-        if _OPENER_RE.match(text, pos) and not _is_escaped(text, pos):
+        if _opens_directive(text, pos):
             # §11.4 opener commitment: the next directive begins here, so
             # this one was never closed.
-            raise _Malformed("not closed before the next directive", stop=pos)
+            raise _Malformed("not closed before the next directive")
         pos += 1
     value = text[start:pos].strip(_WS)
     if not value:
@@ -223,35 +229,46 @@ def _is_escaped(text: str, pos: int) -> bool:
     return backslashes % 2 == 1
 
 
-def _malformed_end(text: str, start: int) -> int:
-    """End of a malformed directive whose extent the lexer could not tell:
-    through the first ``}}`` on its line, else the end of the line."""
+def _opens_directive(text: str, pos: int) -> bool:
+    """True if an unescaped directive opener (§11.4) starts at *pos*."""
+    return bool(_OPENER_RE.match(text, pos)) and not _is_escaped(text, pos)
+
+
+def _malformed_end(text: str, start: int, body: int) -> int:
+    """End of a malformed directive opened at *start*, whose arguments begin
+    at *body*: through the first ``}}`` on its line, but never past the next
+    directive opener, which begins a directive of its own (§11.4)."""
     line_end = text.find("\n", start)
     if line_end < 0:
         line_end = len(text)
-    close = text.find("}}", start, line_end)
-    return close + 2 if close >= 0 else line_end
+    close = text.find("}}", body, line_end)
+    end = close + 2 if close >= 0 else line_end
+    return next((pos for pos in range(body, end) if _opens_directive(text, pos)), end)
 
 
-def scan_directives(text: str) -> Iterator[tuple[Directive, str]]:
-    """Yield each directive in *text* with the text as the lexer saw it.
+def _scan(text: str) -> Iterator[tuple[Directive | None, int, str]]:
+    """Yield ``(directive, offset, scan)`` for each ``{{`` outside literal
+    regions: a directive when it opens one, else ``None`` (a stray brace).
 
-    The second item has the same offsets as *text*, with code spans, code
-    blocks, and comments blanked as they stood when the directive was found.
-    Callers that look around a directive (the defined term before a
-    ``{{def:}}``) use it so they agree with the lexer about what is literal.
+    *scan* has the same offsets as *text*, with code spans, code blocks, and
+    comments blanked as they stood when the braces were found.
     """
     scan = strip_uninterpreted(text)
     pos = 0
-    while opener := _OPENER_RE.search(scan, pos):
-        start = opener.start()
+    while braces := _BRACES_RE.search(scan, pos):
+        start = braces.start()
         if _is_escaped(text, start):
+            pos = start + 1
+            continue
+        opener = _OPENER_RE.match(scan, start)
+        if opener is None:
+            yield None, start, scan
             pos = start + 1
             continue
         try:
             positional, params, duplicates, end = _lex_arguments(text, opener.end())
         except _Malformed as exc:
-            end = exc.stop if exc.stop is not None else _malformed_end(text, start)
+            end = _malformed_end(text, start, opener.end())
             directive = Directive(
                 name=opener.group(1),
                 positional=None,
@@ -273,12 +290,31 @@ def scan_directives(text: str) -> Iterator[tuple[Directive, str]]:
                 end=end,
                 source=text[start:end],
             )
-        yield directive, scan
+        yield directive, start, scan
         if scan[start:end] != text[start:end]:
             # A backtick or comment marker inside the directive was taken
             # for literal-region syntax; recompute the regions after it.
             scan = scan[:end] + strip_uninterpreted(text[end:])
         pos = end
+
+
+def scan_directives(text: str) -> Iterator[tuple[Directive, str]]:
+    """Yield each directive in *text* with the text as the lexer saw it.
+
+    The second item has the same offsets as *text*, with code spans, code
+    blocks, and comments blanked as they stood when the directive was found.
+    Callers that look around a directive (the defined term before a
+    ``{{def:}}``) use it so they agree with the lexer about what is literal.
+    """
+    for directive, _start, scan in _scan(text):
+        if directive is not None:
+            yield directive, scan
+
+
+def find_stray_braces(text: str) -> list[int]:
+    """Offsets of each unescaped ``{{`` outside literal regions that does not
+    begin a directive: literal text that is usually a typo (§11.4)."""
+    return [start for directive, start, _scan_text in _scan(text) if directive is None]
 
 
 def iter_directives(text: str) -> Iterator[Directive]:

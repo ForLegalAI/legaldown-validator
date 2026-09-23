@@ -55,10 +55,17 @@ def accepted_delimiters(language: str | None) -> list[tuple[str, str, str, bool]
 # is still recognized, and the validator warns (def-emphasis).
 _EMPHASIS_MARKERS = ("**", "__", "++", "*", "_")
 
+# Spacing allowed between a defined term's closing quotation mark and its
+# {{def:}} (§7.2 "spaces or tabs"), including the no-break spaces French
+# typography sets there.
+_ANCHOR_GAP = " \t\u00a0\u202f"
+
 
 def _trailing_emphasis(text: str, start: int, end: int) -> int:
     """Length of the emphasis markers ending at *end* (not before *start*);
-    nested markers such as bold-italic ``***`` count together."""
+    nested markers such as bold-italic ``***`` count together. An underscore
+    run preceded by a letter or digit is part of that word, not emphasis
+    (CommonMark)."""
     length = 0
     while True:
         for marker in _EMPHASIS_MARKERS:
@@ -67,7 +74,11 @@ def _trailing_emphasis(text: str, start: int, end: int) -> int:
                 length += len(marker)
                 break
         else:
-            return length
+            break
+    at = end - length
+    if length and text[at] == "_" and at > start and text[at - 1].isalnum():
+        return 0
+    return length
 
 
 @dataclass(slots=True)
@@ -92,23 +103,27 @@ class DefinitionAnchor:
 
 
 def find_definition_anchors(
-    text: str, *, language: str | None = None
+    text: str,
+    *,
+    language: str | None = None,
+    scanned: list[tuple[Directive, str]] | None = None,
 ) -> list[DefinitionAnchor]:
     """Every ``{{def:}}`` in *text*, each with the quoted term preceding it.
 
     Per §7.2 the term is found by scanning back from the directive: only
-    spaces or tabs may separate it from the closing quotation mark, and the
-    span opens at the nearest prior matching opening mark on the same line.
+    spacing may separate it from the closing quotation mark, and the span
+    opens at the nearest prior matching opening mark on the same line.
     Directives in code spans, code blocks, and comments are literal (§11.4).
+    *scanned* is ``list(scan_directives(text))`` when the caller has it.
     """
     closing = {pair[1]: pair for pair in accepted_delimiters(language)}
     anchors: list[DefinitionAnchor] = []
-    for directive, scan in scan_directives(text):
+    for directive, scan in scan_directives(text) if scanned is None else scanned:
         if directive.name != "def":
             continue
         line_start = scan.rfind("\n", 0, directive.start) + 1
         end = directive.start
-        while end > line_start and scan[end - 1] in " \t":
+        while end > line_start and scan[end - 1] in _ANCHOR_GAP:
             end -= 1
         trailing = _trailing_emphasis(scan, line_start, end)
         end -= trailing

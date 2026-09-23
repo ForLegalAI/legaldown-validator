@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import Directive, iter_directives
+from .directives import Directive, iter_directives, scan_directives
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -81,12 +81,15 @@ def _parse_paragraph(paragraph: str) -> Block:
     stripped = paragraph.strip()
     # Definition: a paragraph whose leading token is a quoted term followed by a
     # ``{{def: id}}`` anchor. The id may be omitted (derived at validation time).
-    # Anything the block fields cannot hold exactly stays paragraph text so the
-    # validator sees the source: emphasis-wrapped or single-quoted terms
+    # Directives are lifted into block fields only when the serializer writes
+    # back an equivalent directive — the same values, with spacing and quoting
+    # normalized. Anything else stays paragraph text so the validator sees the
+    # source: emphasis-wrapped or single-quoted terms
     # (def-emphasis / def-single-quote-ambiguous) and a {{def:}} with
     # parameters or malformed arguments. The definition is still collected
     # from the paragraph by collect_definitions.
-    anchors = find_definition_anchors(stripped)
+    scanned = list(scan_directives(stripped))
+    anchors = find_definition_anchors(stripped, scanned=scanned)
     if anchors and _is_liftable_definition(anchors[0], stripped):
         anchor = anchors[0]
         return Block(
@@ -100,7 +103,7 @@ def _parse_paragraph(paragraph: str) -> Block:
     anchored = [(a.start, a.directive.start) for a in anchors if a.term is not None]
     directives = [
         d
-        for d in iter_directives(stripped)
+        for d, _scan in scanned
         if not any(start <= d.start < end for start, end in anchored)
     ]
     ref_directive = _first_liftable(directives, "ref")
@@ -124,11 +127,11 @@ def _parse_paragraph(paragraph: str) -> Block:
 
 
 def _is_liftable_definition(anchor: DefinitionAnchor, paragraph: str) -> bool:
-    """True if the definition block fields represent *anchor* exactly: it
+    """True if the definition block fields hold *anchor* without loss: it
     leads the paragraph, with a plain quoted term and a bare or omitted id.
 
     The serializer writes a non-empty term in straight double quotes, so only
-    a paragraph that begins exactly that way round-trips.
+    a paragraph that begins exactly that way keeps its term and delimiters.
     """
     directive = anchor.directive
     return (
@@ -143,8 +146,8 @@ def _is_liftable_definition(anchor: DefinitionAnchor, paragraph: str) -> bool:
 
 
 def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
-    """The first *name* directive that the ref/term block fields represent
-    exactly: well-formed, with a target and only the parameters it defines."""
+    """The first *name* directive the ref/term block fields hold without loss:
+    well-formed, with a target and only the parameters it defines."""
     for directive in directives:
         if (
             directive.name == name

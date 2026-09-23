@@ -46,7 +46,7 @@ IMPLEMENTED_RULES = {
     "amends-title-empty", "amend-def-override", "amend-term-undefined",
     "amend-term-unresolvable",
     "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",
-    "attachment-title-empty", "attachment-unreferenced",
+    "attachment-title-empty", "attachment-unreferenced", "brace-stray",
     "date-invalid", "date-of-birth-invalid",
     "def-autogen-collision", "def-duplicate-id", "def-emphasis",
     "def-no-quoted-span", "def-single-quote-ambiguous", "def-unreferenced",

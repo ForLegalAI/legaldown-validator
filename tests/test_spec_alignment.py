@@ -352,10 +352,17 @@ def test_code_in_a_note_is_markdown():
     assert "note-invalid" in _validate("On {{date: 2026-01-01, note=see `x` here}}.").rules("error")
 
 
-def test_text_inside_a_malformed_directive_is_not_lexed():
-    rules = _validate('Pay {{money: "5, {{date: 2026-13-01}} now.').rules()
-    assert "directive-malformed" in rules
-    assert "date-invalid" not in rules
+@pytest.mark.parametrize(
+    "body",
+    [
+        'Pay {{money: "5, {{date: 2026-13-01}} now.',
+        'By {{party: acme, label="Acme" Inc and {{date: 2026-13-01}} end.',
+    ],
+)
+def test_malformed_directive_ends_at_the_next_opener(body):
+    """§11.4 opener commitment: the next {{name: begins a directive of its
+    own, so it is checked even when the one before it is malformed."""
+    assert {"directive-malformed", "date-invalid"} <= _validate(body).rules("error")
 
 
 @pytest.mark.parametrize(
@@ -434,6 +441,37 @@ def test_format_value_rejects_line_breaks_and_quotes_openers():
 def test_underscore_emphasis_on_a_defined_term_is_a_warning():
     result = _validate('_"Term"_ {{def: t}} means x. {{term: t}}')
     assert result.rules() == {"def-emphasis"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["```x``` {{ref: nope}} `y`.", r"Use \` here {{ref: nope}} and \` there."],
+)
+def test_code_spans_follow_commonmark(body):
+    """A triple-backtick span closes on three backticks; an escaped backtick
+    opens nothing — either way the directive between is live."""
+    assert "ref-broken" in _validate(body).rules("error")
+
+
+def test_no_break_space_may_separate_term_and_def():
+    result = _validate("« Services »\u00a0{{def: services}} means x. {{term: services}}")
+    assert result.diagnostics == []
+
+
+def test_underscore_inside_a_word_is_not_emphasis():
+    result = _validate('snake_"Term" {{def: t}} means x. {{term: t}}')
+    assert "def-emphasis" not in result.rules()
+
+
+@pytest.mark.parametrize("body", ["A stray {{ opener.", '"Term" {{ def: term}} means x.'])
+def test_stray_double_brace_is_a_warning(body):
+    """§11.4: literal {{ is usually a typo, e.g. a space before the name."""
+    assert "brace-stray" in _validate(body).rules("warning")
+
+
+def test_escaped_or_directive_braces_are_not_stray():
+    result = _validate(r'Write \{{ literally, or {{term: t, label="{{x"}}. "T" {{def: t}}')
+    assert "brace-stray" not in result.rules()
 
 
 def test_iter_directives_decodes_escapes():
