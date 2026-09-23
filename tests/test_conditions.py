@@ -435,3 +435,18 @@ def test_a_long_unclosed_look_alike_is_scanned_quickly():
     from legaldown.markers import MARKER_RE
 
     assert MARKER_RE.search("{#x " + " ".join(["a=b=c=d=e=f"] * 40)) is None
+
+
+def test_alternatives_nested_under_many_questions_are_covered_quickly():
+    from legaldown.validator.conditions import Condition, always_covered
+
+    n = 20  # an exhaustive search would try 20 * 2**20 combinations
+    questions = {"k": {"type": "choice", "choices": {f"v{i}": "" for i in range(n)}}}
+    questions |= {f"b{i}": {"type": "boolean"} for i in range(n)}
+    targets = [
+        frozenset({Condition("k", f"v{i}"), Condition(f"b{i}", None, negated)})
+        for i in range(n)
+        for negated in (False, True)
+    ]
+    assert always_covered(frozenset(), targets, questions)
+    assert not always_covered(frozenset(), targets[:-1], questions)

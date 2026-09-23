@@ -680,15 +680,16 @@ def validate_document(
         | {found.marker.identifier for found in placed_anchors}
         | attachment_ids
     )
+    # Each anchor's declarations, by presence. While sections are numbered,
+    # it holds only earlier headings' identifiers.
     anchors: dict[str, list[Presence]] = {}
-    generated: dict[str, list[Presence]] = {}  # earlier headings' identifiers
 
     def free_identifier(base: str, presence: Presence) -> str:
         """The lowest suffix of *base* — none, -2, -3, … — not taken by an
         explicit identifier or by an earlier heading that can appear with
         this one (§5.5)."""
         candidate, suffix = base, 1
-        while candidate in explicit_ids or _clashes(presence, generated.get(candidate, []), questions):
+        while candidate in explicit_ids or _clashes(presence, anchors.get(candidate, []), questions):
             suffix += 1
             candidate = f"{base}-{suffix}"
         return candidate
@@ -757,7 +758,6 @@ def validate_document(
                     f"identifier. It was adjusted to '{identifier}'; give the heading an "
                     f"explicit identifier (§5.5).",
                 )
-        generated.setdefault(identifier, []).append(presence)
         anchors.setdefault(identifier, []).append(presence)
 
         if _clashes(presence, attachment_presence.get(identifier, []), questions):
