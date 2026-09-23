@@ -19,11 +19,18 @@ from __future__ import annotations
 
 # Definitions (§7)
 from .definitions import (
-    DEF_ANCHOR_RE,
     DELIMITER_PAIRS,
+    DefinitionAnchor,
     DefinitionRef,
     collect_definitions,
     definition_lookup,
+    find_definition_anchors,
+)
+from .directives import (
+    DIRECTIVE_PARAMS,
+    KNOWN_DIRECTIVES,
+    Directive,
+    iter_directives,
 )
 from .models import (
     BLOCK_DEFAULTS,
@@ -87,7 +94,13 @@ __all__ = [
     "definition_lookup",
     "DefinitionRef",
     "DELIMITER_PAIRS",
-    "DEF_ANCHOR_RE",
+    "find_definition_anchors",
+    "DefinitionAnchor",
+    # Directives (§11)
+    "iter_directives",
+    "Directive",
+    "DIRECTIVE_PARAMS",
+    "KNOWN_DIRECTIVES",
     "render_block",
     "AttachmentDefinitionsImporter",
     # Result types

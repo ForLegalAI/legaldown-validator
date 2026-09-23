@@ -5,7 +5,7 @@ and validate a single document in memory.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **57 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **61 of the
 corpus's 95 rules are implemented, and every one the corpus can exercise at Core level passes.**
 
 Seven implemented rules — `amend-def-override`, `amend-term-undefined`, `amend-term-unresolvable`,
@@ -26,7 +26,7 @@ files other than the document itself.
 | Filesystem-dependent (Full, §16.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`, `path-not-relative`, `path-outside-root` |
 | Includes (Full, §16.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip` |
 | Bilingual sets (Full, §16.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent` |
-| Lexer-level grammar (§11.2–11.4) | `directive-malformed`, `directive-duplicate-param`, `directive-unknown-param`, `brace-stray`, `value-curly-quote`, `raw-html`, `anchor-misplaced` |
+| Lexer-level grammar (§11.2–11.4) | `value-curly-quote`, `raw-html`, `anchor-misplaced` |
 | Other | `frontmatter-absent`, `frontmatter-invalid-yaml` (reported by the CLI, not the validator), `anchor-lossy-slug`, `def-lossy-slug`, `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared`, `supersedes-title-empty` |
 
 In practice this means multi-file processing is out of scope: includes, attachment file contents,
@@ -40,6 +40,11 @@ itself. The specification provides no separate id for the absent key, so a diagn
 `attachment-file-missing` from this implementation always means the key is missing, never that the
 path failed to resolve.
 
+`directive-malformed` is evaluated on the text the parser hands the validator. The parser joins
+the lines of a paragraph (and a list item's continuation lines) with a space, so a directive
+broken across two of those lines reaches the validator on one line and is not reported. A
+directive left unclosed at the end of its paragraph, list item, or table cell is reported.
+
 ## Checking this yourself
 
 The conformance harness runs against a checkout of the specification repository:
@@ -49,8 +54,8 @@ git clone https://github.com/ForLegalAI/LegalDown ../LegalDown
 LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
-Cases for the rules above are skipped by name, so the 38 `not implemented` skips reproduce this
-table one for one. The run reports 45 skips in total: the remaining seven are the implemented
+Cases for the rules above are skipped by name, so the 34 `not implemented` skips reproduce this
+table one for one. The run reports 41 skips in total: the remaining seven are the implemented
 rules named above, skipped as `multi-file case` or `requires conformance level full`. CI runs this
 on every push and pull request.
 

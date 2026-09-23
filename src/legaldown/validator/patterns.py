@@ -1,4 +1,4 @@
-"""Regex patterns and constants for LegalDown inline directive validation."""
+"""Regex patterns and constants for LegalDown validation."""
 from __future__ import annotations
 
 import re
@@ -6,40 +6,7 @@ import re
 # ── Identifier format ─────────────────────────────────────────────
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
-# ── Inline directive patterns ─────────────────────────────────────
-REF_RE = re.compile(r"\{\{ref:\s*([^,}]+)(?:,\s*format=([^}]+))?}}")
-TERM_RE = re.compile(r"\{\{term:\s*([^,}]+)(?:,\s*label=([^}]+))?}}")
-DATE_RE = re.compile(r"\{\{date:\s*([^,}]+?)(?:,\s*note=[^}]*)?\}\}")
-MONEY_RE = re.compile(
-    r"\{\{money:\s*([^,}]+?)(?:,\s*currency=([^,}]+?))?(?:,\s*note=[^}]*)?\}\}"
-)
-DURATION_RE = re.compile(
-    r"\{\{duration:\s*([^,}]+?)(?:,\s*unit=([^,}]+?))?(?:,\s*note=[^}]*)?\}\}"
-)
-PARTY_RE = re.compile(
-    r"\{\{party:\s*([^,}]+?)(?:,\s*label=([^,}]+?))?(?:,\s*note=[^}]*)?\}\}"
-)
-FIELD_RE = re.compile(
-    r"\{\{field:\s*([^,}]+?)(?:,\s*type=([^,}]+?))?(?:,\s*note=[^}]*)?\}\}"
-)
-PLACEHOLDER_RE = re.compile(
-    r"\{\{placeholder:\s*([^,}]+?)(?:,\s*type=([^,}]+?))?(?:,\s*currency=([^,}]+?))?(?:,\s*note=[^}]*)?\}\}"
-)
-ATTACH_RE = re.compile(r"\{\{attach:\s*([^,}]+?)(?:,\s*label=[^}]*)?\}\}")
-SIDE_RE = re.compile(
-    r"\{\{side:\s*([^,}]+?)(?:,\s*label=([^,}]+?))?(?:,\s*note=[^}]*)?\}\}"
-)
-NOTE_RE = re.compile(r"\{\{\w+:[^}]*,\s*note=([^}]*)\}\}")
-
-# Any well-formed-looking directive opener, for unknown-name detection (§11.5).
-DIRECTIVE_NAME_RE = re.compile(r"\{\{([a-z]+):")
-
 # ── Domain constants ──────────────────────────────────────────────
-# Directive vocabulary defined by spec §11.1.
-KNOWN_DIRECTIVES: frozenset[str] = frozenset({
-    "ref", "def", "term", "date", "money", "duration", "party", "side",
-    "field", "placeholder", "include", "attach",
-})
 # Reserved value-type names (§3.2): field_types keys must not collide with
 # the built-in field specs or placeholder types.
 RESERVED_VALUE_TYPES: frozenset[str] = frozenset({"date", "money", "duration", "party", "text"})

@@ -201,6 +201,8 @@ with open("contract.lgd", "w", encoding="utf-8") as handle:
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
 structures, and `render_block()` renders a single block when you are driving your own layout.
+`iter_directives()` lexes the directives in a piece of text by the §11.2
+grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it
 valid, so what you authored is exactly what the validator judges. The serializer, by contrast,
@@ -214,6 +216,7 @@ The full rule set with severities and examples lives in the specification (§15)
 | Area | Checks include |
 |---|---|
 | **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title |
+| **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
 | **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions |
 | **Definitions** | Undefined `{{term:}}`, duplicate ids, missing quoted span, ambiguous quoting, unreferenced definitions |

@@ -14,9 +14,10 @@ from typing import Any
 
 import yaml
 
-from .definitions import DEF_ANCHOR_RE, EMPHASIS_DEF_RE, extract_def, is_single_quoted
+from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
+from .directives import Directive, iter_directives, scan_directives
 from .models import Block, Document, document_from_dict
-from .validator import REF_RE, TERM_RE, slugify_identifier
+from .validator import slugify_identifier
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -41,12 +42,6 @@ FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 # (e.g. {#Bad_ID}) must reach the validator to be reported as anchor-format
 # rather than silently remaining part of the title.
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
-REF_BLOCK_RE = re.compile(
-    r"^(.*?)\{\{ref:\s*([^,}]+)(?:,\s*format=([^}]+))?}}(.*)$", re.DOTALL
-)
-TERM_BLOCK_RE = re.compile(
-    r"^(.*?)\{\{term:\s*([^,}]+)(?:,\s*label=([^}]+))?}}(.*)$", re.DOTALL
-)
 
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -86,44 +81,86 @@ def _parse_paragraph(paragraph: str) -> Block:
     stripped = paragraph.strip()
     # Definition: a paragraph whose leading token is a quoted term followed by a
     # ``{{def: id}}`` anchor. The id may be omitted (derived at validation time).
-    # Non-canonical source forms — emphasis-wrapped or single-quoted terms —
-    # stay paragraphs so the validator can see the raw text and report
-    # def-emphasis / def-single-quote-ambiguous (the definition itself is still
-    # collected from the paragraph by collect_definitions).
-    def_match = DEF_ANCHOR_RE.match(stripped)
-    if def_match and (
-        EMPHASIS_DEF_RE.match(stripped) or is_single_quoted(def_match)
-    ):
-        def_match = None
-    if def_match:
-        term, raw_id = extract_def(def_match)
+    # Directives are lifted into block fields only when the serializer writes
+    # back an equivalent directive — the same values, with spacing and quoting
+    # normalized. Anything else stays paragraph text so the validator sees the
+    # source: emphasis-wrapped or single-quoted terms
+    # (def-emphasis / def-single-quote-ambiguous) and a {{def:}} with
+    # parameters or malformed arguments. The definition is still collected
+    # from the paragraph by collect_definitions.
+    scanned = list(scan_directives(stripped))
+    anchors = find_definition_anchors(stripped, scanned=scanned)
+    if anchors and _is_liftable_definition(anchors[0], stripped):
+        anchor = anchors[0]
         return Block(
             kind="definition",
-            definition_id=raw_id,
-            term=term,
-            text=stripped[def_match.end():].strip(),
+            definition_id=anchor.directive.positional or "",
+            term=anchor.term,
+            text=stripped[anchor.directive.end:].strip(),
         )
-    ref_match = REF_BLOCK_RE.match(paragraph.strip())
-    if ref_match and ref_match.group(2).strip():
-        prefix, target, fmt, suffix = ref_match.groups()
+    # A directive inside a defined term's quoted span cannot be split out
+    # without separating the {{def:}} from its opening quotation mark.
+    anchored = [(a.start, a.directive.start) for a in anchors if a.term is not None]
+    directives = [
+        d
+        for d, _scan in scanned
+        if not any(start <= d.start < end for start, end in anchored)
+    ]
+    ref_directive = _first_liftable(directives, "ref")
+    if ref_directive is not None:
         return Block(
             kind="ref",
-            prefix=prefix,
-            target=target.strip(),
-            format=(fmt or "").strip(),
-            suffix=suffix,
+            prefix=stripped[:ref_directive.start],
+            target=ref_directive.positional,
+            suffix=stripped[ref_directive.end:],
         )
-    term_match = TERM_BLOCK_RE.match(paragraph.strip())
-    if term_match and term_match.group(2).strip():
-        prefix, target, label, suffix = term_match.groups()
+    term_directive = _first_liftable(directives, "term")
+    if term_directive is not None:
         return Block(
             kind="term",
-            prefix=prefix,
-            target=target.strip(),
-            label=(label or "").strip(),
-            suffix=suffix,
+            prefix=stripped[:term_directive.start],
+            target=term_directive.positional,
+            label=term_directive.params.get("label", ""),
+            suffix=stripped[term_directive.end:],
         )
-    return Block(kind="paragraph", text=paragraph.strip())
+    return Block(kind="paragraph", text=stripped)
+
+
+def _is_liftable_definition(anchor: DefinitionAnchor, paragraph: str) -> bool:
+    """True if the definition block fields hold *anchor* without loss: it
+    leads the paragraph, with a plain quoted term and a bare or omitted id.
+
+    The serializer writes a non-empty term in straight double quotes, so only
+    a paragraph that begins exactly that way keeps its term and delimiters.
+    """
+    directive = anchor.directive
+    return (
+        bool(anchor.term)
+        and anchor.start == 0
+        and paragraph.startswith(f'"{anchor.term}"')
+        and not anchor.emphasis
+        and not directive.malformed
+        and not directive.params
+        and directive.positional != ""
+    )
+
+
+def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
+    """The first *name* directive the ref/term block fields hold without loss:
+    well-formed, with a target and only the parameters it defines."""
+    for directive in directives:
+        if (
+            directive.name == name
+            and not directive.malformed
+            and directive.positional
+            and not directive.duplicates
+            and not directive.unknown_params()
+            # Block fields hold "" for an absent parameter, so an explicitly
+            # empty one (label=) would be dropped on serialization.
+            and all(directive.params.values())
+        ):
+            return directive
+    return None
 
 
 def _parse_blocks(chunk: str) -> list[Block]:
@@ -259,22 +296,12 @@ def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
                 refs.add(block.target)
             if block.kind == "term" and block.target:
                 terms.add(block.target)
-            text_fragments: list[str] = []
-            if block.text:
-                text_fragments.append(block.text)
-            if block.prefix:
-                text_fragments.append(block.prefix)
-            if block.suffix:
-                text_fragments.append(block.suffix)
-            text_fragments.extend(item for item in block.items if item)
-            text_fragments.extend(cell for row in block.rows for cell in row if cell)
-            for fragment in text_fragments:
-                refs.update(
-                    match.group(1).strip() for match in REF_RE.finditer(fragment)
-                )
-                terms.update(
-                    match.group(1).strip() for match in TERM_RE.finditer(fragment)
-                )
+            for fragment in text_fragments(block):
+                for directive in iter_directives(fragment):
+                    if directive.malformed or not directive.positional:
+                        continue
+                    if directive.name == "ref":
+                        refs.add(directive.positional)
+                    elif directive.name == "term":
+                        terms.add(directive.positional)
     return refs, terms
-
-
