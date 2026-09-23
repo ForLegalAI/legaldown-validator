@@ -925,3 +925,56 @@ def test_fence_interrupts_a_paragraph():
     document = parse_document(_FRONTMATTER + "Example:\n```\n{{ref: nope}}\n```\n")
     assert [b.kind for b in document.sections[0].blocks] == ["paragraph", "code"]
     assert validate_document(document).diagnostics == []
+
+
+def _kinds(source: str) -> list[str]:
+    return [b.kind for b in parse_document(source).sections[0].blocks]
+
+
+@pytest.mark.parametrize(
+    ("after_fence", "kinds"),
+    [("---", ["code", "rule"]), ("===", ["code", "paragraph"])],
+)
+def test_underline_after_a_fence_is_not_a_setext_heading(after_fence, kinds):
+    """A setext underline needs a paragraph above it; a code block is not one."""
+    source = _FRONTMATTER + "```\ncode\n```\n" + after_fence + "\n"
+    assert _outline(source) == [("Terms", 1, "terms")]
+    assert _kinds(source) == kinds
+
+
+def test_rule_before_setext_text_stays_a_rule():
+    source = _FRONTMATTER + "Text.\n\n---\nFoo\n---\n"
+    assert _outline(source) == [("Terms", 1, "terms"), ("Foo", 2, "foo")]
+    assert _kinds(source) == ["paragraph", "rule"]
+
+
+@pytest.mark.parametrize("body", ["- item\ncontinued\n---\n", "> quoted\nlazy\n---\n"])
+def test_dashes_after_a_lazy_continuation_are_a_rule(body):
+    assert _kinds(_FRONTMATTER + body)[-1] == "rule"
+
+
+def test_fence_inside_a_list_item_does_not_swallow_the_section():
+    body = "- Example:\n  ```\n  code\n\n  code2\n  ```\n\nSee {{ref: nope}}.\n"
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == ["unordered_list", "ref"]
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+def test_tab_indented_backticks_neither_open_nor_close_a_fence():
+    """A tab is four columns (CommonMark), past a fence's three."""
+    assert "ref-broken" in _validate("\t```\n{{ref: nope}}\n").rules("error")
+    source = _FRONTMATTER + "```\n\t```\n# Inside\n```\n"
+    assert _outline(source) == [("Terms", 1, "terms")]
+
+
+def test_indented_fence_round_trips_unchanged():
+    fence = "  ```\n  code\n  ```"
+    assert fence in serialize_document(parse_document(_FRONTMATTER + "Para.\n\n" + fence + "\n"))
+
+
+def test_paragraph_directly_above_dashes_is_a_setext_heading():
+    """CommonMark, which §4.1 follows: a separator needs a blank line above it."""
+    source = _FRONTMATTER + '"Buyer" {{def: buyer}} means X.\n\n---\n\nText.\n'
+    assert "rule" in _kinds(source)
+    heading = _FRONTMATTER + "Closing words\n---\n"
+    assert _outline(heading)[-1] == ("Closing words", 2, "closing-words")

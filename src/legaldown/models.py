@@ -210,7 +210,8 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
     merged = {**defaults, **payload}
     return Block(
         kind=kind,
-        text=_str(merged.get("text")),
+        # A code block's text is literal source, indentation included.
+        text=str(merged.get("text") or "") if kind == "code" else _str(merged.get("text")),
         definition_id=_str(merged.get("definition_id")),
         term=_str(merged.get("term")),
         prefix=str(merged.get("prefix") or ""),
