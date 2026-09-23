@@ -11,6 +11,7 @@ from typing import Any
 
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
 from .patterns import (
+    DURATION_UNITS,
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
     VALID_DURATION_UNITS,
@@ -35,11 +36,12 @@ YAML_KEYWORDS: frozenset[str] = frozenset(
 @dataclass(slots=True)
 class Blank:
     """Every occurrence of one placeholder id — one logical blank (§10.7)."""
-    type: str
-    #: The ``currency`` and ``unit`` of each occurrence, ``""`` where it fixes
-    #: none. Two different ones are an Error (placeholder-type-inconsistent).
-    currencies: list[str] = field(default_factory=list)
-    units: list[str] = field(default_factory=list)
+    #: The effective type of its first occurrence with a valid one.
+    type: str | None = None
+    #: What each occurrence of that type fixes — the ``currency`` of a money
+    #: blank, the ``unit`` of a duration blank — ``""`` where it fixes none.
+    #: Two different ones are an Error (placeholder-type-inconsistent).
+    codes: list[str] = field(default_factory=list)
     in_frontmatter: bool = False
 
 
@@ -84,7 +86,7 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
         return "must be an ISO 8601 date (YYYY-MM-DD)"
     if qtype == "money":
         return _measure_problem(
-            answer, "amount", "currency", blank.currencies if blank else [],
+            answer, "amount", "currency", blank.codes if blank else [],
             valid_amount=lambda v: isinstance(v, str) and is_valid_money_amount(v),
             amount_rule="a string in §10.3 format",
             valid_code=lambda c: c in KNOWN_CURRENCIES,
@@ -92,7 +94,7 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
         )
     if qtype == "duration":
         return _measure_problem(
-            answer, "value", "unit", blank.units if blank else [],
+            answer, "value", "unit", blank.codes if blank else [],
             valid_amount=lambda v: (
                 isinstance(v, (int, str)) and not isinstance(v, bool) and is_positive_numeric(str(v))
             ),
@@ -101,7 +103,7 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
                 "not a YAML float, which can alter the digits"
             ),
             valid_code=lambda u: u in VALID_DURATION_UNITS,
-            code_rule=f"one of {', '.join(VALID_DURATION_UNITS)}",
+            code_rule=f"one of {', '.join(DURATION_UNITS)}",
         )
     if qtype == "boolean":
         return None if isinstance(answer, bool) else "must be true or false"

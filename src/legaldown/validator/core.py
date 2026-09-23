@@ -31,6 +31,7 @@ from .helpers import (
     slugify_identifier,
 )
 from .patterns import (
+    DURATION_UNITS,
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
     RESERVED_VALUE_TYPES,
@@ -124,7 +125,7 @@ def _check_duration_unit(unit: str, result: ValidationResult) -> None:
     elif unit not in VALID_DURATION_UNITS:
         result.error(
             "duration-invalid-unit",
-            f"Invalid duration unit '{unit}'. Must be one of: {', '.join(VALID_DURATION_UNITS)}.",
+            f"Invalid duration unit '{unit}'. Must be one of: {', '.join(DURATION_UNITS)}.",
         )
 
 
@@ -198,65 +199,71 @@ def _check_placeholder(
     ptype = _placeholder_type(directive, declared)
     if not _check_directive_arguments(directive, result, effective_type=ptype):
         return
+    result.inline_placeholders.append((pid, ptype))
     if not pid or not IDENTIFIER_RE.fullmatch(pid):
         result.error(
             "placeholder-id-malformed",
             f"Placeholder id '{pid}' is invalid — must match [a-z][a-z0-9-]*.",
         )
-    elif written_type is not None and written_type not in VALID_PLACEHOLDER_TYPES:
-        result.error(
-            "placeholder-type-invalid",
-            f"Placeholder type '{written_type}' is unsupported. "
-            f"Must be one of: text, date, money, duration.",
-        )
-    elif declared in DECISION_QUESTION_TYPES:
+        return
+    blank = blanks.setdefault(pid, Blank())
+    blank.in_frontmatter |= in_frontmatter
+    if declared in DECISION_QUESTION_TYPES:
         result.error(
             "placeholder-question-mismatch",
             f"Placeholder '{pid}' uses the id of {declared} question '{pid}'; a decision "
             f"question is answered by conditions and {{{{choose:}}}}, never by a blank (§15.2).",
         )
-    else:
-        if declared is not None and written_type is not None and written_type != declared:
-            result.error(
-                "placeholder-question-mismatch",
-                f"Placeholder '{pid}' is written with type '{written_type}', but its "
-                f"question is declared with type '{declared}' (§15.2).",
-            )
-        currency = params.get("currency", "") if ptype == "money" else ""
-        unit = params.get("unit", "") if ptype == "duration" else ""
-        blank = blanks.setdefault(pid, Blank(type=ptype))
-        blank.in_frontmatter |= in_frontmatter
-        if blank.type != ptype:
-            result.error(
-                "placeholder-type-inconsistent",
-                f"Placeholder '{pid}' used with inconsistent types: "
-                f"'{blank.type}' and '{ptype}'.",
-            )
-        else:
-            blank.currencies.append(currency)
-            blank.units.append(unit)
-        if currency and currency not in KNOWN_CURRENCIES:
-            result.warning(
-                "placeholder-unknown-currency",
-                f"Placeholder '{pid}' has unrecognized currency code '{currency}'.",
-            )
-        if ptype == "duration" and "unit" in params:
-            _check_duration_unit(unit, result)
-    result.inline_placeholders.append((pid, ptype))
+    elif declared is not None and written_type is not None and written_type != declared:
+        result.error(
+            "placeholder-question-mismatch",
+            f"Placeholder '{pid}' is written with type '{written_type}', but its "
+            f"question is declared with type '{declared}' (§15.2).",
+        )
+    if written_type is not None and written_type not in VALID_PLACEHOLDER_TYPES:
+        result.error(
+            "placeholder-type-invalid",
+            f"Placeholder type '{written_type}' is unsupported. "
+            f"Must be one of: {', '.join(sorted(VALID_PLACEHOLDER_TYPES))}.",
+        )
+        return
+    if declared in DECISION_QUESTION_TYPES:
+        return
+    # The currency or unit this occurrence fixes, by its type (§10.7).
+    code_param = {"money": "currency", "duration": "unit"}.get(ptype)
+    code = params.get(code_param, "") if code_param else ""
+    if blank.type is None:
+        blank.type = ptype
+    if blank.type != ptype:
+        result.error(
+            "placeholder-type-inconsistent",
+            f"Placeholder '{pid}' used with inconsistent types: "
+            f"'{blank.type}' and '{ptype}'.",
+        )
+    elif ptype != "duration" or code in VALID_DURATION_UNITS or not code:
+        # An invalid unit is reported below and fixes nothing.
+        blank.codes.append(code)
+    if ptype == "money" and code and code not in KNOWN_CURRENCIES:
+        result.warning(
+            "placeholder-unknown-currency",
+            f"Placeholder '{pid}' has unrecognized currency code '{code}'.",
+        )
+    if ptype == "duration" and "unit" in params:
+        _check_duration_unit(code, result)
 
 
 def _check_blank_codes(blanks: dict[str, Blank], result: ValidationResult) -> None:
     """Report each blank whose occurrences fix two currencies or units: one
     blank cannot hold two (§10.7)."""
     for pid, blank in blanks.items():
-        for kind, codes in (("currencies", blank.currencies), ("units", blank.units)):
-            fixed = sorted(set(filter(None, codes)))
-            if len(fixed) > 1:
-                result.error(
-                    "placeholder-type-inconsistent",
-                    f"Placeholder '{pid}' fixes different {kind} in different occurrences "
-                    f"({', '.join(fixed)}); one blank cannot hold two (§10.7).",
-                )
+        fixed = sorted(set(filter(None, blank.codes)))
+        if len(fixed) > 1:
+            kind = "currencies" if blank.type == "money" else "units"
+            result.error(
+                "placeholder-type-inconsistent",
+                f"Placeholder '{pid}' fixes different {kind} in different occurrences "
+                f"({', '.join(fixed)}); one blank cannot hold two (§10.7).",
+            )
 
 
 def _is_include_only(text: str, directives: list[Directive]) -> bool:

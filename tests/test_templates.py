@@ -411,3 +411,49 @@ def test_a_float_duration_default_is_rejected_with_the_reason():
     frontmatter = "questions:\n  term:\n    type: duration\n    default:\n      value: 1.5\n      unit: D\n"
     result = _validate(frontmatter, "{{placeholder: term}}")
     assert any("YAML float" in d.message for d in result.diagnostics if d.rule == "question-invalid")
+
+
+def test_merged_keys_are_read_as_written_too():
+    frontmatter = "base: &base\n  yes:\n    type: text\nquestions:\n  <<: *base\n"
+    messages = [d.message for d in _validate(frontmatter).diagnostics if d.rule == "question-invalid"]
+    assert any("'yes'" in message for message in messages)
+
+
+@pytest.mark.parametrize("when", ["no", "on", "true"])
+def test_an_attachment_condition_is_read_as_written(when):
+    source = (
+        f"---\ntitle: Fixture\n{_SIDES}attachments:\n"
+        f"  - id: dpa\n    title: DPA\n    file: dpa.lgd\n    when: {when}\n---\n"
+    )
+    document = parse_document(source)
+    assert document.metadata.attachments[0].when == when
+    assert parse_document(serialize_document(document)).metadata == document.metadata
+
+
+def test_choice_labels_are_read_as_written():
+    frontmatter = "questions:\n  agree:\n    type: choice\n    choices:\n      accept: Yes\n      reject: No\n"
+    assert "question-invalid" not in _validate(frontmatter).rules()
+
+
+def test_a_boolean_default_keeps_its_yaml_type():
+    frontmatter = "questions:\n  vat:\n    type: boolean\n    default: true\n"
+    assert "question-invalid" not in _validate(frontmatter).rules()
+
+
+def test_a_placeholder_with_an_invalid_type_is_still_checked_against_its_question():
+    result = _validate(_QUESTIONS, "{{placeholder: forum, type=bogus}}")
+    assert {"placeholder-type-invalid", "placeholder-question-mismatch"} <= result.rules("error")
+    template = _validate("questions:\n  client:\n    type: text\n", "{{placeholder: yes, type=bogus}}")
+    assert {"placeholder-type-invalid", "question-invalid"} <= template.rules("error")
+
+
+def test_an_invalid_unit_fixes_nothing():
+    body = "{{placeholder: p, type=duration, unit=M}} {{placeholder: p, type=duration, unit=D}}"
+    assert "placeholder-type-inconsistent" not in _validate(body=body).rules()
+    frontmatter = "questions:\n  p:\n    type: duration\n    default: 3\n"
+    result = _validate(frontmatter, "{{placeholder: p, unit=M}}")
+    assert "question-invalid" in result.rules("error")
+
+
+def test_a_version_takes_ascii_digits_only():
+    assert "legaldown-version-newer" not in _validate('legaldown: "\uff10.\uff13"\n').rules()

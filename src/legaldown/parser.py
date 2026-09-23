@@ -26,39 +26,46 @@ from .validator import slugify_identifier
 # dates are strings validated by the validator (metadata-date-invalid), so
 # load them as plain scalars.
 
-_STR_TAG = "tag:yaml.org,2002:str"
-# Implicit tags that change what was written: ``yes`` becomes True, ``0.10``
-# becomes 0.1. The merge key ``<<`` is not among them.
-_CONVERTED_TAGS = frozenset(
-    f"tag:yaml.org,2002:{name}" for name in ("bool", "null", "int", "float", "timestamp")
-)
-
-
-def _as_written(node: yaml.Node) -> None:
-    """Read a plain scalar *node* as the string written."""
-    if isinstance(node, yaml.ScalarNode) and node.style is None and node.tag in _CONVERTED_TAGS:
-        node.tag = _STR_TAG
-
 
 class _StrDateSafeLoader(yaml.SafeLoader):
-    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
-        """Read plain mapping keys as the strings written: a YAML 1.1 reader
-        would turn ``yes``/``on``/``true`` into one boolean key and ``null``
-        into ``None``, collapsing distinct keys and hiding the ids §15.2
-        forbids behind a value the author never wrote. The ``legaldown``
-        version is read as written too, so ``0.10`` does not become ``0.1``
-        (§3.2)."""
-        for key, value in node.value:
-            _as_written(key)
-            if key.value == "legaldown":
-                _as_written(value)
-        return super().construct_mapping(node, deep=deep)
+    pass
 
 
 _StrDateSafeLoader.add_constructor(
     "tag:yaml.org,2002:timestamp",
     _StrDateSafeLoader.construct_yaml_str,
 )
+
+# A YAML 1.1 reader changes what was written: ``no`` becomes False, ``0.10``
+# becomes 0.1, a ``null`` key becomes None. Frontmatter holds text — ids,
+# names, labels, versions, conditions — so plain scalars are read as
+# written, except a question's ``default``, whose YAML type the answer rules
+# rely on (§15.7.1). A value left empty or written ``null`` stays absent.
+_STR_TAG = "tag:yaml.org,2002:str"
+_NULL_TAG = "tag:yaml.org,2002:null"
+_CONVERTED_TAGS = frozenset(
+    f"tag:yaml.org,2002:{name}" for name in ("bool", "int", "float", "timestamp")
+)
+
+
+def _read_as_written(loader: yaml.SafeLoader, node: yaml.Node, path: tuple[str, ...] = ()) -> None:
+    """Retag the plain scalars under *node*, the value at *path*, to read as
+    the strings written."""
+    if path[:1] == ("questions",) and path[2:3] == ("default",):
+        return
+    if isinstance(node, yaml.ScalarNode):
+        if node.style is None and node.tag in _CONVERTED_TAGS:
+            node.tag = _STR_TAG
+    elif isinstance(node, yaml.SequenceNode):
+        for item in node.value:
+            _read_as_written(loader, item, (*path, ""))
+    elif isinstance(node, yaml.MappingNode):
+        loader.flatten_mapping(node)  # bring merged (<<) keys in first
+        for key, value in node.value:
+            if isinstance(key, yaml.ScalarNode) and key.style is None and key.tag == _NULL_TAG:
+                key.tag = _STR_TAG
+            _read_as_written(loader, key)
+            _read_as_written(loader, value, (*path, str(key.value)))
 
 # ── Parser regex patterns ─────────────────────────────────────────
 
@@ -91,6 +98,8 @@ def _split_frontmatter(source: str) -> tuple[yaml.Node | None, dict[str, Any], s
     loader = _StrDateSafeLoader(match.group(1) or "")
     try:
         node = loader.get_single_node()
+        if node is not None:
+            _read_as_written(loader, node)
         metadata = (loader.construct_document(node) if node is not None else None) or {}
     finally:
         loader.dispose()
