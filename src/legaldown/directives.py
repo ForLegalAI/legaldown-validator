@@ -41,9 +41,10 @@ DIRECTIVE_PARAMS: dict[str, frozenset[str]] = {
 # Parameters defined only for one value of the directive's ``type`` (§10.7):
 # a placeholder takes ``currency`` only when its effective type is ``money``,
 # and ``unit`` only when it is ``duration``.
+PLACEHOLDER_TYPE_PARAMS: dict[str, str] = {"money": "currency", "duration": "unit"}
 _TYPE_SPECIFIC_PARAMS: dict[tuple[str, str], str] = {
-    ("placeholder", "currency"): "money",
-    ("placeholder", "unit"): "duration",
+    ("placeholder", param): placeholder_type
+    for placeholder_type, param in PLACEHOLDER_TYPE_PARAMS.items()
 }
 
 # Directive vocabulary defined by §11.1.

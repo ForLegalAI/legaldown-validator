@@ -100,10 +100,11 @@ class Metadata:
     #: can report a malformed declaration. ``None`` when the document
     #: declares none.
     questions: Any = None
-    #: Frontmatter keys (``questions``, ``attachments``) not written as
-    #: §15.2 requires for assembly to edit them line by line: in YAML block
-    #: style, each attachment entry beginning with ``id``. The parser sets it
-    #: from the source.
+    #: Frontmatter keys (``questions``, ``attachments``) the parsed source
+    #: does not write as §15.2 requires for assembly to edit them line by
+    #: line: in YAML block style, each attachment entry beginning with
+    #: ``id``. Only ``parse_document`` sets it: a document built or rebuilt
+    #: from a dict has no source, and the serializer writes block style.
     not_line_editable: list[str] = field(default_factory=list)
 
 
@@ -369,11 +370,6 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         amends=amends,
         attachments=attachments,
         questions=payload.get("questions"),
-        # Carried by a model-shaped dict (document_to_dict); parse_document
-        # sets it from the source instead.
-        not_line_editable=_clean_list(
-            payload["not_line_editable"] if isinstance(payload.get("not_line_editable"), list) else []
-        ),
     )
 
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from ..directives import PLACEHOLDER_TYPE_PARAMS
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
 from .patterns import (
     DURATION_UNITS,
@@ -38,10 +39,10 @@ class Blank:
     """Every occurrence of one placeholder id — one logical blank (§10.7)."""
     #: The effective type of its first occurrence with a valid one.
     type: str | None = None
-    #: What each occurrence of that type fixes — the ``currency`` of a money
-    #: blank, the ``unit`` of a duration blank — ``""`` where it fixes none.
-    #: Two different ones are an Error (placeholder-type-inconsistent).
-    codes: list[str] = field(default_factory=list)
+    #: What its occurrences of that type fix — the ``currency`` of a money
+    #: blank, the ``unit`` of a duration blank — with ``""`` for any that
+    #: fixes none. Two codes are an Error (placeholder-type-inconsistent).
+    codes: set[str] = field(default_factory=set)
     in_frontmatter: bool = False
 
 
@@ -57,11 +58,10 @@ def question_type(questions: Any, question_id: str) -> str | None:
     return declared if isinstance(declared, str) and declared in QUESTION_TYPES else None
 
 
-def _fixed_by_all(codes: list[str]) -> str | None:
+def _fixed_by_all(codes: set[str]) -> str | None:
     """The currency or unit every occurrence of a blank fixes, if they all
     fix the same one."""
-    distinct = set(codes)
-    return codes[0] if len(distinct) == 1 and codes[0] else None
+    return next(iter(codes)) if len(codes) == 1 and "" not in codes else None
 
 
 def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank | None = None) -> str | None:
@@ -86,7 +86,7 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
         return "must be an ISO 8601 date (YYYY-MM-DD)"
     if qtype == "money":
         return _measure_problem(
-            answer, "amount", "currency", blank.codes if blank else [],
+            answer, "amount", PLACEHOLDER_TYPE_PARAMS["money"], blank.codes if blank else set(),
             valid_amount=lambda v: isinstance(v, str) and is_valid_money_amount(v),
             amount_rule="a string in §10.3 format",
             valid_code=lambda c: c in KNOWN_CURRENCIES,
@@ -94,7 +94,7 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
         )
     if qtype == "duration":
         return _measure_problem(
-            answer, "value", "unit", blank.codes if blank else [],
+            answer, "value", PLACEHOLDER_TYPE_PARAMS["duration"], blank.codes if blank else set(),
             valid_amount=lambda v: (
                 isinstance(v, (int, str)) and not isinstance(v, bool) and is_positive_numeric(str(v))
             ),
@@ -118,7 +118,7 @@ def _measure_problem(
     answer: Any,
     amount_key: str,
     code_key: str,
-    codes: list[str],
+    codes: set[str],
     *,
     valid_amount,
     amount_rule: str,
@@ -136,7 +136,7 @@ def _measure_problem(
             return f"'{amount_key}' must be {amount_rule}"
         if not isinstance(code, str) or not valid_code(code):
             return f"'{code_key}' must be {code_rule}"
-        fixed = next((c for c in codes if c and c != code), None)
+        fixed = next((c for c in sorted(codes) if c and c != code), None)
         if fixed is not None:
             return f"'{code_key}' {code} disagrees with the {code_key} {fixed} its placeholders fix"
         return None
@@ -211,7 +211,8 @@ def check_questions(
                 continue
         elif "choices" in declaration:
             invalid(f"Question '{qid}' is not a choice question and cannot declare choices (§15.2).")
-        if "default" in declaration:
+        # A default left empty or written null is absent, like any value.
+        if declaration.get("default") is not None:
             problem = answer_problem(
                 qtype, declaration["default"], choices=choices, blank=blanks.get(qid)
             )

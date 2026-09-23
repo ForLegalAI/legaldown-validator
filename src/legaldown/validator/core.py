@@ -15,6 +15,7 @@ from typing import Any
 from ..directives import (
     DIRECTIVE_PARAMS,
     KNOWN_DIRECTIVES,
+    PLACEHOLDER_TYPE_PARAMS,
     Directive,
     is_escaped,
     iter_directives,
@@ -58,16 +59,19 @@ def _placeholders(value: str) -> list[Directive]:
 
 
 def _strings(value: Any) -> Iterator[str]:
-    """Every string in a YAML value, mapping keys included."""
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            yield from _strings(key)
-            yield from _strings(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _strings(item)
+    """Every string in a YAML value, mapping keys included. A container an
+    alias repeats, or one that holds itself, is visited once."""
+    seen: set[int] = set()
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            yield current
+        elif isinstance(current, (dict, list)) and id(current) not in seen:
+            seen.add(id(current))
+            items = current.items() if isinstance(current, dict) else ((item,) for item in current)
+            for entry in items:
+                stack.extend(entry)
 
 
 def _placeholder_type(directive: Directive, declared: str | None) -> str:
@@ -79,11 +83,10 @@ def _placeholder_type(directive: Directive, declared: str | None) -> str:
     return directive.params.get("type", "text")
 
 
-def _is_date_placeholder(value: str, questions: Any) -> bool:
+def _is_date_placeholder(value: str, directives: list[Directive], questions: Any) -> bool:
     """True if a frontmatter date field holds a placeholder that is its whole
     value and has effective type ``date`` — the one case §3.10 exempts from
-    the field's date check (§16.6)."""
-    directives = list(iter_directives(value))
+    the field's date check (§16.6). *directives* are those of *value*."""
     if len(directives) != 1:
         return False
     directive = directives[0]
@@ -101,11 +104,14 @@ def _check_date_field(
 ) -> None:
     """Report a frontmatter date field that is neither an ISO 8601 date nor a
     whole-value ``date`` placeholder (§3.10, §16.6)."""
-    if not value or _is_date_placeholder(value, questions) or is_valid_iso_date(value):
+    if not value or is_valid_iso_date(value):
+        return
+    directives = list(iter_directives(value))
+    if _is_date_placeholder(value, directives, questions):
         return
     hint = (
         " A placeholder in a date field must be the whole value and of type date (§3.10)."
-        if _placeholders(value)
+        if any(d.name == "placeholder" for d in directives)
         else ""
     )
     result.error(rule, f"{label} '{value}' must be a valid ISO 8601 date (YYYY-MM-DD).{hint}")
@@ -230,7 +236,7 @@ def _check_placeholder(
     if declared in DECISION_QUESTION_TYPES:
         return
     # The currency or unit this occurrence fixes, by its type (§10.7).
-    code_param = {"money": "currency", "duration": "unit"}.get(ptype)
+    code_param = PLACEHOLDER_TYPE_PARAMS.get(ptype)
     code = params.get(code_param, "") if code_param else ""
     if blank.type is None:
         blank.type = ptype
@@ -242,7 +248,7 @@ def _check_placeholder(
         )
     elif ptype != "duration" or code in VALID_DURATION_UNITS or not code:
         # An invalid unit is reported below and fixes nothing.
-        blank.codes.append(code)
+        blank.codes.add(code)
     if ptype == "money" and code and code not in KNOWN_CURRENCIES:
         result.warning(
             "placeholder-unknown-currency",
@@ -256,7 +262,7 @@ def _check_blank_codes(blanks: dict[str, Blank], result: ValidationResult) -> No
     """Report each blank whose occurrences fix two currencies or units: one
     blank cannot hold two (§10.7)."""
     for pid, blank in blanks.items():
-        fixed = sorted(set(filter(None, blank.codes)))
+        fixed = sorted(blank.codes - {""})
         if len(fixed) > 1:
             kind = "currencies" if blank.type == "money" else "units"
             result.error(

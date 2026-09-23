@@ -9,6 +9,7 @@ The parser handles:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import asdict
 from typing import Any
 
@@ -39,8 +40,8 @@ _StrDateSafeLoader.add_constructor(
 # A YAML 1.1 reader changes what was written: ``no`` becomes False, ``0.10``
 # becomes 0.1, a ``null`` key becomes None. Frontmatter holds text — ids,
 # names, labels, versions, conditions — so plain scalars are read as
-# written, except a question's ``default``, whose YAML type the answer rules
-# rely on (§15.7.1). A value left empty or written ``null`` stays absent.
+# written, except in a question's ``default``, whose YAML type the answer
+# rules rely on (§15.7.1). A value left empty or written ``null`` stays absent.
 _STR_TAG = "tag:yaml.org,2002:str"
 _NULL_TAG = "tag:yaml.org,2002:null"
 _CONVERTED_TAGS = frozenset(
@@ -48,24 +49,55 @@ _CONVERTED_TAGS = frozenset(
 )
 
 
-def _read_as_written(loader: yaml.SafeLoader, node: yaml.Node, path: tuple[str, ...] = ()) -> None:
-    """Retag the plain scalars under *node*, the value at *path*, to read as
-    the strings written."""
-    if path[:1] == ("questions",) and path[2:3] == ("default",):
-        return
-    if isinstance(node, yaml.ScalarNode):
-        if node.style is None and node.tag in _CONVERTED_TAGS:
+def _walk(node: yaml.Node, seen: set[int], loader: yaml.SafeLoader | None = None) -> Iterator[yaml.Node]:
+    """*node* and every node under it not in *seen*, each once — an alias
+    shares its anchor's node, so a graph with aliases is neither walked
+    exponentially nor forever. With a *loader*, each mapping has its merged
+    (``<<``) entries brought in before it is walked."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        if isinstance(current, yaml.SequenceNode):
+            stack.extend(reversed(current.value))
+        elif isinstance(current, yaml.MappingNode):
+            if loader is not None:
+                loader.flatten_mapping(current)
+            for key, value in reversed(current.value):
+                stack.extend((value, key))
+
+
+def _entries(loader: yaml.SafeLoader, node: yaml.Node) -> list[tuple[yaml.Node, yaml.Node]]:
+    """The entries of mapping *node*, merged ones included."""
+    if not isinstance(node, yaml.MappingNode):
+        return []
+    loader.flatten_mapping(node)
+    return node.value
+
+
+def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
+    """Retag the plain scalars of the frontmatter *root* to read as the
+    strings written, leaving the nodes of question defaults typed — even a
+    default shared through an alias with another field."""
+    seen: set[int] = set()
+    for key, questions in _entries(loader, root):
+        if key.value == "questions":
+            for _qid, declaration in _entries(loader, questions):
+                for field_key, value in _entries(loader, declaration):
+                    if field_key.value == "default":
+                        for _node in _walk(value, seen):
+                            pass
+    for node in _walk(root, seen, loader):
+        if isinstance(node, yaml.MappingNode):
+            for key, _value in node.value:
+                if isinstance(key, yaml.ScalarNode) and key.style is None and key.tag == _NULL_TAG:
+                    key.tag = _STR_TAG
+        elif isinstance(node, yaml.ScalarNode) and node.style is None and node.tag in _CONVERTED_TAGS:
             node.tag = _STR_TAG
-    elif isinstance(node, yaml.SequenceNode):
-        for item in node.value:
-            _read_as_written(loader, item, (*path, ""))
-    elif isinstance(node, yaml.MappingNode):
-        loader.flatten_mapping(node)  # bring merged (<<) keys in first
-        for key, value in node.value:
-            if isinstance(key, yaml.ScalarNode) and key.style is None and key.tag == _NULL_TAG:
-                key.tag = _STR_TAG
-            _read_as_written(loader, key)
-            _read_as_written(loader, value, (*path, str(key.value)))
+
 
 # ── Parser regex patterns ─────────────────────────────────────────
 
@@ -89,42 +121,41 @@ LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)\.|-)\s+")
 
 # ── Internal helpers ──────────────────────────────────────────────
 
-def _split_frontmatter(source: str) -> tuple[yaml.Node | None, dict[str, Any], str]:
-    """Split *source* into ``(frontmatter YAML node, parsed frontmatter,
-    body)``. The node keeps how the YAML is written, which the data loses."""
+def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str]:
+    """Split *source* into ``(keys not line-editable, parsed frontmatter,
+    body)``; the first is read from how the YAML is written, which the
+    parsed data loses."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return None, {}, source
+        return [], {}, source
     loader = _StrDateSafeLoader(match.group(1) or "")
     try:
         node = loader.get_single_node()
-        if node is not None:
-            _read_as_written(loader, node)
-        metadata = (loader.construct_document(node) if node is not None else None) or {}
+        if node is None:
+            return [], {}, source[match.end():]
+        # Before merges rewrite the mappings: an entry is judged as written.
+        not_line_editable = _not_line_editable(node)
+        _read_as_written(loader, node)
+        metadata = loader.construct_document(node)
     finally:
         loader.dispose()
     if not isinstance(metadata, dict):
         raise ValueError("Frontmatter must be a YAML mapping of fields.")
-    body = source[match.end():]
-    return node, metadata, body
+    return not_line_editable, metadata, source[match.end():]
 
 
 def _has_flow_style(node: yaml.Node) -> bool:
-    """True if *node* or anything inside it has entries written in YAML flow
+    """True if *node* or anything under it has entries written in YAML flow
     style. An empty ``{}`` or ``[]`` has none to edit."""
-    if isinstance(node, yaml.MappingNode):
-        return bool(node.value) and (
-            node.flow_style
-            or any(_has_flow_style(key) or _has_flow_style(value) for key, value in node.value)
-        )
-    if isinstance(node, yaml.SequenceNode):
-        return bool(node.value) and (
-            node.flow_style or any(_has_flow_style(item) for item in node.value)
-        )
-    return False
+    return any(
+        isinstance(inner, (yaml.MappingNode, yaml.SequenceNode))
+        and inner.flow_style
+        and bool(inner.value)
+        for inner in _walk(node, set())
+    )
 
 
-def _not_line_editable(root: yaml.Node | None) -> list[str]:
+def _not_line_editable(root: yaml.Node) -> list[str]:
     """The keys among ``questions`` and ``attachments`` that are not written
     as §15.2 requires for assembly to edit them line by line: in YAML block
     style, and each attachment entry beginning with ``id``. *root* is the
@@ -438,7 +469,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     silently corrected).
     """
     # A byte-order mark is an encoding artifact, not content.
-    frontmatter_node, metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
+    not_line_editable, metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
     preamble, sections = _parse_body(body.splitlines())
     payload: dict[str, Any] = {
         "metadata": metadata,
@@ -455,8 +486,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
         "preamble": [asdict(block) for block in preamble],
     }
     document = document_from_dict(payload)
-    # Set from the source, never from a frontmatter key of that name.
-    document.metadata.not_line_editable = _not_line_editable(frontmatter_node)
+    document.metadata.not_line_editable = not_line_editable
     return document
 
 

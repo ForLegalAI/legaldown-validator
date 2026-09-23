@@ -331,10 +331,16 @@ def test_an_empty_attachments_key_in_a_template_is_line_editable():
     assert "question-invalid" not in _validate(frontmatter, "{{placeholder: client}}").rules()
 
 
-def test_the_block_style_finding_survives_the_dict_round_trip():
+def test_the_block_style_finding_describes_the_parsed_source_only():
+    """A document rebuilt from a dict has no source; serialized, it is
+    written in block style. A frontmatter key cannot set the finding."""
     source = f"---\ntitle: Fixture\n{_SIDES}questions: {{fee: {{type: text}}}}\n---\n"
-    document = document_from_dict(document_to_dict(parse_document(source)))
-    assert "question-invalid" in validate_document(document).rules("error")
+    parsed = parse_document(source)
+    assert parsed.metadata.not_line_editable == ["questions"]
+    rebuilt = document_from_dict(document_to_dict(parsed))
+    assert rebuilt.metadata.not_line_editable == []
+    injected = "not_line_editable:\n  - questions\nquestions:\n  fee:\n    type: text\n"
+    assert "question-invalid" not in _validate(injected, "{{placeholder: fee}}").rules()
 
 
 @pytest.mark.parametrize("value", ["1e3", "inf", "+5", "-5", "1.5.2"])
@@ -457,3 +463,40 @@ def test_an_invalid_unit_fixes_nothing():
 
 def test_a_version_takes_ascii_digits_only():
     assert "legaldown-version-newer" not in _validate('legaldown: "\uff10.\uff13"\n').rules()
+
+
+def test_a_default_shared_through_an_alias_keeps_its_type():
+    frontmatter = (
+        "x-base: &base\n  type: boolean\n  default: false\n"
+        "questions:\n  agree:\n    <<: *base\n"
+    )
+    assert "question-invalid" not in _validate(frontmatter).rules()
+
+
+def test_self_referencing_aliases_parse():
+    frontmatter = "x: &a [*a]\nquestions: &q\n  a:\n    type: text\n    label: *q\n"
+    assert "question-invalid" not in _validate(frontmatter, "{{placeholder: a}}").rules()
+
+
+def test_nested_aliases_are_walked_once():
+    levels = ["l0: &l0 [x, x, x, x, x, x, x, x, x, x]"]
+    for depth in range(1, 25):
+        levels.append(f"l{depth}: &l{depth} [{', '.join([f'*l{depth - 1}'] * 10)}]")
+    source = "---\ntitle: Fixture\n" + "\n".join(levels) + "\n---\n"
+    assert parse_document(source).metadata.title == "Fixture"
+
+
+def test_an_attachment_entry_is_judged_as_written_not_as_merged():
+    frontmatter = (
+        "x-common: &common\n  title: Annex\n"
+        "attachments:\n  - id: annex\n    file: annex.lgd\n    <<: *common\n"
+        "questions:\n  client:\n    type: text\n"
+    )
+    result = _validate(frontmatter, "{{placeholder: client}} {{attach: annex}}")
+    assert "question-invalid" not in result.rules()
+
+
+@pytest.mark.parametrize("default", ["", " null"])
+def test_an_empty_default_is_absent(default):
+    frontmatter = f"questions:\n  vat:\n    type: boolean\n    default:{default}\n"
+    assert "question-invalid" not in _validate(frontmatter).rules()
