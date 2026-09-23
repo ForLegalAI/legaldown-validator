@@ -9,8 +9,10 @@ from typing import Any
 
 import yaml
 
-from .directives import FENCE_OPEN_RE, closes_fence, format_value
+from .directives import format_value
+from .markdown import FENCE_OPEN_RE, close_fences
 from .models import Block, Document, Metadata
+from .parser import HEADING_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -113,26 +115,25 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
 
 
 def _list_item(marker: str, item: str) -> str:
-    """A list item: its later lines (a fenced code block in the item) are
-    indented to the item's content; blank lines stay blank."""
-    first, *rest = (marker + item).split("\n")
+    """A list item: its later lines (a fenced code block in the item, closed
+    if left open) are indented to the item's content; blank lines stay
+    blank."""
+    first, *rest = (marker + close_fences(item)).split("\n")
     return "\n".join([first, *(" " * len(marker) + line if line else line for line in rest)])
 
 
-def _code_block(text: str) -> str:
-    """A fenced code block's source, with its fence closed if it is not, so
-    that it cannot swallow what the serializer writes after it."""
-    lines = text.split("\n")
-    opening = FENCE_OPEN_RE.match(lines[0])
-    if opening and not any(closes_fence(line, opening.group("fence")) for line in lines[1:]):
-        indent = lines[0][: len(lines[0]) - len(lines[0].lstrip(" "))]
-        lines.append(indent + opening.group("fence"))
-    return "\n".join(lines)
+def _paragraph(text: str) -> str:
+    """A paragraph's text, indented four columns if at the margin it would
+    open a code block or a heading: the parser only reads such text as a
+    paragraph when it was indented like that in the source."""
+    if FENCE_OPEN_RE.match(text) or HEADING_RE.match(text):
+        return "    " + text
+    return text
 
 
 def _render_block(block: Block) -> str:
     if block.kind == "paragraph":
-        return block.text.strip()
+        return _paragraph(block.text.strip())
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()
@@ -186,7 +187,7 @@ def _render_block(block: Block) -> str:
     if block.kind == "rule":
         return "---"
     if block.kind == "code":
-        return _code_block(block.text)
+        return close_fences(block.text)
     return block.text.strip()
 
 

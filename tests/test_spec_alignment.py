@@ -1087,3 +1087,58 @@ def test_code_in_a_list_item_keeps_trailing_spaces():
     item = parse_document(source).sections[0].blocks[0].items[0]
     assert item == "```\nkeep  \n```"
     assert parse_document(serialize_document(parse_document(source))).sections[0].blocks[0].items[0] == item
+
+
+@pytest.mark.parametrize(
+    ("text", "targets"),
+    [
+        ('```{{ref: "a`b"}}\n{{ref: hidden}} and `code`', ["a`b", "hidden"]),
+        ('{{ref: "a`b"}} {{ref: "c`d"}} {{ref: hidden}} `code`', ["a`b", "c`d", "hidden"]),
+    ],
+)
+def test_backticks_in_directive_values_open_nothing(text, targets):
+    """One left-to-right scan: a directive consumes its own backticks."""
+    assert [d.positional for d in iter_directives(text)] == targets
+
+
+@pytest.mark.parametrize("paragraph", ["    ~~~\n    x", "    # not a heading"])
+def test_paragraph_that_would_open_a_block_stays_indented(paragraph):
+    source = _FRONTMATTER + paragraph + "\n\n# Next {#next}\n\nBody.\n"
+    reparsed = parse_document(serialize_document(parse_document(source)))
+    assert reparsed.sections == parse_document(source).sections
+
+
+def test_tabs_inside_list_item_code_are_kept():
+    document = parse_document(_FRONTMATTER + "- item\n  ```\n  a\tb\n  ```\n")
+    assert document.sections[0].blocks[0].items == ["item\n```\na\tb\n```"]
+
+
+def test_serializer_closes_an_unclosed_fence_in_a_list_item():
+    document = parse_document(_FRONTMATTER + "Text.\n")
+    document.sections[0].blocks += [
+        Block(kind="unordered_list", items=["x\n```\ncode"]),
+        Block(kind="unordered_list", items=["y"]),
+    ]
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [b.items for b in blocks[1:]] == [["x\n```\ncode\n```"], ["y"]]
+
+
+def test_indentation_after_the_quote_marker_is_content():
+    """Only one space after > is syntax; a fence line indented four columns
+    inside quoted code is content, not a closing fence."""
+    document = parse_document(_FRONTMATTER + "> ```\n>     ```\n> {{ref: missing}}\n> ```\n")
+    assert validate_document(document).diagnostics == []
+
+
+@pytest.mark.parametrize(
+    ("second_line", "kinds", "headings"),
+    [
+        ("- ", [], ["Some paragraph"]),  # an empty item is a setext underline
+        ("    - x", ["paragraph"], []),  # indented four: paragraph text
+        ("2. two", ["paragraph"], []),  # ordered, not numbered 1
+    ],
+)
+def test_only_some_list_items_interrupt_a_paragraph(second_line, kinds, headings):
+    source = _FRONTMATTER + "Some paragraph\n" + second_line + "\n"
+    assert _kinds(source) == kinds
+    assert [title for title, _level, _id in _outline(source)[1:]] == headings

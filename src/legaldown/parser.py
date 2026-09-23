@@ -15,15 +15,8 @@ from typing import Any
 import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import (
-    FENCE_OPEN_RE,
-    Directive,
-    closes_fence,
-    fence_end,
-    indent_width,
-    iter_directives,
-    lex,
-)
+from .directives import Directive, iter_directives, lex
+from .markdown import FENCE_OPEN_RE, closes_fence, dedent, fence_end, indent_width
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -76,12 +69,6 @@ def _split_frontmatter(source: str) -> tuple[dict[str, Any], str]:
     return metadata, body
 
 
-def _dedent(line: str, columns: int) -> str:
-    """*line* with up to *columns* columns of leading whitespace removed."""
-    expanded = line.expandtabs(4)
-    return expanded[min(columns, indent_width(expanded)):]
-
-
 def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int, bool]:
     """Parse the list starting at ``lines[index]``.
 
@@ -104,7 +91,7 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
         line = lines[end]
         if fence is not None:
             if not line.strip() or indent_width(line) >= 2:
-                code = _dedent(line, content_indent)
+                code = dedent(line, content_indent)
                 items[-1] += "\n" + code
                 end += 1
                 if closes_fence(code, fence):
@@ -117,11 +104,11 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
         marker = LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
         if marker and ((marker.group("number") is not None) == ordered or indented):
-            content_indent = len(line[:marker.end()].expandtabs(4))
+            content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
             content = line[marker.end():].strip()
             items.append(content)
         elif items and indented:
-            content = _dedent(line, content_indent)
+            content = dedent(line, content_indent)
             # An item holding code keeps its lines; other continuation lines
             # join the item's text.
             if FENCE_OPEN_RE.match(content) or "\n" in items[-1]:
@@ -233,6 +220,19 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
     return None
 
 
+def _starts_interrupting_item(line: str) -> bool:
+    """True if *line* is a list item that may interrupt a paragraph
+    (CommonMark): indented at most three columns, not empty, and, if
+    ordered, numbered 1."""
+    marker = LIST_ITEM_RE.match(line)
+    return (
+        marker is not None
+        and indent_width(line) <= 3
+        and bool(line[marker.end():].strip())
+        and marker.group("number") in (None, "1")
+    )
+
+
 def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     """Return ``(end, setext_level)`` for the paragraph starting at
     ``lines[index]``. *setext_level* is 1 or 2 when the paragraph is the text
@@ -247,12 +247,11 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     end = index + 1
     while end < len(lines) and lines[end].strip():
         line = lines[end]
-        marker = LIST_ITEM_RE.match(line)
         if (
             FENCE_OPEN_RE.match(line)
             or HEADING_RE.match(line)
             or line.lstrip().startswith(">")
-            or (marker and marker.group("number") in (None, "1"))
+            or _starts_interrupting_item(line)
         ):
             break
         underline = SETEXT_UNDERLINE_RE.match(line)
@@ -306,7 +305,9 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             end = index
             while end < len(lines) and lines[end].lstrip().startswith(">"):
                 end += 1
-            quoted = (quote.lstrip()[1:].lstrip() for quote in lines[index:end])
+            # After ">", one optional space is syntax; any further
+            # indentation belongs to the quoted content (CommonMark).
+            quoted = (quote.lstrip()[1:].removeprefix(" ") for quote in lines[index:end])
             blocks.append(Block(kind="quote", text="\n".join(quoted).strip()))
             index = end
             lazy = True
