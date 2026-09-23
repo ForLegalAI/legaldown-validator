@@ -842,6 +842,18 @@ def test_frontmatter_that_is_not_a_mapping_is_rejected():
         parse_document("---\njust text\n---\n# A\n")
 
 
-def test_marker_followed_by_a_code_span_is_not_at_the_end():
-    result = _validate("See {#a} `code`\n\nAnd {#b} <!-- note -->")
-    assert [d.rule for d in result.diagnostics] == ["anchor-misplaced"] * 2
+def test_only_a_comment_may_follow_an_anchor():
+    """A comment is not rendered (§8.6), so an anchor before one is still at
+    the end of its paragraph; a code span is visible text."""
+    result = _validate(
+        "Deliver. {#delivery} <!-- drafting note -->\n\nSee {#a} `code`\n\n"
+        "Per {{ref: delivery}}."
+    )
+    assert [d.rule for d in result.diagnostics] == ["anchor-misplaced"]
+    assert "delivery" in result.section_lookup
+
+
+def test_marker_after_a_malformed_directive_is_still_an_anchor():
+    """A malformed directive has no value to hide the marker in."""
+    result = _validate("Text {{ref: x more {#x}\n\nSee {{ref: x}}.")
+    assert result.rules() == {"directive-malformed"}

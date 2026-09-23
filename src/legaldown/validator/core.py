@@ -143,6 +143,7 @@ def _check_placeholder(
 
 # A {#id}-like marker (§5.7), in body text as opposed to a heading.
 _ANCHOR_MARKER_RE = re.compile(r"\{#([^}\s]+)\}")
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def validate_document(
@@ -453,12 +454,14 @@ def validate_document(
                 lexed = lex_fragment(fragment)
                 for m in _ANCHOR_MARKER_RE.finditer(lexed.view):
                     if is_escaped(fragment, m.start()) or any(
-                        d.start <= m.start() < d.end for d in lexed.directives
+                        d.start <= m.start() < d.end
+                        for d in lexed.directives
+                        if not d.malformed
                     ):
                         continue  # literal: escaped, or part of a directive's value
-                    # The end of the source, not of the view: a code span or
-                    # comment after the marker is literal text that follows it.
-                    at_end = not fragment[m.end():].strip()
+                    # Only whitespace and comments may follow an anchor: a
+                    # comment is not rendered (§8.6), but a code span is text.
+                    at_end = not _HTML_COMMENT_RE.sub("", fragment[m.end():]).strip()
                     if entry is None or not anchor_position or not at_end:
                         result.warning(
                             "anchor-misplaced",
@@ -492,7 +495,9 @@ def validate_document(
     # definition is a quoted term followed by a ``{{def: id}}`` anchor, declared
     # either as a leading-anchor "definition" block or inline at first use, and
     # may appear anywhere.
-    definition_refs = collect_definitions(document, language=document.metadata.language)
+    definition_refs = collect_definitions(
+        document, language=document.metadata.language, lex_fragment=lex_fragment
+    )
     auto_ids_seen: dict[str, str] = {}
     for ref in definition_refs:
         def_id = ref.id

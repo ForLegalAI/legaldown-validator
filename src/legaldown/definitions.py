@@ -13,6 +13,7 @@ analysis, and the editor glossary.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex
@@ -194,12 +195,16 @@ def text_fragments(block: Block) -> list[str]:
 
 
 def collect_definitions(
-    document: Document, *, language: str | None = None
+    document: Document,
+    *,
+    language: str | None = None,
+    lex_fragment: Callable[[str], Lexed] = lex,
 ) -> list[DefinitionRef]:
     """Collect every definition declared in *document*, in document order.
 
     Scans both ``definition`` blocks (a paragraph whose leading token is a
     definition anchor) and inline anchors inside any text fragment.
+    *lex_fragment* lets a caller that lexes the same fragments share results.
     """
     lang = language or document.metadata.language or "en"
     refs: list[DefinitionRef] = []
@@ -220,7 +225,9 @@ def collect_definitions(
                 )
             )
         for fragment in text_fragments(block):
-            for anchor in find_definition_anchors(fragment, language=lang):
+            for anchor in find_definition_anchors(
+                fragment, language=lang, lexed=lex_fragment(fragment)
+            ):
                 # A malformed {{def:}} has no id to register; the validator
                 # reports it as directive-malformed.
                 if anchor.term is None or anchor.directive.malformed:
