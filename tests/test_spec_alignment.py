@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import pytest
 
+from legaldown import iter_directives, serialize_document
+from legaldown.directives import format_value
 from legaldown.parser import collect_source_directives, parse_document
-from legaldown.validator import iter_directives, validate_document
+from legaldown.validator import validate_document
 
 _FRONTMATTER = """---
 title: Fixture
@@ -214,17 +216,32 @@ def test_malformed_directive_is_an_error(body):
     assert "directive-malformed" in _validate(body).rules("error")
 
 
-def test_parameter_on_a_lifted_directive_is_reported():
-    """The parser lifts a paragraph's {{ref:}} and a leading {{def:}} into
-    block fields; their parameters are still checked."""
-    result = _validate(
+def test_parameters_on_ref_and_def_are_reported():
+    """{{ref:}} and {{def:}} define no parameters. The parser lifts neither
+    into block fields here, so the parameters stay in the text and survive
+    a round trip."""
+    source = (
         '"Foo" {{def: foo, colour=red}} means x.\n\n'
         "See {{ref: terms, format=long}} and {{term: foo}}."
     )
-    unknown = [d.message for d in result.diagnostics if d.rule == "directive-unknown-param"]
-    assert len(unknown) == 2
+    result = _validate(source)
+    assert [d.rule for d in result.diagnostics] == ["directive-unknown-param"] * 2
     assert result.definition_lookup["foo"] == "Foo"
-    assert result.is_valid
+    assert "{{ref: terms, format=long}}" in serialize_document(parse_document(_FRONTMATTER + source))
+
+
+def test_directive_in_code_span_is_not_lifted_or_checked():
+    """§11.4: the parser must not lift a code-span {{ref:}} into a ref block."""
+    document = parse_document(_FRONTMATTER + "Write `{{ref: nope}}` or `{{term: nope}}`.")
+    assert document.sections[0].blocks[0].kind == "paragraph"
+    assert validate_document(document).diagnostics == []
+
+
+def test_lifted_term_label_round_trips():
+    source = _FRONTMATTER + '"Svc" {{def: svc}} x.\n\nSee {{term: svc, label="Services, as amended"}}.\n'
+    block = parse_document(source).sections[0].blocks[1]
+    assert (block.kind, block.target, block.label) == ("term", "svc", "Services, as amended")
+    assert '{{term: svc, label="Services, as amended"}}' in serialize_document(parse_document(source))
 
 
 def test_placeholder_currency_is_defined_only_for_money():
@@ -254,6 +271,16 @@ def test_iter_directives_decodes_escapes():
     (directive,) = iter_directives(r'{{field: "say \"hi\" C:\path\\", type=t}}')
     assert directive.positional == 'say "hi" C:\\path\\'
     assert directive.params == {"type": "t"}
+
+
+@pytest.mark.parametrize(
+    "value", ["plain", "a, b", "a}}b", "ends}", '"quoted"', " padded ", "C:\\dir", "type=x", ""]
+)
+def test_format_value_is_the_inverse_of_the_lexer(value):
+    source = f"{{{{field: {format_value(value, positional=True)}, type=t}}}}"
+    (directive,) = iter_directives(source)
+    assert directive.positional == value
+    assert not directive.malformed
 
 
 def test_side_directive_resolves_and_reports_unknown():

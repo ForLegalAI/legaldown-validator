@@ -17,8 +17,8 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
+from .directives import parse_def_id
 from .models import Block, Document
-from .validator.directives import parse_def_id
 from .validator.helpers import slugify_identifier
 
 # ---------------------------------------------------------------------------
@@ -170,7 +170,7 @@ def collect_definitions(
         for block_index, block in enumerate(section.blocks):
             if block.kind == "definition":
                 term = (block.term or "").strip()
-                raw_id = parse_def_id(block.definition_id or "")
+                raw_id = (block.definition_id or "").strip()
                 did = raw_id or slugify_identifier(term, fallback="term")
                 refs.append(
                     DefinitionRef(
@@ -184,8 +184,11 @@ def collect_definitions(
                 )
             for fragment in text_fragments(block):
                 for match in rx.finditer(fragment):
-                    term, raw_id = extract_def(match)
-                    raw_id = parse_def_id(raw_id)
+                    term, raw_args = extract_def(match)
+                    # Parameters are not part of the id; a malformed argument
+                    # is kept whole so the identifier checks report it.
+                    parsed_id = parse_def_id(raw_args)
+                    raw_id = raw_args if parsed_id is None else parsed_id
                     did = raw_id or slugify_identifier(term, fallback="term")
                     refs.append(
                         DefinitionRef(

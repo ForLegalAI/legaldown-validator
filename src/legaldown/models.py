@@ -100,7 +100,6 @@ class Block:
     prefix: str = ""
     suffix: str = ""
     target: str = ""
-    format: str = ""
     label: str = ""
     items: list[str] = field(default_factory=list)
     headers: list[str] = field(default_factory=list)
@@ -131,7 +130,7 @@ class Document:
 BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     "paragraph": {"kind": "paragraph", "text": ""},
     "definition": {"kind": "definition", "definition_id": "", "term": "", "text": ""},
-    "ref": {"kind": "ref", "prefix": "", "target": "", "format": "", "suffix": ""},
+    "ref": {"kind": "ref", "prefix": "", "target": "", "suffix": ""},
     "term": {"kind": "term", "prefix": "", "target": "", "suffix": "", "label": ""},
     "unordered_list": {"kind": "unordered_list", "items": [""]},
     "ordered_list": {"kind": "ordered_list", "items": [""]},
@@ -200,7 +199,6 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         prefix=str(merged.get("prefix") or ""),
         suffix=str(merged.get("suffix") or ""),
         target=_str(merged.get("target")),
-        format=_str(merged.get("format")),
         label=_str(merged.get("label")),
         items=_clean_list(list(merged.get("items") or []))
         or ([""] if kind.endswith("list") else []),

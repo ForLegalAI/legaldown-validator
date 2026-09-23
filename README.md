@@ -201,7 +201,7 @@ with open("contract.lgd", "w", encoding="utf-8") as handle:
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
 structures, and `render_block()` renders a single block when you are driving your own layout.
-`legaldown.validator.iter_directives()` lexes the directives in a piece of text by the §11.2
+`iter_directives()` lexes the directives in a piece of text by the §11.2
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it

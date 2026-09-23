@@ -10,8 +10,14 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from ..directives import (
+    DIRECTIVE_PARAMS,
+    KNOWN_DIRECTIVES,
+    Directive,
+    iter_directives,
+    strip_uninterpreted,
+)
 from ..models import Document
-from .directives import DIRECTIVE_PARAMS, Directive, directive_fragments, iter_directives
 from .helpers import (
     ensure_unique_identifier,
     format_section_number,
@@ -23,7 +29,6 @@ from .helpers import (
 from .patterns import (
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
-    KNOWN_DIRECTIVES,
     RESERVED_VALUE_TYPES,
     VALID_DOC_TYPES,
     VALID_DURATION_UNITS,
@@ -45,33 +50,18 @@ def _is_placeholder_value(value: str) -> bool:
     return _PLACEHOLDER_LITERAL in (value or "")
 
 
-# §11.4: directives and anchor markers are not recognized inside inline code
-# spans, fenced/indented code blocks, or HTML comments — directive-like text
-# there is literal. Blanking those regions keeps their content out of every
-# scan below without shifting any offsets.
-_CODE_SPAN_RE = re.compile(r"``.*?``|`[^`\n]*`", re.DOTALL)
-_FENCED_CODE_RE = re.compile(r"^(?P<fence>```|~~~).*?^(?P=fence)", re.DOTALL | re.MULTILINE)
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+# §10.1: notes are plain text — Markdown formatting would leak markers into
+# machine-facing output.
+_MARKDOWN_RE = re.compile(r"\*\*|__|\+\+|`|(?<!\w)\*(?!\s)")
 
 
-def _strip_uninterpreted(fragment: str) -> str:
-    """Blank out code spans, code blocks, and comments, preserving length."""
-    def _blank(match: re.Match) -> str:
-        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
+def _check_directive_arguments(directive: Directive, result: ValidationResult) -> bool:
+    """Report the argument problems any directive can have; False if malformed.
 
-    text = _FENCED_CODE_RE.sub(_blank, fragment or "")
-    text = _HTML_COMMENT_RE.sub(_blank, text)
-    return _CODE_SPAN_RE.sub(_blank, text)
-
-
-def _check_directive_syntax(directive: Directive, result: ValidationResult) -> bool:
-    """Report §11.2 grammar violations on *directive*; False if it is malformed.
-
-    A malformed directive has no reliable arguments, so its own checks are
-    skipped — the directive-malformed Error keeps the document from passing.
-    Unknown and duplicate parameters leave the directive usable: an unknown
-    parameter is ignored (§11.2) and a duplicate keeps its first value, so the
-    directive's own checks still run.
+    A malformed directive (§11.2) has no reliable arguments, so its own checks
+    are skipped; its Error keeps the document from passing. An unknown
+    parameter is ignored (§11.2) and a repeated one keeps its first value, so
+    the directive's own checks still run.
     """
     name = directive.name
     if directive.malformed:
@@ -97,11 +87,7 @@ def _check_directive_syntax(directive: Directive, result: ValidationResult) -> b
             f"'{directive.source}'.",
         )
     note = directive.params.get("note")
-    if note is not None and "note" in DIRECTIVE_PARAMS.get(name, ()) and re.search(
-        r"\*\*|__|\+\+|`|(?<!\w)\*(?!\s)", note
-    ):
-        # §10.1: notes are plain text — Markdown formatting would leak
-        # markers into machine-facing output.
+    if note is not None and "note" in DIRECTIVE_PARAMS[name] and _MARKDOWN_RE.search(note):
         result.error(
             "note-invalid",
             "Note parameter must be plain text without Markdown formatting.",
@@ -449,7 +435,7 @@ def validate_document(
             continue
         for block in section.blocks:
             for fragment in (
-                _strip_uninterpreted(f) for f in _all_text_fragments(block)
+                strip_uninterpreted(f) for f in _all_text_fragments(block)
             ):
                 m = _trailing_anchor_re.search(fragment)
                 if not m:
@@ -628,18 +614,24 @@ def validate_document(
     for field_value in value_fields:
         if field_value and _PLACEHOLDER_LITERAL in field_value:
             for directive in iter_directives(field_value):
-                if directive.name == "placeholder" and _check_directive_syntax(
+                if directive.name == "placeholder" and _check_directive_arguments(
                     directive, result
                 ):
                     _check_placeholder(directive, result, placeholder_types)
 
     for section in document.sections:
         for block in section.blocks:
+            # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
+            # block fields when they represent it exactly (no other parameters).
             ref_targets: list[str] = []
             term_targets: list[str] = []
+            if block.kind == "ref" and block.target.strip():
+                ref_targets.append(block.target.strip())
+            if block.kind == "term" and block.target.strip():
+                term_targets.append(block.target.strip())
             # §11.4: directive-like text inside code spans/blocks and comments
             # is literal — never a directive, never a diagnostic.
-            for fragment in (_strip_uninterpreted(f) for f in directive_fragments(block)):
+            for fragment in (strip_uninterpreted(f) for f in text_fragments(block)):
                 for directive in iter_directives(fragment):
                     name = directive.name
                     # ── Unknown directive names (§11.5) ──
@@ -650,7 +642,7 @@ def validate_document(
                             f"with [UNKNOWN DIRECTIVE: {name}] (§11.5).",
                         )
                         continue
-                    if not _check_directive_syntax(directive, result):
+                    if not _check_directive_arguments(directive, result):
                         continue
                     value = directive.positional or ""
                     params = directive.params

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from .core import AttachmentDefinitionsImporter, DefinitionsImporter, validate_document
-from .directives import DIRECTIVE_PARAMS, Directive, iter_directives
 from .helpers import (
     ensure_unique_identifier,
     format_section_number,
@@ -13,22 +12,9 @@ from .helpers import (
     slugify_identifier,
 )
 from .patterns import (
-    ATTACH_RE,
-    DATE_RE,
-    DIRECTIVE_NAME_RE,
-    DURATION_RE,
-    FIELD_RE,
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
-    KNOWN_DIRECTIVES,
-    MONEY_RE,
-    NOTE_RE,
-    PARTY_RE,
-    PLACEHOLDER_RE,
-    REF_RE,
     RESERVED_VALUE_TYPES,
-    SIDE_RE,
-    TERM_RE,
     VALID_DOC_TYPES,
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
@@ -40,10 +26,6 @@ __all__ = [
     "validate_document",
     "DefinitionsImporter",
     "AttachmentDefinitionsImporter",
-    # Directive lexer
-    "Directive",
-    "iter_directives",
-    "DIRECTIVE_PARAMS",
     # Result types
     "ValidationResult",
     "SectionIndexEntry",
@@ -58,19 +40,6 @@ __all__ = [
     "is_positive_numeric",
     # Patterns & constants
     "IDENTIFIER_RE",
-    "REF_RE",
-    "TERM_RE",
-    "DATE_RE",
-    "MONEY_RE",
-    "DURATION_RE",
-    "PARTY_RE",
-    "SIDE_RE",
-    "FIELD_RE",
-    "PLACEHOLDER_RE",
-    "ATTACH_RE",
-    "NOTE_RE",
-    "DIRECTIVE_NAME_RE",
-    "KNOWN_DIRECTIVES",
     "RESERVED_VALUE_TYPES",
     "VALID_DOC_TYPES",
     "VALID_DURATION_UNITS",

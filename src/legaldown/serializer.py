@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from .directives import format_value
 from .models import Block, Document, Metadata
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -116,16 +117,17 @@ def _render_block(block: Block) -> str:
         return block.text.strip()
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
-        did = block.definition_id.strip()
+        did = format_value(block.definition_id.strip(), positional=True)
         anchor = f'"{term}" {{{{def: {did}}}}}' if did else f'"{term}" {{{{def:}}}}'
         body = block.text.strip()
         return f"{anchor} {body}" if body else anchor
     if block.kind == "ref":
-        format_part = f", format={block.format}" if block.format else ""
-        return f"{block.prefix}{{{{ref: {block.target}{format_part}}}}}{block.suffix}".strip()
+        target = format_value(block.target, positional=True)
+        return f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}".strip()
     if block.kind == "term":
-        label_part = f", label={block.label}" if block.label else ""
-        return f"{block.prefix}{{{{term: {block.target}{label_part}}}}}{block.suffix}".strip()
+        target = format_value(block.target, positional=True)
+        label_part = f", label={format_value(block.label)}" if block.label else ""
+        return f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip()
     if block.kind == "unordered_list":
         return "\n".join(f"- {item}" for item in block.items if item.strip())
     if block.kind == "ordered_list":

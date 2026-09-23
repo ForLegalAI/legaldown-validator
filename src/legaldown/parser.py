@@ -14,10 +14,16 @@ from typing import Any
 
 import yaml
 
-from .definitions import DEF_ANCHOR_RE, EMPHASIS_DEF_RE, extract_def, is_single_quoted
+from .definitions import (
+    DEF_ANCHOR_RE,
+    EMPHASIS_DEF_RE,
+    extract_def,
+    is_single_quoted,
+    text_fragments,
+)
+from .directives import Directive, iter_directives, parse_def_id, strip_uninterpreted
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
-from .validator.directives import directive_fragments, iter_directives
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -42,12 +48,6 @@ FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 # (e.g. {#Bad_ID}) must reach the validator to be reported as anchor-format
 # rather than silently remaining part of the title.
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
-REF_BLOCK_RE = re.compile(
-    r"^(.*?)\{\{ref:\s*([^,}]+)(?:,\s*format=([^}]+))?}}(.*)$", re.DOTALL
-)
-TERM_BLOCK_RE = re.compile(
-    r"^(.*?)\{\{term:\s*([^,}]+)(?:,\s*label=([^}]+))?}}(.*)$", re.DOTALL
-)
 
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -98,33 +98,49 @@ def _parse_paragraph(paragraph: str) -> Block:
         def_match = None
     if def_match:
         term, raw_id = extract_def(def_match)
-        return Block(
-            kind="definition",
-            definition_id=raw_id,
-            term=term,
-            text=stripped[def_match.end():].strip(),
-        )
-    ref_match = REF_BLOCK_RE.match(paragraph.strip())
-    if ref_match and ref_match.group(2).strip():
-        prefix, target, fmt, suffix = ref_match.groups()
+        # Only a bare id fits the block fields; a {{def:}} with parameters or
+        # malformed arguments stays paragraph text for the validator to report.
+        if parse_def_id(raw_id) == raw_id:
+            return Block(
+                kind="definition",
+                definition_id=raw_id,
+                term=term,
+                text=stripped[def_match.end():].strip(),
+            )
+    directives = list(iter_directives(strip_uninterpreted(stripped)))
+    ref_directive = _first_liftable(directives, "ref")
+    if ref_directive is not None:
         return Block(
             kind="ref",
-            prefix=prefix,
-            target=target.strip(),
-            format=(fmt or "").strip(),
-            suffix=suffix,
+            prefix=stripped[:ref_directive.start],
+            target=ref_directive.positional,
+            suffix=stripped[ref_directive.end:],
         )
-    term_match = TERM_BLOCK_RE.match(paragraph.strip())
-    if term_match and term_match.group(2).strip():
-        prefix, target, label, suffix = term_match.groups()
+    term_directive = _first_liftable(directives, "term")
+    if term_directive is not None:
         return Block(
             kind="term",
-            prefix=prefix,
-            target=target.strip(),
-            label=(label or "").strip(),
-            suffix=suffix,
+            prefix=stripped[:term_directive.start],
+            target=term_directive.positional,
+            label=term_directive.params.get("label", ""),
+            suffix=stripped[term_directive.end:],
         )
-    return Block(kind="paragraph", text=paragraph.strip())
+    return Block(kind="paragraph", text=stripped)
+
+
+def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
+    """The first *name* directive that the ref/term block fields represent
+    exactly: well-formed, with a target and only the parameters it defines."""
+    for directive in directives:
+        if (
+            directive.name == name
+            and not directive.malformed
+            and directive.positional
+            and not directive.duplicates
+            and not directive.unknown_params()
+        ):
+            return directive
+    return None
 
 
 def _parse_blocks(chunk: str) -> list[Block]:
@@ -256,8 +272,12 @@ def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
     terms: set[str] = set()
     for section in document.sections:
         for block in section.blocks:
-            for fragment in directive_fragments(block):
-                for directive in iter_directives(fragment):
+            if block.kind == "ref" and block.target:
+                refs.add(block.target)
+            if block.kind == "term" and block.target:
+                terms.add(block.target)
+            for fragment in text_fragments(block):
+                for directive in iter_directives(strip_uninterpreted(fragment)):
                     if directive.malformed or not directive.positional:
                         continue
                     if directive.name == "ref":

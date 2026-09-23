@@ -25,6 +25,12 @@ from .definitions import (
     collect_definitions,
     definition_lookup,
 )
+from .directives import (
+    DIRECTIVE_PARAMS,
+    KNOWN_DIRECTIVES,
+    Directive,
+    iter_directives,
+)
 from .models import (
     BLOCK_DEFAULTS,
     Amends,
@@ -88,6 +94,11 @@ __all__ = [
     "DefinitionRef",
     "DELIMITER_PAIRS",
     "DEF_ANCHOR_RE",
+    # Directives (§11)
+    "iter_directives",
+    "Directive",
+    "DIRECTIVE_PARAMS",
+    "KNOWN_DIRECTIVES",
     "render_block",
     "AttachmentDefinitionsImporter",
     # Result types
