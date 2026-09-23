@@ -18,11 +18,13 @@ from dataclasses import dataclass
 # with ``#`` or ``when=`` and further words each holding ``#`` or ``=``, such
 # as ``{#id}``, ``{#a #b}``, or ``{#id class=x}``. Whether it is one is
 # decided by parse_marker; a look-alike is literal text (anchor-misplaced).
-# Prose in braces, such as ``{#1 and #2}``, is not a look-alike.
-# Each further word is split at its first '#' or '=' so that the pattern
-# matches one way only: no backtracking blow-up on text with no closing brace.
+# Prose in braces, such as ``{#1 and #2}``, is not a look-alike; anything
+# opening with ``when=`` is. Each further word after ``#id`` is split at its
+# first '#' or '=' so that the pattern matches one way only: no backtracking
+# blow-up on text with no closing brace.
 _LOOK_ALIKE = (
-    r"\{[ \t]*(?:#|when=)[^{}\s]+(?:[ \t]+[^{}\s#=]*[#=][^{}\s]*)*[ \t]*\}"
+    r"\{[ \t]*(?:when=[^{}\n]*"
+    r"|#[^{}\s]+(?:[ \t]+[^{}\s#=]*[#=][^{}\s]*)*[ \t]*)\}"
 )
 MARKER_RE = re.compile(_LOOK_ALIKE)
 

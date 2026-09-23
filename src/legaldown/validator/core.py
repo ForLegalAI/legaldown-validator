@@ -356,7 +356,7 @@ def _check_final(
     if questions is not None:
         construct("The 'questions' key")
     for where, text in conditions:
-        construct(f"The condition 'when={text}' on {where}")
+        construct(f"The condition '{text}' on {where}")
     for directive in chooses:
         construct(f"'{directive.source}'")
     for _note in notes:
@@ -681,17 +681,14 @@ def validate_document(
         | attachment_ids
     )
     anchors: dict[str, list[Presence]] = {}
-    generated: list[tuple[str, Presence]] = []  # earlier headings' identifiers
+    generated: dict[str, list[Presence]] = {}  # earlier headings' identifiers
 
     def free_identifier(base: str, presence: Presence) -> str:
         """The lowest suffix of *base* — none, -2, -3, … — not taken by an
         explicit identifier or by an earlier heading that can appear with
         this one (§5.5)."""
         candidate, suffix = base, 1
-        while candidate in explicit_ids or any(
-            used == candidate and not exclusive(presence, other, questions)
-            for used, other in generated
-        ):
+        while candidate in explicit_ids or _clashes(presence, generated.get(candidate, []), questions):
             suffix += 1
             candidate = f"{base}-{suffix}"
         return candidate
@@ -760,7 +757,7 @@ def validate_document(
                     f"identifier. It was adjusted to '{identifier}'; give the heading an "
                     f"explicit identifier (§5.5).",
                 )
-        generated.append((identifier, presence))
+        generated.setdefault(identifier, []).append(presence)
         anchors.setdefault(identifier, []).append(presence)
 
         if _clashes(presence, attachment_presence.get(identifier, []), questions):

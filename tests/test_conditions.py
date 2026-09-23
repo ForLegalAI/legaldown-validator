@@ -409,7 +409,15 @@ def test_alternatives_share_a_number():
     assert [s.number for s in result.sections] == ["1", "1.1", "1", "1.1", "2"]
 
 
-@pytest.mark.parametrize("heading", ["# Services {#services class=x}", "# Services { #services }"])
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "# Services {#services class=x}",
+        "# Services { #services }",
+        "# Services {when= vat}",
+        "# Services {when=}",
+    ],
+)
 def test_a_mistyped_heading_marker_is_reported(heading):
     assert "anchor-misplaced" in _rules(f"{heading}\n\nText.", "")
 
