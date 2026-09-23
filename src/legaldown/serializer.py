@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from .directives import format_value
+from .directives import FENCE_OPEN_RE, closes_fence, format_value
 from .models import Block, Document, Metadata
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -114,9 +114,20 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
 
 def _list_item(marker: str, item: str) -> str:
     """A list item: its later lines (a fenced code block in the item) are
-    indented to the item's content."""
-    lines = (marker + item).split("\n")
-    return "\n".join([lines[0], *((" " * len(marker) + line).rstrip() for line in lines[1:])])
+    indented to the item's content; blank lines stay blank."""
+    first, *rest = (marker + item).split("\n")
+    return "\n".join([first, *(" " * len(marker) + line if line else line for line in rest)])
+
+
+def _code_block(text: str) -> str:
+    """A fenced code block's source, with its fence closed if it is not, so
+    that it cannot swallow what the serializer writes after it."""
+    lines = text.split("\n")
+    opening = FENCE_OPEN_RE.match(lines[0])
+    if opening and not any(closes_fence(line, opening.group("fence")) for line in lines[1:]):
+        indent = lines[0][: len(lines[0]) - len(lines[0].lstrip(" "))]
+        lines.append(indent + opening.group("fence"))
+    return "\n".join(lines)
 
 
 def _render_block(block: Block) -> str:
@@ -175,7 +186,7 @@ def _render_block(block: Block) -> str:
     if block.kind == "rule":
         return "---"
     if block.kind == "code":
-        return block.text
+        return _code_block(block.text)
     return block.text.strip()
 
 

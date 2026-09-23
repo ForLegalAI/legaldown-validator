@@ -103,17 +103,19 @@ def strip_uninterpreted(text: str) -> str:
     paragraph, which the parser joins onto one line, or a table cell) has
     only inline backticks.
     """
-    lines = (text or "").split("\n")
-    index = 0 if len(lines) > 1 else len(lines)
-    while index < len(lines):
-        opening = FENCE_OPEN_RE.match(lines[index])
-        if opening is None:
-            index += 1
-            continue
-        end = fence_end(lines, index, opening.group("fence"))
-        lines[index:end] = [" " * len(line) for line in lines[index:end]]
-        index = end
-    text = "\n".join(lines)
+    text = text or ""
+    if "\n" in text:
+        lines = text.split("\n")
+        index = 0
+        while index < len(lines):
+            opening = FENCE_OPEN_RE.match(lines[index])
+            if opening is None:
+                index += 1
+                continue
+            end = fence_end(lines, index, opening.group("fence"))
+            lines[index:end] = [" " * len(line) for line in lines[index:end]]
+            index = end
+        text = "\n".join(lines)
     parts: list[str] = []
     done = search = 0
     while match := _INLINE_LITERAL_RE.search(text, search):
@@ -355,8 +357,12 @@ def lex(text: str) -> Lexed:
             ))
         if view[start:end] != text[start:end]:
             # A backtick or comment marker inside the directive was taken
-            # for literal-region syntax; recompute the regions after it.
-            view = view[:end] + strip_uninterpreted(text[end:])
+            # for literal-region syntax; recompute the regions after it, with
+            # the directive masked out and from the start of its line, so a
+            # fence is still recognized only at a line start.
+            line_start = text.rfind("\n", 0, start) + 1
+            masked = text[line_start:start] + " " * (end - start) + text[end:]
+            view = view[:end] + strip_uninterpreted(masked)[end - line_start:]
         pos = end
     return Lexed(directives, stray_braces, view)
 

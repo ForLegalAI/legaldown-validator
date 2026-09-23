@@ -82,50 +82,60 @@ def _dedent(line: str, columns: int) -> str:
     return expanded[min(columns, indent_width(expanded)):]
 
 
-def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int]:
-    """Parse the list starting at ``lines[index]``; return it with the index
-    just past it.
+def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int, bool]:
+    """Parse the list starting at ``lines[index]``.
+
+    Returns ``(block, end, lazy)``: *end* is the index just past the list,
+    and *lazy* is True when it ends in item text, which a following
+    unindented line would lazily continue (it cannot continue a code block).
 
     The list runs through its items, their continuation lines (indented two
     or more columns), and nested items; an unindented item of the other kind
     ends it. A fenced code block in an item stays in that item, one line per
     line, indented relative to the item, blank lines included, until it
-    closes or an unindented line ends the item.
+    closes or an unindented line ends the item (and the fence with it).
     """
     items: list[str] = []
     fence: str | None = None  # the open fence inside the current item
-    content_indent = 0
+    content_indent = 0  # columns before the current item's text
+    lazy = False
     end = index
     while end < len(lines):
         line = lines[end]
         if fence is not None:
-            if line.strip() and indent_width(line) < 2:
-                break
-            code = _dedent(line, content_indent)
-            items[-1] += "\n" + code
-            end += 1
-            if closes_fence(code, fence):
-                fence = None
-            continue
+            if not line.strip() or indent_width(line) >= 2:
+                code = _dedent(line, content_indent)
+                items[-1] += "\n" + code
+                end += 1
+                if closes_fence(code, fence):
+                    fence = None
+                lazy = False
+                continue
+            fence = None
         if not line.strip():
             break
         marker = LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
         if marker and ((marker.group("number") is not None) == ordered or indented):
-            content_indent = marker.end()
-            content = line[marker.end():]
-            items.append(content.strip())
+            content_indent = len(line[:marker.end()].expandtabs(4))
+            content = line[marker.end():].strip()
+            items.append(content)
         elif items and indented:
             content = _dedent(line, content_indent)
-            opens = FENCE_OPEN_RE.match(content)
-            items[-1] += "\n" + content if opens else " " + line.strip()
+            # An item holding code keeps its lines; other continuation lines
+            # join the item's text.
+            if FENCE_OPEN_RE.match(content) or "\n" in items[-1]:
+                items[-1] += "\n" + content
+            else:
+                items[-1] += " " + content.strip()
         else:
             break
         opening = FENCE_OPEN_RE.match(content)
         fence = opening.group("fence") if opening else None
+        lazy = fence is None
         end += 1
     kind = "ordered_list" if ordered else "unordered_list"
-    return Block(kind=kind, items=items), end
+    return Block(kind=kind, items=items), end, lazy
 
 
 def _parse_table(lines: list[str]) -> Block:
@@ -228,14 +238,22 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     ``lines[index]``. *setext_level* is 1 or 2 when the paragraph is the text
     of a setext heading, whose underline is ``lines[end - 1]``, else 0.
 
-    A paragraph ends at a blank line, a fence, or an ATX heading. A *lazy*
-    paragraph continues a list, block quote, or table (no blank line between),
-    so it cannot be setext text (CommonMark): ``---`` under it is a rule.
+    A paragraph ends at a blank line or at a block that can interrupt it
+    (CommonMark): a fence, an ATX heading, a block quote, or a list item
+    (an ordered one only when numbered 1). A *lazy* paragraph continues a
+    list, block quote, or table (no blank line between), so it cannot be
+    setext text: ``---`` under it is a rule.
     """
     end = index + 1
     while end < len(lines) and lines[end].strip():
         line = lines[end]
-        if FENCE_OPEN_RE.match(line) or HEADING_RE.match(line):
+        marker = LIST_ITEM_RE.match(line)
+        if (
+            FENCE_OPEN_RE.match(line)
+            or HEADING_RE.match(line)
+            or line.lstrip().startswith(">")
+            or (marker and marker.group("number") in (None, "1"))
+        ):
             break
         underline = SETEXT_UNDERLINE_RE.match(line)
         if underline and not lazy:
@@ -302,10 +320,10 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             index = end
             lazy = True
         elif marker:
-            block, index = _parse_list(lines, index, ordered=marker.group("number") is not None)
+            block, index, lazy = _parse_list(
+                lines, index, ordered=marker.group("number") is not None
+            )
             blocks.append(block)
-            # A fence in the last item may have run on through blank lines.
-            lazy = bool(lines[index - 1].strip())
         else:
             end, setext_level = _paragraph_end(lines, index, lazy)
             if setext_level:

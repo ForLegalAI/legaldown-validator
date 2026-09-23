@@ -1020,3 +1020,70 @@ def test_code_block_without_a_fence_is_checked_as_text():
     document = parse_document(_FRONTMATTER + "Text.\n")
     document.sections[0].blocks.append(Block(kind="code", text="See {{ref: nope}}."))
     assert "ref-broken" in validate_document(document).rules("error")
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("The parties agree:\n- one\n- two\n---\n", ["paragraph", "unordered_list", "rule"]),
+        ("Intro\n> quoted\n---\n", ["paragraph", "quote", "rule"]),
+        ("The parties agree:\n1. one\n", ["paragraph", "ordered_list"]),
+    ],
+)
+def test_list_or_quote_interrupts_a_paragraph(body, kinds):
+    """CommonMark: a list (ordered only from 1) or a block quote may start
+    without a blank line, so the paragraph above is not setext text."""
+    source = _FRONTMATTER + body
+    assert _outline(source) == [("Terms", 1, "terms")]
+    assert _kinds(source) == kinds
+
+
+def test_item_text_after_its_closed_fence_is_checked():
+    document = parse_document(_FRONTMATTER + "- ```\n  code\n  ```\n  more {{ref: nowhere}}\n")
+    assert document.sections[0].blocks[0].items == ["```\ncode\n```\nmore {{ref: nowhere}}"]
+    assert "ref-broken" in validate_document(document).rules("error")
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+def test_unclosed_fence_in_an_item_ends_at_the_next_item():
+    document = parse_document(_FRONTMATTER + "1. ```\n   x\n2. b\n3. c\n")
+    assert [(b.kind, b.items) for b in document.sections[0].blocks] == [
+        ("ordered_list", ["```\nx", "b", "c"])
+    ]
+
+
+def test_tab_after_a_list_marker_counts_as_columns():
+    document = parse_document(_FRONTMATTER + "-\t```\n\tx\n\t```\n")
+    assert document.sections[0].blocks[0].items == ["```\nx\n```"]
+
+
+def test_text_after_a_list_ending_in_a_fence_is_not_lazy():
+    source = _FRONTMATTER + "- ```\n  x\n  ```\ntext\n---\n"
+    assert _outline(source)[-1] == ("text", 2, "text")
+
+
+def test_rescan_after_a_directive_starts_at_its_line():
+    """Backticks right after a directive are not at a line start, so they do
+    not open a fence."""
+    text = 'a {{ref: x, label="`"}}```\n{{ref: nowhere}} `y`'
+    assert [d.positional for d in iter_directives(text)] == ["x", "nowhere"]
+
+
+def test_code_block_text_after_its_closing_fence_is_checked():
+    document = parse_document(_FRONTMATTER + "Text.\n")
+    document.sections[0].blocks.append(Block(kind="code", text="```\nx\n```\n{{ref: missing}}"))
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+def test_serializer_closes_an_unclosed_fence():
+    document = parse_document(_FRONTMATTER + "Text.\n\n# Next {#next}\n")
+    document.sections[0].blocks.append(Block(kind="code", text="```\nx"))
+    reparsed = parse_document(serialize_document(document))
+    assert [s.identifier for s in reparsed.sections] == ["terms", "next"]
+
+
+def test_code_in_a_list_item_keeps_trailing_spaces():
+    source = _FRONTMATTER + "- ```\n  keep  \n  ```\n"
+    item = parse_document(source).sections[0].blocks[0].items[0]
+    assert item == "```\nkeep  \n```"
+    assert parse_document(serialize_document(parse_document(source))).sections[0].blocks[0].items[0] == item
