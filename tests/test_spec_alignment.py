@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from legaldown import (
+    Block,
     collect_definitions,
     document_from_dict,
     document_to_dict,
@@ -978,3 +979,44 @@ def test_paragraph_directly_above_dashes_is_a_setext_heading():
     assert "rule" in _kinds(source)
     heading = _FRONTMATTER + "Closing words\n---\n"
     assert _outline(heading)[-1] == ("Closing words", 2, "closing-words")
+
+
+def test_fence_opening_on_a_list_marker_line_stays_in_the_item():
+    body = "- ```\n  a\n\n  b\n  ```\n\n# Next {#next}\n\nSee {{ref: nope}}.\n"
+    document = parse_document(_FRONTMATTER + body)
+    assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms"), ("Next", 1, "next")]
+    assert document.sections[0].blocks[0].items == ["```\na\n\nb\n```"]
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+def test_fence_in_a_list_item_is_literal_and_round_trips():
+    body = "- Example:\n  ~~~\n  {{ref: nope}}\n\n  {#zz}\n  ~~~\n"
+    document = parse_document(_FRONTMATTER + body)
+    assert validate_document(document).diagnostics == []
+    assert body.strip() in serialize_document(document)
+
+
+def test_blank_line_ends_the_lazy_context_even_inside_a_list_fence():
+    source = _FRONTMATTER + "- a\n  ```\n  code\n\nHeading\n---\n"
+    assert _outline(source)[-1] == ("Heading", 2, "heading")
+
+
+def test_indented_dashes_are_still_a_rule():
+    assert _kinds(_FRONTMATTER + "Text.\n\n    ---\n\nMore.\n") == ["paragraph", "rule", "paragraph"]
+
+
+def test_a_single_pipe_line_is_a_paragraph_not_dropped():
+    document = parse_document(_FRONTMATTER + "| lone {{ref: nope}}\n")
+    assert _kinds(_FRONTMATTER + "| lone {{ref: nope}}\n") == ["ref"]
+    assert "ref-broken" in validate_document(document).rules("error")
+
+
+def test_fence_in_a_block_quote_is_literal():
+    assert _validate("> ```\n> {{ref: nope}}\n> ```\n").diagnostics == []
+
+
+def test_code_block_without_a_fence_is_checked_as_text():
+    """Only a fenced block is literal; a hand-built one is not taken on trust."""
+    document = parse_document(_FRONTMATTER + "Text.\n")
+    document.sections[0].blocks.append(Block(kind="code", text="See {{ref: nope}}."))
+    assert "ref-broken" in validate_document(document).rules("error")

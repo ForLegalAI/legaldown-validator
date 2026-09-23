@@ -112,6 +112,13 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
     return payload
 
 
+def _list_item(marker: str, item: str) -> str:
+    """A list item: its later lines (a fenced code block in the item) are
+    indented to the item's content."""
+    lines = (marker + item).split("\n")
+    return "\n".join([lines[0], *((" " * len(marker) + line).rstrip() for line in lines[1:])])
+
+
 def _render_block(block: Block) -> str:
     if block.kind == "paragraph":
         return block.text.strip()
@@ -133,10 +140,10 @@ def _render_block(block: Block) -> str:
         label_part = f", label={format_value(block.label)}" if block.label else ""
         return f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip()
     if block.kind == "unordered_list":
-        return "\n".join(f"- {item}" for item in block.items if item.strip())
+        return "\n".join(_list_item("- ", item) for item in block.items if item.strip())
     if block.kind == "ordered_list":
         return "\n".join(
-            f"{index}. {item}"
+            _list_item(f"{index}. ", item)
             for index, item in enumerate(
                 (item for item in block.items if item.strip()), start=1
             )

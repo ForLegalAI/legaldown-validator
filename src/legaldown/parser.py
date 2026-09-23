@@ -15,7 +15,15 @@ from typing import Any
 import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import Directive, iter_directives, lex
+from .directives import (
+    FENCE_OPEN_RE,
+    Directive,
+    closes_fence,
+    fence_end,
+    indent_width,
+    iter_directives,
+    lex,
+)
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -50,12 +58,9 @@ SETEXT_TEXT_RE = re.compile(r"^(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
 # A setext underline under a paragraph: ``===`` makes a level-1 heading,
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
-RULE_RE = re.compile(r"^ {0,3}-{3,}[ \t]*$")
-# A fenced code block opens with three or more backticks or tildes; a
-# backtick fence's info string cannot contain a backtick (CommonMark).
-FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
-UNORDERED_ITEM_RE = re.compile(r"^\s*-\s+")
-ORDERED_ITEM_RE = re.compile(r"^\s*\d+\.\s+")
+RULE_RE = re.compile(r"^[ \t]*-{3,}[ \t]*$")
+# A list item marker: ``-`` for an unordered list, ``1.`` for an ordered one.
+LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)\.|-)\s+")
 
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -71,17 +76,56 @@ def _split_frontmatter(source: str) -> tuple[dict[str, Any], str]:
     return metadata, body
 
 
-def _parse_list(lines: list[str], *, ordered: bool) -> Block:
-    """Parse a sequence of list-item lines (including continuation lines)."""
-    marker = re.compile(r"^\s*(?:\d+\.|-)\s+(.*)$")
+def _dedent(line: str, columns: int) -> str:
+    """*line* with up to *columns* columns of leading whitespace removed."""
+    expanded = line.expandtabs(4)
+    return expanded[min(columns, indent_width(expanded)):]
+
+
+def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int]:
+    """Parse the list starting at ``lines[index]``; return it with the index
+    just past it.
+
+    The list runs through its items, their continuation lines (indented two
+    or more columns), and nested items; an unindented item of the other kind
+    ends it. A fenced code block in an item stays in that item, one line per
+    line, indented relative to the item, blank lines included, until it
+    closes or an unindented line ends the item.
+    """
     items: list[str] = []
-    for line in lines:
-        m = marker.match(line)
-        if m:
-            items.append(m.group(1).strip())
-        elif items:
-            items[-1] = items[-1] + " " + line.strip()
-    return Block(kind="ordered_list" if ordered else "unordered_list", items=items)
+    fence: str | None = None  # the open fence inside the current item
+    content_indent = 0
+    end = index
+    while end < len(lines):
+        line = lines[end]
+        if fence is not None:
+            if line.strip() and indent_width(line) < 2:
+                break
+            code = _dedent(line, content_indent)
+            items[-1] += "\n" + code
+            end += 1
+            if closes_fence(code, fence):
+                fence = None
+            continue
+        if not line.strip():
+            break
+        marker = LIST_ITEM_RE.match(line)
+        indented = indent_width(line) >= 2
+        if marker and ((marker.group("number") is not None) == ordered or indented):
+            content_indent = marker.end()
+            content = line[marker.end():]
+            items.append(content.strip())
+        elif items and indented:
+            content = _dedent(line, content_indent)
+            opens = FENCE_OPEN_RE.match(content)
+            items[-1] += "\n" + content if opens else " " + line.strip()
+        else:
+            break
+        opening = FENCE_OPEN_RE.match(content)
+        fence = opening.group("fence") if opening else None
+        end += 1
+    kind = "ordered_list" if ordered else "unordered_list"
+    return Block(kind=kind, items=items), end
 
 
 def _parse_table(lines: list[str]) -> Block:
@@ -179,55 +223,6 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
     return None
 
 
-def _indent(line: str) -> int:
-    """Columns of leading whitespace, a tab counting as four (CommonMark)."""
-    expanded = line.expandtabs(4)
-    return len(expanded) - len(expanded.lstrip(" "))
-
-
-def _closes_fence(line: str, fence: str) -> bool:
-    """True if *line* closes a code block opened with *fence*: at most three
-    columns of indentation, then the same character at least as many times,
-    and nothing else (CommonMark)."""
-    stripped = line.strip()
-    return (
-        _indent(line) <= 3
-        and len(stripped) >= len(fence)
-        and set(stripped) == {fence[0]}
-    )
-
-
-def _fence_end(lines: list[str], index: int, fence: str) -> int:
-    """Index just past the fenced code block opening at ``lines[index]``;
-    an unclosed fence runs to the end of the document."""
-    for end in range(index + 1, len(lines)):
-        if _closes_fence(lines[end], fence):
-            return end + 1
-    return len(lines)
-
-
-def _list_end(lines: list[str], index: int, item_re: re.Pattern[str]) -> int:
-    """Index just past the list starting at ``lines[index]``: its items and
-    their indented continuation lines, including a fenced code block inside
-    an item, which lasts while its lines stay indented or blank."""
-    end = index + 1
-    while end < len(lines) and lines[end].strip():
-        line = lines[end]
-        if item_re.match(line):
-            end += 1
-            continue
-        if _indent(line) < 2:
-            break
-        opening = FENCE_OPEN_RE.match(line.lstrip())
-        end += 1
-        if opening:
-            while end < len(lines) and (not lines[end].strip() or _indent(lines[end]) >= 2):
-                end += 1
-                if _closes_fence(lines[end - 1].lstrip(), opening.group("fence")):
-                    break
-    return end
-
-
 def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     """Return ``(end, setext_level)`` for the paragraph starting at
     ``lines[index]``. *setext_level* is 1 or 2 when the paragraph is the text
@@ -268,15 +263,16 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
     index = 0
     while index < len(lines):
         line = lines[index]
-        heading: _Heading | None = None
-        opening = FENCE_OPEN_RE.match(line)
-        atx = HEADING_RE.match(line)
         if not line.strip():
             index += 1
             lazy = False
             continue
+        heading: _Heading | None = None
+        opening = FENCE_OPEN_RE.match(line)
+        atx = HEADING_RE.match(line)
+        marker = LIST_ITEM_RE.match(line)
         if opening:
-            end = _fence_end(lines, index, opening.group("fence"))
+            end = fence_end(lines, index, opening.group("fence"))
             blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
             index = end
             lazy = False
@@ -296,20 +292,20 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             blocks.append(Block(kind="quote", text="\n".join(quoted).strip()))
             index = end
             lazy = True
-        elif line.lstrip().startswith("|"):
+        elif line.lstrip().startswith("|") and lines[index + 1:index + 2] and (
+            lines[index + 1].lstrip().startswith("|")
+        ):
             end = index
             while end < len(lines) and lines[end].lstrip().startswith("|"):
                 end += 1
-            if end - index >= 2:
-                blocks.append(_parse_table(lines[index:end]))
+            blocks.append(_parse_table(lines[index:end]))
             index = end
             lazy = True
-        elif UNORDERED_ITEM_RE.match(line) or ORDERED_ITEM_RE.match(line):
-            ordered = not UNORDERED_ITEM_RE.match(line)
-            end = _list_end(lines, index, ORDERED_ITEM_RE if ordered else UNORDERED_ITEM_RE)
-            blocks.append(_parse_list(lines[index:end], ordered=ordered))
-            index = end
-            lazy = True
+        elif marker:
+            block, index = _parse_list(lines, index, ordered=marker.group("number") is not None)
+            blocks.append(block)
+            # A fence in the last item may have run on through blank lines.
+            lazy = bool(lines[index - 1].strip())
         else:
             end, setext_level = _paragraph_end(lines, index, lazy)
             if setext_level:

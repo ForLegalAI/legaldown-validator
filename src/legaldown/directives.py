@@ -49,29 +49,74 @@ _PARAM_NAME_RE = re.compile(r"[a-z][a-z0-9-]*=")
 _WS = " \t"
 
 # §11.4: directives and anchor markers are not recognized inside fenced code
-# blocks, HTML comments, or inline code spans. One alternation, so whichever
-# construct opens first wins: a `<!--` inside a code span is code, not the
-# start of a comment. A code span closes on a backtick run of its opening
-# run's length (CommonMark), so ```x``` is one span.
-_LITERAL_RE = re.compile(
-    r"^(?P<fence>`{3,}|~{3,})[^`\n]*\n.*?^(?P=fence)"
-    r"|<!--.*?-->"
-    r"|(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`)",
-    re.DOTALL | re.MULTILINE,
+# blocks, HTML comments, or inline code spans.
+#
+# A fenced code block opens with three or more backticks or tildes, indented
+# at most three columns; a backtick fence's info string cannot contain a
+# backtick (CommonMark). The parser uses the same rules to find code blocks.
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
+# Comments and code spans in one alternation, so whichever opens first wins:
+# a `<!--` inside a code span is code, not the start of a comment. A code
+# span closes on a backtick run of its opening run's length, so ```x``` is
+# one span.
+_INLINE_LITERAL_RE = re.compile(
+    r"<!--.*?-->|(?<!`)(?P<ticks>`+)(?!`).*?(?<!`)(?P=ticks)(?!`)",
+    re.DOTALL,
 )
 _BRACES_RE = re.compile(r"\{\{")
 
 
+def indent_width(line: str) -> int:
+    """Columns of leading whitespace, a tab counting as four (CommonMark)."""
+    expanded = line.expandtabs(4)
+    return len(expanded) - len(expanded.lstrip(" "))
+
+
+def closes_fence(line: str, fence: str) -> bool:
+    """True if *line* closes a code block opened with *fence*: at most three
+    columns of indentation, then the same character at least as many times,
+    and nothing else (CommonMark)."""
+    stripped = line.strip()
+    return (
+        indent_width(line) <= 3
+        and len(stripped) >= len(fence)
+        and set(stripped) == {fence[0]}
+    )
+
+
+def fence_end(lines: list[str], index: int, fence: str) -> int:
+    """Index just past the fenced code block opening at ``lines[index]``;
+    an unclosed fence runs to the end of *lines*."""
+    for end in range(index + 1, len(lines)):
+        if closes_fence(lines[end], fence):
+            return end + 1
+    return len(lines)
+
+
 def strip_uninterpreted(text: str) -> str:
-    """Blank out code spans, code blocks, and comments, preserving offsets.
+    """Blank out code blocks, comments, and code spans, preserving offsets.
 
     Directive-like text in those regions is literal (§11.4); blanking it keeps
     it out of every scan without shifting the position of anything else.
+    Fenced code blocks are found first, as block structure precedes inline
+    structure. A fence needs lines of its own, so single-line text (a
+    paragraph, which the parser joins onto one line, or a table cell) has
+    only inline backticks.
     """
-    text = text or ""
+    lines = (text or "").split("\n")
+    index = 0 if len(lines) > 1 else len(lines)
+    while index < len(lines):
+        opening = FENCE_OPEN_RE.match(lines[index])
+        if opening is None:
+            index += 1
+            continue
+        end = fence_end(lines, index, opening.group("fence"))
+        lines[index:end] = [" " * len(line) for line in lines[index:end]]
+        index = end
+    text = "\n".join(lines)
     parts: list[str] = []
     done = search = 0
-    while match := _LITERAL_RE.search(text, search):
+    while match := _INLINE_LITERAL_RE.search(text, search):
         if is_escaped(text, match.start()):
             # A backslash-escaped backtick or ``<`` opens nothing.
             search = match.start() + 1
