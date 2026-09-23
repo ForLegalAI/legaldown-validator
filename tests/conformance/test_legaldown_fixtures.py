@@ -56,7 +56,7 @@ IMPLEMENTED_RULES = {
     "field-type-key-format", "field-type-key-reserved", "field-type-missing",
     "field-type-undeclared",
     "heading-depth", "heading-hardcoded-number", "heading-skip",
-    "issuer-side-required", "metadata-date-invalid",
+    "issuer-side-required", "legaldown-version-newer", "metadata-date-invalid",
     "money-invalid-amount", "money-missing-currency", "money-unknown-currency",
     "note-invalid", "parties-minimum",
     "party-name-duplicate", "party-name-malformed", "party-type-invalid",

@@ -97,12 +97,13 @@ class Metadata:
     #: The specification version the document targets (§3.2).
     legaldown: str = ""
     #: The template questions (§15.2) as written — kept raw so the validator
-    #: can report a malformed declaration — with top-level ids read as
-    #: strings (see ``yaml_key``). ``None`` when the document declares none.
+    #: can report a malformed declaration. ``None`` when the document
+    #: declares none.
     questions: Any = None
     #: Frontmatter keys (``questions``, ``attachments``) not written as
     #: §15.2 requires for assembly to edit them line by line: in YAML block
-    #: style, each attachment entry beginning with ``id``. Set by the parser.
+    #: style, each attachment entry beginning with ``id``. The parser sets it
+    #: from the source.
     not_line_editable: list[str] = field(default_factory=list)
 
 
@@ -203,18 +204,6 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def yaml_key(key: Any) -> str:
-    """A YAML mapping key as a string. A YAML 1.1 reader turns ``yes``,
-    ``on``, ``true`` (and their negations) into booleans and ``null`` into
-    ``None``; they come back as ``"true"``, ``"false"``, and ``"null"``, which
-    §15.2 forbids as ids, so the validator can still report them."""
-    if isinstance(key, bool):
-        return "true" if key else "false"
-    if key is None:
-        return "null"
-    return str(key)
 
 
 def _parse_str_dict(raw: Any) -> dict[str, str]:
@@ -356,9 +345,6 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         if isinstance(a, dict)
     ]
 
-    questions = payload.get("questions")
-    if isinstance(questions, dict):
-        questions = {yaml_key(qid): declaration for qid, declaration in questions.items()}
 
     return Metadata(
         # No default title: a missing title is a validation error (§16.6,
@@ -382,7 +368,8 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         supersedes=supersedes,
         amends=amends,
         attachments=attachments,
-        questions=questions,
+        questions=payload.get("questions"),
+        not_line_editable=_clean_list(list(payload.get("not_line_editable") or [])),
     )
 
 

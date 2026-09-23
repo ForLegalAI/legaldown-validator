@@ -58,6 +58,9 @@ from .models import (
 from .parser import collect_source_directives, parse_document
 from .serializer import render_block, serialize_document
 
+# The LegalDown specification version this implementation targets.
+from .specification import SPEC_VERSION
+
 # Validator
 from .validator import (
     AttachmentDefinitionsImporter,
@@ -70,9 +73,6 @@ from .validator import (
 )
 
 __version__ = "0.1.0"
-
-#: The LegalDown specification version this implementation targets.
-SPEC_VERSION = "0.2"
 
 #: Conformance level per specification §17. "core" — parse and validate a
 #: single document. Rendering and Full (multi-file: includes, attachments,

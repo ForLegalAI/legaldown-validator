@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from legaldown import Amends, serialize_document
+from legaldown import Amends, document_from_dict, document_to_dict, serialize_document
 from legaldown.parser import parse_document
 from legaldown.validator import validate_document
 
@@ -298,3 +298,59 @@ def test_an_anchor_on_an_include_only_paragraph_is_ignored(paragraph):
 def test_an_anchor_on_a_list_item_holding_an_include_is_kept():
     result = _validate(body="- {{include: parts/a.lgd}} {#part-a}\n\nSee {{ref: part-a}}.")
     assert result.diagnostics == []
+
+
+# ── Review follow-ups ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "questions",
+    [
+        'questions:\n  "abc\\n":\n    type: text\n',
+        'questions:\n  forum:\n    type: choice\n    choices:\n      "a\\n": A\n      b: B\n',
+    ],
+)
+def test_an_id_ending_in_a_line_break_is_not_an_identifier(questions):
+    assert "question-invalid" in _validate(questions).rules("error")
+
+
+def test_keys_yaml_reads_as_booleans_stay_distinct_and_as_written():
+    frontmatter = "questions:\n  yes:\n    type: text\n  true:\n    type: date\n"
+    result = _validate(frontmatter)
+    messages = [d.message for d in result.diagnostics if d.rule == "question-invalid"]
+    assert len(messages) == 2
+    assert any("'yes'" in message for message in messages)
+    source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n"
+    document = parse_document(source)
+    assert list(document.metadata.questions) == ["yes", "true"]
+    assert parse_document(serialize_document(document)).metadata == document.metadata
+
+
+def test_an_empty_attachments_key_in_a_template_is_line_editable():
+    frontmatter = "attachments:\nquestions:\n  client:\n    type: text\n"
+    assert "question-invalid" not in _validate(frontmatter, "{{placeholder: client}}").rules()
+
+
+def test_the_block_style_finding_survives_the_dict_round_trip():
+    source = f"---\ntitle: Fixture\n{_SIDES}questions: {{fee: {{type: text}}}}\n---\n"
+    document = document_from_dict(document_to_dict(parse_document(source)))
+    assert "question-invalid" in validate_document(document).rules("error")
+
+
+@pytest.mark.parametrize("value", ["1e3", "inf", "+5", "-5", "1.5.2"])
+def test_a_duration_value_is_an_integer_or_decimal(value):
+    body = f"For {{{{duration: {value}, unit=H}}}}."
+    assert "duration-invalid-value" in _validate(body=body).rules("error")
+    default = f"questions:\n  term:\n    type: duration\n    default:\n      value: '{value}'\n      unit: H\n"
+    assert "question-invalid" in _validate(default, "{{placeholder: term}}").rules("error")
+
+
+@pytest.mark.parametrize(
+    ("version", "newer"),
+    [("0.3", True), ("1.0", True), ("0.2.1", True), ("0.2", False), ("0.2.0", False), ("0.1", False), ("draft", False)],
+)
+def test_a_newer_declared_version_is_a_warning_and_softens_unknown_directives(version, newer):
+    result = _validate(f'legaldown: "{version}"\n', "{{frobnicate: x}}")
+    assert ("legaldown-version-newer" in result.rules("warning")) == newer
+    assert ("directive-unknown" in result.rules("warning" if newer else "error"))
+    assert ("directive-unknown" in result.rules("error")) != newer

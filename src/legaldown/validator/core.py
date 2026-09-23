@@ -21,6 +21,7 @@ from ..directives import (
     lex,
 )
 from ..models import Amends, Document
+from ..specification import SPEC_VERSION, parse_version
 from .helpers import (
     ensure_unique_identifier,
     format_section_number,
@@ -68,10 +69,10 @@ def _strings(value: Any) -> Iterator[str]:
             yield from _strings(item)
 
 
-def _placeholder_type(directive: Directive, questions: Any) -> str:
-    """A placeholder's effective type (§10.7, §15.2): the type of the value
-    question declared with its id, else its ``type`` parameter, else text."""
-    declared = question_type(questions, directive.positional or "")
+def _placeholder_type(directive: Directive, declared: str | None) -> str:
+    """A placeholder's effective type (§10.7, §15.2): *declared*, the type of
+    the question declared with its id, when that is a value question; else
+    its ``type`` parameter, else text."""
     if declared in VALID_PLACEHOLDER_TYPES:
         return declared
     return directive.params.get("type", "text")
@@ -82,12 +83,15 @@ def _is_date_placeholder(value: str, questions: Any) -> bool:
     value and has effective type ``date`` — the one case §3.10 exempts from
     the field's date check (§16.6)."""
     directives = list(iter_directives(value))
+    if len(directives) != 1:
+        return False
+    directive = directives[0]
+    declared = question_type(questions, directive.positional or "")
     return (
-        len(directives) == 1
-        and directives[0].name == "placeholder"
-        and not directives[0].malformed
-        and (directives[0].start, directives[0].end) == (0, len(value))
-        and _placeholder_type(directives[0], questions) == "date"
+        directive.name == "placeholder"
+        and not directive.malformed
+        and (directive.start, directive.end) == (0, len(value))
+        and _placeholder_type(directive, declared) == "date"
     )
 
 
@@ -120,7 +124,7 @@ def _check_duration_unit(unit: str, result: ValidationResult) -> None:
     elif unit not in VALID_DURATION_UNITS:
         result.error(
             "duration-invalid-unit",
-            f"Invalid duration unit '{unit}'. Must be one of: S, MIN, H, D, W, MO, Y.",
+            f"Invalid duration unit '{unit}'. Must be one of: {', '.join(VALID_DURATION_UNITS)}.",
         )
 
 
@@ -180,7 +184,8 @@ def _check_placeholder(
     *,
     in_frontmatter: bool = False,
 ) -> None:
-    """Validate one ``{{placeholder:}}`` directive and record it in *blanks*.
+    """Validate one ``{{placeholder:}}`` directive, its arguments included,
+    and record it in *blanks*.
 
     Shared by the body-block scan and the frontmatter scan so a placeholder id
     used in both is treated as the *same* blank (consistent type, currency,
@@ -190,8 +195,10 @@ def _check_placeholder(
     params = directive.params
     written_type = params.get("type")
     declared = question_type(questions, pid)
-    ptype = _placeholder_type(directive, questions)
-    if not pid or not IDENTIFIER_RE.match(pid):
+    ptype = _placeholder_type(directive, declared)
+    if not _check_directive_arguments(directive, result, effective_type=ptype):
+        return
+    if not pid or not IDENTIFIER_RE.fullmatch(pid):
         result.error(
             "placeholder-id-malformed",
             f"Placeholder id '{pid}' is invalid — must match [a-z][a-z0-9-]*.",
@@ -288,6 +295,19 @@ def validate_document(
         document-wide definitions declared inside an attachment file (§12.4).
     """
     result = ValidationResult()
+    # §3.2: a newer declared version draws a Warning, never a failure, and
+    # softens unknown directives to Warnings (§11.5).
+    declared_version = parse_version(document.metadata.legaldown)
+    newer_version = declared_version is not None and declared_version > parse_version(
+        SPEC_VERSION
+    )
+    if newer_version:
+        result.warning(
+            "legaldown-version-newer",
+            f"The document declares LegalDown {document.metadata.legaldown}; this "
+            f"implementation supports {SPEC_VERSION}, so constructs added since may not "
+            f"be recognized (§3.2).",
+        )
     title = document.metadata.title.strip()
     if not title:
         result.error("title-missing", "The document title is required.")
@@ -491,7 +511,7 @@ def validate_document(
 
         explicit_identifier = bool(section.identifier.strip())
         identifier = section.identifier.strip() or slugify_identifier(section.title)
-        if not IDENTIFIER_RE.match(identifier):
+        if not IDENTIFIER_RE.fullmatch(identifier):
             result.error(
                 "anchor-format",
                 f"Identifier '{identifier}' on section '{section.title}' is invalid. Use lowercase letters, numbers, and hyphens only.",
@@ -600,7 +620,7 @@ def validate_document(
                         )
                         continue
                     anchor_id = m.group(1)
-                    if not IDENTIFIER_RE.match(anchor_id):
+                    if not IDENTIFIER_RE.fullmatch(anchor_id):
                         result.error(
                             "anchor-format",
                             f"Anchor '{{#{anchor_id}}}' is invalid. Use lowercase letters, numbers, and hyphens only.",
@@ -630,7 +650,7 @@ def validate_document(
     auto_ids_seen: dict[str, str] = {}
     for ref in definition_refs:
         def_id = ref.id
-        if not IDENTIFIER_RE.match(def_id):
+        if not IDENTIFIER_RE.fullmatch(def_id):
             result.error(
                 "anchor-format",
                 f"Definition identifier '{def_id}' (term '{ref.term}') is invalid. "
@@ -795,10 +815,7 @@ def validate_document(
             value_fields.extend(cf.value for cf in party.custom_fields)
     for field_value in value_fields:
         for directive in _placeholders(field_value):
-            if _check_directive_arguments(
-                directive, result, effective_type=_placeholder_type(directive, questions)
-            ):
-                _check_placeholder(directive, result, blanks, questions, in_frontmatter=True)
+            _check_placeholder(directive, result, blanks, questions, in_frontmatter=True)
 
     for _section, _index, block in document.iter_blocks():
         # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
@@ -819,16 +836,17 @@ def validate_document(
                 )
             for directive in lexed.directives:
                 name = directive.name
-                effective_type = (
-                    _placeholder_type(directive, questions) if name == "placeholder" else None
-                )
-                if not _check_directive_arguments(
-                    directive, result, effective_type=effective_type
-                ):
+                if name == "placeholder":
+                    # Its effective type decides which parameters it defines.
+                    _check_placeholder(directive, result, blanks, questions)
+                    continue
+                if not _check_directive_arguments(directive, result):
                     continue
                 # ── Unknown directive names (§11.5): well-formed only ──
                 if name not in KNOWN_DIRECTIVES:
-                    result.error(
+                    # It may be a construct of the newer declared version.
+                    report = result.warning if newer_version else result.error
+                    report(
                         "directive-unknown",
                         f"Unknown directive '{{{{{name}:}}}}'. Renderers replace it "
                         f"with [UNKNOWN DIRECTIVE: {name}] (§11.5).",
@@ -877,7 +895,8 @@ def validate_document(
                     if not is_positive_numeric(value):
                         result.error(
                             "duration-invalid-value",
-                            f"Invalid duration value '{value}'. Must be a positive numeric value.",
+                            f"Invalid duration value '{value}'. Must be a positive integer "
+                            "or decimal, with a period as the decimal separator.",
                         )
                     _check_duration_unit(dur_unit, result)
                 elif name == "party":
@@ -909,7 +928,7 @@ def validate_document(
                             "field-type-missing",
                             "Field directive is missing required type parameter.",
                         )
-                    elif not IDENTIFIER_RE.match(ftype):
+                    elif not IDENTIFIER_RE.fullmatch(ftype):
                         result.error(
                             "field-type-missing",
                             f"Field type '{ftype}' is invalid — must match [a-z][a-z0-9-]*.",
@@ -923,8 +942,6 @@ def validate_document(
                             f"Field type '{ftype}' is not declared in field_types.",
                         )
                     result.inline_fields.append((value, ftype))
-                elif name == "placeholder":
-                    _check_placeholder(directive, result, blanks, questions)
                 elif name == "attach":
                     referenced_attachments.add(value)
                     if value not in attachment_ids:

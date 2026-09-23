@@ -231,7 +231,7 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
-| **Metadata** | Invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title |
+| **Metadata** | Invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2 |
 
 Each check reports at the severity the specification assigns it — Error, Warning, or Info.
 

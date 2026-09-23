@@ -26,9 +26,19 @@ from .validator import slugify_identifier
 # dates are strings validated by the validator (metadata-date-invalid), so
 # load them as plain scalars.
 
+_STR_TAG = "tag:yaml.org,2002:str"
+
 
 class _StrDateSafeLoader(yaml.SafeLoader):
-    pass
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        """Read every plain mapping key as the string written. A YAML 1.1
+        reader would turn ``yes``/``on``/``true`` into one boolean key and
+        ``null`` into ``None``, collapsing distinct keys and hiding the ids
+        §15.2 forbids behind a value the author never wrote."""
+        for key, _value in node.value:
+            if isinstance(key, yaml.ScalarNode) and key.style is None and key.tag != _STR_TAG:
+                key.tag = _STR_TAG
+        return super().construct_mapping(node, deep=deep)
 
 
 _StrDateSafeLoader.add_constructor(
@@ -58,17 +68,22 @@ LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)\.|-)\s+")
 
 # ── Internal helpers ──────────────────────────────────────────────
 
-def _split_frontmatter(source: str) -> tuple[str, dict[str, Any], str]:
-    """Split *source* into ``(frontmatter YAML, parsed frontmatter, body)``."""
+def _split_frontmatter(source: str) -> tuple[yaml.Node | None, dict[str, Any], str]:
+    """Split *source* into ``(frontmatter YAML node, parsed frontmatter,
+    body)``. The node keeps how the YAML is written, which the data loses."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return "", {}, source
-    frontmatter = match.group(1) or ""
-    metadata = yaml.load(frontmatter, Loader=_StrDateSafeLoader) or {}
+        return None, {}, source
+    loader = _StrDateSafeLoader(match.group(1) or "")
+    try:
+        node = loader.get_single_node()
+        metadata = (loader.construct_document(node) if node is not None else None) or {}
+    finally:
+        loader.dispose()
     if not isinstance(metadata, dict):
         raise ValueError("Frontmatter must be a YAML mapping of fields.")
     body = source[match.end():]
-    return frontmatter, metadata, body
+    return node, metadata, body
 
 
 def _has_flow_style(node: yaml.Node) -> bool:
@@ -82,27 +97,28 @@ def _has_flow_style(node: yaml.Node) -> bool:
     return False
 
 
-def _not_line_editable(frontmatter: str) -> list[str]:
+def _not_line_editable(root: yaml.Node | None) -> list[str]:
     """The keys among ``questions`` and ``attachments`` that are not written
     as §15.2 requires for assembly to edit them line by line: in YAML block
-    style, and each attachment entry beginning with ``id``."""
-    if "questions" not in frontmatter and "attachments" not in frontmatter:
-        return []
-    root = yaml.compose(frontmatter, Loader=_StrDateSafeLoader)
+    style, and each attachment entry beginning with ``id``. *root* is the
+    frontmatter's YAML node. A key with no entries is not reported."""
     if not isinstance(root, yaml.MappingNode):
         return []
     keys: list[str] = []
     for key, value in root.value:
         if key.value == "questions" and _has_flow_style(value):
             keys.append("questions")
-        elif key.value == "attachments" and (
-            _has_flow_style(value)
-            or not isinstance(value, yaml.SequenceNode)
-            or any(
-                not isinstance(entry, yaml.MappingNode)
-                or not entry.value
-                or entry.value[0][0].value != "id"
-                for entry in value.value
+        elif (
+            key.value == "attachments"
+            and isinstance(value, yaml.SequenceNode)
+            and (
+                _has_flow_style(value)
+                or any(
+                    not isinstance(entry, yaml.MappingNode)
+                    or not entry.value
+                    or entry.value[0][0].value != "id"
+                    for entry in value.value
+                )
             )
         ):
             keys.append("attachments")
@@ -395,7 +411,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     silently corrected).
     """
     # A byte-order mark is an encoding artifact, not content.
-    frontmatter, metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
+    frontmatter_node, metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
     preamble, sections = _parse_body(body.splitlines())
     payload: dict[str, Any] = {
         "metadata": metadata,
@@ -412,7 +428,8 @@ def parse_document(source: str, *, filename: str = "") -> Document:
         "preamble": [asdict(block) for block in preamble],
     }
     document = document_from_dict(payload)
-    document.metadata.not_line_editable = _not_line_editable(frontmatter)
+    # Set from the source, never from a frontmatter key of that name.
+    document.metadata.not_line_editable = _not_line_editable(frontmatter_node)
     return document
 
 

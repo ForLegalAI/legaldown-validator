@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from ..models import yaml_key
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
 from .patterns import (
     IDENTIFIER_RE,
@@ -97,15 +96,14 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
             valid_amount=lambda v: (
                 isinstance(v, (int, str)) and not isinstance(v, bool) and is_positive_numeric(str(v))
             ),
-            amount_rule="a positive number (§10.5)",
+            amount_rule="a positive integer or decimal (§10.5)",
             valid_code=lambda u: u in VALID_DURATION_UNITS,
-            code_rule="one of S, MIN, H, D, W, MO, Y",
+            code_rule=f"one of {', '.join(VALID_DURATION_UNITS)}",
         )
     if qtype == "boolean":
         return None if isinstance(answer, bool) else "must be true or false"
     if qtype == "choice":
-        values = {yaml_key(value) for value in choices} if isinstance(choices, dict) else set()
-        if isinstance(answer, str) and answer in values:
+        if isinstance(answer, str) and isinstance(choices, dict) and answer in choices:
             return None
         return "must be one of the declared choices"
     return None
@@ -126,7 +124,7 @@ def _measure_problem(
     or the amount alone when every placeholder for the question fixes the
     same code. *codes* are the codes its placeholders fix."""
     if isinstance(answer, dict):
-        if set(map(yaml_key, answer)) != {amount_key, code_key}:
+        if set(answer) != {amount_key, code_key}:
             return f"must be a map of exactly '{amount_key}' and '{code_key}'"
         amount, code = answer.get(amount_key), answer.get(code_key)
         if not valid_amount(amount):
@@ -149,7 +147,7 @@ def _measure_problem(
 
 def _id_problem(value: str) -> str | None:
     """Why *value* cannot be a question id or choice value id (§15.2)."""
-    if not IDENTIFIER_RE.match(value):
+    if not IDENTIFIER_RE.fullmatch(value):
         return "must match [a-z][a-z0-9-]*"
     if value in YAML_KEYWORDS:
         return "is read by YAML as a boolean or null (y, n, yes, no, on, off, true, false, null)"
@@ -161,11 +159,11 @@ def _choices_problem(choices: Any) -> str | None:
     if not isinstance(choices, dict) or len(choices) < 2:
         return "must declare at least two choices, as a map of value id to label"
     for value, label in choices.items():
-        problem = _id_problem(yaml_key(value))
+        problem = _id_problem(str(value))
         if problem:
-            return f"value id '{yaml_key(value)}' {problem}"
+            return f"value id '{value}' {problem}"
         if not isinstance(label, str) or not label.strip():
-            return f"the label of '{yaml_key(value)}' must be non-empty text"
+            return f"the label of '{value}' must be non-empty text"
     return None
 
 
@@ -190,7 +188,7 @@ def check_questions(
         invalid("'questions' must be a map of question id to declaration (§15.2).")
     declared = questions if isinstance(questions, dict) else {}
     for qid, declaration in declared.items():
-        problem = _id_problem(qid)
+        problem = _id_problem(str(qid))
         if problem:
             invalid(f"Question id '{qid}' {problem} (§15.2).")
         qtype = question_type(declared, qid)

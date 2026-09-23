@@ -8,6 +8,11 @@ It is verified against the specification's own
 validation rule, paired with the diagnostic a conforming validator must produce. **65 of the
 corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes.**
 
+The specification defines 116 rules. The corpus has no fixture for three of them, since a
+document alone cannot exercise them. This implementation covers two of the three,
+`anchor-autogen-collision` and `legaldown-version-newer`, with unit tests. The third,
+`ref-not-enumerated`, depends on the style template and is listed below.
+
 Seven implemented rules — `amend-def-override`, `amend-term-undefined`, `amend-term-unresolvable`,
 `attachment-id-collision`, `attachment-id-duplicate`, `attachment-title-empty`, and
 `attachment-unreferenced` — have fixtures that span several files or are marked for the Full level,
@@ -29,6 +34,7 @@ files other than the document itself.
 | Templates (§15, §16.12) — not yet implemented | `question-unused`, `condition-invalid`, `condition-never-true`, `condition-reference-unsafe`, `choose-invalid`, `drafting-note-def`, `drafting-note-unrecognized`, `def-term-variable`, `insertion-boundary`, `template-fragment-invalid` |
 | Final option (§15.9) — not offered yet | `placeholder-unfilled`, `template-construct-present` |
 | Assembly capability (§17.6) — not claimed | `answer-invalid`, `answer-missing`, `answer-unknown` |
+| Rendering (§17.3) | `ref-not-enumerated` |
 | Lexer-level grammar (§11.2–11.4) | `value-curly-quote`, `raw-html` |
 | Other | `frontmatter-absent`, `frontmatter-invalid-yaml` (reported by the CLI, not the validator), `anchor-lossy-slug`, `def-lossy-slug`, `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
@@ -66,9 +72,9 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Cases for the rules above are skipped by name, so the 48 `not implemented` skips reproduce this
-table one for one. The run reports 55 skips in total: the remaining seven are the implemented
-rules named above, skipped as `multi-file case` or `requires conformance level full`. CI runs this
-on every push and pull request.
+table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 55 skips in
+total: the remaining seven are the implemented rules named above, skipped as `multi-file case` or
+`requires conformance level full`. CI runs this on every push and pull request.
 
 ## Declaring conformance in code
 
