@@ -113,7 +113,7 @@ def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
 FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)", re.DOTALL)
 # An ATX heading: its level and its text, which may end in a marker (split
 # off by markers.split_heading).
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")  # the text is stripped by split_heading
 # A setext underline under a paragraph: ``===`` makes a level-1 heading,
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")

@@ -67,11 +67,14 @@ def parse_marker(text: str) -> Marker | None:
     return Marker(identifier, condition)
 
 
-# A heading's trailing marker, after its text and at least one space. Only
-# comments may follow it: they are not rendered (§8.6), as after a body marker.
-_TRAILING_MARKER_RE = re.compile(
-    rf"\s+({_LOOK_ALIKE})((?:\s*<!--(?:(?!-->).)*-->)*)\s*$"
-)
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+# A heading's trailing marker, after its text and at least one space. It is
+# sought with comments blanked: a marker inside a comment is not one, and a
+# comment may follow the marker, since it is not rendered (§8.6). The
+# look-behind starts a match only at the start of a run of whitespace, which
+# keeps a long run from being rescanned at every position.
+_TRAILING_MARKER_RE = re.compile(rf"(?<!\s)\s+({_LOOK_ALIKE})\s*$")
 
 
 def split_heading(text: str) -> tuple[str, Marker]:
@@ -79,11 +82,12 @@ def split_heading(text: str) -> tuple[str, Marker]:
     when there is none). Comments after the marker stay in the text, before
     it. A trailing look-alike that is not a marker stays in the text, where
     the validator reports it (anchor-misplaced)."""
-    trailing = _TRAILING_MARKER_RE.search(text)
+    view = HTML_COMMENT_RE.sub(lambda comment: " " * len(comment.group()), text)
+    trailing = _TRAILING_MARKER_RE.search(view)
     if trailing:
         marker = parse_marker(trailing.group(1))
         if marker is not None:
-            title = f"{text[: trailing.start()]} {trailing.group(2).strip()}"
+            title = f"{text[: trailing.start(1)].strip()} {text[trailing.end(1):].strip()}"
             return title.strip(), marker
     return text.strip(), Marker()
 

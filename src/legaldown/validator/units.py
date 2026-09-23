@@ -15,11 +15,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..directives import Directive, Lexed, is_escaped
-from ..markers import MARKER_RE, Marker, parse_marker
+from ..markers import HTML_COMMENT_RE, MARKER_RE, Marker, parse_marker
 from ..models import Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 
-HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _PARAGRAPHS = ("paragraph", "definition", "ref", "term")
 _LISTS = ("ordered_list", "unordered_list")
 
@@ -48,18 +47,20 @@ class FoundMarker:
     block: int
     fragment: int  # the index of its text in block_fragments(block)
     #: Why it is literal text (anchor-misplaced), or "" when it is in a
-    #: marker position. PREAMBLE_CONDITION is a condition in a place that
-    #: only a template gives it.
+    #: marker position.
     misplaced: str
     #: True for the marker of a paragraph holding only an {{include:}}: its
     #: #id is ignored (§12.2), its condition applies.
     include_only: bool
+    #: True for a preamble paragraph's condition, which only a template
+    #: places (§5.7).
+    template_only: bool
 
     def placed(self, template: bool) -> bool:
         """True if the marker is in a marker position: its #id and condition
         apply. A preamble paragraph's condition is placed only in a
         template (§5.7)."""
-        return not self.misplaced or (self.misplaced == PREAMBLE_CONDITION and template)
+        return not self.misplaced or (self.template_only and template)
 
 
 _ANYWHERE = (
@@ -71,7 +72,7 @@ _NOT_A_MARKER = (
     "not a marker and is literal text: a marker holds '#id', 'when=condition', or "
     "both, each at most once (§15.3)"
 )
-PREAMBLE_CONDITION = (
+_PREAMBLE_CONDITION = (
     "a condition on a preamble paragraph, which applies only in a template (§5.7, "
     "§15.3); in this document it is literal text"
 )
@@ -127,13 +128,14 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
                     and block.kind == "paragraph"
                     and is_include_only(fragment[:m.start()], lexed.directives)
                 )
-                preamble_condition = bool(
+                template_only = bool(
                     section is None
                     and at_end
                     and block.kind in _PARAGRAPHS
                     and marker
                     and marker.condition
                     and not marker.identifier
+                    and not include_only
                 )
                 if marker is None:
                     misplaced = _NOT_A_MARKER
@@ -141,8 +143,8 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
                     misplaced = _ANYWHERE
                 elif section is None and marker.identifier and not include_only:
                     misplaced = _PREAMBLE_ANCHOR
-                elif preamble_condition and not include_only:
-                    misplaced = PREAMBLE_CONDITION
+                elif template_only:
+                    misplaced = _PREAMBLE_CONDITION
                 elif section is None and block.kind in _LISTS and marker.condition:
                     misplaced = _PREAMBLE_ITEM
                 elif section is None and not include_only:
@@ -152,7 +154,7 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
                 found.append(
                     FoundMarker(
                         m.group(0), marker, section, block_index, fragment_index,
-                        misplaced, include_only,
+                        misplaced, include_only, template_only,
                     )
                 )
     return found

@@ -450,3 +450,13 @@ def test_alternatives_nested_under_many_questions_are_covered_quickly():
     ]
     assert always_covered(frozenset(), targets, questions)
     assert not always_covered(frozenset(), targets[:-1], questions)
+
+
+def test_a_marker_in_a_heading_comment_is_not_a_marker():
+    [section] = _parse("## Fees <!-- was {when=vat} <!-- todo -->\n\nText.").sections
+    assert section.condition == ""
+
+
+def test_a_long_heading_is_parsed_quickly():
+    [section] = _parse("# a" + " " * 100_000 + "{#b}\n\nText.").sections
+    assert (section.title, section.identifier) == ("a", "b")
