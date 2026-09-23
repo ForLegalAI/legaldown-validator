@@ -18,7 +18,7 @@ from ..directives import (
     iter_directives,
     strip_uninterpreted,
 )
-from ..models import Document
+from ..models import Block, Document
 from .helpers import (
     ensure_unique_identifier,
     format_section_number,
@@ -138,6 +138,31 @@ def _check_placeholder(
                 f"Placeholder '{pid}' has unrecognized currency code '{pcurrency}'.",
             )
     result.inline_placeholders.append((pid, ptype))
+
+
+# A {#id}-like marker (§5.7), in body text as opposed to a heading.
+_ANCHOR_MARKER_RE = re.compile(r"\{#([^}\s]+)\}")
+
+
+def _anchor_fragments(block: Block) -> list[tuple[str, bool]]:
+    """The text of *block* that may contain ``{#id}`` markers, each paired
+    with whether a marker at its very end is an anchor position (§5.7).
+
+    Only a top-level paragraph (including one the parser split around a
+    lifted directive) and a list item end in an anchor position; a block
+    quote or table cell never does.
+    """
+    if block.kind in ("paragraph", "definition"):
+        return [(block.text, True)]
+    if block.kind in ("ref", "term"):
+        return [(block.prefix, False), (block.suffix, True)]
+    if block.kind in ("ordered_list", "unordered_list"):
+        return [(item, True) for item in block.items]
+    if block.kind == "quote":
+        return [(block.text, False)]
+    if block.kind == "table":
+        return [(cell, False) for row in block.rows for cell in row]
+    return []
 
 
 def validate_document(
@@ -415,25 +440,28 @@ def validate_document(
         last_level = level
 
     # ── Item and paragraph anchors (§5.7) ──
-    # A trailing {#id} on a list item or paragraph joins the shared anchor
-    # namespace and is a valid {{ref:}} target. It resolves to its containing
-    # section (the §13.2 enumeration-path refinement is a Rendering-level
-    # concern; §6.3 falls back to the containing section's number).
-    from ..definitions import text_fragments as _all_text_fragments
-
-    _trailing_anchor_re = re.compile(r"\{#([^}\s]+)\}\s*$")
-    for entry in list(result.sections):
-        section = next(
-            (s for s in document.sections if s.identifier == entry.identifier), None
-        )
-        if section is None:
-            continue
-        for block in section.blocks:
-            for fragment in (
-                strip_uninterpreted(f) for f in _all_text_fragments(block)
-            ):
-                m = _trailing_anchor_re.search(fragment)
-                if not m:
+    # A {#id} at the very end of a top-level paragraph or of a list item joins
+    # the shared anchor namespace and is a valid {{ref:}} target. It resolves
+    # to its containing section (the §13.2 enumeration-path refinement is a
+    # Rendering-level concern; §6.3 falls back to the containing section's
+    # number). A marker anywhere else is literal text (anchor-misplaced).
+    entries = dict(zip(map(id, document.sections), result.sections, strict=True))
+    for section, _index, block in document.iter_blocks():
+        entry = entries[id(section)] if section is not None else None
+        for fragment, at_end_is_anchor in _anchor_fragments(block):
+            scan = strip_uninterpreted(fragment)
+            spans = [(d.start, d.end) for d in iter_directives(fragment)]
+            end_of_text = len(scan.rstrip())
+            for m in _ANCHOR_MARKER_RE.finditer(scan):
+                if any(start <= m.start() < end for start, end in spans):
+                    continue  # part of a directive's value
+                if entry is None or not at_end_is_anchor or m.end() != end_of_text:
+                    result.warning(
+                        "anchor-misplaced",
+                        f"'{m.group(0)}' is not in an anchor position and is literal text: "
+                        f"anchors go at the end of a list item or of a paragraph directly "
+                        f"inside a section (§5.7).",
+                    )
                     continue
                 anchor_id = m.group(1)
                 if not IDENTIFIER_RE.match(anchor_id):
@@ -488,7 +516,7 @@ def validate_document(
             auto_ids_seen[def_id] = ref.term
 
     # ── Definition source-form checks (§7.2 validation table) ──
-    for _section, _index, block in document.blocks():
+    for _section, _index, block in document.iter_blocks():
         for fragment in text_fragments(block):
             for anchor in find_definition_anchors(
                 fragment, language=document.metadata.language
@@ -605,7 +633,7 @@ def validate_document(
             if _check_directive_arguments(directive, result):
                 _check_placeholder(directive, result, placeholder_types)
 
-    for _section, _index, block in document.blocks():
+    for _section, _index, block in document.iter_blocks():
         # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
         # block fields when they hold it without loss (no other parameters).
         ref_targets: list[str] = []

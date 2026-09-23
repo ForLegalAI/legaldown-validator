@@ -42,7 +42,7 @@ pytestmark = [
 # (single-file, Core-level scope: no filesystem, include, bilingual, or
 # line-level lexer checks yet).
 IMPLEMENTED_RULES = {
-    "anchor-autogen-collision", "anchor-duplicate", "anchor-format",
+    "anchor-autogen-collision", "anchor-duplicate", "anchor-format", "anchor-misplaced",
     "amends-title-empty", "amend-def-override", "amend-term-undefined",
     "amend-term-unresolvable",
     "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",

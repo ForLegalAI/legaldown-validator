@@ -739,16 +739,56 @@ def test_document_of_only_a_preamble():
     assert "party-unknown" in validate_document(document).rules("error")
 
 
-def test_preamble_paragraph_anchor_is_not_a_ref_target():
+@pytest.mark.parametrize("marker", ["{#intro}", "{#Bad_ID}"])
+def test_preamble_paragraph_anchor_is_misplaced(marker):
     """§4.4: preamble paragraphs cannot carry anchors or be referenced."""
-    source = _PREAMBLE_SOURCE.replace("{{party: beta}}.", "{{party: beta}}. {#intro}") + (
+    source = _PREAMBLE_SOURCE.replace("{{party: beta}}.", "{{party: beta}}. " + marker) + (
         "See {{ref: intro}}.\n"
     )
-    assert "ref-broken" in validate_document(parse_document(source)).rules("error")
+    result = validate_document(parse_document(source))
+    assert "anchor-misplaced" in result.rules("warning")
+    assert "ref-broken" in result.rules("error")
+    assert "anchor-format" not in result.rules()
 
 
 def test_preamble_survives_the_dict_round_trip():
     document = parse_document(_PREAMBLE_SOURCE)
     assert document_from_dict(document_to_dict(document)) == document
     ref = next(r for r in collect_definitions(document) if r.id == "agreement")
-    assert ref.section_identifier == ""
+    assert ref.section_identifier is None
+
+
+# ── Item and paragraph anchor positions (§5.7) ────────────────────
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "A marker {#stray} mid-paragraph.",
+        "> Quoted text {#quoted}",
+        "| A | B |\n|---|---|\n| cell {#cell} | x |",
+    ],
+)
+def test_marker_outside_an_anchor_position_is_literal(body):
+    marker = body.split("{#")[1].split("}")[0]
+    result = _validate(body + f"\n\nSee {{{{ref: {marker}}}}}.")
+    assert "anchor-misplaced" in result.rules("warning")
+    assert "ref-broken" in result.rules("error")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "A top-level paragraph. {#para}",
+        "- a list item {#para}",
+        "See {{ref: terms}} for more. {#para}",
+    ],
+)
+def test_anchor_positions_are_ref_targets(body):
+    result = _validate(body + "\n\nBack to {{ref: para}}.")
+    assert result.diagnostics == []
+
+
+def test_marker_inside_a_directive_value_is_not_an_anchor():
+    result = _validate('Case {{field: "{#x}", type=code}} here.')
+    assert result.diagnostics == []

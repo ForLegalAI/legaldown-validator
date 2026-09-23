@@ -128,7 +128,7 @@ class Document:
     filename: str = ""
     preamble: list[Block] = field(default_factory=list)
 
-    def blocks(self) -> Iterator[tuple[Section | None, int, Block]]:
+    def iter_blocks(self) -> Iterator[tuple[Section | None, int, Block]]:
         """Every body block in document order, as ``(section, index, block)``:
         the preamble first, with ``section`` ``None``, then each section's."""
         for index, block in enumerate(self.preamble):

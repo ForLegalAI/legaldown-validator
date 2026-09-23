@@ -227,6 +227,11 @@ def _parse_blocks(chunk: str) -> list[Block]:
     return blocks
 
 
+def _block_dicts(lines: list[str]) -> list[dict[str, Any]]:
+    """Parse body lines into block dicts for ``document_from_dict``."""
+    return [asdict(block) for block in _parse_blocks("\n".join(lines).strip())]
+
+
 # ── Public API ────────────────────────────────────────────────────
 
 def parse_document(source: str, *, filename: str = "") -> Document:
@@ -257,10 +262,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
             if title.strip() == "Signature Block" and identifier == "signature-block":
                 break
             if current is not None:
-                current["blocks"] = [
-                    asdict(block)
-                    for block in _parse_blocks("\n".join(current_lines).strip())
-                ]
+                current["blocks"] = _block_dicts(current_lines)
                 payload["sections"].append(current)
             current = {
                 "title": title.strip(),
@@ -272,13 +274,9 @@ def parse_document(source: str, *, filename: str = "") -> Document:
             current_lines.append(raw_line)
 
     if current is not None:
-        current["blocks"] = [
-            asdict(block) for block in _parse_blocks("\n".join(current_lines).strip())
-        ]
+        current["blocks"] = _block_dicts(current_lines)
         payload["sections"].append(current)
-    payload["preamble"] = [
-        asdict(block) for block in _parse_blocks("\n".join(preamble_lines).strip())
-    ]
+    payload["preamble"] = _block_dicts(preamble_lines)
     return document_from_dict(payload)
 
 
@@ -289,7 +287,7 @@ def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
     """
     refs: set[str] = set()
     terms: set[str] = set()
-    for _section, _index, block in document.blocks():
+    for _section, _index, block in document.iter_blocks():
         if block.kind == "ref" and block.target:
             refs.add(block.target)
         if block.kind == "term" and block.target:

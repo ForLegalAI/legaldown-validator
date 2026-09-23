@@ -201,7 +201,7 @@ with open("contract.lgd", "w", encoding="utf-8") as handle:
 
 Content before the first heading — typically the sentence identifying the parties — is the
 document's preamble (§4.4): it is unnumbered, so it lives in `document.preamble` rather than in
-`sections`. `document.blocks()` walks every body block, preamble first.
+`sections`. `document.iter_blocks()` walks every body block, preamble first.
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
 structures, and `render_block()` renders a single block when you are driving your own layout.
@@ -222,7 +222,7 @@ The full rule set with severities and examples lives in the specification (§15)
 | **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title |
 | **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
-| **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions |
+| **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions, markers outside an anchor position |
 | **Definitions** | Undefined `{{term:}}`, duplicate ids, missing quoted span, ambiguous quoting, unreferenced definitions |
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |

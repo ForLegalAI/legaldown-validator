@@ -156,7 +156,7 @@ class DefinitionRef:
 
     id: str
     term: str
-    section_identifier: str  # "" for the preamble (§4.4)
+    section_identifier: str | None  # None for the preamble (§4.4)
     block_index: int
     inline: bool       # True: mid-text anchor; False: leading anchor of a definition block
     auto_id: bool      # True if the id was derived from the term (omitted in source)
@@ -186,8 +186,8 @@ def collect_definitions(
     """
     lang = language or document.metadata.language or "en"
     refs: list[DefinitionRef] = []
-    for section, block_index, block in document.blocks():
-        section_identifier = section.identifier if section else ""
+    for section, block_index, block in document.iter_blocks():
+        section_identifier = section.identifier if section else None
         if block.kind == "definition":
             term = (block.term or "").strip()
             raw_id = (block.definition_id or "").strip()
