@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex, mask_directives
 from .models import Block, Document
-from .validator.helpers import slugify_identifier
+from .validator.helpers import generate_identifier
 
 # ---------------------------------------------------------------------------
 # Accepted quotation-mark delimiters (spec 7.2)
@@ -168,6 +168,9 @@ class DefinitionRef:
     fragment_index: int | None
     inline: bool       # True: mid-text anchor; False: leading anchor of a definition block
     auto_id: bool      # True if the id was derived from the term (omitted in source)
+    #: True if deriving the id dropped letters or digits without an ASCII
+    #: form (§5.3): an explicit id is recommended (def-lossy-slug).
+    lossy_id: bool = False
 
 
 def block_fragments(block: Block) -> list[tuple[str, bool]]:
@@ -217,7 +220,7 @@ def collect_definitions(
         if block.kind == "definition":
             term = (block.term or "").strip()
             raw_id = (block.definition_id or "").strip()
-            did = raw_id or slugify_identifier(term, fallback="term")
+            did, lossy = (raw_id, False) if raw_id else generate_identifier(term)
             refs.append(
                 DefinitionRef(
                     id=did,
@@ -227,6 +230,7 @@ def collect_definitions(
                     fragment_index=None,
                     inline=False,
                     auto_id=not raw_id,
+                    lossy_id=lossy,
                 )
             )
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
@@ -239,7 +243,7 @@ def collect_definitions(
                     continue
                 term = anchor.term
                 raw_id = anchor.directive.positional or ""
-                did = raw_id or slugify_identifier(term, fallback="term")
+                did, lossy = (raw_id, False) if raw_id else generate_identifier(term)
                 refs.append(
                     DefinitionRef(
                         id=did,
@@ -249,6 +253,7 @@ def collect_definitions(
                         fragment_index=fragment_index,
                         inline=True,
                         auto_id=not raw_id,
+                        lossy_id=lossy,
                     )
                 )
     return refs

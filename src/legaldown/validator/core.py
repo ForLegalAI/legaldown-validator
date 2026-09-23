@@ -25,6 +25,7 @@ from ..specification import SPEC_VERSION, parse_version
 from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
 from .helpers import (
     format_section_number,
+    generate_identifier,
     is_positive_numeric,
     is_valid_iso_date,
     is_valid_money_amount,
@@ -52,7 +53,7 @@ from .templates import (
     check_template_body,
     question_type,
 )
-from .units import HTML_COMMENT_RE, FoundMarker, Units, find_markers, marker_matches, own_presence
+from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
 
 # Type aliases for the optional definitions-import callbacks.
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
@@ -748,9 +749,15 @@ def validate_document(
                 f"'{identifier}'.",
             )
         elif not identifier:
-            # A comment is not part of the rendered heading (§8.6).
-            base = slugify_identifier(HTML_COMMENT_RE.sub("", section.title))
+            base, lossy = generate_identifier(section.title)
             identifier = free_identifier(base, presence)
+            if lossy:
+                result.warning(
+                    "anchor-lossy-slug",
+                    f"The identifier generated for '{section.title}' is '{base}': letters or "
+                    f"digits without an ASCII form were dropped. Give the heading an explicit "
+                    f"identifier (§5.3).",
+                )
             if identifier != base:
                 result.warning(
                     "anchor-autogen-collision",
@@ -856,6 +863,13 @@ def validate_document(
                 f"Use lowercase letters, numbers, and hyphens only.",
             )
             continue
+        if ref.lossy_id:
+            result.warning(
+                "def-lossy-slug",
+                f"The id generated for the defined term '{ref.term}' is '{def_id}': letters or "
+                f"digits without an ASCII form were dropped. Give the definition an explicit "
+                f"id (§5.3, §7.2).",
+            )
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.

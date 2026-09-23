@@ -3,21 +3,59 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from datetime import date as date_type
 
+from ..markers import HTML_COMMENT_RE
 
-def slugify_identifier(value: str, *, fallback: str = "section") -> str:
-    """Convert free-form text into a valid LegalDown section identifier.
+# The §5.3 transliteration table, exhaustive: exactly these mappings.
+_TRANSLITERATION = str.maketrans({
+    "ß": "ss", "ẞ": "ss",
+    "æ": "ae", "Æ": "ae",
+    "œ": "oe", "Œ": "oe",
+    "ø": "o", "Ø": "o",
+    "đ": "d", "Đ": "d",
+    "ð": "d", "Ð": "d",
+    "þ": "th", "Þ": "th",
+    "ł": "l", "Ł": "l",
+    "ħ": "h", "Ħ": "h",
+    "ı": "i",
+})
 
-    Rules: lowercase, starts with a letter, contains only [a-z0-9-], max 64 chars.
+
+def _ascii_text(value: str) -> tuple[str, bool]:
+    """Steps 2–4 of §5.3: *value* reduced to ASCII, and whether step 4
+    removed a letter or digit (the lossy-slug Warning rule)."""
+    decomposed = unicodedata.normalize("NFKD", value)
+    text = "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+    text = text.translate(_TRANSLITERATION)
+    lossy = any(not c.isascii() and unicodedata.category(c)[0] in "LN" for c in text)
+    return "".join(c for c in text if c.isascii()), lossy
+
+
+def generate_identifier(value: str) -> tuple[str, bool]:
+    """The identifier §5.3 generates from heading or term text *value*
+    (without its trailing marker), and whether a letter or digit without an
+    ASCII form, such as Cyrillic or CJK text, was dropped: the identifier
+    then lost information, and an explicit one is recommended.
+
+    Deterministic, so that every conformant implementation generates the
+    same identifier. Comments are not part of the rendered text (§8.6).
     """
-    text = re.sub(r"[^a-z0-9\s_-]", "", (value or "").lower())
-    text = re.sub(r"[\s_]+", "-", text).strip("-")[:64]
+    text, lossy = _ascii_text(HTML_COMMENT_RE.sub("", value or ""))
+    text = re.sub(r"[ \t_]", "-", text.lower())
+    text = re.sub(r"[^a-z0-9-]", "", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    text = text[:64].rstrip("-")
     if not text:
-        return fallback
-    if not text[0].isalpha():
-        text = f"{fallback}-{text}"[:64].strip("-")
-    return text or fallback
+        return "section", lossy
+    # The prefix is exempt from the 64-character maximum: no re-truncation.
+    return (text if "a" <= text[0] <= "z" else f"section-{text}"), lossy
+
+
+def slugify_identifier(value: str) -> str:
+    """The identifier §5.3 generates from *value* (see generate_identifier)."""
+    return generate_identifier(value)[0]
 
 
 def format_section_number(counters: list[int], level: int) -> str:

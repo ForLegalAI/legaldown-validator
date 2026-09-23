@@ -42,14 +42,16 @@ pytestmark = [
 # (single-file, Core-level scope: no filesystem, include, bilingual, or
 # line-level lexer checks yet).
 IMPLEMENTED_RULES = {
-    "anchor-autogen-collision", "anchor-duplicate", "anchor-format", "anchor-misplaced",
+    "anchor-autogen-collision", "anchor-duplicate", "anchor-format", "anchor-lossy-slug",
+    "anchor-misplaced",
     "amends-title-empty", "amend-def-override", "amend-term-undefined",
     "amend-term-unresolvable",
     "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",
     "attachment-title-empty", "attachment-unreferenced", "brace-stray", "choose-invalid",
     "condition-invalid", "condition-never-true", "condition-reference-unsafe",
     "date-invalid", "date-of-birth-invalid",
-    "def-autogen-collision", "def-duplicate-id", "def-emphasis", "def-term-variable",
+    "def-autogen-collision", "def-duplicate-id", "def-emphasis", "def-lossy-slug",
+    "def-term-variable",
     "def-no-quoted-span", "def-single-quote-ambiguous", "def-unreferenced",
     "directive-duplicate-param", "directive-malformed", "directive-unknown",
     "directive-unknown-param", "document-type-invalid", "drafting-note-def",
