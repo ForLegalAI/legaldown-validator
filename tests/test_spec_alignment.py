@@ -857,3 +857,71 @@ def test_marker_after_a_malformed_directive_is_still_an_anchor():
     """A malformed directive has no value to hide the marker in."""
     result = _validate("Text {{ref: x more {#x}\n\nSee {{ref: x}}.")
     assert result.rules() == {"directive-malformed"}
+
+
+# ── Heading and code-block recognition (§4.1, §11.4) ──────────────
+
+_BARE = _FRONTMATTER.replace("# Terms {#terms}\n\n", "")
+
+
+def _outline(source: str) -> list[tuple[str, int, str]]:
+    return [(s.title, s.level, s.identifier) for s in parse_document(source).sections]
+
+
+def test_setext_headings_are_headings():
+    """§4.1: === and --- underlines make level-1 and level-2 headings."""
+    source = _BARE + "Intro.\n\nPayment\nTerms {#pay}\n=======\n\nText.\n\nLate Fees\n---\n\nMore.\n"
+    assert _outline(source) == [("Payment Terms", 1, "pay"), ("Late Fees", 2, "late-fees")]
+    assert len(parse_document(source).preamble) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["Text.\n\n---\n\nMore.\n", "- item\n---\n", "> quoted\n---\n", "| a | b |\n|---|---|\n| c | d |\n---\n"],
+)
+def test_dashes_not_under_a_paragraph_are_a_rule(body):
+    document = parse_document(_FRONTMATTER + body)
+    assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms")]
+    assert "rule" in [b.kind for b in document.sections[0].blocks]
+
+
+def test_setext_heading_round_trips_as_an_atx_heading():
+    source = _BARE + "Scope\n=====\n\nText.\n"
+    assert "# Scope {#scope}" in serialize_document(parse_document(source))
+
+
+def test_fenced_code_is_one_literal_block():
+    """§11.4: nothing inside a fence is a heading, directive, or anchor, and a
+    blank line inside it does not end it."""
+    fence = "```\n# not a heading\n\n{#z} {{ref: nope}} {{\n```"
+    source = _FRONTMATTER + fence + "\n\n# Next {#next}\n"
+    document = parse_document(source)
+    assert _outline(source) == [("Terms", 1, "terms"), ("Next", 1, "next")]
+    assert [(b.kind, b.text) for b in document.sections[0].blocks] == [("code", fence)]
+    assert validate_document(document).diagnostics == []
+    assert fence in serialize_document(document)
+
+
+@pytest.mark.parametrize(
+    ("fence", "closed"),
+    [
+        ("~~~~\n# x\n~~~\n# y\n~~~~", True),  # a shorter fence does not close it
+        ("```\n# x\n~~~\n# y\n```", True),  # nor does the other character
+        ("```\n# x\n# y", False),  # unclosed: runs to the end of the document
+    ],
+)
+def test_fence_closes_only_on_a_matching_fence(fence, closed):
+    source = _FRONTMATTER + fence + "\n\n# After {#after}\n"
+    expected = [("Terms", 1, "terms")] + ([("After", 1, "after")] if closed else [])
+    assert _outline(source) == expected
+
+
+def test_inline_triple_backticks_do_not_open_a_fence():
+    source = _FRONTMATTER + "```x``` and text\n\n# Next {#next}\n"
+    assert _outline(source) == [("Terms", 1, "terms"), ("Next", 1, "next")]
+
+
+def test_fence_interrupts_a_paragraph():
+    document = parse_document(_FRONTMATTER + "Example:\n```\n{{ref: nope}}\n```\n")
+    assert [b.kind for b in document.sections[0].blocks] == ["paragraph", "code"]
+    assert validate_document(document).diagnostics == []

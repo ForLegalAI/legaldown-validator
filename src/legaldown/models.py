@@ -150,6 +150,8 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     "unordered_list": {"kind": "unordered_list", "items": [""]},
     "ordered_list": {"kind": "ordered_list", "items": [""]},
     "quote": {"kind": "quote", "text": ""},
+    # A fenced code block, fences included; its content is literal (§11.4).
+    "code": {"kind": "code", "text": ""},
     "table": {"kind": "table", "headers": ["Column 1", "Column 2"], "rows": [["", ""]]},
     "rule": {"kind": "rule"},
 }

@@ -167,6 +167,8 @@ def _render_block(block: Block) -> str:
         )
     if block.kind == "rule":
         return "---"
+    if block.kind == "code":
+        return block.text
     return block.text.strip()
 
 

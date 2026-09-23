@@ -45,6 +45,15 @@ FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)",
 # (e.g. {#Bad_ID}) must reach the validator to be reported as anchor-format
 # rather than silently remaining part of the title.
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
+# Setext heading text (§4.1), with the same optional trailing anchor.
+SETEXT_TEXT_RE = re.compile(r"^(.+?)(?:\s+\{#([^}\s]+)})?\s*$")
+# A setext underline: ``===`` makes a level-1 heading, ``---`` a level-2 one.
+SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+# A fenced code block opens with three or more backticks or tildes; a
+# backtick fence's info string cannot contain a backtick (CommonMark).
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
+# Lines that begin a block of their own, so they are not paragraph text.
+_BLOCK_START_RE = re.compile(r"^\s*(?:>|\||-\s|\d+\.\s|#{1,6}\s)")
 
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -168,6 +177,17 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
     return None
 
 
+def _closes_fence(line: str, fence: str) -> bool:
+    """True if *line* closes a code block opened with *fence*: the same
+    character, at least as many of it, and nothing else (CommonMark)."""
+    stripped = line.strip()
+    return (
+        len(line) - len(line.lstrip(" ")) <= 3
+        and len(stripped) >= len(fence)
+        and set(stripped) == {fence[0]}
+    )
+
+
 def _parse_blocks(chunk: str) -> list[Block]:
     lines = chunk.splitlines()
     blocks: list[Block] = []
@@ -176,6 +196,19 @@ def _parse_blocks(chunk: str) -> list[Block]:
         line = lines[index]
         if not line.strip():
             index += 1
+            continue
+        opening = FENCE_OPEN_RE.match(line)
+        if opening:
+            # A fenced code block is literal (§11.4) and kept whole, blank
+            # lines included; unclosed, it runs to the end of the chunk.
+            code_lines = [line]
+            index += 1
+            while index < len(lines):
+                code_lines.append(lines[index])
+                index += 1
+                if _closes_fence(code_lines[-1], opening.group("fence")):
+                    break
+            blocks.append(Block(kind="code", text="\n".join(code_lines)))
             continue
         if line.strip() == "---":
             blocks.append(Block(kind="rule"))
@@ -225,11 +258,75 @@ def _parse_blocks(chunk: str) -> list[Block]:
             blocks.append(_parse_list(list_lines, ordered=True))
             continue
         paragraph_lines: list[str] = []
-        while index < len(lines) and lines[index].strip():
+        # A fence interrupts a paragraph (CommonMark), as in _split_sections.
+        while (
+            index < len(lines)
+            and lines[index].strip()
+            and not FENCE_OPEN_RE.match(lines[index])
+        ):
             paragraph_lines.append(lines[index])
             index += 1
         blocks.append(_parse_paragraph(" ".join(paragraph_lines)))
     return blocks
+
+
+def _setext_content(body: list[str]) -> int:
+    """How many lines at the end of *body* form the text of a setext heading
+    whose underline comes next: the trailing paragraph lines, unless they are
+    the lazy continuation of a list item, block quote, or table."""
+    run = 0
+    while run < len(body) and body[-1 - run].strip() and not _BLOCK_START_RE.match(
+        body[-1 - run]
+    ):
+        run += 1
+    if run < len(body) and _BLOCK_START_RE.match(body[-1 - run]):
+        return 0
+    return run
+
+
+def _split_sections(
+    lines: list[str],
+) -> tuple[list[str], list[tuple[str, int, str | None, list[str]]]]:
+    """Split body lines at headings into the preamble (§4.4) and sections.
+
+    Returns ``(preamble_lines, [(title, level, identifier, lines), ...])``.
+    ATX (``#``) and setext (underlined) headings are both headings (§4.1);
+    nothing inside a fenced code block is.
+    """
+    preamble: list[str] = []
+    sections: list[tuple[str, int, str | None, list[str]]] = []
+    body = preamble
+    fence: str | None = None
+    for line in lines:
+        if fence is not None:
+            body.append(line)
+            if _closes_fence(line, fence):
+                fence = None
+            continue
+        opening = FENCE_OPEN_RE.match(line)
+        if opening:
+            fence = opening.group("fence")
+            body.append(line)
+            continue
+        atx = HEADING_RE.match(line)
+        underline = SETEXT_UNDERLINE_RE.match(line)
+        run = _setext_content(body) if underline else 0
+        if atx:
+            hashes, title, identifier = atx.groups()
+            heading = (title.strip(), len(hashes), identifier)
+        elif run:
+            text = " ".join(content.strip() for content in body[-run:])
+            del body[-run:]
+            title, identifier = SETEXT_TEXT_RE.match(text).groups()
+            heading = (title.strip(), 1 if underline.group(1)[0] == "=" else 2, identifier)
+        else:
+            body.append(line)
+            continue
+        if heading[0] == "Signature Block" and heading[2] == "signature-block":
+            break
+        body = []
+        sections.append((*heading, body))
+    return preamble, sections
 
 
 def _block_dicts(lines: list[str]) -> list[dict[str, Any]]:
@@ -249,40 +346,21 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     """
     # A byte-order mark is an encoding artifact, not content.
     metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
+    preamble_lines, sections = _split_sections(body.splitlines())
     payload: dict[str, Any] = {
         "metadata": metadata,
-        "sections": [],
-        "filename": filename,
-    }
-    lines = body.splitlines()
-    current: dict[str, Any] | None = None
-    # Lines before the first heading are the preamble (§4.4).
-    preamble_lines: list[str] = []
-    current_lines = preamble_lines
-
-    for raw_line in lines:
-        match = HEADING_RE.match(raw_line)
-        if match:
-            hashes, title, identifier = match.groups()
-            level = len(hashes)
-            if title.strip() == "Signature Block" and identifier == "signature-block":
-                break
-            if current is not None:
-                current["blocks"] = _block_dicts(current_lines)
-                payload["sections"].append(current)
-            current = {
-                "title": title.strip(),
+        "sections": [
+            {
+                "title": title,
                 "level": level,
-                "identifier": identifier or slugify_identifier(title.strip()),
+                "identifier": identifier or slugify_identifier(title),
+                "blocks": _block_dicts(section_lines),
             }
-            current_lines = []
-        else:
-            current_lines.append(raw_line)
-
-    if current is not None:
-        current["blocks"] = _block_dicts(current_lines)
-        payload["sections"].append(current)
-    payload["preamble"] = _block_dicts(preamble_lines)
+            for title, level, identifier, section_lines in sections
+        ],
+        "filename": filename,
+        "preamble": _block_dicts(preamble_lines),
+    }
     return document_from_dict(payload)
 
 

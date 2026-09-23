@@ -173,6 +173,8 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
     one the parser split around a lifted {{ref:}} or {{term:}}) and the end
     of a list item; a block quote or a table cell never is one.
     """
+    if block.kind == "code":
+        return []  # literal text (§11.4)
     paragraph = block.kind in ("paragraph", "definition")
     lifted = block.kind in ("ref", "term")
     listed = block.kind in ("ordered_list", "unordered_list")
