@@ -52,7 +52,7 @@ from .templates import (
     check_template_body,
     question_type,
 )
-from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
+from .units import HTML_COMMENT_RE, FoundMarker, Units, find_markers, marker_matches, own_presence
 
 # Type aliases for the optional definitions-import callbacks.
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
@@ -699,6 +699,9 @@ def validate_document(
     counters = [0] * 7
     path_stack: list[str] = []
     last_level = 0
+    # The last section at each open level: (identifier, presence). An
+    # alternative to it shares its number (§15.8).
+    previous_sibling: dict[int, tuple[str, Presence]] = {}
 
     for section_index, section in enumerate(document.sections):
         # An out-of-range level is an Error, but the section still gets an
@@ -747,7 +750,8 @@ def validate_document(
                 f"'{identifier}'.",
             )
         elif not identifier:
-            base = slugify_identifier(section.title)
+            # A comment is not part of the rendered heading (§8.6).
+            base = slugify_identifier(HTML_COMMENT_RE.sub("", section.title))
             identifier = free_identifier(base, presence)
             if identifier != base:
                 result.warning(
@@ -765,9 +769,13 @@ def validate_document(
                 f"Section identifier '{identifier}' collides with an attachment id.",
             )
 
+        sibling_id, sibling_presence = previous_sibling.get(level, ("", ALWAYS))
+        alternative = sibling_id == identifier and exclusive(presence, sibling_presence, questions)
+        previous_sibling = {lvl: v for lvl, v in previous_sibling.items() if lvl < level}
+        previous_sibling[level] = (identifier, presence)
         for idx in range(level, 7):
             if idx == level:
-                counters[idx] += 1
+                counters[idx] += 0 if alternative else 1
             elif idx > level:
                 counters[idx] = 0
         path_stack = path_stack[: max(level - 1, 0)]

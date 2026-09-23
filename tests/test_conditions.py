@@ -388,3 +388,22 @@ def test_a_comment_may_follow_a_heading_marker():
 
 def test_a_dotted_path_is_not_a_reference():
     assert "ref-broken" in _rules("# A\n\n## B\n\nSee {{ref: a.b}}.", "")
+
+
+def test_a_comment_in_a_heading_is_not_part_of_its_identifier():
+    result = validate_document(_parse("# Title {when=vat} <!-- internal note -->\n\nSee {{ref: title}}."))
+    assert result.sections[0].identifier == "title"
+    assert "ref-broken" not in result.rules()
+
+
+def test_prose_in_braces_is_not_a_marker_look_alike():
+    assert "anchor-misplaced" not in _rules("# A\n\nIssues {#1 and #2} were fixed. Use {# comment } here.", "")
+
+
+def test_alternatives_share_a_number():
+    body = (
+        "# Disputes {#disputes when=forum:courts}\n\n## Venue\n\nText.\n\n"
+        "# Disputes {#disputes when=forum:arbitration}\n\n## Seat\n\nText.\n\n# Notices\n\nText."
+    )
+    result = validate_document(_parse(body))
+    assert [s.number for s in result.sections] == ["1", "1.1", "1", "1.1", "2"]

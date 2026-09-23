@@ -14,10 +14,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# Something that looks like a marker: a brace opening with ``#`` or ``when=``,
-# up to the next closing brace on the line. Whether it is one is decided by
-# parse_marker; a look-alike is literal text (anchor-misplaced).
-MARKER_RE = re.compile(r"\{(?:#|when=)[^{}\n]*\}")
+# Something that looks like a marker: braces around words that each start
+# with ``#`` or ``when=``, such as ``{#id}`` or ``{#a #b}``. Whether it is one
+# is decided by parse_marker; a look-alike is literal text (anchor-misplaced).
+# Prose in braces, such as ``{#1 and #2}``, is not a look-alike.
+_LOOK_ALIKE = r"\{(?:#|when=)[^{}\s]+(?:[ \t]+(?:#|when=)[^{}\s]+)*\}"
+MARKER_RE = re.compile(_LOOK_ALIKE)
 
 _ATTRIBUTE_RE = re.compile(r"#(?P<id>\S+)|when=(?P<when>\S+)")
 
@@ -60,7 +62,7 @@ def parse_marker(text: str) -> Marker | None:
 # A heading's trailing marker, after its text and at least one space. Only
 # comments may follow it: they are not rendered (§8.6), as after a body marker.
 _TRAILING_MARKER_RE = re.compile(
-    r"\s+(\{(?:#|when=)[^{}\n]*\})((?:\s*<!--(?:(?!-->).)*-->)*)\s*$"
+    rf"\s+({_LOOK_ALIKE})((?:\s*<!--(?:(?!-->).)*-->)*)\s*$"
 )
 
 
