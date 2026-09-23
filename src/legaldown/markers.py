@@ -57,19 +57,24 @@ def parse_marker(text: str) -> Marker | None:
     return Marker(identifier, condition)
 
 
-# A heading's trailing marker, after its text and at least one space.
-_TRAILING_MARKER_RE = re.compile(r"\s+(\{(?:#|when=)[^{}\n]*\})\s*$")
+# A heading's trailing marker, after its text and at least one space. Only
+# comments may follow it: they are not rendered (§8.6), as after a body marker.
+_TRAILING_MARKER_RE = re.compile(
+    r"\s+(\{(?:#|when=)[^{}\n]*\})((?:\s*<!--(?:(?!-->).)*-->)*)\s*$"
+)
 
 
 def split_heading(text: str) -> tuple[str, Marker]:
     """A heading's text without its trailing marker, and the marker (empty
-    when there is none). A trailing look-alike that is not a marker stays in
-    the text, where the validator reports it (anchor-misplaced)."""
+    when there is none). Comments after the marker stay in the text, before
+    it. A trailing look-alike that is not a marker stays in the text, where
+    the validator reports it (anchor-misplaced)."""
     trailing = _TRAILING_MARKER_RE.search(text)
     if trailing:
         marker = parse_marker(trailing.group(1))
         if marker is not None:
-            return text[: trailing.start()].strip(), marker
+            title = f"{text[: trailing.start()]} {trailing.group(2).strip()}"
+            return title.strip(), marker
     return text.strip(), Marker()
 
 

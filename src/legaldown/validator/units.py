@@ -16,7 +16,7 @@ from typing import Any
 
 from ..directives import Directive, Lexed, is_escaped
 from ..markers import MARKER_RE, Marker, parse_marker
-from ..models import Block, Document
+from ..models import Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -197,20 +197,28 @@ class Units:
             self._section_enclosing.append(enclosing)
             self._section_presence.append(presence)
             stack.append((section.level, presence))
-        # Own conditions of body units: (section, block) for a paragraph,
-        # (section, block, fragment) for a list item.
         self._own_conditions: dict[tuple[int | None, int, int | None], Presence] = {}
         for found in markers:
             if not found.placed(template):
                 continue
             if not found.marker or not found.marker.condition:
                 continue
-            block = self._block(found.section, found.block)
-            key = (found.section, found.block, found.fragment if block.kind in _LISTS else None)
-            self._own_conditions[key] = own_presence(found.marker.condition, questions)
+            key = self._unit(found.section, found.block, found.fragment)
+            if key is not None:
+                self._own_conditions[key] = own_presence(found.marker.condition, questions)
 
-    def _block(self, section: int | None, block: int) -> Block:
-        return self._blocks[0 if section is None else section + 1][block]
+    def _unit(
+        self, section: int | None, block: int, fragment: int | None
+    ) -> tuple[int | None, int, int | None] | None:
+        """The key of the unit holding *fragment* of a block: a list item
+        (section, block, fragment), a paragraph (section, block, None), or
+        None for a block that carries no condition."""
+        kind = self._blocks[0 if section is None else section + 1][block].kind
+        if kind in _LISTS:
+            return section, block, fragment
+        if kind in _PARAGRAPHS:
+            return section, block, None
+        return None
 
     def enclosing(self, section: int) -> Presence:
         """The presence of the sections enclosing a section."""
@@ -218,12 +226,8 @@ class Units:
 
     def own(self, section: int | None, block: int, fragment: int | None) -> Presence:
         """The condition a body unit carries itself (for condition-never-true)."""
-        kind = self._block(section, block).kind
-        if kind in _LISTS:
-            return self._own_conditions.get((section, block, fragment), ALWAYS)
-        if kind in _PARAGRAPHS:
-            return self._own_conditions.get((section, block, None), ALWAYS)
-        return ALWAYS
+        key = self._unit(section, block, fragment)
+        return ALWAYS if key is None else self._own_conditions.get(key, ALWAYS)
 
     def presence(self, section: int | None, block: int | None = None, fragment: int | None = None) -> Presence:
         """The presence of a section (*block* None), or of the text at

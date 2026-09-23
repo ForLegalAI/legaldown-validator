@@ -463,6 +463,23 @@ def validate_document(
     frontmatter_texts = [text for _label, text in structural_fields] + value_fields
     headings = [section.title for section in document.sections]
 
+    def named(text: str, name: str) -> list[Directive]:
+        """The *name* directives in a frontmatter value or heading, each text
+        lexed once per validation."""
+        return [d for d in lex_fragment(text or "").directives if d.name == name]
+
+    # {{choose:}} belongs in body text: never in frontmatter or a heading
+    # (§15.5). Wherever it is, it makes the document a template (§15.1).
+    misplaced_chooses = [
+        (directive, where)
+        for texts, where in (
+            (frontmatter_texts, "in frontmatter; it belongs in body text"),
+            (headings, "in a heading, where §4.2 allows plain text only"),
+        )
+        for text in texts
+        for directive in named(text, "choose")
+    ]
+
     # ── Templates and the presence of units (§15.1, §15.3) ──
     # A document declaring questions, carrying a condition, or containing a
     # {{choose:}} is a template. Its markers are found first: only a template
@@ -480,11 +497,7 @@ def validate_document(
         or any(section.condition for section in document.sections)
         or any(found.marker and found.marker.condition and not found.misplaced for found in markers)
         or "choose" in body_directives
-        or any(
-            directive.name == "choose"
-            for text in [*frontmatter_texts, *headings]
-            for directive in lex_fragment(text or "").directives
-        )
+        or bool(misplaced_chooses)
     )
     units = Units(document, markers, questions, template=template)
 
@@ -771,8 +784,6 @@ def validate_document(
         # Alternatives share an identifier: a reference resolves to
         # whichever is present after assembly; the index keeps the first.
         result.section_lookup.setdefault(identifier, entry)
-        result.section_lookup.setdefault(entry.path, entry)
-        anchors.setdefault(entry.path, []).append(presence)
         last_level = level
 
     # ── Markers in the body (§5.7, §12.2, §15.3) ──
@@ -950,11 +961,6 @@ def validate_document(
     # in identifier, structural, or format-checked fields, which a filled-in
     # value could break. Placeholders collected here share the same blank
     # (id, type, currency, unit) with any matching body placeholder.
-    def named(text: str, name: str) -> list[Directive]:
-        """The *name* directives in a frontmatter value or heading, each text
-        lexed once per validation."""
-        return [d for d in lex_fragment(text or "").directives if d.name == name]
-
     for field_label, field_value in structural_fields:
         if named(field_value, "placeholder"):
             result.error(
@@ -974,17 +980,10 @@ def validate_document(
         for directive in named(text, "placeholder")
     ]
 
-    # {{choose:}} belongs in body text: never in frontmatter or a heading
-    # (§15.5). Wherever it is, it makes the document a template (§15.1).
     chooses: list[Directive] = []
-    for texts, where in (
-        (frontmatter_texts, "in frontmatter; it belongs in body text"),
-        (headings, "in a heading, where §4.2 allows plain text only"),
-    ):
-        for text in texts:
-            for directive in named(text, "choose"):
-                chooses.append(directive)
-                result.error("choose-invalid", f"'{directive.source}' is {where} (§15.5).")
+    for directive, where in misplaced_chooses:
+        chooses.append(directive)
+        result.error("choose-invalid", f"'{directive.source}' is {where} (§15.5).")
 
     # Every {{ref:}}, {{term:}}, and {{attach:}}: (target, presence, in a
     # drafting note), for reference safety (§15.4).
@@ -1195,11 +1194,11 @@ def validate_document(
     # Reference safety (§15.4): a reference resolves in every assembled
     # document it is in. References in drafting notes are exempt: assembly
     # removes every note.
-    term_targets = {
+    term_presences = {
         def_id: [presence for _term, _auto, presence in declarations]
         for def_id, declarations in declared_terms.items()
     }
-    targets_of = {"ref": anchors, "term": term_targets, "attach": attachment_presence}
+    targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
     for kind, uses in references.items():
         for target, presence, in_note in uses:
             declared = targets_of[kind].get(target)

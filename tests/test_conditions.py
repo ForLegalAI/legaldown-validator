@@ -377,3 +377,14 @@ def test_a_preamble_list_items_condition_is_explained():
 def test_alternative_attachments_are_unreferenced_once():
     result = validate_document(_parse("# A\n\nText.", _ALTERNATIVE_ATTACHMENTS))
     assert [d.rule for d in result.diagnostics].count("attachment-unreferenced") == 1
+
+
+def test_a_comment_may_follow_a_heading_marker():
+    document = _parse("# Termination {when=vat} <!-- optional -->\n\nText.")
+    [section] = document.sections
+    assert (section.title, section.condition) == ("Termination <!-- optional -->", "vat")
+    assert parse_document(serialize_document(document)).sections[0].condition == "vat"
+
+
+def test_a_dotted_path_is_not_a_reference():
+    assert "ref-broken" in _rules("# A\n\n## B\n\nSee {{ref: a.b}}.", "")
