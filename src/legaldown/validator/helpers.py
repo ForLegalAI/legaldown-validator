@@ -20,22 +20,6 @@ def slugify_identifier(value: str, *, fallback: str = "section") -> str:
     return text or fallback
 
 
-def ensure_unique_identifier(identifier: str, used: set[str]) -> tuple[str, bool]:
-    """Deduplicate *identifier* against *used* set.
-
-    Returns ``(final_id, was_changed)``. Registers the final id in *used*.
-    """
-    if identifier not in used:
-        used.add(identifier)
-        return identifier, False
-    suffix = 2
-    while f"{identifier}-{suffix}" in used:
-        suffix += 1
-    updated = f"{identifier}-{suffix}"
-    used.add(updated)
-    return updated, True
-
-
 def format_section_number(counters: list[int], level: int) -> str:
     """Format hierarchical counters as a dotted number (e.g. ``1.2.3``)."""
     return ".".join(

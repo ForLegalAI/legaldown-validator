@@ -20,7 +20,6 @@ from ..directives import (
     iter_directives,
     lex,
 )
-from ..markers import MARKER_RE
 from ..models import Amends, Document
 from ..specification import SPEC_VERSION, parse_version
 from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
@@ -53,7 +52,7 @@ from .templates import (
     check_template_body,
     question_type,
 )
-from .units import PREAMBLE_CONDITION, FoundMarker, Units, find_markers, own_presence
+from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
 
 # Type aliases for the optional definitions-import callbacks.
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
@@ -463,7 +462,6 @@ def validate_document(
     structural_fields, value_fields = _frontmatter_fields(meta)
     frontmatter_texts = [text for _label, text in structural_fields] + value_fields
     headings = [section.title for section in document.sections]
-    bodies = [(None, document.preamble), *enumerate(s.blocks for s in document.sections)]
 
     # ── Templates and the presence of units (§15.1, §15.3) ──
     # A document declaring questions, carrying a condition, or containing a
@@ -723,12 +721,12 @@ def validate_document(
         elif identifier and _clashes(presence, anchors.get(identifier, []), questions):
             # Duplicate explicit anchors are an Error (§16.2); the identifier
             # is still adjusted so downstream indices stay usable.
+            identifier = free_identifier(identifier, presence)
             result.error(
                 "anchor-duplicate",
                 f"Duplicate section identifier on '{section.title}'. It was adjusted to "
-                f"'{free_identifier(identifier, presence)}'.",
+                f"'{identifier}'.",
             )
-            identifier = free_identifier(identifier, presence)
         elif not identifier:
             base = slugify_identifier(section.title)
             identifier = free_identifier(base, presence)
@@ -778,8 +776,7 @@ def validate_document(
     # refinement is a Rendering-level concern; §6.3 falls back to the
     # section's number). Anything else is literal text (anchor-misplaced).
     for title in headings:
-        view = lex_fragment(title).view
-        for look_alike in MARKER_RE.finditer(view):
+        for look_alike in marker_matches(title, lex_fragment(title)):
             result.warning(
                 "anchor-misplaced",
                 f"'{look_alike.group(0)}' in the heading '{title}' is literal text: a heading's "
@@ -787,7 +784,7 @@ def validate_document(
                 f"once (§5.2, §15.3).",
             )
     for found in markers:
-        if found.misplaced and not (found.misplaced == PREAMBLE_CONDITION and template):
+        if not found.placed(template):
             result.warning("anchor-misplaced", f"'{found.source}' is {found.misplaced}.")
         elif found.include_only and found.marker.identifier:
             result.warning(
@@ -922,15 +919,19 @@ def validate_document(
             att_defs = import_attachment_definitions(att.file)
             if not att_defs:
                 continue
+            # Its definitions are present when the attachment is (§15.3).
+            presence = own_presence(att.when, questions)
             for def_id, term_text in att_defs.items():
-                if def_id in result.definition_lookup:
+                earlier = [other for _term, _auto, other in declared_terms.get(def_id, [])]
+                if _clashes(presence, earlier, questions):
                     result.error(
                         "def-duplicate-id",
                         f"Definition id '{def_id}' from attachment '{att.id}' collides with "
-                        f"a definition in the main document (ids must be unique, §16.10).",
+                        f"another definition that can appear with it (§16.10, §15.4).",
                     )
                 else:
-                    result.definition_lookup[def_id] = term_text
+                    declared_terms.setdefault(def_id, []).append((term_text, False, presence))
+                    result.definition_lookup.setdefault(def_id, term_text)
 
     # ── Inline directive validation ──
     blanks: dict[str, Blank] = {}
@@ -980,12 +981,7 @@ def validate_document(
     # Every {{ref:}}, {{term:}}, and {{attach:}}: (target, presence, in a
     # drafting note), for reference safety (§15.4).
     references: dict[str, list[tuple[str, Presence, bool]]] = {"ref": [], "term": [], "attach": []}
-    located_blocks = [
-        (section_index, block_index, block)
-        for section_index, blocks in bodies
-        for block_index, block in enumerate(blocks)
-    ]
-    for section_index, block_index, block in located_blocks:
+    for section_index, block_index, block in document.iter_indexed_blocks():
         # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
         # block fields when they hold it without loss (no other parameters).
         ref_targets: list[str] = []
@@ -1177,7 +1173,7 @@ def validate_document(
         for found in markers
         if found.marker
         and found.marker.condition
-        and (not found.misplaced or (found.misplaced == PREAMBLE_CONDITION and template))
+        and found.placed(template)
     )
     conditions.extend(
         (f"attachment '{att.id}'", att.when) for att in meta.attachments if att.when

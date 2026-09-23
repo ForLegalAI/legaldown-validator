@@ -298,3 +298,42 @@ def test_a_unit_that_can_never_appear_is_reported_once():
     body = "# A {when=vat}\n\n- item {when=!vat} and {when=!vat}"
     result = validate_document(_parse(body))
     assert [d.rule for d in result.diagnostics].count("condition-never-true") == 1
+
+
+# ── Review follow-ups ─────────────────────────────────────────────
+
+_ALTERNATIVE_ATTACHMENTS = _QUESTIONS + (
+    "attachments:\n"
+    "  - id: sched\n    title: Schedule\n    file: cz.lgd\n    when: forum:courts\n"
+    "  - id: sched\n    title: Schedule\n    file: uk.lgd\n    when: forum:arbitration\n"
+)
+
+
+def _with_attachment_definitions(body: str):
+    return validate_document(
+        _parse(body, _ALTERNATIVE_ATTACHMENTS),
+        import_attachment_definitions=lambda path: {"fee": f"Fee ({path})"},
+    )
+
+
+def test_alternative_attachments_may_define_the_same_term():
+    result = _with_attachment_definitions("# A\n\nSee {{attach: sched}}. {when=forum:courts}")
+    assert "def-duplicate-id" not in result.rules()
+
+
+def test_a_term_from_a_conditional_attachment_is_checked_for_safety():
+    covered = _with_attachment_definitions(
+        "# A\n\nSee {{attach: sched}} and the {{term: fee}}. {when=vat}"
+    )
+    assert "condition-reference-unsafe" not in covered.rules()  # one of the two is always present
+    frontmatter = _QUESTIONS + "attachments:\n  - id: s\n    title: S\n    file: s.lgd\n    when: vat\n"
+    result = validate_document(
+        _parse("# A\n\nSee {{attach: s}}. {when=vat}\n\nThe {{term: fee}}.", frontmatter),
+        import_attachment_definitions=lambda path: {"fee": "Fee"},
+    )
+    assert "condition-reference-unsafe" in result.rules("error")
+
+
+@pytest.mark.parametrize("heading", ["# Fees \\{#x}", '# Fees {{placeholder: p, note="{#x}"}}'])
+def test_escaped_or_quoted_markers_in_a_heading_are_not_look_alikes(heading):
+    assert "anchor-misplaced" not in _rules(f"{heading}\n\nText.", "")

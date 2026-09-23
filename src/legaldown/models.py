@@ -150,6 +150,15 @@ class Document:
     filename: str = ""
     preamble: list[Block] = field(default_factory=list)
 
+    def iter_indexed_blocks(self) -> Iterator[tuple[int | None, int, Block]]:
+        """Every body block in document order, as ``(section_index, index,
+        block)``: the preamble first, with ``section_index`` ``None``."""
+        for index, block in enumerate(self.preamble):
+            yield None, index, block
+        for section_index, section in enumerate(self.sections):
+            for index, block in enumerate(section.blocks):
+                yield section_index, index, block
+
     def iter_blocks(self) -> Iterator[tuple[Section | None, int, Block]]:
         """Every body block in document order, as ``(section, index, block)``:
         the preamble first, with ``section`` ``None``, then each section's."""

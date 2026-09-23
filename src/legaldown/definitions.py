@@ -213,46 +213,44 @@ def collect_definitions(
     """
     lang = language or document.metadata.language or "en"
     refs: list[DefinitionRef] = []
-    bodies = [(None, document.preamble), *enumerate(s.blocks for s in document.sections)]
-    for section_index, blocks in bodies:
-        for block_index, block in enumerate(blocks):
-            if block.kind == "definition":
-                term = (block.term or "").strip()
-                raw_id = (block.definition_id or "").strip()
+    for section_index, block_index, block in document.iter_indexed_blocks():
+        if block.kind == "definition":
+            term = (block.term or "").strip()
+            raw_id = (block.definition_id or "").strip()
+            did = raw_id or slugify_identifier(term, fallback="term")
+            refs.append(
+                DefinitionRef(
+                    id=did,
+                    term=term or did.replace("-", " ").title(),
+                    section_index=section_index,
+                    block_index=block_index,
+                    fragment_index=None,
+                    inline=False,
+                    auto_id=not raw_id,
+                )
+            )
+        for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
+            for anchor in find_definition_anchors(
+                fragment, language=lang, lexed=lex_fragment(fragment)
+            ):
+                # A malformed {{def:}} has no id to register; the validator
+                # reports it as directive-malformed.
+                if anchor.term is None or anchor.directive.malformed:
+                    continue
+                term = anchor.term
+                raw_id = anchor.directive.positional or ""
                 did = raw_id or slugify_identifier(term, fallback="term")
                 refs.append(
                     DefinitionRef(
                         id=did,
-                        term=term or did.replace("-", " ").title(),
+                        term=term,
                         section_index=section_index,
                         block_index=block_index,
-                        fragment_index=None,
-                        inline=False,
+                        fragment_index=fragment_index,
+                        inline=True,
                         auto_id=not raw_id,
                     )
                 )
-            for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
-                for anchor in find_definition_anchors(
-                    fragment, language=lang, lexed=lex_fragment(fragment)
-                ):
-                    # A malformed {{def:}} has no id to register; the validator
-                    # reports it as directive-malformed.
-                    if anchor.term is None or anchor.directive.malformed:
-                        continue
-                    term = anchor.term
-                    raw_id = anchor.directive.positional or ""
-                    did = raw_id or slugify_identifier(term, fallback="term")
-                    refs.append(
-                        DefinitionRef(
-                            id=did,
-                            term=term,
-                            section_index=section_index,
-                            block_index=block_index,
-                            fragment_index=fragment_index,
-                            inline=True,
-                            auto_id=not raw_id,
-                        )
-                    )
     return refs
 
 

@@ -99,6 +99,8 @@ def always_covered(presence: Presence, targets: list[Presence], questions: Any) 
     """True if, whenever a reference with *presence* appears, a declaration
     with one of the *targets* presences appears too (§15.4). Every
     combination of answers to the questions involved is tried."""
+    if any(target <= presence for target in targets):
+        return True  # a target present whenever the reference is: no search
     involved = sorted({c.question for c in presence.union(*targets)})
     for answers in itertools.product(*(_answers(q, questions) for q in involved)):
         given = dict(zip(involved, answers, strict=True))

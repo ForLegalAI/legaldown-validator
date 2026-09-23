@@ -10,7 +10,7 @@ sections enclosing it.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,6 +55,12 @@ class FoundMarker:
     #: #id is ignored (§12.2), its condition applies.
     include_only: bool
 
+    def placed(self, template: bool) -> bool:
+        """True if the marker is in a marker position: its #id and condition
+        apply. A preamble paragraph's condition is placed only in a
+        template (§5.7)."""
+        return not self.misplaced or (self.misplaced == PREAMBLE_CONDITION and template)
+
 
 _ANYWHERE = (
     "not in a marker position and is literal text: markers go after a heading's "
@@ -75,6 +81,17 @@ _PREAMBLE_ANCHOR = (
 )
 
 
+def marker_matches(text: str, lexed: Lexed) -> Iterator[re.Match[str]]:
+    """The markers and look-alikes in *text*, whose lexing is *lexed*: not
+    in code or comments (blanked in the lexer's view), not escaped, and not
+    in a directive's value (§11.4)."""
+    for match in MARKER_RE.finditer(lexed.view):
+        if not is_escaped(text, match.start()) and not any(
+            d.start <= match.start() < d.end for d in lexed.directives if not d.malformed
+        ):
+            yield match
+
+
 def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> list[FoundMarker]:
     """Every marker and look-alike in the document's body text, outside code,
     comments, directives, and escapes (§11.4), with its place."""
@@ -83,56 +100,50 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
     from ..definitions import block_fragments
 
     found: list[FoundMarker] = []
-    bodies = [(None, document.preamble), *enumerate(s.blocks for s in document.sections)]
-    for section, blocks in bodies:
-        for block_index, block in enumerate(blocks):
-            for fragment_index, (fragment, position) in enumerate(block_fragments(block)):
-                if "{#" not in fragment and "{when=" not in fragment:
-                    continue
-                lexed = lex_fragment(fragment)
-                for m in MARKER_RE.finditer(lexed.view):
-                    if is_escaped(fragment, m.start()) or any(
-                        d.start <= m.start() < d.end for d in lexed.directives if not d.malformed
-                    ):
-                        continue  # literal: escaped, or part of a directive's value
-                    marker = parse_marker(m.group(0))
-                    # Only whitespace and comments may follow a marker: a
-                    # comment is not rendered (§8.6), but a code span is text.
-                    # An item's marker ends its first paragraph, its first
-                    # line here: a note or code may follow (§5.7).
-                    line_end = fragment.find("\n", m.end())
-                    rest = fragment[m.end():line_end] if line_end >= 0 else fragment[m.end():]
-                    at_end = (
-                        position
-                        and "\n" not in fragment[:m.start()]
-                        and not HTML_COMMENT_RE.sub("", rest).strip()
+    for section, block_index, block in document.iter_indexed_blocks():
+        for fragment_index, (fragment, position) in enumerate(block_fragments(block)):
+            if "{#" not in fragment and "{when=" not in fragment:
+                continue
+            lexed = lex_fragment(fragment)
+            for m in marker_matches(fragment, lexed):
+                marker = parse_marker(m.group(0))
+                # Only whitespace and comments may follow a marker: a
+                # comment is not rendered (§8.6), but a code span is text.
+                # An item's marker ends its first paragraph, its first
+                # line here: a note or code may follow (§5.7).
+                line_end = fragment.find("\n", m.end())
+                rest = fragment[m.end():line_end] if line_end >= 0 else fragment[m.end():]
+                at_end = (
+                    position
+                    and "\n" not in fragment[:m.start()]
+                    and not HTML_COMMENT_RE.sub("", rest).strip()
+                )
+                include_only = (
+                    at_end
+                    and block.kind == "paragraph"
+                    and is_include_only(fragment[:m.start()], lexed.directives)
+                )
+                preamble_condition = bool(
+                    section is None and at_end and marker and marker.condition and not marker.identifier
+                )
+                if marker is None:
+                    misplaced = _NOT_A_MARKER
+                elif not at_end:
+                    misplaced = _ANYWHERE
+                elif section is None and marker.identifier and not include_only:
+                    misplaced = _PREAMBLE_ANCHOR
+                elif preamble_condition and not include_only:
+                    misplaced = PREAMBLE_CONDITION
+                elif section is None and not include_only:
+                    misplaced = _ANYWHERE
+                else:
+                    misplaced = ""
+                found.append(
+                    FoundMarker(
+                        m.group(0), marker, section, block_index, fragment_index,
+                        misplaced, include_only,
                     )
-                    include_only = (
-                        at_end
-                        and block.kind == "paragraph"
-                        and is_include_only(fragment[:m.start()], lexed.directives)
-                    )
-                    preamble_condition = bool(
-                        section is None and at_end and marker and marker.condition and not marker.identifier
-                    )
-                    if marker is None:
-                        misplaced = _NOT_A_MARKER
-                    elif not at_end:
-                        misplaced = _ANYWHERE
-                    elif section is None and marker.identifier and not include_only:
-                        misplaced = _PREAMBLE_ANCHOR
-                    elif preamble_condition and not include_only:
-                        misplaced = PREAMBLE_CONDITION
-                    elif section is None and not include_only:
-                        misplaced = _ANYWHERE
-                    else:
-                        misplaced = ""
-                    found.append(
-                        FoundMarker(
-                            m.group(0), marker, section, block_index, fragment_index,
-                            misplaced, include_only,
-                        )
-                    )
+                )
     return found
 
 
@@ -179,7 +190,7 @@ class Units:
         # (section, block, fragment) for a list item.
         self._own_conditions: dict[tuple[int | None, int, int | None], Presence] = {}
         for found in markers:
-            if found.misplaced and not (found.misplaced == PREAMBLE_CONDITION and template):
+            if not found.placed(template):
                 continue
             if not found.marker or not found.marker.condition:
                 continue
