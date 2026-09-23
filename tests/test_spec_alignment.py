@@ -6,8 +6,10 @@ its input, and the §11.4 recognition contexts.
 """
 from __future__ import annotations
 
-from legaldown.parser import parse_document
-from legaldown.validator import validate_document
+import pytest
+
+from legaldown.parser import collect_source_directives, parse_document
+from legaldown.validator import iter_directives, validate_document
 
 _FRONTMATTER = """---
 title: Fixture
@@ -118,6 +120,140 @@ def test_directive_like_text_in_code_span_is_not_a_diagnostic():
 def test_unknown_directive_is_an_error():
     result = _validate("A {{trem: services}} typo.")
     assert "directive-unknown" in result.rules("error")
+
+
+@pytest.mark.parametrize(
+    ("body", "rule"),
+    [
+        ("See {{term: nonexistent, colour=red}}.", "term-undefined"),
+        ("See {{ref: no-such-section, colour=red}}.", "ref-broken"),
+        ("On {{date: 2026-02-30, colour=red}}.", "date-invalid"),
+        ("Pay {{money: -5, currency=USD, colour=red}}.", "money-invalid-amount"),
+        ("For {{duration: 0, unit=D, colour=red}}.", "duration-invalid-value"),
+        ("By {{party: nobody, colour=red}}.", "party-unknown"),
+        ("By {{side: nobody, colour=red}}.", "side-unknown"),
+        ("Ref {{field: x, colour=red}}.", "field-type-missing"),
+        ("Rate {{placeholder: r, type=percentage, colour=red}}.", "placeholder-type-invalid"),
+        ("Rate {{placeholder: r, label=Rate, type=percentage}}.", "placeholder-type-invalid"),
+        ("See {{attach: nothing, colour=red}}.", "attach-undeclared"),
+    ],
+)
+def test_unknown_parameter_is_a_warning_and_does_not_suppress_checks(body, rule):
+    """§11.2: an unknown parameter is ignored, not the whole directive."""
+    result = _validate(body)
+    assert "directive-unknown-param" in result.rules("warning")
+    assert rule in result.rules("error")
+
+
+def test_unknown_parameter_alone_leaves_the_document_valid():
+    result = _validate("On {{date: 2026-01-01, colour=red}}.")
+    assert result.is_valid
+    assert result.inline_dates == ["2026-01-01"]
+
+
+@pytest.mark.parametrize(
+    ("body", "rule", "level"),
+    [
+        ("Pay {{placeholder: x, currency=XXQ, type=money}}.", "placeholder-unknown-currency", "warning"),
+        ("Pay {{placeholder: x, note=Fee, type=bogus}}.", "placeholder-type-invalid", "error"),
+        ("Pay {{money: 5, note=Fee, currency=XXQ}}.", "money-unknown-currency", "warning"),
+    ],
+)
+def test_named_parameters_are_order_insensitive(body, rule, level):
+    """§11.2: a parameter after note= is neither swallowed nor lost."""
+    result = _validate(body)
+    assert rule in result.rules(level)
+    assert "note-invalid" not in result.rules()
+
+
+def test_parameters_in_any_order_are_valid():
+    result = _validate(
+        "Pay {{money: 5, note=Fee, currency=USD}} within "
+        "{{duration: 5, note=Grace, unit=D}} to {{party: acme, note=Payee, label=Acme}} "
+        "under {{field: A-1, note=Ref, type=case-id}}."
+    )
+    assert result.diagnostics == []
+    assert ("5", "USD") in result.inline_money
+    assert ("A-1", "case-id") in result.inline_fields
+
+
+def test_quoted_values_are_decoded():
+    """§11.3: a quoted value may hold commas and closing braces."""
+    result = _validate(
+        '{{field: "Smith, Jones v. Doe", type=case-name}} for '
+        '{{party: acme, label="Acme, Inc."}} at {{money: 5, currency="USD", note="base, monthly"}} '
+        'and {{field: "a}}b", type=code}}.'
+    )
+    assert result.diagnostics == []
+    assert ("Smith, Jones v. Doe", "case-name") in result.inline_fields
+    assert ("a}}b", "code") in result.inline_fields
+    assert ("5", "USD") in result.inline_money
+
+
+def test_quoted_values_are_still_checked():
+    result = _validate('By {{party: nobody, label="Smith, Jones"}} on {{field: "a, b", type=Bad_Type}}.')
+    assert {"party-unknown", "field-type-missing"} <= result.rules("error")
+
+
+def test_duplicate_parameter_is_an_error():
+    result = _validate('"Term" {{def: term}} means x. See {{term: term, label=A, label=B}}.')
+    assert "directive-duplicate-param" in result.rules("error")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "See {{ref: unterminated",
+        "On {{date: 2026-01-01, oops}}.",
+        "On {{date: note=x, 2026-01-01}}.",
+        'By {{party: acme, label="Acme}}.',
+        'By {{party: acme, label="Acme" Inc}}.',
+    ],
+)
+def test_malformed_directive_is_an_error(body):
+    assert "directive-malformed" in _validate(body).rules("error")
+
+
+def test_parameter_on_a_lifted_directive_is_reported():
+    """The parser lifts a paragraph's {{ref:}} and a leading {{def:}} into
+    block fields; their parameters are still checked."""
+    result = _validate(
+        '"Foo" {{def: foo, colour=red}} means x.\n\n'
+        "See {{ref: terms, format=long}} and {{term: foo}}."
+    )
+    unknown = [d.message for d in result.diagnostics if d.rule == "directive-unknown-param"]
+    assert len(unknown) == 2
+    assert result.definition_lookup["foo"] == "Foo"
+    assert result.is_valid
+
+
+def test_placeholder_currency_is_defined_only_for_money():
+    """§13.5 placeholder rule 7: a type-specific parameter for another type."""
+    result = _validate("Pay {{placeholder: x, type=text, currency=USD}}.")
+    assert "directive-unknown-param" in result.rules("warning")
+    assert result.is_valid
+
+
+def test_frontmatter_placeholder_with_unknown_parameter_is_checked():
+    source = _FRONTMATTER.replace(
+        "title: Fixture", 'title: "{{placeholder: t, type=percentage, colour=red}}"'
+    )
+    result = validate_document(parse_document(source + "Text.\n", filename="t.lgd"))
+    assert "placeholder-type-invalid" in result.rules("error")
+    assert "directive-unknown-param" in result.rules("warning")
+
+
+def test_collect_source_directives_sees_every_parameter_shape():
+    document = parse_document(
+        _FRONTMATTER + "See {{ref: a, colour=red}} and {{term: b, label=\"x, y\"}}.\n"
+    )
+    assert collect_source_directives(document) == ({"a"}, {"b"})
+
+
+def test_iter_directives_decodes_escapes():
+    (directive,) = iter_directives(r'{{field: "say \"hi\" C:\path\\", type=t}}')
+    assert directive.positional == 'say "hi" C:\\path\\'
+    assert directive.params == {"type": "t"}
 
 
 def test_side_directive_resolves_and_reports_unknown():

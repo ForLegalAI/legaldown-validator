@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable
 
 from ..models import Document
+from .directives import DIRECTIVE_PARAMS, Directive, directive_fragments, iter_directives
 from .helpers import (
     ensure_unique_identifier,
     format_section_number,
@@ -20,22 +21,10 @@ from .helpers import (
     slugify_identifier,
 )
 from .patterns import (
-    ATTACH_RE,
-    DATE_RE,
-    DIRECTIVE_NAME_RE,
-    DURATION_RE,
-    FIELD_RE,
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
     KNOWN_DIRECTIVES,
-    MONEY_RE,
-    NOTE_RE,
-    PARTY_RE,
-    PLACEHOLDER_RE,
-    REF_RE,
     RESERVED_VALUE_TYPES,
-    SIDE_RE,
-    TERM_RE,
     VALID_DOC_TYPES,
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
@@ -75,20 +64,65 @@ def _strip_uninterpreted(fragment: str) -> str:
     return _CODE_SPAN_RE.sub(_blank, text)
 
 
+def _check_directive_syntax(directive: Directive, result: ValidationResult) -> bool:
+    """Report §11.2 grammar violations on *directive*; False if it is malformed.
+
+    A malformed directive has no reliable arguments, so its own checks are
+    skipped — the directive-malformed Error keeps the document from passing.
+    Unknown and duplicate parameters leave the directive usable: an unknown
+    parameter is ignored (§11.2) and a duplicate keeps its first value, so the
+    directive's own checks still run.
+    """
+    name = directive.name
+    if directive.malformed:
+        # An unclosed directive runs to the end of its line — often the whole
+        # paragraph — so only its start is quoted.
+        source = directive.source
+        if len(source) > 60:
+            source = source[:57] + "..."
+        result.error(
+            "directive-malformed",
+            f"Malformed {{{{{name}:}}}} directive ({directive.malformed}): '{source}'.",
+        )
+        return False
+    for param in dict.fromkeys(directive.duplicates):
+        result.error(
+            "directive-duplicate-param",
+            f"Parameter '{param}' is given more than once in '{directive.source}'.",
+        )
+    for param in directive.unknown_params():
+        result.warning(
+            "directive-unknown-param",
+            f"Parameter '{param}' is not defined for {{{{{name}:}}}} and is ignored: "
+            f"'{directive.source}'.",
+        )
+    note = directive.params.get("note")
+    if note is not None and "note" in DIRECTIVE_PARAMS.get(name, ()) and re.search(
+        r"\*\*|__|\+\+|`|(?<!\w)\*(?!\s)", note
+    ):
+        # §10.1: notes are plain text — Markdown formatting would leak
+        # markers into machine-facing output.
+        result.error(
+            "note-invalid",
+            "Note parameter must be plain text without Markdown formatting.",
+        )
+    return True
+
+
 def _check_placeholder(
-    match: re.Match,
+    directive: Directive,
     result: ValidationResult,
     placeholder_types: dict[str, str],
 ) -> None:
-    """Validate one ``{{placeholder:}}`` match and record it.
+    """Validate one ``{{placeholder:}}`` directive and record it.
 
     Shared by the body-block scan and the frontmatter scan so a placeholder id
     used in both is treated as the *same* blank (consistent type, single entry
     semantics per §3.10).
     """
-    pid = match.group(1).strip()
-    ptype = (match.group(2) or "text").strip()
-    pcurrency = (match.group(3) or "").strip()
+    pid = directive.positional or ""
+    ptype = directive.params.get("type") or "text"
+    pcurrency = directive.params.get("currency", "")
     if not pid or not IDENTIFIER_RE.match(pid):
         result.error(
             "placeholder-id-malformed",
@@ -109,7 +143,15 @@ def _check_placeholder(
                 )
         else:
             placeholder_types[pid] = ptype
-        if ptype == "money" and pcurrency and pcurrency not in KNOWN_CURRENCIES:
+        if "currency" in directive.params and ptype != "money":
+            # §13.5 placeholder rule 7: a type-specific parameter not defined
+            # for the effective type is ignored and reported as a Warning.
+            result.warning(
+                "directive-unknown-param",
+                f"Parameter 'currency' is not defined for placeholder type '{ptype}' "
+                f"and is ignored: '{directive.source}'.",
+            )
+        elif ptype == "money" and pcurrency and pcurrency not in KNOWN_CURRENCIES:
             result.warning(
                 "placeholder-unknown-currency",
                 f"Placeholder '{pid}' has unrecognized currency code '{pcurrency}'.",
@@ -585,168 +627,140 @@ def validate_document(
             value_fields.extend(cf.value for cf in party.custom_fields)
     for field_value in value_fields:
         if field_value and _PLACEHOLDER_LITERAL in field_value:
-            for m in PLACEHOLDER_RE.finditer(field_value):
-                _check_placeholder(m, result, placeholder_types)
+            for directive in iter_directives(field_value):
+                if directive.name == "placeholder" and _check_directive_syntax(
+                    directive, result
+                ):
+                    _check_placeholder(directive, result, placeholder_types)
 
     for section in document.sections:
         for block in section.blocks:
             ref_targets: list[str] = []
             term_targets: list[str] = []
-            if block.kind == "ref" and block.target.strip():
-                ref_targets.append(block.target.strip())
-            if block.kind == "term" and block.target.strip():
-                term_targets.append(block.target.strip())
-            text_fragments: list[str] = []
-            if block.text:
-                text_fragments.append(block.text)
-            if block.prefix:
-                text_fragments.append(block.prefix)
-            if block.suffix:
-                text_fragments.append(block.suffix)
-            text_fragments.extend(item for item in block.items if item)
-            text_fragments.extend(cell for row in block.rows for cell in row if cell)
             # §11.4: directive-like text inside code spans/blocks and comments
             # is literal — never a directive, never a diagnostic.
-            for fragment in (_strip_uninterpreted(f) for f in text_fragments):
-                # ── Unknown directive names (§11.5) ──
-                for m in DIRECTIVE_NAME_RE.finditer(fragment):
-                    name = m.group(1)
+            for fragment in (_strip_uninterpreted(f) for f in directive_fragments(block)):
+                for directive in iter_directives(fragment):
+                    name = directive.name
+                    # ── Unknown directive names (§11.5) ──
                     if name not in KNOWN_DIRECTIVES:
                         result.error(
                             "directive-unknown",
                             f"Unknown directive '{{{{{name}:}}}}'. Renderers replace it "
                             f"with [UNKNOWN DIRECTIVE: {name}] (§11.5).",
                         )
-                ref_targets.extend(
-                    match.group(1).strip() for match in REF_RE.finditer(fragment)
-                )
-                term_targets.extend(
-                    match.group(1).strip() for match in TERM_RE.finditer(fragment)
-                )
-                for m in DATE_RE.finditer(fragment):
-                    date_val = m.group(1).strip()
-                    result.inline_dates.append(date_val)
-                    if not is_valid_iso_date(date_val):
-                        result.error(
-                            "date-invalid",
-                            f"Invalid date value '{date_val}'. Must be a valid ISO 8601 date (YYYY-MM-DD).",
-                        )
-                for m in MONEY_RE.finditer(fragment):
-                    amount = m.group(1).strip()
-                    currency = (m.group(2) or "").strip()
-                    result.inline_money.append((amount, currency))
-                    if not is_valid_money_amount(amount):
-                        result.error(
-                            "money-invalid-amount",
-                            f"Invalid money amount '{amount}'. Must be a non-negative numeric value.",
-                        )
-                    if currency:
-                        if currency not in KNOWN_CURRENCIES:
-                            result.warning(
-                                "money-unknown-currency",
-                                f"Unrecognized currency code '{currency}'.",
+                        continue
+                    if not _check_directive_syntax(directive, result):
+                        continue
+                    value = directive.positional or ""
+                    params = directive.params
+                    if name == "ref":
+                        ref_targets.append(value)
+                    elif name == "term":
+                        term_targets.append(value)
+                    elif name == "date":
+                        result.inline_dates.append(value)
+                        if not is_valid_iso_date(value):
+                            result.error(
+                                "date-invalid",
+                                f"Invalid date value '{value}'. Must be a valid ISO 8601 date (YYYY-MM-DD).",
                             )
-                    else:
-                        result.warning(
-                            "money-missing-currency",
-                            "Money directive without currency parameter.",
-                        )
-                for m in DURATION_RE.finditer(fragment):
-                    dur_val = m.group(1).strip()
-                    dur_unit = (m.group(2) or "").strip()
-                    result.inline_durations.append((dur_val, dur_unit))
-                    if not is_positive_numeric(dur_val):
-                        result.error(
-                            "duration-invalid-value",
-                            f"Invalid duration value '{dur_val}'. Must be a positive numeric value.",
-                        )
-                    if not dur_unit:
-                        result.error(
-                            "duration-invalid-unit",
-                            "Duration directive missing required unit parameter.",
-                        )
-                    elif dur_unit == "M":
-                        # §10.5: bare "M" is deliberately undefined (ISO 8601
-                        # would read it as months; earlier drafts as minutes).
-                        result.error(
-                            "duration-invalid-unit",
-                            "Duration unit 'M' is not defined. Use 'MIN' for minutes or 'MO' for months.",
-                        )
-                    elif dur_unit not in VALID_DURATION_UNITS:
-                        result.error(
-                            "duration-invalid-unit",
-                            f"Invalid duration unit '{dur_unit}'. Must be one of: S, MIN, H, D, W, MO, Y.",
-                        )
-                for m in PARTY_RE.finditer(fragment):
-                    party_id = m.group(1).strip()
-                    if not party_id or not IDENTIFIER_RE.fullmatch(party_id):
-                        result.error(
-                            "party-name-malformed",
-                            f"Party directive has invalid role value '{party_id}'. Must match [a-z][a-z0-9-]*.",
-                        )
-                    elif party_id not in result.party_lookup:
-                        result.error(
-                            "party-unknown",
-                            f"Party directive references unknown party: '{party_id}'.",
-                        )
-                for m in SIDE_RE.finditer(fragment):
-                    side_id = m.group(1).strip()
-                    if not side_id or not IDENTIFIER_RE.fullmatch(side_id):
-                        result.error(
-                            "side-name-malformed",
-                            f"Side directive has invalid value '{side_id}'. Must match [a-z][a-z0-9-]*.",
-                        )
-                    elif side_id not in seen_side_names:
-                        result.error(
-                            "side-unknown",
-                            f"Side directive references unknown side: '{side_id}'.",
-                        )
-                for m in FIELD_RE.finditer(fragment):
-                    fval = m.group(1).strip()
-                    ftype = (m.group(2) or "").strip()
-                    if not ftype:
-                        result.error(
-                            "field-type-missing",
-                            "Field directive is missing required type parameter.",
-                        )
-                    elif not IDENTIFIER_RE.match(ftype):
-                        result.error(
-                            "field-type-missing",
-                            f"Field type '{ftype}' is invalid — must match [a-z][a-z0-9-]*.",
-                        )
-                    elif (
-                        document.metadata.field_types
-                        and ftype not in document.metadata.field_types
-                    ):
-                        result.warning(
-                            "field-type-undeclared",
-                            f"Field type '{ftype}' is not declared in field_types.",
-                        )
-                    result.inline_fields.append((fval, ftype))
-                for m in PLACEHOLDER_RE.finditer(fragment):
-                    _check_placeholder(m, result, placeholder_types)
-                for m in ATTACH_RE.finditer(fragment):
-                    att_id = m.group(1).strip()
-                    referenced_attachments.add(att_id)
-                    if att_id not in attachment_ids:
-                        result.error(
-                            "attach-undeclared",
-                            f"Attachment reference '{{{{attach: {att_id}}}}}' references undeclared attachment id.",
-                        )
-                for m in NOTE_RE.finditer(fragment):
-                    note_val = m.group(1)
-                    if "," in note_val or "}}" in note_val:
-                        result.error(
-                            "note-invalid",
-                            "Note parameter must not contain commas or closing braces.",
-                        )
-                    elif re.search(r"\*\*|__|\+\+|`|(?<!\w)\*(?!\s)", note_val):
-                        # §10.1: notes are plain text — Markdown formatting
-                        # would leak markers into machine-facing output.
-                        result.error(
-                            "note-invalid",
-                            "Note parameter must be plain text without Markdown formatting.",
-                        )
+                    elif name == "money":
+                        currency = params.get("currency", "")
+                        result.inline_money.append((value, currency))
+                        if not is_valid_money_amount(value):
+                            result.error(
+                                "money-invalid-amount",
+                                f"Invalid money amount '{value}'. Must be a non-negative numeric value.",
+                            )
+                        if currency:
+                            if currency not in KNOWN_CURRENCIES:
+                                result.warning(
+                                    "money-unknown-currency",
+                                    f"Unrecognized currency code '{currency}'.",
+                                )
+                        else:
+                            result.warning(
+                                "money-missing-currency",
+                                "Money directive without currency parameter.",
+                            )
+                    elif name == "duration":
+                        dur_unit = params.get("unit", "")
+                        result.inline_durations.append((value, dur_unit))
+                        if not is_positive_numeric(value):
+                            result.error(
+                                "duration-invalid-value",
+                                f"Invalid duration value '{value}'. Must be a positive numeric value.",
+                            )
+                        if not dur_unit:
+                            result.error(
+                                "duration-invalid-unit",
+                                "Duration directive missing required unit parameter.",
+                            )
+                        elif dur_unit == "M":
+                            # §10.5: bare "M" is deliberately undefined (ISO 8601
+                            # would read it as months; earlier drafts as minutes).
+                            result.error(
+                                "duration-invalid-unit",
+                                "Duration unit 'M' is not defined. Use 'MIN' for minutes or 'MO' for months.",
+                            )
+                        elif dur_unit not in VALID_DURATION_UNITS:
+                            result.error(
+                                "duration-invalid-unit",
+                                f"Invalid duration unit '{dur_unit}'. Must be one of: S, MIN, H, D, W, MO, Y.",
+                            )
+                    elif name == "party":
+                        if not value or not IDENTIFIER_RE.fullmatch(value):
+                            result.error(
+                                "party-name-malformed",
+                                f"Party directive has invalid role value '{value}'. Must match [a-z][a-z0-9-]*.",
+                            )
+                        elif value not in result.party_lookup:
+                            result.error(
+                                "party-unknown",
+                                f"Party directive references unknown party: '{value}'.",
+                            )
+                    elif name == "side":
+                        if not value or not IDENTIFIER_RE.fullmatch(value):
+                            result.error(
+                                "side-name-malformed",
+                                f"Side directive has invalid value '{value}'. Must match [a-z][a-z0-9-]*.",
+                            )
+                        elif value not in seen_side_names:
+                            result.error(
+                                "side-unknown",
+                                f"Side directive references unknown side: '{value}'.",
+                            )
+                    elif name == "field":
+                        ftype = params.get("type", "")
+                        if not ftype:
+                            result.error(
+                                "field-type-missing",
+                                "Field directive is missing required type parameter.",
+                            )
+                        elif not IDENTIFIER_RE.match(ftype):
+                            result.error(
+                                "field-type-missing",
+                                f"Field type '{ftype}' is invalid — must match [a-z][a-z0-9-]*.",
+                            )
+                        elif (
+                            document.metadata.field_types
+                            and ftype not in document.metadata.field_types
+                        ):
+                            result.warning(
+                                "field-type-undeclared",
+                                f"Field type '{ftype}' is not declared in field_types.",
+                            )
+                        result.inline_fields.append((value, ftype))
+                    elif name == "placeholder":
+                        _check_placeholder(directive, result, placeholder_types)
+                    elif name == "attach":
+                        referenced_attachments.add(value)
+                        if value not in attachment_ids:
+                            result.error(
+                                "attach-undeclared",
+                                f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.",
+                            )
             for target in ref_targets:
                 if target in result.section_lookup:
                     continue

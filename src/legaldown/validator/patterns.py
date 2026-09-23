@@ -7,6 +7,11 @@ import re
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
 # ── Inline directive patterns ─────────────────────────────────────
+# These match only the conventional spelling of each directive: fixed
+# parameter order, no quoted values, no parameters beyond those listed. The
+# validator does not use them — it lexes directives with
+# ``validator.directives.iter_directives`` (§11.2) — and they are kept for
+# existing importers.
 REF_RE = re.compile(r"\{\{ref:\s*([^,}]+)(?:,\s*format=([^}]+))?}}")
 TERM_RE = re.compile(r"\{\{term:\s*([^,}]+)(?:,\s*label=([^}]+))?}}")
 DATE_RE = re.compile(r"\{\{date:\s*([^,}]+?)(?:,\s*note=[^}]*)?\}\}")

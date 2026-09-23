@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .core import AttachmentDefinitionsImporter, DefinitionsImporter, validate_document
+from .directives import DIRECTIVE_PARAMS, Directive, iter_directives
 from .helpers import (
     ensure_unique_identifier,
     format_section_number,
@@ -39,6 +40,10 @@ __all__ = [
     "validate_document",
     "DefinitionsImporter",
     "AttachmentDefinitionsImporter",
+    # Directive lexer
+    "Directive",
+    "iter_directives",
+    "DIRECTIVE_PARAMS",
     # Result types
     "ValidationResult",
     "SectionIndexEntry",

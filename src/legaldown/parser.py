@@ -16,7 +16,8 @@ import yaml
 
 from .definitions import DEF_ANCHOR_RE, EMPHASIS_DEF_RE, extract_def, is_single_quoted
 from .models import Block, Document, document_from_dict
-from .validator import REF_RE, TERM_RE, slugify_identifier
+from .validator import slugify_identifier
+from .validator.directives import directive_fragments, iter_directives
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -255,26 +256,12 @@ def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
     terms: set[str] = set()
     for section in document.sections:
         for block in section.blocks:
-            if block.kind == "ref" and block.target:
-                refs.add(block.target)
-            if block.kind == "term" and block.target:
-                terms.add(block.target)
-            text_fragments: list[str] = []
-            if block.text:
-                text_fragments.append(block.text)
-            if block.prefix:
-                text_fragments.append(block.prefix)
-            if block.suffix:
-                text_fragments.append(block.suffix)
-            text_fragments.extend(item for item in block.items if item)
-            text_fragments.extend(cell for row in block.rows for cell in row if cell)
-            for fragment in text_fragments:
-                refs.update(
-                    match.group(1).strip() for match in REF_RE.finditer(fragment)
-                )
-                terms.update(
-                    match.group(1).strip() for match in TERM_RE.finditer(fragment)
-                )
+            for fragment in directive_fragments(block):
+                for directive in iter_directives(fragment):
+                    if directive.malformed or not directive.positional:
+                        continue
+                    if directive.name == "ref":
+                        refs.add(directive.positional)
+                    elif directive.name == "term":
+                        terms.add(directive.positional)
     return refs, terms
-
-
