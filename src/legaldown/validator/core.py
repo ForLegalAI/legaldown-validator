@@ -214,27 +214,28 @@ def _check_placeholder(
         return
     blank = blanks.setdefault(pid, Blank())
     blank.in_frontmatter |= in_frontmatter
+    type_valid = written_type is None or written_type in VALID_PLACEHOLDER_TYPES
+    if not type_valid:
+        result.error(
+            "placeholder-type-invalid",
+            f"Placeholder type '{written_type}' is unsupported. "
+            f"Must be one of: {', '.join(sorted(VALID_PLACEHOLDER_TYPES))}.",
+        )
     if declared in DECISION_QUESTION_TYPES:
         result.error(
             "placeholder-question-mismatch",
             f"Placeholder '{pid}' uses the id of {declared} question '{pid}'; a decision "
             f"question is answered by conditions and {{{{choose:}}}}, never by a blank (§15.2).",
         )
-    elif declared is not None and written_type is not None and written_type != declared:
+        return
+    if not type_valid:
+        return
+    if declared is not None and written_type is not None and written_type != declared:
         result.error(
             "placeholder-question-mismatch",
             f"Placeholder '{pid}' is written with type '{written_type}', but its "
             f"question is declared with type '{declared}' (§15.2).",
         )
-    if written_type is not None and written_type not in VALID_PLACEHOLDER_TYPES:
-        result.error(
-            "placeholder-type-invalid",
-            f"Placeholder type '{written_type}' is unsupported. "
-            f"Must be one of: {', '.join(sorted(VALID_PLACEHOLDER_TYPES))}.",
-        )
-        return
-    if declared in DECISION_QUESTION_TYPES:
-        return
     # The currency or unit this occurrence fixes, by its type (§10.7).
     code_param = PLACEHOLDER_TYPE_PARAMS.get(ptype)
     code = params.get(code_param, "") if code_param else ""

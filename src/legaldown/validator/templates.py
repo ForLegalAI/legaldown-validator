@@ -5,6 +5,7 @@ answer rules live here, next to the declarations they apply to.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -14,11 +15,12 @@ from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amou
 from .patterns import (
     DURATION_UNITS,
     IDENTIFIER_RE,
-    KNOWN_CURRENCIES,
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
 from .result import ValidationResult
+
+_CURRENCY_RE = re.compile(r"[A-Z]{3}")
 
 #: Questions filled through ``{{placeholder:}}`` (§15.2): the placeholder
 #: types (§10.7).
@@ -89,8 +91,10 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
             answer, "amount", PLACEHOLDER_TYPE_PARAMS["money"], blank.codes if blank else set(),
             valid_amount=lambda v: isinstance(v, str) and is_valid_money_amount(v),
             amount_rule="a string in §10.3 format",
-            valid_code=lambda c: c in KNOWN_CURRENCIES,
-            code_rule="an ISO 4217 code",
+            # A code of the ISO 4217 form: one this implementation does not
+            # know is only a Warning where it is inserted (§16.5).
+            valid_code=lambda c: bool(_CURRENCY_RE.fullmatch(c)),
+            code_rule="a three-letter ISO 4217 code",
         )
     if qtype == "duration":
         return _measure_problem(

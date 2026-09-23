@@ -82,15 +82,14 @@ def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
     """Retag the plain scalars of the frontmatter *root* to read as the
     strings written, leaving the nodes of question defaults typed — even a
     default shared through an alias with another field."""
-    seen: set[int] = set()
+    typed: set[int] = set()
     for key, questions in _entries(loader, root):
         if key.value == "questions":
             for _qid, declaration in _entries(loader, questions):
                 for field_key, value in _entries(loader, declaration):
                     if field_key.value == "default":
-                        for _node in _walk(value, seen):
-                            pass
-    for node in _walk(root, seen, loader):
+                        typed.update(id(node) for node in _walk(value, set()))
+    for node in _walk(root, typed, loader):
         if isinstance(node, yaml.MappingNode):
             for key, _value in node.value:
                 if isinstance(key, yaml.ScalarNode) and key.style is None and key.tag == _NULL_TAG:
@@ -133,7 +132,10 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str]:
         node = loader.get_single_node()
         if node is None:
             return [], {}, source[match.end():]
-        # Before merges rewrite the mappings: an entry is judged as written.
+        # Keys merged into the root count, but each entry is judged as
+        # written, before merges inside it reorder its keys.
+        if isinstance(node, yaml.MappingNode):
+            loader.flatten_mapping(node)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)

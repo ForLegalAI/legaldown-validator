@@ -145,7 +145,7 @@ def test_well_formed_questions_are_valid():
         "questions:\n  start:\n    type: date\n    default: 2026-13-01\n",
         "questions:\n  fee:\n    type: money\n    default: '100.00'\n",  # no fixed currency
         "questions:\n  fee:\n    type: money\n    default:\n      amount: 100\n      currency: EUR\n",
-        "questions:\n  fee:\n    type: money\n    default:\n      amount: '100'\n      currency: XXQ\n",
+        "questions:\n  fee:\n    type: money\n    default:\n      amount: '100'\n      currency: eur\n",
         "questions:\n  term:\n    type: duration\n    default:\n      value: 12\n      unit: M\n",
         "questions: {fee: {type: text}}\n",  # flow style
         "questions:\n  forum:\n    type: choice\n    choices: {a: A, b: B}\n",
@@ -500,3 +500,32 @@ def test_an_attachment_entry_is_judged_as_written_not_as_merged():
 def test_an_empty_default_is_absent(default):
     frontmatter = f"questions:\n  vat:\n    type: boolean\n    default:{default}\n"
     assert "question-invalid" not in _validate(frontmatter).rules()
+
+
+def test_a_currency_this_implementation_does_not_know_is_a_valid_answer_form():
+    frontmatter = (
+        "questions:\n  fee:\n    type: money\n    default:\n"
+        "      amount: '10'\n      currency: XYZ\n"
+    )
+    result = _validate(frontmatter, "{{placeholder: fee, currency=XYZ}}")
+    assert "question-invalid" not in result.rules()
+    assert "placeholder-unknown-currency" in result.rules("warning")
+
+
+def test_questions_merged_into_the_root_are_checked_for_block_style():
+    frontmatter = "<<: {questions: {q: {type: text}}}\n"
+    assert "question-invalid" in _validate(frontmatter, "{{placeholder: q}}").rules("error")
+
+
+def test_the_serializer_writes_shared_declarations_in_full():
+    source = (
+        f"---\ntitle: Fixture\n{_SIDES}questions:\n  q: &a\n    type: text\n  r: *a\n---\n"
+    )
+    written = serialize_document(parse_document(source))
+    assert "&" not in written and "*" not in written
+    assert parse_document(written).metadata.questions == {"q": {"type": "text"}, "r": {"type": "text"}}
+
+
+def test_an_invalid_type_on_a_declared_blank_is_one_error():
+    result = _validate(_QUESTIONS, "Pay {{placeholder: fee, type=number}}.")
+    assert [d.rule for d in result.diagnostics if d.level == "error"] == ["placeholder-type-invalid"]

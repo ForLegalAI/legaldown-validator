@@ -346,7 +346,6 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         if isinstance(a, dict)
     ]
 
-
     return Metadata(
         # No default title: a missing title is a validation error (§16.6,
         # title-missing); app flows that create fresh documents supply one.

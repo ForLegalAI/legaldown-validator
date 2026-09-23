@@ -210,12 +210,24 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
     return parts
 
 
+class _BlockDumper(yaml.SafeDumper):
+    """Writes every value in full, never as an ``&anchor``/``*alias``: a
+    question declaration shared in the source gets lines of its own, so
+    assembly can edit each one (§15.2)."""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
 # ── Public API ────────────────────────────────────────────────────
 
 def serialize_document(document: Document) -> str:
     """Serialize a Document object to LegalDown (.legal.md) source text."""
-    frontmatter = yaml.safe_dump(
-        _metadata_to_frontmatter(document.metadata), sort_keys=False, allow_unicode=True
+    frontmatter = yaml.dump(
+        _metadata_to_frontmatter(document.metadata),
+        Dumper=_BlockDumper,
+        sort_keys=False,
+        allow_unicode=True,
     ).strip()
     parts = [
         "---",
