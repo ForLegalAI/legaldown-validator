@@ -13,9 +13,10 @@ analysis, and the editor glossary.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from .directives import Directive, scan_directives
+from .directives import Directive, Lexed, lex
 from .models import Block, Document
 from .validator.helpers import slugify_identifier
 
@@ -106,7 +107,7 @@ def find_definition_anchors(
     text: str,
     *,
     language: str | None = None,
-    scanned: list[tuple[Directive, str]] | None = None,
+    lexed: Lexed | None = None,
 ) -> list[DefinitionAnchor]:
     """Every ``{{def:}}`` in *text*, each with the quoted term preceding it.
 
@@ -114,11 +115,13 @@ def find_definition_anchors(
     spacing may separate it from the closing quotation mark, and the span
     opens at the nearest prior matching opening mark on the same line.
     Directives in code spans, code blocks, and comments are literal (§11.4).
-    *scanned* is ``list(scan_directives(text))`` when the caller has it.
+    *lexed* is ``lex(text)`` when the caller has it.
     """
     closing = {pair[1]: pair for pair in accepted_delimiters(language)}
+    lexed = lexed or lex(text)
+    scan = lexed.view
     anchors: list[DefinitionAnchor] = []
-    for directive, scan in scan_directives(text) if scanned is None else scanned:
+    for directive in lexed.directives:
         if directive.name != "def":
             continue
         line_start = scan.rfind("\n", 0, directive.start) + 1
@@ -156,71 +159,92 @@ class DefinitionRef:
 
     id: str
     term: str
-    section_identifier: str
+    section_identifier: str | None  # None for the preamble (§4.4)
     block_index: int
     inline: bool       # True: mid-text anchor; False: leading anchor of a definition block
     auto_id: bool      # True if the id was derived from the term (omitted in source)
 
 
-def text_fragments(block: Block) -> list[str]:
-    """All free-text fragments of a block that may contain inline directives."""
-    fragments: list[str] = []
+def block_fragments(block: Block) -> list[tuple[str, bool]]:
+    """The free-text fragments of *block* that may contain inline directives,
+    each with whether a ``{#id}`` at its very end is in an anchor position.
+
+    Anchor positions (§5.7) are the end of a top-level paragraph (including
+    one the parser split around a lifted {{ref:}} or {{term:}}) and the end
+    of a list item; a block quote or a table cell never is one.
+    """
+    paragraph = block.kind in ("paragraph", "definition")
+    lifted = block.kind in ("ref", "term")
+    listed = block.kind in ("ordered_list", "unordered_list")
+    fragments: list[tuple[str, bool]] = []
     if block.text:
-        fragments.append(block.text)
+        fragments.append((block.text, paragraph))
     if block.prefix:
-        fragments.append(block.prefix)
+        fragments.append((block.prefix, False))
     if block.suffix:
-        fragments.append(block.suffix)
-    fragments.extend(item for item in block.items if item)
-    fragments.extend(cell for row in block.rows for cell in row if cell)
+        fragments.append((block.suffix, lifted))
+    fragments.extend((item, listed) for item in block.items if item)
+    fragments.extend((cell, False) for cell in block.headers if cell)
+    fragments.extend((cell, False) for row in block.rows for cell in row if cell)
     return fragments
 
 
+def text_fragments(block: Block) -> list[str]:
+    """All free-text fragments of a block that may contain inline directives."""
+    return [fragment for fragment, _anchor_position in block_fragments(block)]
+
+
 def collect_definitions(
-    document: Document, *, language: str | None = None
+    document: Document,
+    *,
+    language: str | None = None,
+    lex_fragment: Callable[[str], Lexed] = lex,
 ) -> list[DefinitionRef]:
     """Collect every definition declared in *document*, in document order.
 
     Scans both ``definition`` blocks (a paragraph whose leading token is a
     definition anchor) and inline anchors inside any text fragment.
+    *lex_fragment* lets a caller that lexes the same fragments share results.
     """
     lang = language or document.metadata.language or "en"
     refs: list[DefinitionRef] = []
-    for section in document.sections:
-        for block_index, block in enumerate(section.blocks):
-            if block.kind == "definition":
-                term = (block.term or "").strip()
-                raw_id = (block.definition_id or "").strip()
+    for section, block_index, block in document.iter_blocks():
+        section_identifier = section.identifier if section else None
+        if block.kind == "definition":
+            term = (block.term or "").strip()
+            raw_id = (block.definition_id or "").strip()
+            did = raw_id or slugify_identifier(term, fallback="term")
+            refs.append(
+                DefinitionRef(
+                    id=did,
+                    term=term or did.replace("-", " ").title(),
+                    section_identifier=section_identifier,
+                    block_index=block_index,
+                    inline=False,
+                    auto_id=not raw_id,
+                )
+            )
+        for fragment in text_fragments(block):
+            for anchor in find_definition_anchors(
+                fragment, language=lang, lexed=lex_fragment(fragment)
+            ):
+                # A malformed {{def:}} has no id to register; the validator
+                # reports it as directive-malformed.
+                if anchor.term is None or anchor.directive.malformed:
+                    continue
+                term = anchor.term
+                raw_id = anchor.directive.positional or ""
                 did = raw_id or slugify_identifier(term, fallback="term")
                 refs.append(
                     DefinitionRef(
                         id=did,
-                        term=term or did.replace("-", " ").title(),
-                        section_identifier=section.identifier,
+                        term=term,
+                        section_identifier=section_identifier,
                         block_index=block_index,
-                        inline=False,
+                        inline=True,
                         auto_id=not raw_id,
                     )
                 )
-            for fragment in text_fragments(block):
-                for anchor in find_definition_anchors(fragment, language=lang):
-                    # A malformed {{def:}} has no id to register; the validator
-                    # reports it as directive-malformed.
-                    if anchor.term is None or anchor.directive.malformed:
-                        continue
-                    term = anchor.term
-                    raw_id = anchor.directive.positional or ""
-                    did = raw_id or slugify_identifier(term, fallback="term")
-                    refs.append(
-                        DefinitionRef(
-                            id=did,
-                            term=term,
-                            section_identifier=section.identifier,
-                            block_index=block_index,
-                            inline=True,
-                            auto_id=not raw_id,
-                        )
-                    )
     return refs
 
 

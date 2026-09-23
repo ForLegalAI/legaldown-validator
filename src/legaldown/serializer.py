@@ -170,6 +170,16 @@ def _render_block(block: Block) -> str:
     return block.text.strip()
 
 
+def _render_blocks(blocks: list[Block]) -> list[str]:
+    """Rendered blocks, each preceded by a blank separator line."""
+    parts: list[str] = []
+    for block in blocks:
+        rendered = _render_block(block)
+        if rendered:
+            parts.extend(["", rendered])
+    return parts
+
+
 # ── Public API ────────────────────────────────────────────────────
 
 def serialize_document(document: Document) -> str:
@@ -182,15 +192,13 @@ def serialize_document(document: Document) -> str:
         frontmatter,
         "---",
     ]
+    parts.extend(_render_blocks(document.preamble))
     for section in document.sections:
         heading = f"{'#' * section.level} {section.title.strip()}"
         if section.identifier.strip():
             heading += f" {{#{section.identifier.strip()}}}"
         parts.extend(["", heading])
-        for block in section.blocks:
-            rendered = _render_block(block)
-            if rendered:
-                parts.extend(["", rendered])
+        parts.extend(_render_blocks(section.blocks))
     return "\n".join(parts).strip() + "\n"
 
 

@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from legaldown import iter_directives, serialize_document
+from legaldown import (
+    collect_definitions,
+    document_from_dict,
+    document_to_dict,
+    iter_directives,
+    serialize_document,
+)
 from legaldown.directives import format_value
 from legaldown.parser import collect_source_directives, parse_document
 from legaldown.validator import validate_document
@@ -688,3 +694,166 @@ The {{term: services}} are amended.
         document, import_definitions=lambda *_: {"services": "Services"}
     )
     assert "amend-def-override" in result.rules("warning")
+
+
+# ── Preamble (§4.4) ───────────────────────────────────────────────
+
+_PREAMBLE_SOURCE = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + (
+    'This Agreement (this "Agreement" {{def: agreement}}) is entered into\n'
+    "between {{party: acme}} and {{party: beta}}.\n"
+    "\n"
+    "# Confidentiality {#confidentiality}\n"
+    "\n"
+    "The {{term: agreement}} binds both sides.\n"
+)
+
+
+def test_preamble_is_kept_out_of_the_numbered_sections():
+    document = parse_document(_PREAMBLE_SOURCE)
+    assert [s.identifier for s in document.sections] == ["confidentiality"]
+    assert "entered into between" in document.preamble[0].text
+
+
+def test_definition_in_the_preamble_is_document_wide():
+    result = validate_document(parse_document(_PREAMBLE_SOURCE))
+    assert result.definition_lookup == {"agreement": "Agreement"}
+    assert result.diagnostics == []
+
+
+def test_directives_in_the_preamble_are_checked():
+    source = _PREAMBLE_SOURCE.replace("{{party: beta}}", "{{party: nobody}} on {{date: 2026-02-30}}")
+    assert {"party-unknown", "date-invalid"} <= validate_document(parse_document(source)).rules("error")
+
+
+def test_preamble_round_trips():
+    document = parse_document(_PREAMBLE_SOURCE)
+    reparsed = parse_document(serialize_document(document))
+    assert reparsed.preamble == document.preamble
+    assert reparsed.sections == document.sections
+
+
+def test_document_of_only_a_preamble():
+    source = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + "By {{party: nobody}}.\n"
+    document = parse_document(source)
+    assert document.sections == [] and len(document.preamble) == 1
+    assert "party-unknown" in validate_document(document).rules("error")
+
+
+@pytest.mark.parametrize("marker", ["{#intro}", "{#Bad_ID}"])
+def test_preamble_paragraph_anchor_is_misplaced(marker):
+    """§4.4: preamble paragraphs cannot carry anchors or be referenced."""
+    source = _PREAMBLE_SOURCE.replace("{{party: beta}}.", "{{party: beta}}. " + marker) + (
+        "See {{ref: intro}}.\n"
+    )
+    result = validate_document(parse_document(source))
+    assert "anchor-misplaced" in result.rules("warning")
+    assert "ref-broken" in result.rules("error")
+    assert "anchor-format" not in result.rules()
+
+
+def test_preamble_survives_the_dict_round_trip():
+    document = parse_document(_PREAMBLE_SOURCE)
+    assert document_from_dict(document_to_dict(document)) == document
+    ref = next(r for r in collect_definitions(document) if r.id == "agreement")
+    assert ref.section_identifier is None
+
+
+# ── Item and paragraph anchor positions (§5.7) ────────────────────
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "A marker {#stray} mid-paragraph.",
+        "> Quoted text {#quoted}",
+        "| A | B |\n|---|---|\n| cell {#cell} | x |",
+    ],
+)
+def test_marker_outside_an_anchor_position_is_literal(body):
+    marker = body.split("{#")[1].split("}")[0]
+    result = _validate(body + f"\n\nSee {{{{ref: {marker}}}}}.")
+    assert "anchor-misplaced" in result.rules("warning")
+    assert "ref-broken" in result.rules("error")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "A top-level paragraph. {#para}",
+        "- a list item {#para}",
+        "See {{ref: terms}} for more. {#para}",
+    ],
+)
+def test_anchor_positions_are_ref_targets(body):
+    result = _validate(body + "\n\nBack to {{ref: para}}.")
+    assert result.diagnostics == []
+
+
+def test_marker_inside_a_directive_value_is_not_an_anchor():
+    result = _validate('Case {{field: "{#x}", type=code}} here.')
+    assert result.diagnostics == []
+
+
+def test_anchor_scan_agrees_with_the_lexer_about_code_spans():
+    """A backtick inside a directive value does not open a code span."""
+    result = _validate('P {{field: "a`b", type=code}} mid {#m} then `c` end.')
+    assert "anchor-misplaced" in result.rules("warning")
+
+
+def test_table_header_cells_are_body_text():
+    result = _validate("| {{party: nobody}} {#h} | x |\n|---|---|\n| a | b |")
+    assert "party-unknown" in result.rules("error")
+    assert "anchor-misplaced" in result.rules("warning")
+
+
+def test_escaped_anchor_marker_is_literal():
+    result = _validate(r"Para \{#b} mid and end \{#c}" + "\n\nSee {{ref: c}}.")
+    assert "anchor-misplaced" not in result.rules()
+    assert "ref-broken" in result.rules("error")
+
+
+def test_paragraph_anchor_colliding_with_an_attachment_id_is_reported():
+    result = _validate_attachments(
+        "  - id: sched\n    title: Schedule\n    file: s.pdf",
+        "End {#sched}\n\nSee {{attach: sched}}.",
+    )
+    assert "attachment-id-collision" in result.rules("error")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "---\n---\n# A {#a}\n\nText.\n",
+        "---\n---\n# A {#a}\n\nText.\n\n---\n\n## B {#b}\n",
+        "\ufeff---\ntitle: T\n---\n# A {#a}\n\nText.\n",
+        "\ufeff# A {#a}\n\nText.\n",
+    ],
+)
+def test_empty_frontmatter_and_byte_order_mark_are_not_body(source):
+    """Empty frontmatter stops at its own closing ---, not at a later rule,
+    and a byte-order mark never hides the first heading."""
+    document = parse_document(source)
+    assert document.preamble == []
+    assert document.sections[0].identifier == "a"
+
+
+def test_frontmatter_that_is_not_a_mapping_is_rejected():
+    with pytest.raises(ValueError, match="mapping"):
+        parse_document("---\njust text\n---\n# A\n")
+
+
+def test_only_a_comment_may_follow_an_anchor():
+    """A comment is not rendered (§8.6), so an anchor before one is still at
+    the end of its paragraph; a code span is visible text."""
+    result = _validate(
+        "Deliver. {#delivery} <!-- drafting note -->\n\nSee {#a} `code`\n\n"
+        "Per {{ref: delivery}}."
+    )
+    assert [d.rule for d in result.diagnostics] == ["anchor-misplaced"]
+    assert "delivery" in result.section_lookup
+
+
+def test_marker_after_a_malformed_directive_is_still_an_anchor():
+    """A malformed directive has no value to hide the marker in."""
+    result = _validate("Text {{ref: x more {#x}\n\nSee {{ref: x}}.")
+    assert result.rules() == {"directive-malformed"}

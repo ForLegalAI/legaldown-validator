@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import Directive, iter_directives, scan_directives
+from .directives import Directive, iter_directives, lex
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -37,7 +37,10 @@ _StrDateSafeLoader.add_constructor(
 
 # ── Parser regex patterns ─────────────────────────────────────────
 
-FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+# The YAML between the delimiters may be empty. The optional group is lazy
+# so that empty frontmatter is tried first: otherwise ``---``/``---`` would
+# extend to the next ``---`` rule in the body.
+FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)", re.DOTALL)
 # The anchor group deliberately accepts any non-brace run: a malformed id
 # (e.g. {#Bad_ID}) must reach the validator to be reported as anchor-format
 # rather than silently remaining part of the title.
@@ -50,7 +53,9 @@ def _split_frontmatter(source: str) -> tuple[dict[str, Any], str]:
     match = FRONTMATTER_RE.match(source)
     if not match:
         return {}, source
-    metadata = yaml.load(match.group(1), Loader=_StrDateSafeLoader) or {}
+    metadata = yaml.load(match.group(1) or "", Loader=_StrDateSafeLoader) or {}
+    if not isinstance(metadata, dict):
+        raise ValueError("Frontmatter must be a YAML mapping of fields.")
     body = source[match.end():]
     return metadata, body
 
@@ -88,8 +93,8 @@ def _parse_paragraph(paragraph: str) -> Block:
     # (def-emphasis / def-single-quote-ambiguous) and a {{def:}} with
     # parameters or malformed arguments. The definition is still collected
     # from the paragraph by collect_definitions.
-    scanned = list(scan_directives(stripped))
-    anchors = find_definition_anchors(stripped, scanned=scanned)
+    lexed = lex(stripped)
+    anchors = find_definition_anchors(stripped, lexed=lexed)
     if anchors and _is_liftable_definition(anchors[0], stripped):
         anchor = anchors[0]
         return Block(
@@ -103,7 +108,7 @@ def _parse_paragraph(paragraph: str) -> Block:
     anchored = [(a.start, a.directive.start) for a in anchors if a.term is not None]
     directives = [
         d
-        for d, _scan in scanned
+        for d in lexed.directives
         if not any(start <= d.start < end for start, end in anchored)
     ]
     ref_directive = _first_liftable(directives, "ref")
@@ -227,6 +232,11 @@ def _parse_blocks(chunk: str) -> list[Block]:
     return blocks
 
 
+def _block_dicts(lines: list[str]) -> list[dict[str, Any]]:
+    """Parse body lines into block dicts for ``document_from_dict``."""
+    return [asdict(block) for block in _parse_blocks("\n".join(lines).strip())]
+
+
 # ── Public API ────────────────────────────────────────────────────
 
 def parse_document(source: str, *, filename: str = "") -> Document:
@@ -237,7 +247,8 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     says (a bare ``unit=M`` surfaces as duration-invalid-unit rather than being
     silently corrected).
     """
-    metadata, body = _split_frontmatter(source or "")
+    # A byte-order mark is an encoding artifact, not content.
+    metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
     payload: dict[str, Any] = {
         "metadata": metadata,
         "sections": [],
@@ -245,7 +256,9 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     }
     lines = body.splitlines()
     current: dict[str, Any] | None = None
-    current_lines: list[str] = []
+    # Lines before the first heading are the preamble (§4.4).
+    preamble_lines: list[str] = []
+    current_lines = preamble_lines
 
     for raw_line in lines:
         match = HEADING_RE.match(raw_line)
@@ -255,10 +268,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
             if title.strip() == "Signature Block" and identifier == "signature-block":
                 break
             if current is not None:
-                current["blocks"] = [
-                    asdict(block)
-                    for block in _parse_blocks("\n".join(current_lines).strip())
-                ]
+                current["blocks"] = _block_dicts(current_lines)
                 payload["sections"].append(current)
             current = {
                 "title": title.strip(),
@@ -266,21 +276,14 @@ def parse_document(source: str, *, filename: str = "") -> Document:
                 "identifier": identifier or slugify_identifier(title.strip()),
             }
             current_lines = []
-        elif current is not None:
+        else:
             current_lines.append(raw_line)
 
     if current is not None:
-        current["blocks"] = [
-            asdict(block) for block in _parse_blocks("\n".join(current_lines).strip())
-        ]
+        current["blocks"] = _block_dicts(current_lines)
         payload["sections"].append(current)
-
-    if not payload.get("sections"):
-        payload["sections"] = []
-    document = document_from_dict(payload)
-    if not document.sections:
-        document.sections = []
-    return document
+    payload["preamble"] = _block_dicts(preamble_lines)
+    return document_from_dict(payload)
 
 
 def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
@@ -290,18 +293,17 @@ def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
     """
     refs: set[str] = set()
     terms: set[str] = set()
-    for section in document.sections:
-        for block in section.blocks:
-            if block.kind == "ref" and block.target:
-                refs.add(block.target)
-            if block.kind == "term" and block.target:
-                terms.add(block.target)
-            for fragment in text_fragments(block):
-                for directive in iter_directives(fragment):
-                    if directive.malformed or not directive.positional:
-                        continue
-                    if directive.name == "ref":
-                        refs.add(directive.positional)
-                    elif directive.name == "term":
-                        terms.add(directive.positional)
+    for _section, _index, block in document.iter_blocks():
+        if block.kind == "ref" and block.target:
+            refs.add(block.target)
+        if block.kind == "term" and block.target:
+            terms.add(block.target)
+        for fragment in text_fragments(block):
+            for directive in iter_directives(fragment):
+                if directive.malformed or not directive.positional:
+                    continue
+                if directive.name == "ref":
+                    refs.add(directive.positional)
+                elif directive.name == "term":
+                    terms.add(directive.positional)
     return refs, terms

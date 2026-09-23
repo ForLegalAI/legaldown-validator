@@ -5,6 +5,7 @@ in memory, plus factory functions for safe construction from dicts.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -117,10 +118,24 @@ class Section:
 
 @dataclass(slots=True)
 class Document:
-    """Top-level container representing a complete LegalDown document."""
+    """Top-level container representing a complete LegalDown document.
+
+    ``preamble`` holds the body content before the first heading (§4.4): it
+    is unnumbered and cannot be referenced, so it is not a section.
+    """
     metadata: Metadata = field(default_factory=Metadata)
     sections: list[Section] = field(default_factory=list)
     filename: str = ""
+    preamble: list[Block] = field(default_factory=list)
+
+    def iter_blocks(self) -> Iterator[tuple[Section | None, int, Block]]:
+        """Every body block in document order, as ``(section, index, block)``:
+        the preamble first, with ``section`` ``None``, then each section's."""
+        for index, block in enumerate(self.preamble):
+            yield None, index, block
+        for section in self.sections:
+            for index, block in enumerate(section.blocks):
+                yield section, index, block
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +346,7 @@ def document_from_dict(data: dict[str, Any] | None) -> Document:
         metadata=metadata_from_dict(payload.get("metadata") or {}),
         sections=[section_from_dict(s) for s in list(payload.get("sections") or [])],
         filename=_str(payload.get("filename")),
+        preamble=[block_from_dict(b) for b in list(payload.get("preamble") or [])],
     )
 
 
