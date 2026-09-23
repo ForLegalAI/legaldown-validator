@@ -14,11 +14,11 @@ from ..directives import (
     DIRECTIVE_PARAMS,
     KNOWN_DIRECTIVES,
     Directive,
-    find_stray_braces,
+    is_escaped,
     iter_directives,
-    strip_uninterpreted,
+    lex,
 )
-from ..models import Block, Document
+from ..models import Document
 from .helpers import (
     ensure_unique_identifier,
     format_section_number,
@@ -142,27 +142,6 @@ def _check_placeholder(
 
 # A {#id}-like marker (§5.7), in body text as opposed to a heading.
 _ANCHOR_MARKER_RE = re.compile(r"\{#([^}\s]+)\}")
-
-
-def _anchor_fragments(block: Block) -> list[tuple[str, bool]]:
-    """The text of *block* that may contain ``{#id}`` markers, each paired
-    with whether a marker at its very end is an anchor position (§5.7).
-
-    Only a top-level paragraph (including one the parser split around a
-    lifted directive) and a list item end in an anchor position; a block
-    quote or table cell never does.
-    """
-    if block.kind in ("paragraph", "definition"):
-        return [(block.text, True)]
-    if block.kind in ("ref", "term"):
-        return [(block.prefix, False), (block.suffix, True)]
-    if block.kind in ("ordered_list", "unordered_list"):
-        return [(item, True) for item in block.items]
-    if block.kind == "quote":
-        return [(block.text, False)]
-    if block.kind == "table":
-        return [(cell, False) for row in block.rows for cell in row]
-    return []
 
 
 def validate_document(
@@ -444,49 +423,66 @@ def validate_document(
     # the shared anchor namespace and is a valid {{ref:}} target. It resolves
     # to its containing section (the §13.2 enumeration-path refinement is a
     # Rendering-level concern; §6.3 falls back to the containing section's
-    # number). A marker anywhere else is literal text (anchor-misplaced).
-    entries = dict(zip(map(id, document.sections), result.sections, strict=True))
-    for section, _index, block in document.iter_blocks():
-        entry = entries[id(section)] if section is not None else None
-        for fragment, at_end_is_anchor in _anchor_fragments(block):
-            scan = strip_uninterpreted(fragment)
-            spans = [(d.start, d.end) for d in iter_directives(fragment)]
-            end_of_text = len(scan.rstrip())
-            for m in _ANCHOR_MARKER_RE.finditer(scan):
-                if any(start <= m.start() < end for start, end in spans):
-                    continue  # part of a directive's value
-                if entry is None or not at_end_is_anchor or m.end() != end_of_text:
-                    result.warning(
-                        "anchor-misplaced",
-                        f"'{m.group(0)}' is not in an anchor position and is literal text: "
-                        f"anchors go at the end of a list item or of a paragraph directly "
-                        f"inside a section (§5.7).",
-                    )
+    # number). A marker anywhere else, including the preamble (§4.4), is
+    # literal text (anchor-misplaced). The definitions module is imported
+    # lazily to avoid a module-level import cycle (definitions ->
+    # validator.helpers -> validator/__init__ -> core).
+    from ..definitions import (
+        block_fragments,
+        collect_definitions,
+        find_definition_anchors,
+        text_fragments,
+    )
+
+    bodies = [
+        (None, document.preamble),
+        *zip(result.sections, (s.blocks for s in document.sections), strict=True),
+    ]
+    for entry, blocks in bodies:
+        for block in blocks:
+            for fragment, anchor_position in block_fragments(block):
+                if "{#" not in fragment:
                     continue
-                anchor_id = m.group(1)
-                if not IDENTIFIER_RE.match(anchor_id):
-                    result.error(
-                        "anchor-format",
-                        f"Anchor '{{#{anchor_id}}}' is invalid. Use lowercase letters, numbers, and hyphens only.",
-                    )
-                    continue
-                if anchor_id in used_identifiers:
-                    result.error(
-                        "anchor-duplicate",
-                        f"Anchor '{{#{anchor_id}}}' duplicates an existing anchor in the document.",
-                    )
-                    continue
-                used_identifiers.add(anchor_id)
-                result.section_lookup[anchor_id] = entry
+                lexed = lex(fragment)
+                end_of_text = len(lexed.view.rstrip())
+                for m in _ANCHOR_MARKER_RE.finditer(lexed.view):
+                    if is_escaped(fragment, m.start()) or any(
+                        d.start <= m.start() < d.end for d in lexed.directives
+                    ):
+                        continue  # literal: escaped, or part of a directive's value
+                    if entry is None or not anchor_position or m.end() != end_of_text:
+                        result.warning(
+                            "anchor-misplaced",
+                            f"'{m.group(0)}' is not in an anchor position and is literal "
+                            f"text: anchors go at the end of a list item or of a paragraph "
+                            f"directly inside a section (§5.7).",
+                        )
+                        continue
+                    anchor_id = m.group(1)
+                    if not IDENTIFIER_RE.match(anchor_id):
+                        result.error(
+                            "anchor-format",
+                            f"Anchor '{{#{anchor_id}}}' is invalid. Use lowercase letters, numbers, and hyphens only.",
+                        )
+                    elif anchor_id in used_identifiers:
+                        result.error(
+                            "anchor-duplicate",
+                            f"Anchor '{{#{anchor_id}}}' duplicates an existing anchor in the document.",
+                        )
+                    elif anchor_id in attachment_ids:
+                        result.error(
+                            "attachment-id-collision",
+                            f"Anchor '{{#{anchor_id}}}' collides with an attachment id.",
+                        )
+                    else:
+                        used_identifiers.add(anchor_id)
+                        result.section_lookup[anchor_id] = entry
 
     # ── Definitions (§7) ──
     # The mandatory, first-positioned Definitions section is gone (§7.2). A
     # definition is a quoted term followed by a ``{{def: id}}`` anchor, declared
     # either as a leading-anchor "definition" block or inline at first use, and
-    # may appear anywhere. Imported lazily to avoid a module-level import cycle
-    # (definitions -> validator.helpers -> validator/__init__ -> core).
-    from ..definitions import collect_definitions, find_definition_anchors, text_fragments
-
+    # may appear anywhere.
     definition_refs = collect_definitions(document, language=document.metadata.language)
     auto_ids_seen: dict[str, str] = {}
     for ref in definition_refs:
@@ -643,13 +639,14 @@ def validate_document(
         if block.kind == "term" and block.target.strip():
             term_targets.append(block.target.strip())
         for fragment in text_fragments(block):
-            for _offset in find_stray_braces(fragment):
+            lexed = lex(fragment)
+            for _offset in lexed.stray_braces:
                 result.warning(
                     "brace-stray",
                     "'{{' does not begin a directive and is literal text; "
                     "write '\\{{' if that is intended (§11.4).",
                 )
-            for directive in iter_directives(fragment):
+            for directive in lexed.directives:
                 name = directive.name
                 if not _check_directive_arguments(directive, result):
                     continue

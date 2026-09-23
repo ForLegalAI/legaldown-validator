@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .directives import Directive, scan_directives
+from .directives import Directive, Lexed, lex
 from .models import Block, Document
 from .validator.helpers import slugify_identifier
 
@@ -106,7 +106,7 @@ def find_definition_anchors(
     text: str,
     *,
     language: str | None = None,
-    scanned: list[tuple[Directive, str]] | None = None,
+    lexed: Lexed | None = None,
 ) -> list[DefinitionAnchor]:
     """Every ``{{def:}}`` in *text*, each with the quoted term preceding it.
 
@@ -114,11 +114,13 @@ def find_definition_anchors(
     spacing may separate it from the closing quotation mark, and the span
     opens at the nearest prior matching opening mark on the same line.
     Directives in code spans, code blocks, and comments are literal (§11.4).
-    *scanned* is ``list(scan_directives(text))`` when the caller has it.
+    *lexed* is ``lex(text)`` when the caller has it.
     """
     closing = {pair[1]: pair for pair in accepted_delimiters(language)}
+    lexed = lexed or lex(text)
+    scan = lexed.view
     anchors: list[DefinitionAnchor] = []
-    for directive, scan in scan_directives(text) if scanned is None else scanned:
+    for directive in lexed.directives:
         if directive.name != "def":
             continue
         line_start = scan.rfind("\n", 0, directive.start) + 1
@@ -162,18 +164,33 @@ class DefinitionRef:
     auto_id: bool      # True if the id was derived from the term (omitted in source)
 
 
+def block_fragments(block: Block) -> list[tuple[str, bool]]:
+    """The free-text fragments of *block* that may contain inline directives,
+    each with whether a ``{#id}`` at its very end is in an anchor position.
+
+    Anchor positions (§5.7) are the end of a top-level paragraph (including
+    one the parser split around a lifted {{ref:}} or {{term:}}) and the end
+    of a list item; a block quote or a table cell never is one.
+    """
+    paragraph = block.kind in ("paragraph", "definition")
+    lifted = block.kind in ("ref", "term")
+    listed = block.kind in ("ordered_list", "unordered_list")
+    fragments: list[tuple[str, bool]] = []
+    if block.text:
+        fragments.append((block.text, paragraph))
+    if block.prefix:
+        fragments.append((block.prefix, False))
+    if block.suffix:
+        fragments.append((block.suffix, lifted))
+    fragments.extend((item, listed) for item in block.items if item)
+    fragments.extend((cell, False) for cell in block.headers if cell)
+    fragments.extend((cell, False) for row in block.rows for cell in row if cell)
+    return fragments
+
+
 def text_fragments(block: Block) -> list[str]:
     """All free-text fragments of a block that may contain inline directives."""
-    fragments: list[str] = []
-    if block.text:
-        fragments.append(block.text)
-    if block.prefix:
-        fragments.append(block.prefix)
-    if block.suffix:
-        fragments.append(block.suffix)
-    fragments.extend(item for item in block.items if item)
-    fragments.extend(cell for row in block.rows for cell in row if cell)
-    return fragments
+    return [fragment for fragment, _anchor_position in block_fragments(block)]
 
 
 def collect_definitions(

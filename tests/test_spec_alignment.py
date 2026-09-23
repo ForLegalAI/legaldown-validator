@@ -792,3 +792,39 @@ def test_anchor_positions_are_ref_targets(body):
 def test_marker_inside_a_directive_value_is_not_an_anchor():
     result = _validate('Case {{field: "{#x}", type=code}} here.')
     assert result.diagnostics == []
+
+
+def test_anchor_scan_agrees_with_the_lexer_about_code_spans():
+    """A backtick inside a directive value does not open a code span."""
+    result = _validate('P {{field: "a`b", type=code}} mid {#m} then `c` end.')
+    assert "anchor-misplaced" in result.rules("warning")
+
+
+def test_table_header_cells_are_body_text():
+    result = _validate("| {{party: nobody}} {#h} | x |\n|---|---|\n| a | b |")
+    assert "party-unknown" in result.rules("error")
+    assert "anchor-misplaced" in result.rules("warning")
+
+
+def test_escaped_anchor_marker_is_literal():
+    result = _validate(r"Para \{#b} mid and end \{#c}" + "\n\nSee {{ref: c}}.")
+    assert "anchor-misplaced" not in result.rules()
+    assert "ref-broken" in result.rules("error")
+
+
+def test_paragraph_anchor_colliding_with_an_attachment_id_is_reported():
+    result = _validate_attachments(
+        "  - id: sched\n    title: Schedule\n    file: s.pdf",
+        "End {#sched}\n\nSee {{attach: sched}}.",
+    )
+    assert "attachment-id-collision" in result.rules("error")
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["---\n---\n# A {#a}\n\nText.\n", "﻿---\ntitle: T\n---\n# A {#a}\n\nText.\n"],
+)
+def test_empty_or_bom_prefixed_frontmatter_is_not_preamble(source):
+    document = parse_document(source)
+    assert document.preamble == []
+    assert "---" not in serialize_document(document).split("---", 2)[2]

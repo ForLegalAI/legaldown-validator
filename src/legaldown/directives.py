@@ -72,7 +72,7 @@ def strip_uninterpreted(text: str) -> str:
     parts: list[str] = []
     done = search = 0
     while match := _LITERAL_RE.search(text, search):
-        if _is_escaped(text, match.start()):
+        if is_escaped(text, match.start()):
             # A backslash-escaped backtick or ``<`` opens nothing.
             search = match.start() + 1
             continue
@@ -220,7 +220,7 @@ def _lex_arguments(
         pos += 1  # past the comma
 
 
-def _is_escaped(text: str, pos: int) -> bool:
+def is_escaped(text: str, pos: int) -> bool:
     """True if the brace at *pos* is backslash-escaped (§11.4): preceded by an
     odd number of backslashes, as ``\\\\`` is itself a literal backslash."""
     backslashes = 0
@@ -231,7 +231,7 @@ def _is_escaped(text: str, pos: int) -> bool:
 
 def _opens_directive(text: str, pos: int) -> bool:
     """True if an unescaped directive opener (§11.4) starts at *pos*."""
-    return bool(_OPENER_RE.match(text, pos)) and not _is_escaped(text, pos)
+    return bool(_OPENER_RE.match(text, pos)) and not is_escaped(text, pos)
 
 
 def _malformed_end(text: str, start: int, body: int) -> int:
@@ -246,30 +246,48 @@ def _malformed_end(text: str, start: int, body: int) -> int:
     return next((pos for pos in range(body, end) if _opens_directive(text, pos)), end)
 
 
-def _scan(text: str) -> Iterator[tuple[Directive | None, int, str]]:
-    """Yield ``(directive, offset, scan)`` for each ``{{`` outside literal
-    regions: a directive when it opens one, else ``None`` (a stray brace).
+@dataclass(slots=True)
+class Lexed:
+    """What the lexer found in a piece of text.
 
-    *scan* has the same offsets as *text*, with code spans, code blocks, and
-    comments blanked as they stood when the braces were found.
+    ``view`` has the same offsets as the text, with code spans, code blocks,
+    and comments blanked as the lexer saw them: a backtick or comment marker
+    inside a directive's value does not open a literal region. Callers that
+    look around directives (the defined term before a ``{{def:}}``, anchor
+    markers) use it so they agree with the lexer about what is literal.
     """
-    scan = strip_uninterpreted(text)
+
+    directives: list[Directive]
+    stray_braces: list[int]  # offsets of each ``{{`` that opens no directive
+    view: str
+
+
+def lex(text: str) -> Lexed:
+    """Lex every ``{{`` in *text* outside literal regions (§11.4).
+
+    A ``{{`` followed by a name and ``:`` opens a directive, lexed from the
+    source as written, so a quoted value may contain backticks. Any other
+    unescaped ``{{`` is literal text that is usually a typo (a stray brace).
+    """
+    view = strip_uninterpreted(text)
+    directives: list[Directive] = []
+    stray_braces: list[int] = []
     pos = 0
-    while braces := _BRACES_RE.search(scan, pos):
+    while braces := _BRACES_RE.search(view, pos):
         start = braces.start()
-        if _is_escaped(text, start):
+        if is_escaped(text, start):
             pos = start + 1
             continue
-        opener = _OPENER_RE.match(scan, start)
+        opener = _OPENER_RE.match(view, start)
         if opener is None:
-            yield None, start, scan
+            stray_braces.append(start)
             pos = start + 1
             continue
         try:
             positional, params, duplicates, end = _lex_arguments(text, opener.end())
         except _Malformed as exc:
             end = _malformed_end(text, start, opener.end())
-            directive = Directive(
+            directives.append(Directive(
                 name=opener.group(1),
                 positional=None,
                 params={},
@@ -278,9 +296,9 @@ def _scan(text: str) -> Iterator[tuple[Directive | None, int, str]]:
                 start=start,
                 end=end,
                 source=text[start:end].rstrip(_WS),
-            )
+            ))
         else:
-            directive = Directive(
+            directives.append(Directive(
                 name=opener.group(1),
                 positional=positional,
                 params=params,
@@ -289,32 +307,13 @@ def _scan(text: str) -> Iterator[tuple[Directive | None, int, str]]:
                 start=start,
                 end=end,
                 source=text[start:end],
-            )
-        yield directive, start, scan
-        if scan[start:end] != text[start:end]:
+            ))
+        if view[start:end] != text[start:end]:
             # A backtick or comment marker inside the directive was taken
             # for literal-region syntax; recompute the regions after it.
-            scan = scan[:end] + strip_uninterpreted(text[end:])
+            view = view[:end] + strip_uninterpreted(text[end:])
         pos = end
-
-
-def scan_directives(text: str) -> Iterator[tuple[Directive, str]]:
-    """Yield each directive in *text* with the text as the lexer saw it.
-
-    The second item has the same offsets as *text*, with code spans, code
-    blocks, and comments blanked as they stood when the directive was found.
-    Callers that look around a directive (the defined term before a
-    ``{{def:}}``) use it so they agree with the lexer about what is literal.
-    """
-    for directive, _start, scan in _scan(text):
-        if directive is not None:
-            yield directive, scan
-
-
-def find_stray_braces(text: str) -> list[int]:
-    """Offsets of each unescaped ``{{`` outside literal regions that does not
-    begin a directive: literal text that is usually a typo (§11.4)."""
-    return [start for directive, start, _scan_text in _scan(text) if directive is None]
+    return Lexed(directives, stray_braces, view)
 
 
 def iter_directives(text: str) -> Iterator[Directive]:
@@ -324,8 +323,7 @@ def iter_directives(text: str) -> Iterator[Directive]:
     and skipped. Once a directive opens, its arguments are lexed from the
     source as written, so a quoted value may contain backticks.
     """
-    for directive, _scan in scan_directives(text):
-        yield directive
+    return iter(lex(text).directives)
 
 
 def format_value(value: str, *, positional: bool = False) -> str:

@@ -15,7 +15,7 @@ from typing import Any
 import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import Directive, iter_directives, scan_directives
+from .directives import Directive, iter_directives, lex
 from .models import Block, Document, document_from_dict
 from .validator import slugify_identifier
 
@@ -37,7 +37,11 @@ _StrDateSafeLoader.add_constructor(
 
 # ── Parser regex patterns ─────────────────────────────────────────
 
-FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+# The YAML between the delimiters may be empty, and a byte-order mark may
+# precede the opening one.
+FRONTMATTER_RE = re.compile(
+    r"\A\ufeff?---[ \t\r]*\n(?:(.*?)\n)?---[ \t\r]*(?:\n|\Z)", re.DOTALL
+)
 # The anchor group deliberately accepts any non-brace run: a malformed id
 # (e.g. {#Bad_ID}) must reach the validator to be reported as anchor-format
 # rather than silently remaining part of the title.
@@ -50,7 +54,7 @@ def _split_frontmatter(source: str) -> tuple[dict[str, Any], str]:
     match = FRONTMATTER_RE.match(source)
     if not match:
         return {}, source
-    metadata = yaml.load(match.group(1), Loader=_StrDateSafeLoader) or {}
+    metadata = yaml.load(match.group(1) or "", Loader=_StrDateSafeLoader) or {}
     body = source[match.end():]
     return metadata, body
 
@@ -88,8 +92,8 @@ def _parse_paragraph(paragraph: str) -> Block:
     # (def-emphasis / def-single-quote-ambiguous) and a {{def:}} with
     # parameters or malformed arguments. The definition is still collected
     # from the paragraph by collect_definitions.
-    scanned = list(scan_directives(stripped))
-    anchors = find_definition_anchors(stripped, scanned=scanned)
+    lexed = lex(stripped)
+    anchors = find_definition_anchors(stripped, lexed=lexed)
     if anchors and _is_liftable_definition(anchors[0], stripped):
         anchor = anchors[0]
         return Block(
@@ -103,7 +107,7 @@ def _parse_paragraph(paragraph: str) -> Block:
     anchored = [(a.start, a.directive.start) for a in anchors if a.term is not None]
     directives = [
         d
-        for d, _scan in scanned
+        for d in lexed.directives
         if not any(start <= d.start < end for start, end in anchored)
     ]
     ref_directive = _first_liftable(directives, "ref")
