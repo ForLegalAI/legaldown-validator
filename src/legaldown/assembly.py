@@ -28,6 +28,7 @@ whose linked templates are assembled with it (§15.7.2).
 from __future__ import annotations
 
 import bisect
+import itertools
 import posixpath
 import re
 from collections.abc import Callable, Iterator, Mapping
@@ -37,7 +38,7 @@ from functools import cache
 from typing import Any
 
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
-from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, indent_width
+from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, LINE_ENDING_RE, indent_width
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import Block, Document
 from .parser import FRONTMATTER_RE, _BlockSpan, _Layout, _layout, _opens_paragraph, parse_document
@@ -141,7 +142,10 @@ def _pairs(layout: _Layout, document: Document) -> Iterator[tuple[int | None, in
     spans = layout.containers()
     # The layout is recorded by the walk that builds the model, block for
     # block; anything else is a bug, and would edit the wrong lines.
-    if len(spans) != len(model) or any(len(a) != len(b) for a, b in zip(spans, model, strict=True)):
+    if len(spans) != len(model) or any(
+        len(a) != len(b) or any(span.kind != block.kind for span, block in zip(a, b, strict=True))
+        for a, b in zip(spans, model, strict=True)
+    ):
         raise AssemblyError("The template's source does not match its parsed structure.")
     for container, (container_spans, blocks) in enumerate(zip(spans, model, strict=True)):
         for index, (span, block) in enumerate(zip(container_spans, blocks, strict=True)):
@@ -183,6 +187,7 @@ class _Occurrence:
     start: int
     end: int
     quote: str = ""
+    in_table: bool = False  # in a table row, where ``\|`` is a pipe (GFM)
 
     @property
     def qid(self) -> str:
@@ -208,16 +213,23 @@ class _Source:
     includes: list[_Include]
     occurrences: list[_Occurrence]
     newline: str = "\n"
+    #: The lines that begin a list item, as the parser read them: the item
+    #: marker there is a container marker (§15.7.3).
+    item_lines: frozenset[int] = frozenset()
+    malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
+    nested: bool = False  # an ``{{include:}}`` is written in it
 
 
 def _unix(text: str) -> tuple[str, str]:
-    """*text* without a byte-order mark and with LF line breaks, and the line
-    break it was written with. A CRLF file is assembled as LF and written
-    back as CRLF, so that no byte assembly does not edit changes."""
+    """*text* without a byte-order mark and with LF line breaks — the line
+    endings CommonMark and the parser know: LF, CR, CRLF — and the line
+    break it was written with, its first one. A CRLF (or CR) file is
+    assembled as LF and written back with it, so that no byte assembly does
+    not edit changes."""
     text = text.removeprefix("\ufeff")
-    first = text.find("\n")
-    newline = "\r\n" if first > 0 and text[first - 1] == "\r" else "\n"
-    return text.replace("\r\n", "\n"), newline
+    first = LINE_ENDING_RE.search(text)
+    newline = first.group(0) if first else "\n"
+    return LINE_ENDING_RE.sub("\n", text), newline
 
 
 def _test(condition: str, questions: Any) -> Condition | None:
@@ -234,17 +246,46 @@ def _read_body(
         if marker.placed(template) and marker.marker is not None:
             found.setdefault((marker.section, marker.block), []).append(marker)
     source = _Source(path, lines, _section_units(layout, document, lines, questions), set(), [], [])
+    tails = _tails(layout)
     for section, index, span, block in _pairs(layout, document):
         markers = found.get((section, index), [])
         if _kind(span) == "list":
-            _read_list(source, span, block, markers, questions)
+            _read_list(source, span, block, markers, questions, tails.get(id(span), []))
         elif _kind(span) == "paragraph":
             _read_paragraph(source, span, block, markers, questions)
         elif _kind(span) == "quote":
             for first, last in _note_lines(block.text):
                 source.notes.update(range(span.start + first, span.start + last + 1))
-    source.occurrences = list(_occurrences(layout, lines))
+    source.occurrences, source.malformed, source.nested = _occurrences(layout, lines)
+    source.item_lines = frozenset(
+        first for blocks in layout.containers() for block in blocks for first, _raw in block.items
+    )
     return source
+
+
+def _tails(layout: _Layout) -> dict[int, list[_BlockSpan]]:
+    """The paragraphs after each list (by ``id``) that CommonMark reads as
+    part of its last item: indented, and read as paragraphs only because
+    they follow the list (``_BlockSpan.tail``)."""
+    tails: dict[int, list[_BlockSpan]] = {}
+    for spans in layout.containers():
+        for k, span in enumerate(spans):
+            if _kind(span) == "list":
+                tails[id(span)] = list(itertools.takewhile(lambda s: s.tail, spans[k + 1:]))
+    return tails
+
+
+def _content_column(line: str) -> int:
+    """The column where the content of the list item beginning on *line*
+    starts (CommonMark): after its marker and one to four columns of spacing,
+    or one column when there are more, or when the item is empty."""
+    marker = re.match(r"[ \t]*(?:[-*+]|[0-9]{1,9}[.)])", line)
+    after = len(line[:marker.end()].expandtabs(4))
+    rest = line[marker.end():]
+    if not rest.strip():
+        return after + 1
+    spacing = len(line[:len(line) - len(rest.lstrip(" \t"))].expandtabs(4)) - after
+    return after + 1 if spacing > 4 else after + spacing
 
 
 def _section_units(
@@ -300,17 +341,26 @@ def _read_paragraph(
         source.includes.append(_Include(span.start, span.end, path))
 
 
-def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:
+def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any,
+               tails: list[_BlockSpan]) -> None:
     """Each item runs through its nested items; its marker ends its first
-    paragraph (§5.7), which the parser joins onto the item text's first line."""
+    paragraph (§5.7), which the parser joins onto the item text's first line.
+    An item the list ends in also runs through the *tails* indented to its
+    content, which CommonMark reads as its later paragraphs."""
     lines, items = source.lines, span.items
     starts = [first for first, _raw in items] + [span.end]
     listed = []  # the items the model keeps: it drops empty ones
     for k, (first, raw) in enumerate(items):
         own_end, indent = starts[k + 1], indent_width(lines[first])
         full_end = next(
-            (s for s, _raw in items[k + 1:] if indent_width(lines[s]) <= indent), span.end
+            (s for s, _raw in items[k + 1:] if indent_width(lines[s]) <= indent), None
         )
+        if full_end is None:
+            full_end, column = span.end, _content_column(lines[first])
+            for tail in tails:
+                if indent_width(lines[tail.start]) < column:
+                    break  # CommonMark closes the item here
+                full_end = tail.end
         text_lines = raw.count("\n") + 1
         paragraph_end = own_end - (text_lines - 1)
         if raw.strip():
@@ -337,10 +387,16 @@ def _note_lines(text: str, *, inside_list: bool = False) -> Iterator[tuple[int, 
             yield text.count("\n", 0, quote.start), text.count("\n", 0, quote.end)
 
 
-def _occurrences(layout: _Layout, lines: list[str]) -> Iterator[_Occurrence]:
+def _occurrences(
+    layout: _Layout, lines: list[str]
+) -> tuple[list[_Occurrence], list[Directive], bool]:
     """Every placeholder and choice in the body, lexed block by block as the
     validator lexes them, so a code span or comment hides the same ones. No
-    directive is recognized in code or raw HTML (§11.4)."""
+    directive is recognized in code or raw HTML (§11.4). Also the malformed
+    ones, and whether an ``{{include:}}`` is written anywhere."""
+    found: list[_Occurrence] = []
+    malformed: list[Directive] = []
+    includes = False
     for blocks in layout.containers():
         for block in blocks:
             if _kind(block) in ("code", "rule", "html"):
@@ -348,12 +404,21 @@ def _occurrences(layout: _Layout, lines: list[str]) -> Iterator[_Occurrence]:
             text = "\n".join(lines[block.start:block.end])
             offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
             for directive in lex(text).directives:
-                if directive.malformed or directive.name not in ("placeholder", "choose"):
+                includes |= directive.name == "include"
+                if directive.name not in ("placeholder", "choose"):
+                    continue
+                if directive.malformed:
+                    # The parser joins a paragraph's lines with spaces, so
+                    # one written across lines is well-formed to the
+                    # validator — and could not be filled here.
+                    malformed.append(directive)
                     continue
                 row = bisect.bisect_right(offsets, directive.start) - 1
                 column = directive.start - offsets[row]
-                yield _Occurrence(directive, block.start + row, column,
-                                  column + directive.end - directive.start)
+                found.append(_Occurrence(directive, block.start + row, column,
+                                         column + directive.end - directive.start,
+                                         in_table=_kind(block) == "table"))
+    return found, malformed, includes
 
 
 # ── Frontmatter ──────────────────────────────────────────────────
@@ -377,6 +442,7 @@ class _Frontmatter:
     attachments: tuple[int, int] | None = None
     items: list[_Attachment] = field(default_factory=list)
     occurrences: list[_Occurrence] = field(default_factory=list)
+    malformed: list[Directive] = field(default_factory=list)
 
     def text(self, lines: list[str] | None = None, drop: frozenset[int] = frozenset()) -> str:
         """The frontmatter, delimiters included, written from *lines* (its
@@ -386,9 +452,11 @@ class _Frontmatter:
         return self.head + "\n".join(kept) + self.tail
 
 
-def _split(source: str) -> tuple[_Frontmatter | None, str]:
+def _split(source: str, document: Document) -> tuple[_Frontmatter | None, str]:
+    """*source*'s frontmatter and body, split as the parser split them into
+    *document*: a ``---`` block whose YAML is not a mapping is body."""
     match = FRONTMATTER_RE.match(source)
-    if not match:
+    if not match or document.metadata.frontmatter_absent:
         return None, source
     if match.group(1) is None:
         return _Frontmatter(source[:match.end()], [], ""), source[match.end():]
@@ -479,7 +547,9 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
             continue
         scalars = _quoted_scalars(line)
         for directive in lex(line).directives:
-            if directive.name == "placeholder" and not directive.malformed:
+            if directive.name == "placeholder" and directive.malformed:
+                front.malformed.append(directive)  # a YAML scalar across lines
+            elif directive.name == "placeholder":
                 # Only a quoted scalar can hold one (§3.10); any other is
                 # left for the validator, never filled with unescaped text.
                 quote = next((
@@ -540,12 +610,13 @@ def _read(template: str, load_file: LoadFile | None) -> _Template:
     document = parse_document(source)
     declared = document.metadata.questions if isinstance(document.metadata.questions, dict) else {}
     template_like = is_template(document)
-    front, body = _split(source)
+    front, body = _split(source, document)
     main = _read_body("", body, document, declared, template=template_like)
     main.newline = newline
     if front is not None:
         _read_frontmatter(front, document, declared)
     subs, problems = _read_files(main, front, load_file, declared, template_like)
+    problems += _malformed(main, *subs.values(), front=front)
     for path in document.metadata.translations.values():
         # A translation group is assembled together (§15.7.2), which this
         # implementation does not do: it refuses rather than assemble one
@@ -570,25 +641,87 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     """Read every include fragment and LegalDown attachment file — the absent
     ones too: their placeholders are the template's (answer-unknown) and their
     headings take part in identifier generation (step 7)."""
-    wanted = [(include.path, "include-file-missing") for include in main.includes]
+    wanted = [(include.path, "include") for include in main.includes]
     items = front.items if front else []
-    wanted += [(item.file, "attachment-file-missing") for item in items if item.file]
+    wanted += [(item.file, "attachment") for item in items if item.file]
     subs: dict[str, _Source] = {}
     problems: list[Diagnostic] = []
-    for path, rule in wanted:
+    for path, kind in wanted:
         if path in subs:
             continue
         text = load_file(path) if load_file is not None else None
         if text is None:
             reason = "cannot be read" if load_file else "needs the Full level (§17.6)"
             message = f"'{path}' {reason}; the template is not assembled."
-            problems.append(Diagnostic(rule, "error", message))
+            problems.append(Diagnostic(f"{kind}-file-missing", "error", message))
             continue
         text, newline = _unix(text)
-        _front, body = _split(text)
-        subs[path] = _read_body(path, body, parse_document(text), declared, template=template)
+        sub_document = parse_document(text)
+        sub_front, body = _split(text, sub_document)
+        subs[path] = _read_body(path, body, sub_document, declared, template=template)
         subs[path].newline = newline
+        problems += _file_problems(path, kind, subs[path], sub_front, sub_document, template)
     return subs, problems
+
+
+def _file_problems(path: str, kind: str, source: _Source, front: _Frontmatter | None,
+                   document: Document, template: bool) -> list[Diagnostic]:
+    """The Full checks on a loaded file (§16.10, §16.11, §16.12) that the
+    assembled output depends on; the file is read here, so they are made
+    here rather than left to a validator that may not read it."""
+    what = "fragment" if kind == "include" else "attachment file"
+    problems = []
+
+    def error(rule: str, message: str) -> None:
+        problems.append(Diagnostic(rule, "error", f"The {what} '{path}' {message}"))
+
+    if front is not None:
+        error(f"{kind}-has-frontmatter", "has frontmatter, which it cannot have; the template is "
+                                         "not assembled.")
+    if any(section.level == 1 for section in document.sections):
+        error(f"{kind}-has-h1", "has a level 1 heading, which it cannot have; the template is "
+                                "not assembled.")
+    if source.nested:
+        if template:
+            error("template-fragment-invalid", "holds an {{include:}}; in a template an include "
+                                               "belongs in the template's own body (§15.3).")
+        else:
+            error("include-file-missing", "holds an {{include:}}; an include in an included or "
+                                          "attached file is not assembled, so the template is not "
+                                          "assembled.")
+    if template and kind == "include":
+        # §15.3: a fragment holds no conditions or drafting notes and gives
+        # every heading an explicit identifier. An attachment file may hold
+        # conditions: its own, beneath its attachment's `when`.
+        conditions = any(section.condition for section in document.sections) or any(
+            marker.marker is not None and marker.marker.condition
+            for marker in find_markers(document, cache(lex))
+        )
+        if conditions:
+            error("template-fragment-invalid", "holds a condition; to make a fragment conditional, "
+                                               "put the condition on its {{include:}} paragraph (§15.3).")
+        if source.notes:
+            error("template-fragment-invalid", "holds a drafting note, which belongs in the "
+                                               "template's own body (§15.3).")
+        if any(not section.identifier for section in document.sections):
+            error("template-fragment-invalid", "has a heading without an explicit identifier, "
+                                               "which every heading of a fragment has (§15.3).")
+    return problems
+
+
+def _malformed(*sources: _Source, front: _Frontmatter | None) -> list[Diagnostic]:
+    """A placeholder or choice the lexer cannot read — one written across
+    lines, which the parser joins into one — cannot be filled, so the
+    template is refused rather than assembled with it unfilled."""
+    found = [(source.path, d) for source in sources for d in source.malformed]
+    found += [("", d) for d in (front.malformed if front else [])]
+    return [
+        Diagnostic("directive-malformed", "error",
+                   f"'{directive.source[:57] + '...' if len(directive.source) > 60 else directive.source}'"
+                   f"{f' in {path!r}' if path else ''} is not a well-formed directive on one line "
+                   f"({directive.malformed}); the template is not assembled.")
+        for path, directive in found
+    ]
 
 
 def _effective_type(directive: Directive, declared: dict) -> str:
@@ -828,7 +961,7 @@ def _emit(source: _Source, removed: set[int], answers: _Answers) -> list[_Line]:
         lines.append(line)
     for k, line in enumerate(lines):
         if line.check:
-            line.text = _line_start(line, lines[k - 1].text if k else None, source.lines)
+            line.text = _line_start(line, lines[k - 1].text if k else None, source)
     return lines
 
 
@@ -859,9 +992,10 @@ def _body_replacement(
     answer = answers.get(occ.qid)
     if directive.name == "choose":
         key = _choice_key(qtype, answer)
-        if key is None or key not in directive.params:
+        params = _cell_params(directive) if occ.in_table else directive.params
+        if key is None or key not in params:
             return None
-        return _escape(_end_trimmed(directive.params[key], ends_line), following), True
+        return _escape(_end_trimmed(params[key], ends_line), following), True
     if qtype in DECISION_QUESTION_TYPES:
         return None  # placeholder-question-mismatch: the validator's to report
     if answer is _MISSING:
@@ -871,6 +1005,15 @@ def _body_replacement(
     if ptype == "text":
         return _escape(_end_trimmed(str(answer), ends_line), following), True
     return _value_directive(directive, ptype, answer), True
+
+
+def _cell_params(directive: Directive) -> dict[str, str]:
+    """A choice's values as the validator reads them in a table cell: GFM
+    turns each ``\\|`` of the row into ``|`` before the cell's text is read
+    (``parser._split_row``), so that ``"p\\|q"`` is ``p|q``."""
+    cell = re.sub(r"\\\|", "|", directive.source)
+    lexed = lex(cell).directives
+    return lexed[0].params if len(lexed) == 1 and not lexed[0].malformed else directive.params
 
 
 def _choice_key(qtype: str | None, answer: Any) -> str | None:
@@ -1047,27 +1190,36 @@ def _paragraph_open(line: str | None) -> bool:
     )
 
 
-def _containers(written: str, in_paragraph: bool, limit: int | None) -> tuple[int, bool]:
+def _containers(written: str, in_paragraph: bool, limit: int | None, *, item: bool) -> tuple[int, bool]:
     """Where the content of template line *written* begins — after its block
     quote markers and the list item marker it really has in its context —
-    and whether that is a list item marker. Never past its first insertion."""
+    and whether that is a list item marker. Never past its first insertion.
+    *item*: the parser read the line as beginning a list item, so its marker
+    is one whatever the line before it — an item numbered 2 continues its
+    list even though it could not interrupt a paragraph. Inside a block
+    quote, which the parser does not read into items, the marker is judged
+    from the line before."""
     end = _QUOTE_MARKERS_RE.match(written).end()
     listed = False
-    item = _ITEM_MARKER_RE.match(written, end)
-    if item and _construct(written[end:], in_paragraph=in_paragraph) in ("list", "ordered"):
-        end, listed = item.end(), True
+    marker = _ITEM_MARKER_RE.match(written, end)
+    if marker and (
+        (item and end == 0)
+        or _construct(written[end:], in_paragraph=in_paragraph) in ("list", "ordered")
+    ):
+        end, listed = marker.end(), True
     if limit is not None and limit < end:
         return limit, False
     return end, listed
 
 
-def _line_start(line: _Line, previous: str | None, template: list[str]) -> str:
+def _line_start(line: _Line, previous: str | None, source: _Source) -> str:
     """The line-start check (§15.7.3) of *line*, which follows *previous* in
     the output."""
+    template = source.lines
     written = template[line.origin]
     written_previous = template[line.origin - 1] if line.origin else None
     was_open = _paragraph_open(written_previous)
-    prefix, listed = _containers(written, was_open, line.first)
+    prefix, listed = _containers(written, was_open, line.first, item=line.origin in source.item_lines)
     content = line.text[prefix:]
     if line.first is not None and not written[prefix:line.first].strip(" \t"):
         content = content.lstrip(" \t")

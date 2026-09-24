@@ -181,7 +181,9 @@ def test_assemble_reads_no_file_outside_the_template_directory(tmp_path, capsys,
     assert "[include-file-missing]" in capsys.readouterr().err
 
 
-def test_assemble_refuses_a_kept_file_named_as_the_template(tmp_path, capsys):
+def test_assemble_refuses_a_template_that_keeps_itself(tmp_path, capsys):
+    # Its own attachment file: its frontmatter and level 1 heading stop it
+    # before the output could be written over by the kept file.
     folder = tmp_path / "t"
     folder.mkdir()
     (folder / "main.lgd").write_text(
@@ -189,8 +191,8 @@ def test_assemble_refuses_a_kept_file_named_as_the_template(tmp_path, capsys):
         + "\nSee {{attach: s}}.\n",
         encoding="utf-8",
     )
-    assert main(["assemble", str(folder / "main.lgd"), "-o", str(tmp_path / "out")]) == EXIT_ERROR
-    assert "both the template and a file it keeps" in capsys.readouterr().err
+    assert main(["assemble", str(folder / "main.lgd"), "-o", str(tmp_path / "out")]) == EXIT_DIAGNOSTICS
+    assert "[attachment-has-frontmatter]" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
 
 

@@ -39,9 +39,11 @@ files other than the document itself.
 | Lexer-level grammar (§11.2–11.4) | `raw-html` |
 | Other | `frontmatter-invalid-yaml` (reported by the CLI, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
-In practice this means multi-file processing is out of scope: includes, attachment file contents,
-and bilingual document sets are not resolved or cross-checked. Single-document authoring, editing,
-and CI validation are fully covered.
+In practice this means validating a set of files is out of scope: the validator does not resolve
+or cross-check includes, attachment file contents, or bilingual document sets. Single-document
+authoring, editing, and CI validation are fully covered. Assembly is the exception: it reads a
+template's include fragments and LegalDown attachment files, and reports the checks on them that
+its output depends on (see [Assembly](#assembly-157-176)); the validator still does not.
 
 The template constructs of specification 0.2 (§15) are validated within the document: questions,
 conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, insertion
@@ -70,8 +72,8 @@ One id appears on both sides of that line. `attachment-file-missing` is defined 
 `file` path exists*, which needs the filesystem and is therefore unimplemented — but the validator
 also emits that id when an attachment declares no `file` at all, which is visible in the document
 itself. The specification provides no separate id for the absent key, so a diagnostic carrying
-`attachment-file-missing` from this implementation always means the key is missing, never that the
-path failed to resolve.
+`attachment-file-missing` from the validator always means the key is missing, never that the path
+failed to resolve. From assembly, which reads the file, it means the file could not be read.
 
 `frontmatter-absent` is reported for a document that does not open with a closed `---` block,
 and for one whose `---` block holds YAML that is a scalar or a list rather than a mapping of
@@ -100,11 +102,13 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Cases for the rules above are skipped by name, so the 29 `not implemented` skips reproduce this
-table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 37 skips in
-total: the other eight are the implemented rules named above, skipped as `multi-file case` or
-`requires conformance level full`. Cases that need the final option run with it; cases that need
-an answers set are assembled with it, and each assembly case is compared byte for byte with its
-expected output. CI runs this on every push and pull request.
+table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 91 passed
+and 39 skipped: eight of the other skips are the implemented rules named above, skipped as
+`multi-file case` or `requires conformance level full`, and two are the `multi-file` assembly
+case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py` assembles it with
+a loader instead. Cases that need the final option run with it; cases that need an answers set
+are assembled with it, and each assembly case is compared byte for byte with its expected output.
+CI runs this on every push and pull request.
 
 ## Assembly (§15.7, §17.6)
 
@@ -121,8 +125,33 @@ asks, all of them or those an answers set still leaves open.
   implementation provides for assembly without claiming Full, as §17.1 allows. Without
   `load_file`, such a template is refused with `include-file-missing` or
   `attachment-file-missing`, never assembled partially (§17.6).
+- A file assembly reads is checked as the Full level checks it (§16.10–§16.12), and the template
+  is refused if it fails: frontmatter (`include-has-frontmatter`, `attachment-has-frontmatter`), a
+  level 1 heading (`include-has-h1`, `attachment-has-h1`), and, in a template,
+  `template-fragment-invalid` for an `{{include:}}` in a fragment or attachment file, or a
+  condition, a drafting note, or a heading without an explicit identifier in a fragment. An
+  attachment file may hold conditions of its own (§15.3). An `{{include:}}` in a fragment or
+  attachment file of a document that is not a template is not assembled: it is refused with
+  `include-file-missing`. The other Full checks — `include-cycle`, the `*-anchor-duplicate` and
+  `include-heading-skip` rules, and the path rules — are not made.
+- A `{{placeholder:}}` or `{{choose:}}` written across two lines is refused with
+  `directive-malformed`: the validator reads it on one line (see above), but it could not be
+  filled.
 - A template with `translations` is refused with `translation-file-missing`: its linked templates
-  are assembled with it (§15.7.2), which this implementation does not do.
+  are assembled with it (§15.7.2), which this implementation does not do. The specification has
+  no id for a capability an implementation lacks, so the refusal uses the rule it would otherwise
+  break.
+
+Assembly edits the template's source and so inherits a few limits of the parser's reading of it:
+
+- An item marker inside a block quote (`> 2. x`) is judged from the line before for the
+  line-start check (§15.7.3); the parser does not read lists inside quotes.
+- Removing a drafting note or unit can join what it separated: indented code after a removed note
+  that followed a list becomes a paragraph of the list's last item, and two code blocks separated
+  only by a removed note merge. §15.7.2 step 2 removes the lines; the template author keeps such
+  blocks apart with text that stays.
+- A drafting note that starts on a list item's marker line (`- > [!DRAFTING]`) is removed with that
+  line, the marker included.
 
 All six cases of the corpus's `fixtures/assembly` assemble byte for byte, the multi-file case
 included, and each output validates without Errors (§15.7.4).

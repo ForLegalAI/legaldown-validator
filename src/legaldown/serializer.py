@@ -213,7 +213,7 @@ def _render_block(block: Block, *, indent: bool = False) -> str:
             )
         )
     if block.kind == "quote":
-        lines = block.text.splitlines() or [""]
+        lines = block.text.split("\n")  # the parser joins quoted lines with LF
         return "\n".join(f"> {line}".rstrip() for line in lines)
     if block.kind == "table":
         # GFM needs a header row; a table built without one gets empty

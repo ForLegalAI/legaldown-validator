@@ -20,6 +20,7 @@ from .directives import Directive, iter_directives, lex
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
+    LINE_ENDING_RE,
     closes_fence,
     dedent,
     fence_end,
@@ -603,12 +604,15 @@ class _HeadingSpan:
 class _BlockSpan:
     """Where a block lies in the body: lines ``[start, end)``. *kind* is the
     parsed block's. *items*: a list's items, each with the line it starts on
-    and its text as parsed, empty items included (the model drops them)."""
+    and its text as parsed, empty items included (the model drops them).
+    *tail*: a paragraph read as such only because it follows a list, whose
+    last item CommonMark reads it as part of (``_parse_body``)."""
 
     kind: str
     start: int
     end: int
     items: list[tuple[int, str]] = field(default_factory=list)
+    tail: bool = False
 
 
 @dataclass(slots=True)
@@ -751,7 +755,7 @@ def _parse_body(
             elif len(blocks) > count:
                 block = blocks[-1]
                 raw = list(zip(item_starts, block.items, strict=True)) if item_starts else []
-                spans.append(_BlockSpan(block.kind, start, index, raw))
+                spans.append(_BlockSpan(block.kind, start, index, raw, in_tail and block.kind in _PARAGRAPH_KINDS))
         if heading is not None:
             blocks = []
             sections.append((heading, blocks))
@@ -774,7 +778,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     """
     # A byte-order mark is an encoding artifact, not content.
     not_line_editable, metadata, body, absent = _split_frontmatter((source or "").removeprefix("\ufeff"))
-    preamble, sections = _parse_body(body.splitlines())
+    preamble, sections = _parse_body(LINE_ENDING_RE.split(body))
     payload: dict[str, Any] = {
         "metadata": metadata,
         "sections": [

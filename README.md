@@ -296,7 +296,11 @@ needed_questions(template_source, answers)     # what to ask next, given the ans
 Assembly edits the template as written — "no other byte of the template changes" — so its
 output is identical to any other conforming implementation's. A template with include fragments
 or LegalDown attachment files needs `load_file=`, a function from a relative path to the file's
-text; without it such a template is refused rather than assembled partially (§17.6).
+text; without it such a template is refused rather than assembled partially (§17.6). The files it
+reads are checked as the Full level checks them — no frontmatter, no level 1 heading, and in a
+template no includes, and no conditions or drafting notes in a fragment — and a template whose
+files fail is refused. [CONFORMANCE.md](CONFORMANCE.md#assembly-157-176) lists what assembly
+checks and what it does not.
 
 ## Scope
 

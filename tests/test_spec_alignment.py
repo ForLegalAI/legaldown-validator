@@ -1138,6 +1138,19 @@ def test_setext_headings_are_headings():
     assert len(parse_document(source).preamble) == 1
 
 
+@pytest.mark.parametrize("character", ["\x0c", "\x0b", "\x1c", "\x85", "\u2028"])
+def test_only_lf_cr_and_crlf_end_a_line(character):
+    """CommonMark's line endings are LF, CR and CRLF; the other characters
+    str.splitlines() breaks at are text, so no heading starts after one."""
+    source = _BARE + f"Intro.{character}# Not a heading\n\n# Heading\r\rText.\r\n"
+    assert _outline(source) == [("Heading", 1, "heading")]
+
+
+def test_a_quote_round_trips_a_character_that_is_not_a_line_ending():
+    document = parse_document(_FRONTMATTER + "> One\x0ctwo.\n> Three.\n")
+    assert serialize_document(document).endswith("> One\x0ctwo.\n> Three.\n")
+
+
 @pytest.mark.parametrize(
     "body",
     ["Text.\n\n---\n\nMore.\n", "- item\n---\n", "> quoted\n---\n", "| a | b |\n|---|---|\n| c | d |\n---\n"],

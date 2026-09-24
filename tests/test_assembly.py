@@ -637,6 +637,143 @@ class TestCurrentBlockStructure:
         result = assemble(_template(body, _BOOL), {"x": False})
         assert _body(result) == "\n# Terms\n\nA.\n\n# Signature Block {#signature-block}\n\n# After\n\nC.\n"
 
+    @pytest.mark.parametrize("character", ["\x0c", "\x0b", "\x1c", "\x85", "\u2028"])
+    def test_only_lf_cr_and_crlf_end_a_line(self, character):
+        """Other characters str.splitlines() breaks at are text (CommonMark):
+        splitting at them moved every later unit onto the wrong lines."""
+        body = f"# A\n\nText{character}# Not a heading {{when=x}}\n\n- one {character}- two\n\nAfter.\n"
+        result = assemble(_template(body, _BOOL), {"x": False})
+        assert _body(result) == f"\n# A\n\n- one {character}- two\n\nAfter.\n"
+
+    def test_a_cr_only_file_is_assembled_and_written_back_with_cr(self):
+        template = _template("# A\n\nKept.\n\nDropped. {when=x}\n", _BOOL).replace("\n", "\r")
+        result = assemble(template, {"x": False})
+        assert result.ok and "\n" not in result.output
+        assert result.output.endswith("\r# A\r\rKept.\r")
+
+    def test_a_dashed_block_that_is_not_a_mapping_is_body(self):
+        """The parser reads it as a rule and a setext heading, not
+        frontmatter; assembly splits the file where the parser does."""
+        template = "---\njust a string\n---\n\n# Heading\n\nFor {{placeholder: name}}.\n"
+        result = assemble(template, {"name": "Ann"})
+        assert result.output == "---\njust a string\n---\n\n# Heading\n\nFor Ann.\n"
+
+    def test_a_fragment_opening_with_such_a_block_is_body_too(self):
+        files = {"f.lgd": "---\njust a string\n---\n\nFor {{placeholder: name}}.\n"}
+        result = assemble(_template("# A\n\n{{include: f.lgd}}\n"), {"name": "Ann"}, load_file=files.get)
+        assert result.files == {"f.lgd": "---\njust a string\n---\n\nFor Ann.\n"}
+
+    def test_an_item_numbered_after_1_keeps_its_marker_and_its_insertion_is_escaped(self):
+        """An item numbered 2 continues its list, so its marker is a container
+        marker even though it could not interrupt a paragraph."""
+        result = assemble(_template("# A\n\n1. first item\n2. {{placeholder: name}}\n", _TEXT), {"name": "# T"})
+        assert _body(result) == "\n# A\n\n1. first item\n2. \\# T\n"
+
+    def test_an_item_numbered_2_left_first_stays_a_list_item(self):
+        body = "# A\n\n1. first {when=x}\n2. {{placeholder: name}} second\n"
+        result = assemble(_template(body, _BOOL + _TEXT), {"x": False, "name": "Tee"})
+        assert _body(result) == "\n# A\n\n2. Tee second\n"
+
+    def test_spacing_after_an_empty_choice_goes_in_an_item_numbered_2(self):
+        body = '# A\n\n1. first\n2. {{choose: x, true="", false=""}}  rest\n'
+        result = assemble(_template(body, _BOOL), {"x": True})
+        assert _body(result) == "\n# A\n\n1. first\n2. rest\n"
+
+    def test_a_nested_item_numbered_2(self):
+        body = "# A\n\n- item one\n  1. nested first\n  2. {{placeholder: name}} nested\n"
+        result = assemble(_template(body, _TEXT), {"name": "# T"})
+        assert _body(result) == "\n# A\n\n- item one\n  1. nested first\n  2. \\# T nested\n"
+
+    def test_a_conditional_last_item_goes_with_its_later_paragraphs(self):
+        """An indented paragraph after a list is the last item's (CommonMark),
+        though the parser keeps it a paragraph."""
+        body = "# A\n\n- kept\n- dropped {when=x}\n\n    Its second paragraph.\n\n    Its third.\n\nAfter.\n"
+        result = assemble(_template(body, _BOOL), {"x": False})
+        assert _body(result) == "\n# A\n\n- kept\n\nAfter.\n"
+
+    def test_a_later_paragraph_goes_with_the_item_it_is_indented_to(self):
+        # Indented less than the deepest item's content, the paragraph is
+        # its parent's (cmark-gfm): it stays when the deepest item goes.
+        body = "# A\n\n- one\n  - nested a\n    - deep a\n    - deep b {when=x}\n\n    Nested a's.\n\nAfter.\n"
+        result = assemble(_template(body, _BOOL), {"x": False})
+        assert _body(result) == "\n# A\n\n- one\n  - nested a\n    - deep a\n\n    Nested a's.\n\nAfter.\n"
+
+    def test_an_escaped_pipe_in_a_choice_in_a_table_cell_is_a_pipe(self):
+        """The row's ``\\|`` is a pipe before the cell is read (GFM): the
+        phrase is p|q, inserted escaped once."""
+        choice = "  c:\n    type: choice\n    choices:\n      p: P\n      o: O\n"
+        body = '# A\n\n| X |\n|---|\n| {{choose: c, p="p\\|q", o="other"}} |\n'
+        result = assemble(_template(body, choice), {"c": "p"})
+        assert _body(result) == "\n# A\n\n| X |\n|---|\n| p\\|q |\n"
+
+
+class TestMalformed:
+    def test_a_blank_written_across_lines_is_refused(self):
+        """The parser joins the lines, so the validator reads it; it could not
+        be filled, so assembly refuses rather than leave it."""
+        result = assemble(_template("# A\n\nFor {{placeholder:\nname}} here.\n", _TEXT), {"name": "Ann"})
+        assert _rules(result) == [("directive-malformed", "error")]
+        assert result.output == ""
+
+    def test_a_choice_written_across_lines_in_an_item_is_refused(self):
+        body = '# A\n\n- For {{choose: x,\n  true="a", false="b"}}.\n'
+        assert _rules(assemble(_template(body, _BOOL), {"x": True})) == [("directive-malformed", "error")]
+
+    def test_a_blank_across_frontmatter_lines_is_refused(self):
+        front = 'note: "For {{placeholder:\n  name}}"\n'
+        result = assemble(_template("# A\n\nText.\n", _TEXT, front=front), {"name": "Ann"})
+        assert _rules(result) == [("directive-malformed", "error")]
+
+
+class TestLoadedFiles:
+    """The Full checks on a file assembly reads (§16.10–§16.12)."""
+
+    @staticmethod
+    def _assemble(fragment: str, *, questions: str = _BOOL, attachment: bool = False) -> AssemblyResult:
+        if attachment:
+            front = "attachments:\n  - id: s\n    title: S\n    file: s.lgd\n"
+            template = _template("# A\n\nSee {{attach: s}}.\n", questions, front=front)
+            return assemble(template, {"x": True}, load_file={"s.lgd": fragment}.get)
+        template = _template("# A\n\n{{include: f.lgd}}\n\nB. {when=x}\n" if questions else
+                             "# A\n\n{{include: f.lgd}}\n", questions)
+        return assemble(template, {"x": True}, load_file={"f.lgd": fragment}.get)
+
+    @pytest.mark.parametrize("attachment", [False, True])
+    def test_frontmatter_is_refused(self, attachment):
+        result = self._assemble("---\ntitle: T\n---\n\n## B {#b}\n\nText.\n", attachment=attachment)
+        rule = "attachment-has-frontmatter" if attachment else "include-has-frontmatter"
+        assert _rules(result) == [(rule, "error")]
+
+    @pytest.mark.parametrize("attachment", [False, True])
+    def test_a_level_1_heading_is_refused(self, attachment):
+        result = self._assemble("# B {#b}\n\nText.\n", attachment=attachment)
+        rule = "attachment-has-h1" if attachment else "include-has-h1"
+        assert _rules(result) == [(rule, "error")]
+
+    @pytest.mark.parametrize("fragment", [
+        "## B {#b when=x}\n\nText.\n",
+        "## B {#b}\n\nText. {when=x}\n",
+        "## B {#b}\n\n- Item. {when=x}\n",
+        "## B {#b}\n\n> [!DRAFTING]\n> A note.\n",
+        "## B\n\nText.\n",
+        "## B {#b}\n\n{{include: g.lgd}}\n",
+    ])
+    def test_a_template_fragment_holds_none_of_these(self, fragment):
+        """§15.3: no conditions, drafting notes or includes; an explicit
+        identifier on every heading."""
+        assert _rules(self._assemble(fragment)) == [("template-fragment-invalid", "error")]
+
+    def test_a_template_attachment_file_may_hold_conditions_but_no_include(self):
+        """Its conditions are its own, beneath its attachment's (§15.3)."""
+        assert self._assemble("## B\n\nText. {when=x}\n", attachment=True).ok
+        result = self._assemble("## B\n\n{{include: g.lgd}}\n", attachment=True)
+        assert _rules(result) == [("template-fragment-invalid", "error")]
+
+    def test_an_include_in_a_fragment_of_a_document_is_not_assembled(self):
+        result = self._assemble("## B\n\n{{include: g.lgd}}\n", questions="")
+        assert _rules(result) == [("include-file-missing", "error")]
+        assert (result.output, result.files) == ("", {})
+
 
 class TestFilesItCannotRead:
     def test_an_include_without_a_loader_is_refused(self):
