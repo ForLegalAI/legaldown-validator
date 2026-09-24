@@ -29,6 +29,10 @@ HTML_BLOCK_START_RE = re.compile(
     re.IGNORECASE,
 )
 
+# An HTML comment (CommonMark 0.31): ``<!-->``, ``<!--->``, or ``<!--``, text
+# not containing ``-->``, and ``-->``. The empty forms end at their own ``>``.
+HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)
+
 _TAB = 4  # a tab advances to the next multiple of four columns
 
 

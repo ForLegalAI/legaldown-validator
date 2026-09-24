@@ -563,8 +563,6 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             index = end
             lazy = False
         if heading is not None:
-            if heading[0] == "Signature Block" and heading[1].identifier == "signature-block":
-                break
             blocks = []
             sections.append((heading, blocks))
             lazy = False

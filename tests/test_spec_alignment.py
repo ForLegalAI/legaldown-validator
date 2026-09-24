@@ -16,9 +16,11 @@ from legaldown import (
     iter_directives,
     serialize_document,
 )
-from legaldown.directives import format_value
+from legaldown.directives import format_value, lex
+from legaldown.markers import Marker, split_heading
 from legaldown.parser import collect_source_directives, parse_document
 from legaldown.validator import validate_document
+from legaldown.validator.helpers import generate_identifier
 
 _FRONTMATTER = """---
 title: Fixture
@@ -436,6 +438,43 @@ def test_escaped_placeholder_in_metadata_is_not_a_placeholder():
 def test_comment_opener_inside_code_span_is_code():
     result = _validate("Use `<!--` to open. {{ref: nope}} and `-->` closes.")
     assert "ref-broken" in result.rules("error")
+
+
+@pytest.mark.parametrize("comment", ["<!-->", "<!--->"])
+def test_an_empty_comment_ends_at_its_own_closing_bracket(comment):
+    """CommonMark 0.31: ``<!-->`` and ``<!--->`` are complete comments, not
+    openers that run on to a later ``-->``."""
+    lexed = lex(f"Text {comment} {{{{party: x}}}} more --> end")
+    assert [d.source for d in lexed.directives] == ["{{party: x}}"]
+    assert lexed.view.startswith("Text " + " " * len(comment) + " {{party: x}}")
+    assert "ref-broken" in _validate(f"First. {comment}{{{{ref: nowhere}}}} shown -->").rules("error")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a <!----> {{ref: nope}}", "a <!-- x -- y --> {{ref: nope}}", "a <!--><!--> {{ref: nope}}", "a <!-- {{ref: nope}}"],
+)
+def test_comments_around_the_empty_forms_keep_their_extent(text):
+    assert [d.source for d in lex(text).directives] == ["{{ref: nope}}"]
+
+
+def test_an_empty_comment_in_a_quoted_value_is_part_of_the_value():
+    (directive,) = lex('{{term: x, label="<!-->"}} and <!-- {{ref: y}} -->').directives
+    assert directive.params["label"] == "<!-->"
+
+
+def test_an_empty_comment_after_a_heading_marker_keeps_the_marker():
+    assert split_heading("Scope {#scope} <!-->") == ("Scope <!-->", Marker("scope"))
+    assert generate_identifier("Scope <!--> Terms") == ("scope-terms", False)
+
+
+def test_text_after_an_empty_comment_is_not_a_comment():
+    # The marker is followed by text, so it is not in an anchor position.
+    rules = _validate("Deliver. {#delivery} <!--> tail -->\n\nSee {{ref: delivery}}.").rules()
+    assert {"anchor-misplaced", "ref-broken"} <= rules
+    # Text after the include, so the paragraph is not include-only (§12.2)
+    # and its anchor is kept.
+    assert _validate("{{include: parts/a.lgd}} <!--> more --> {#part-a}\n\nSee {{ref: part-a}}.").rules() == set()
 
 
 def test_format_value_rejects_line_breaks_and_quotes_openers():
@@ -886,6 +925,30 @@ def test_dashes_not_under_a_paragraph_are_a_rule(body):
     document = parse_document(_FRONTMATTER + body)
     assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms")]
     assert "rule" in [b.kind for b in document.sections[0].blocks]
+
+
+@pytest.mark.parametrize("hashes", ["#", "##"])
+def test_a_signature_block_heading_is_an_ordinary_section(hashes):
+    """§2.2: signature blocks are not LegalDown markup, so a heading named
+    like one is a section, and what follows it is content."""
+    source = (
+        f"{_BARE}# A\n\nSee {{{{ref: signature-block}}}}.\n\n"
+        f"{hashes} Signature Block {{#signature-block}}\n\nSigned by the parties. {{{{ref: nowhere}}}}\n\n# After\n\nText.\n"
+    )
+    document = parse_document(source)
+    assert [s.title for s in document.sections] == ["A", "Signature Block", "After"]
+    result = validate_document(document)
+    assert [d.message for d in result.diagnostics if d.rule == "ref-broken"] == [
+        "Broken section reference: 'nowhere'."
+    ]
+    serialized = serialize_document(document)
+    assert "Signed by the parties." in serialized
+    assert parse_document(serialized) == document
+
+
+def test_a_second_signature_block_identifier_is_a_duplicate():
+    source = _BARE + "# Signature Block {#signature-block}\n\nA.\n\n# Signature Block {#signature-block}\n\nB.\n"
+    assert "anchor-duplicate" in validate_document(parse_document(source)).rules()
 
 
 def test_setext_heading_round_trips_as_an_atx_heading():

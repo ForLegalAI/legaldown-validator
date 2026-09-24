@@ -17,7 +17,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from .markdown import FENCE_OPEN_RE, fence_end
+from .markdown import FENCE_OPEN_RE, HTML_COMMENT_RE, fence_end
 
 # Named parameters each directive defines (§6, §7, §10, §12, §15.5). ``note`` is
 # defined for every field spec (§10.1). Placeholder ``currency`` and ``unit``
@@ -309,12 +309,12 @@ def lex(text: str) -> Lexed:
             pos = start + 1
             continue
         if token.group(0) == "<!--":
-            close = view.find("-->", start + 4)
-            if close < 0:
+            comment = HTML_COMMENT_RE.match(view, start)
+            if comment is None:
                 pos = start + 4  # an unclosed comment is literal text
             else:
-                view = _blank(view, start, close + 3)
-                pos = close + 3
+                view = _blank(view, start, comment.end())
+                pos = comment.end()
             continue
         if token.group(0).startswith("`"):
             ticks = len(token.group(0))

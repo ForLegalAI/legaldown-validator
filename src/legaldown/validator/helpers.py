@@ -6,7 +6,7 @@ import re
 import unicodedata
 from datetime import date as date_type
 
-from ..markers import HTML_COMMENT_RE
+from ..markdown import HTML_COMMENT_RE
 
 # The §5.3 transliteration table, exhaustive: exactly these mappings.
 _TRANSLITERATION = str.maketrans({
