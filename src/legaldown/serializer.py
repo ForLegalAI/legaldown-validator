@@ -133,14 +133,22 @@ def _list_item(marker: str, item: str) -> str:
     return "\n".join([first, *(" " * len(marker) + line if line else line for line in rest)])
 
 
-def _paragraph(text: str) -> str:
-    """A paragraph's text, with a backslash before its first character if at
-    the margin it would open a code block, a heading, or an HTML block. The
-    parser never reads such text as a paragraph, so only a model built in
-    code has it; the backslash renders as nothing (CommonMark)."""
-    if FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or html_block_end([text], 0) is not None:
-        return "\\" + text
-    return text
+def _opens_block(text: str) -> bool:
+    """True if *text* at the margin would open a code block, a heading, or
+    an HTML block rather than a paragraph."""
+    return bool(FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or html_block_end([text], 0) is not None)
+
+
+def _paragraph(text: str, *, indent: bool = False) -> str:
+    """A paragraph's text. *indent* writes it indented four columns, which
+    after a list the parser reads as paragraph text whatever it begins with.
+    Elsewhere, text that would open another block gets a backslash before
+    it, which renders as nothing (CommonMark): the parser reads such text as
+    a paragraph only after a list, so otherwise only a model built in code
+    holds it."""
+    if indent:
+        return "    " + text
+    return "\\" + text if _opens_block(text) else text
 
 
 def _code(text: str, *, after_list: bool) -> str:
@@ -169,9 +177,11 @@ def _table_row(cells: list[str]) -> str:
     return "| " + " | ".join(_table_cell(cell) for cell in cells) + " |"
 
 
-def _render_block(block: Block) -> str:
+def _render_block(block: Block, *, indent: bool = False) -> str:
+    """*block* as source; *indent* writes a paragraph-like block indented
+    four columns (``_paragraph``)."""
     if block.kind == "paragraph":
-        return _paragraph(block.text.strip())
+        return _paragraph(block.text.strip(), indent=indent)
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()
@@ -181,14 +191,14 @@ def _render_block(block: Block) -> str:
             else f'"{term}" {{{{def:}}}}'
         )
         body = block.text.strip()
-        return f"{anchor} {body}" if body else anchor
+        return _paragraph(f"{anchor} {body}" if body else anchor, indent=indent)
     if block.kind == "ref":
         target = format_value(block.target, positional=True)
-        return _paragraph(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}".strip())
+        return _paragraph(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}".strip(), indent=indent)
     if block.kind == "term":
         target = format_value(block.target, positional=True)
         label_part = f", label={format_value(block.label)}" if block.label else ""
-        return _paragraph(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip())
+        return _paragraph(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip(), indent=indent)
     if block.kind == "unordered_list":
         items = [item for item in block.items if item.strip()]
         # An item whose text begins with dashes, such as "--", would make a
@@ -228,15 +238,34 @@ def _render_block(block: Block) -> str:
     return block.text.strip()
 
 
+_LISTS = ("ordered_list", "unordered_list")
+_PARAGRAPHS = ("paragraph", "definition", "ref", "term")
+
+
 def _render_blocks(blocks: list[Block]) -> list[str]:
-    """Rendered blocks, each preceded by a blank separator line."""
+    """Rendered blocks, each preceded by a blank separator line.
+
+    After a list the parser reads indented lines as paragraphs, whatever
+    they begin with, for as long as each paragraph is indented
+    (``parser._parse_body``). So the paragraphs directly after a list, up
+    to the last one that would otherwise open another block, are written
+    indented."""
     parts: list[str] = []
-    after_list = False
-    for block in blocks:
-        rendered = _code(block.text, after_list=True) if after_list and block.kind == "code" else _render_block(block)
+    indented: set[int] = set()
+    for index, block in enumerate(blocks):
+        after_list = index > 0 and blocks[index - 1].kind in _LISTS
+        if block.kind in _LISTS:
+            run = index + 1
+            while run < len(blocks) and blocks[run].kind in _PARAGRAPHS:
+                if _opens_block(_render_block(blocks[run], indent=True)[4:]):
+                    indented.update(range(index + 1, run + 1))
+                run += 1
+        if after_list and block.kind == "code":
+            rendered = _code(block.text, after_list=True)
+        else:
+            rendered = _render_block(block, indent=index in indented)
         if rendered:
             parts.extend(["", rendered])
-            after_list = block.kind in ("ordered_list", "unordered_list")
     return parts
 
 

@@ -550,7 +550,8 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
             or (line.lstrip().startswith(">") and indent_width(line) <= 3)
             or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
-            or (indent_width(line) <= 3 and _parse_table(lines, end) is not None)
+            # The delimiter row decides: the header row is paragraph text.
+            or (end + 1 < len(lines) and indent_width(lines[end + 1]) <= 3 and _parse_table(lines, end) is not None)
             or (RULE_RE.match(line) and not SETEXT_UNDERLINE_RE.match(line) and indent_width(line) <= 3)
         ):
             break
@@ -565,6 +566,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
 
 _Heading = tuple[str, Marker, int]  # title, marker, level
 _LIST_KINDS = ("ordered_list", "unordered_list")
+_PARAGRAPH_KINDS = ("paragraph", "definition", "ref", "term")
 
 
 def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
@@ -578,6 +580,10 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
     sections: list[tuple[_Heading, list[Block]]] = []
     blocks = preamble
     lazy = False  # the last block was a list, quote, or table, with no blank line since
+    # After a list, which this parser ends at a blank line, indented lines
+    # stay paragraphs rather than code: CommonMark keeps them in the list's
+    # last item. The run lasts through such paragraphs.
+    list_tail = False
     index = 0
     while index < len(lines):
         line = lines[index]
@@ -586,15 +592,17 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             lazy = False
             continue
         heading: _Heading | None = None
-        if indent_width(line) >= 4 and not (blocks and blocks[-1].kind in _LIST_KINDS):
+        in_tail = list_tail and indent_width(line) >= 4
+        # A table that interrupted a paragraph may have an indented header
+        # row: the paragraph ended there (_paragraph_end).
+        interrupting_table = index > 0 and bool(lines[index - 1].strip()) and _parse_table(lines, index) is not None
+        if indent_width(line) >= 4 and not in_tail and not interrupting_table:
             # Indented code (§11.4). A paragraph's own lines, and a list's
-            # or quote's lazy lines, never get here. After a list this
-            # parser ends at a blank line, CommonMark keeps an indented
-            # line in the list's last item: it stays a paragraph here.
+            # or quote's lazy lines, never get here.
             end = indented_code_end(lines, index)
             blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
             index = end
-            lazy = False
+            lazy = list_tail = False
             continue
         opening = FENCE_OPEN_RE.match(line)
         atx = HEADING_RE.match(line)
@@ -661,6 +669,9 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             blocks = []
             sections.append((heading, blocks))
             lazy = False
+        list_tail = bool(blocks) and (
+            blocks[-1].kind in _LIST_KINDS or (in_tail and blocks[-1].kind in _PARAGRAPH_KINDS)
+        )
     return preamble, sections
 
 

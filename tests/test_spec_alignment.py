@@ -1727,3 +1727,33 @@ def test_model_built_indented_code_after_a_list_is_written_fenced():
     written = serialize_document(document)
     assert "- one\n\n```\nx = `y`\n\n  z\n```" in written
     assert [b.kind for b in parse_document(written).sections[0].blocks] == ["unordered_list", "code"]
+
+
+def test_every_indented_paragraph_after_a_list_stays_a_paragraph():
+    """CommonMark keeps them all in the list's last item, so their
+    directives are checked; an unindented paragraph ends the run."""
+    body = "1. Clause.\n\n    Second.\n\n    Pay {{placeholder: fee}}.\n\nThird.\n\n    code {{ref: nope}}\n"
+    assert [kind for kind, _text in _code_blocks(body)] == ["ordered_list", "paragraph", "paragraph", "paragraph", "code"]
+    result = validate_document(parse_document(_FRONTMATTER + body), final=True)
+    assert "placeholder-unfilled" in result.rules("error") and "ref-broken" not in result.rules()
+
+
+@pytest.mark.parametrize("opener", ["# foo", "<div>", "```", "~~~", "<!-- c -->"])
+def test_an_indented_paragraph_after_a_list_round_trips_whatever_it_begins_with(opener):
+    body = f"- a\n\n    b\n\n    {opener}\n\nd\n\n    code\n"
+    assert _code_blocks(body) == [
+        ("unordered_list", ""), ("paragraph", "b"), ("paragraph", opener), ("paragraph", "d"), ("code", "    code")
+    ]
+    assert "\n    b\n\n    " in serialize_document(parse_document(_FRONTMATTER + body))
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("Text.\n    | a |\n|---|\n| 1 |\n", ["paragraph", "table"]),  # the delimiter row decides
+        ("Text.\n    | a |\n    |---|\n", ["paragraph"]),
+        ("{{ref: x}} y\n      <div>x</div>\n      | a | b |\n|---|---|\n", ["ref", "table"]),
+    ],
+)
+def test_a_table_with_an_indented_header_interrupts_a_paragraph(body, kinds):
+    assert [kind for kind, _text in _code_blocks(body)] == kinds

@@ -59,8 +59,9 @@ claim. Four limits apply:
 
 Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body.
 Indented code inside a block quote or a list item is not recognized, so directives in it are
-checked. An indented line directly after a list, past the blank line that ends the list here,
-stays a paragraph, as CommonMark keeps it in the list's last item rather than making it code.
+checked. Indented lines directly after a list, past the blank line that ends the list here,
+stay paragraphs for as long as each is indented, as CommonMark keeps them in the list's last item
+rather than making them code.
 
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy
