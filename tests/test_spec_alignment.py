@@ -6,6 +6,8 @@ its input, and the §11.4 recognition contexts.
 """
 from __future__ import annotations
 
+import random
+
 import pytest
 import yaml
 
@@ -651,6 +653,50 @@ def test_diagnostics_expose_rule_ids_and_levels():
 
 
 # ── Index alignment and amendment severity ────────────────────────
+
+
+def _numbers(headings: str) -> list[str]:
+    source = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + headings
+    return [entry.number for entry in validate_document(parse_document(source)).sections]
+
+
+@pytest.mark.parametrize(
+    ("headings", "numbers"),
+    [
+        ("# A\n\n# B\n\n# Dispute\n\n### Deep\n\n## Sub Two\n", ["1", "2", "3", "3.1.1", "3.2"]),  # #38
+        ("# A\n\n#### D\n\n## B\n\n### C\n", ["1", "1.1.1.1", "1.2", "1.2.1"]),
+        ("### X\n\n# A\n", ["1.1.1", "2"]),  # a first heading deeper than a later one
+        ("## A\n\n## B\n\n# C\n", ["1.1", "1.2", "2"]),
+        ("###### Six\n\n# A\n", ["1.1.1.1.1", "2"]),  # level 6 is clamped to 5
+    ],
+)
+def test_a_skipped_level_counts_as_its_first_so_numbers_stay_unique(headings, numbers):
+    assert _numbers(headings) == numbers
+
+
+def test_a_document_starting_at_level_two_is_numbered_from_one():
+    """An attachment or include file has no # heading (§13.8, §12)."""
+    assert _numbers("## A\n\n## B\n\n### B1\n\n## C\n") == ["1", "2", "2.1", "3"]
+
+
+def test_numbers_are_unique_and_unchanged_without_a_skip():
+    """Random heading sequences: every number is unique, and a document
+    that skips no level and opens at its shallowest level is numbered as
+    before (dotted counters, from that level)."""
+    rng = random.Random(38)
+    for _ in range(1000):
+        levels = [rng.randint(1, 5) for _ in range(rng.randint(1, 9))]
+        numbers = _numbers("".join(f"{'#' * level} H{index}\n\n" for index, level in enumerate(levels)))
+        assert len(set(numbers)) == len(numbers), (levels, numbers)
+        skips = any(b - a > 1 for a, b in zip(levels, levels[1:], strict=False))
+        if not skips and levels[0] == min(levels):
+            counters = [0] * 6
+            expected = []
+            for level in levels:
+                counters[level] += 1
+                counters[level + 1:] = [0] * (5 - level)
+                expected.append(".".join(str(c) for c in counters[levels[0]:level + 1]))
+            assert numbers == expected, (levels, numbers)
 
 
 def test_out_of_range_heading_keeps_its_index_entry():

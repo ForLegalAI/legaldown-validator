@@ -409,6 +409,17 @@ def test_alternatives_share_a_number():
     assert [s.number for s in result.sections] == ["1", "1.1", "1", "1.1", "2"]
 
 
+def test_what_alternatives_contain_shares_numbers_after_a_skip():
+    """Only one alternative is ever present, so what each contains is
+    numbered from the same point, skipped levels included (§15.8)."""
+    body = (
+        "# Root\n\n## Choice {#choice when=forum:courts}\n\n### Real\n\n##### Deep One\n\n"
+        "## Choice {#choice when=forum:arbitration}\n\n##### Deep Two\n\n## After\n"
+    )
+    result = validate_document(_parse(body))
+    assert [s.number for s in result.sections] == ["1", "1.1", "1.1.1", "1.1.1.1.1", "1.1", "1.1.1.1.1", "1.2"]
+
+
 @pytest.mark.parametrize(
     "heading",
     [
