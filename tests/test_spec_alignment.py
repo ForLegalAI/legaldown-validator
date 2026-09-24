@@ -269,6 +269,55 @@ def test_frontmatter_placeholder_with_unknown_parameter_is_checked():
     assert "directive-unknown-param" in result.rules("warning")
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        '"Fee" {{def: fee}} x. See {{term: fee, label=“Curly”}}.',  # the spec fixture
+        '"Fee" {{def: fee}} x. See {{term: “fee”}}.',
+        '"Fee" {{def: fee}} x. See {{term: fee, label=  „Low“}}.',
+        '"Fee" {{def: fee}} x. See {{term: fee, label=«Guillemets»}}.',
+        "Pay {{money: 5, currency=EUR, note=”closing”}}.",
+        "Pay {{money: 5, currency=EUR, note=“a”, note=b}}.",
+    ],
+)
+def test_an_unquoted_value_beginning_with_a_curly_quote_is_a_warning(text):
+    result = _validate(text)
+    assert [d.level for d in result.diagnostics if d.rule == "value-curly-quote"] == ["warning"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '"Fee" {{def: fee}} x. See {{term: fee, label="“Curly”"}}.',  # quoted
+        '"Fee" {{def: fee}} x. See {{term: fee, label=x“y”}}.',  # not at the start
+        '"Fee" {{def: fee}} x. See {{term: fee, label=’s-Hertogenbosch}}.',  # a single mark
+        '"Fee" {{def: fee}} x. See {{term: fee, label=}}.',  # empty
+        "See {{term: fee, label=“x, y”}} in {{ref: terms}}.",  # malformed: positional after named
+    ],
+)
+def test_other_values_are_not_curly_quote_warnings(text):
+    assert "value-curly-quote" not in _validate(text).rules()
+
+
+def test_a_curly_quoted_reference_stays_paragraph_text():
+    """A lifted {{ref:}} or {{term:}} is not lexed again, so a directive the
+    validator warns about is not lifted."""
+    document = parse_document(_FRONTMATTER + "See {{ref: “terms”}}.\n")
+    assert document.sections[0].blocks[0].kind == "paragraph"
+    assert parse_document(serialize_document(document)).sections == document.sections
+    assert "value-curly-quote" in validate_document(document).rules("warning")
+
+
+def test_a_curly_quote_in_a_frontmatter_placeholder_is_a_warning():
+    source = _FRONTMATTER.replace("title: Fixture", "title: '{{placeholder: t, note=“x”}}'")
+    assert "value-curly-quote" in validate_document(parse_document(source + "Text.\n")).rules("warning")
+
+
+def test_the_lexer_records_which_values_were_unquoted():
+    (directive,) = lex('{{term: a, label="b", note= c , label=d, x=}}').directives
+    assert directive.unquoted == (("", "a"), ("note", "c"), ("label", "d"))
+
+
 def test_collect_source_directives_sees_every_parameter_shape():
     document = parse_document(
         _FRONTMATTER + "See {{ref: a, colour=red}} and {{term: b, label=\"x, y\"}}.\n"

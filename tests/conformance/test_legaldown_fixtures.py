@@ -43,7 +43,7 @@ pytestmark = [
 # line-level lexer checks yet).
 IMPLEMENTED_RULES = {
     "anchor-autogen-collision", "anchor-duplicate", "anchor-format", "anchor-lossy-slug",
-    "anchor-misplaced",
+    "anchor-misplaced", "value-curly-quote",
     "amends-title-empty", "amend-def-override", "amend-term-undefined",
     "amend-term-unresolvable",
     "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",

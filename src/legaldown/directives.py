@@ -54,6 +54,11 @@ _TYPE_SPECIFIC_PARAMS: dict[tuple[str, str], str] = {
     for placeholder_type, param in PLACEHOLDER_TYPE_PARAMS.items()
 }
 
+# Typographic double quotation marks (§11.3). Only the straight ``"`` quotes
+# a value, so an unquoted value that begins with one of these usually means
+# an editor curled an intended ``"`` (value-curly-quote).
+CURLY_DOUBLE_QUOTES = "“”„«»"
+
 # Directive vocabulary defined by §11.1.
 KNOWN_DIRECTIVES: frozenset[str] = frozenset(DIRECTIVE_PARAMS)
 
@@ -101,7 +106,9 @@ class Directive:
     Values are decoded: quoting and escapes are removed and unquoted values
     trimmed (§11.3). ``positional`` is ``None`` when there is no positional
     value. A repeated parameter keeps its first value in ``params`` and is
-    listed in ``duplicates``. ``malformed`` describes the §11.2 violation, or
+    listed in ``duplicates``. ``unquoted`` lists each argument written without
+    quotes, as ``(parameter, value)`` with ``""`` for the positional value,
+    in source order, repeats included. ``malformed`` describes the §11.2 violation, or
     is empty for a well-formed directive; a malformed directive carries no
     arguments, and runs through the first ``}}`` on its line or up to the next
     directive opener (§11.4 opener commitment), whichever comes first.
@@ -115,6 +122,12 @@ class Directive:
     start: int
     end: int
     source: str
+    unquoted: tuple[tuple[str, str], ...] = ()
+
+    def curly_quoted(self) -> list[tuple[str, str]]:
+        """The ``unquoted`` arguments whose value begins with a typographic
+        double quotation mark: probably an intended ``"`` (§11.3)."""
+        return [(param, value) for param, value in self.unquoted if value[0] in CURLY_DOUBLE_QUOTES]
 
     def unknown_params(self, *, effective_type: str | None = None) -> list[str]:
         """Named parameters this directive does not define, in source order.
@@ -214,37 +227,45 @@ def _lex_named_value(text: str, pos: int) -> tuple[str, int]:
 
 def _lex_arguments(
     text: str, pos: int
-) -> tuple[str | None, dict[str, str], list[str], int]:
+) -> tuple[str | None, dict[str, str], list[str], list[tuple[str, str]], int]:
     """Lex the arguments after a directive opener.
 
-    Returns ``(positional, params, duplicates, end)``, where *end* is the
-    offset just past the closing ``}}``.
+    Returns ``(positional, params, duplicates, unquoted, end)``, where
+    *unquoted* is ``Directive.unquoted`` and *end* is the offset just past
+    the closing ``}}``.
     """
     positional: str | None = None
     params: dict[str, str] = {}
     duplicates: list[str] = []
+    unquoted: list[tuple[str, str]] = []
     pos = _skip_ws(text, pos)
     if text.startswith("}}", pos):
-        return positional, params, duplicates, pos + 2
+        return positional, params, duplicates, unquoted, pos + 2
     while True:
         pos = _skip_ws(text, pos)
         named = _PARAM_NAME_RE.match(text, pos)
         if named:
             param = named.group(0)[:-1]
+            # Quoting is syntax, lost on decoding (§11.3): note it first.
+            quoted = text.startswith('"', _skip_ws(text, named.end()))
             value, pos = _lex_named_value(text, named.end())
             if param in params:
                 duplicates.append(param)
             else:
                 params[param] = value
         else:
+            param = ""
+            quoted = text.startswith('"', pos)
             value, pos = _lex_value(text, pos)
             if positional is not None:
                 raise _Malformed("more than one positional value")
             if params:
                 raise _Malformed("positional value after a named parameter")
             positional = value
+        if value and not quoted:
+            unquoted.append((param, value))
         if text.startswith("}}", pos):
-            return positional, params, duplicates, pos + 2
+            return positional, params, duplicates, unquoted, pos + 2
         pos += 1  # past the comma
 
 
@@ -342,7 +363,7 @@ def lex(text: str) -> Lexed:
 def _lex_directive(text: str, start: int, opener: re.Match[str]) -> Directive:
     """Lex the directive whose opener (``{{name:``) is *opener*."""
     try:
-        positional, params, duplicates, end = _lex_arguments(text, opener.end())
+        positional, params, duplicates, unquoted, end = _lex_arguments(text, opener.end())
     except _Malformed as exc:
         end = _malformed_end(text, start, opener.end())
         return Directive(
@@ -364,6 +385,7 @@ def _lex_directive(text: str, start: int, opener: re.Match[str]) -> Directive:
         start=start,
         end=end,
         source=text[start:end],
+        unquoted=tuple(unquoted),
     )
 
 

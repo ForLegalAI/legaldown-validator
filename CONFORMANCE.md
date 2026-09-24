@@ -5,7 +5,7 @@ parse and validate a single document in memory.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **79 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **80 of the
 corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes.**
 
 The specification defines 116 rules. The corpus has no fixture for three of them, since a
@@ -36,7 +36,7 @@ files other than the document itself.
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Assembly capability (§17.6) — not claimed | `answer-invalid`, `answer-missing`, `answer-unknown` |
 | Rendering (§17.3) | `ref-not-enumerated` |
-| Lexer-level grammar (§11.2–11.4) | `value-curly-quote`, `raw-html` |
+| Lexer-level grammar (§11.2–11.4) | `raw-html` |
 | Other | `frontmatter-absent`, `frontmatter-invalid-yaml` (reported by the CLI, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means multi-file processing is out of scope: includes, attachment file contents,
@@ -82,8 +82,8 @@ git clone https://github.com/ForLegalAI/LegalDown ../LegalDown
 LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
-Cases for the rules above are skipped by name, so the 34 `not implemented` skips reproduce this
-table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 43 skips in
+Cases for the rules above are skipped by name, so the 33 `not implemented` skips reproduce this
+table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 42 skips in
 total: eight are the implemented rules named above, skipped as `multi-file case` or
 `requires conformance level full`, and one is the multi-file assembly case, whose template the
 harness would otherwise check for Errors. Cases that need the final option run with it. CI runs this on every push and pull request.

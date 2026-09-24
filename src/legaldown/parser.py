@@ -478,12 +478,15 @@ def _is_liftable_definition(
         and not directive.malformed
         and not directive.params
         and directive.positional != ""
+        and not directive.curly_quoted()
     )
 
 
 def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
     """The first *name* directive the ref/term block fields hold without loss:
-    well-formed, with a target and only the parameters it defines."""
+    well-formed, with a target and only the parameters it defines. One whose
+    arguments the validator warns about stays paragraph text, where it is
+    checked."""
     for directive in directives:
         if (
             directive.name == name
@@ -494,6 +497,7 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
             # Block fields hold "" for an absent parameter, so an explicitly
             # empty one (label=) would be dropped on serialization.
             and all(directive.params.values())
+            and not directive.curly_quoted()
         ):
             return directive
     return None
