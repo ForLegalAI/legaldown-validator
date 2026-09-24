@@ -719,10 +719,26 @@ class TestCurrentBlockStructure:
         body = f"# A\n\n- Kept.\n- Dropped. {{when=x}}\n\n{after}\nAfter.\n"
         assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n- Kept.\n\nAfter.\n"
 
-    def test_an_empty_last_item_takes_no_later_paragraph(self):
-        """An item can begin with at most one blank line (CommonMark)."""
-        body = "# A\n\n- Kept.\n-\n\n  Not the item's.\n\nAfter.\n"
-        assert _body(assemble(_template(body), {})) == "\n" + body
+    def test_a_nested_item_under_an_empty_item_takes_its_later_paragraph(self):
+        body = "# A\n\n- \n  - b {when=x}\n\n    Its second paragraph.\n\nAfter.\n"
+        assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n- \n\nAfter.\n"
+
+    @pytest.mark.parametrize(("after", "kept"), [
+        # What CommonMark reads as outside the item stays (cmark-gfm).
+        ("  - b\n- c\n", "- c\n"),
+        ("  1. b\n2. c\n", "2. c\n"),
+        ("  <!--\nfoo\n  -->\n", "foo\n  -->\n"),
+        ("  | a | b |\n  |---|---|\n| c | d |\n", "| c | d |\n"),
+    ])
+    def test_a_conditional_last_item_goes_only_as_far_as_commonmark_reads_it(self, after, kept):
+        body = f"# A\n\n- a {{when=x}}\n\n{after}\nAfter.\n"
+        assert _body(assemble(_template(body, _BOOL), {"x": False})) == f"\n# A\n\n{kept}\nAfter.\n"
+
+    def test_an_item_indented_less_than_the_content_before_it_is_a_sibling(self):
+        """` - b` is not inside `- a`, whose content starts at column 2, and
+        neither is the paragraph after it (cmark-gfm)."""
+        body = "# A\n\n- a {when=x}\n - b\n\n  para\n\nAfter.\n"
+        assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n - b\n\n  para\n\nAfter.\n"
 
     def test_an_escaped_pipe_in_a_choice_in_a_table_cell_is_a_pipe(self):
         """The row's ``\\|`` is a pipe before the cell is read (GFM): the
@@ -749,6 +765,13 @@ class TestFencedCodeInContainers:
     def test_nothing_in_it_is_malformed(self):
         body = "# A\n\n> [!DRAFTING]\n> Example:\n>\n> ~~~\n> {{placeholder: name\n> ~~~\n\nText.\n"
         assert _body(assemble(_template(body), {})) == "\n# A\n\nText.\n"
+
+    @pytest.mark.parametrize("end", ["", "\n"])
+    def test_a_one_line_item_is_lexed_as_the_validator_lexes_it(self, end):
+        """The validator sees a directive after a one-line item's fence
+        opener (issue #52), and so assembly fills it."""
+        body = f"# A\n\n- ~~~ {{{{placeholder: name}}}}\n{end}"
+        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == "\n# A\n\n- ~~~ Ann\n"
 
     def test_a_continuation_line_is_not_a_fence(self):
         body = "# A\n\n- b\n      ~~~ text\n  more {{placeholder: name}}\n"
@@ -782,6 +805,19 @@ class TestMalformed:
         """YAML drops a comment, and decodes a scalar's escapes."""
         result = assemble(_template("# A\n\nFor {{placeholder: name}}.\n", _TEXT, front=front), {"name": "Ann"})
         assert result.ok and "For Ann." in result.output
+
+    @pytest.mark.parametrize("quote", ['"', "'"])
+    def test_a_blank_on_a_later_line_of_a_quoted_scalar_is_filled(self, quote):
+        front = f"note: {quote}Long text\n  for {{{{placeholder: name}}}} here{quote}\n"
+        result = assemble(_template("# A\n\nText.\n", _TEXT, front=front), {"name": "O'Brien \"Jr\""})
+        written = "O''Brien \"Jr\"" if quote == "'" else "O'Brien \\\"Jr\\\""
+        assert f"  for {written} here{quote}\n" in result.output
+
+    @pytest.mark.parametrize("quote", ['"', "'"])
+    def test_a_blank_across_later_lines_of_a_quoted_scalar_is_refused(self, quote):
+        front = f"note: {quote}Long text\n  for {{{{placeholder:\n  name}}}}{quote}\n"
+        result = assemble(_template("# A\n\nText.\n", _TEXT, front=front), {"name": "Ann"})
+        assert _rules(result) == [("directive-malformed", "error")]
 
     def test_a_blank_across_frontmatter_lines_is_refused(self):
         front = 'note: "For {{placeholder:\n  name}}"\n'

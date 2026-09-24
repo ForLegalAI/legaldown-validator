@@ -1151,6 +1151,11 @@ def test_an_unclosed_fence_at_the_end_holds_no_extra_line():
     assert document.sections[0].blocks[0].text == "```\ncode"
 
 
+def test_nothing_in_an_unclosed_one_line_fence_is_checked():
+    """The info string is code (§11.4), however the fence ends."""
+    assert not _validate("~~~ {{ref: nowhere}}\n").errors
+
+
 def test_frontmatter_with_cr_line_endings_is_frontmatter():
     document = parse_document("---\rtitle: X\r---\r\r# A\r")
     assert not document.metadata.frontmatter_absent

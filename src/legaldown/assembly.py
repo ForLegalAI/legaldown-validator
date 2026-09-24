@@ -28,7 +28,6 @@ whose linked templates are assembled with it (§15.7.2).
 from __future__ import annotations
 
 import bisect
-import itertools
 import posixpath
 import re
 from collections.abc import Callable, Iterator, Mapping
@@ -242,13 +241,15 @@ def _read_body(
     path: str, body: str, document: Document, questions: Any, *, template: bool
 ) -> _Source:
     lines = body.split("\n")
+    if lines[-1] == "":
+        lines.pop()  # the last line's ending, not a line -- as parse_document reads it
     layout = _layout(lines)
     found: dict[tuple[int | None, int], list] = {}
     for marker in find_markers(document, cache(lex)):
         if marker.placed(template) and marker.marker is not None:
             found.setdefault((marker.section, marker.block), []).append(marker)
     source = _Source(path, lines, _section_units(layout, document, lines, questions), set(), [], [])
-    tails = _tails(layout, lines)
+    tails = _tails(layout)
     for section, index, span, block in _pairs(layout, document):
         markers = found.get((section, index), [])
         if _kind(span) == "list":
@@ -267,28 +268,67 @@ def _read_body(
     return source
 
 
-def _tails(layout: _Layout, lines: list[str]) -> dict[int, list[_BlockSpan]]:
-    """The blocks after each list (by ``id``) that CommonMark reads as part of
-    its last items: each is indented to the content of the list's last
-    top-level item, as a later paragraph, a nested list, a quote or code of
-    that item is. The parser ends a list at a blank line and reads them as
-    blocks of their own. An empty item takes none: an item can begin with at
-    most one blank line (CommonMark)."""
+def _tails(layout: _Layout) -> dict[int, list[_BlockSpan]]:
+    """The blocks after each list (by ``id``): candidates for what CommonMark
+    reads as part of one of its items' later content — a later paragraph, a
+    nested list, a quote, code or a table of that item's own (§5.7). Which
+    prefix of them a given item actually takes, if any, is ``_tail_end``'s,
+    since each item of the list's own chain has its own content column."""
     tails: dict[int, list[_BlockSpan]] = {}
     for spans in layout.containers():
         for k, span in enumerate(spans):
-            if _kind(span) != "list" or not span.items:
-                continue
-            outer, raw = min(
-                reversed(span.items), key=lambda item: indent_width(lines[item[0]])
-            )
-            if not raw.strip():
-                continue
-            column = _content_column(lines[outer])
-            tails[id(span)] = list(itertools.takewhile(
-                lambda s: indent_width(lines[s.start]) >= column, spans[k + 1:]  # noqa: B023
-            ))
+            if _kind(span) == "list" and span.items:
+                tails[id(span)] = spans[k + 1:]
     return tails
+
+
+# The kinds whose later lines are always continuation or lazy: a later line,
+# however indented, never closes the item that contains them (§5.7).
+_TAIL_OPEN_KINDS = frozenset({"paragraph", "definition", "ref", "term"})
+
+
+def _tail_cut(lines: list[str], span: _BlockSpan, column: int) -> int | None:
+    """The first line inside *span*, admitted to a tail indented to *column*,
+    where CommonMark actually closes the item: for a nested list, an
+    item-start line indented less than *column* (its own later lines answer
+    to its own, deeper, column); for a quote, a non-blank line indented less
+    than *column* that itself opens a quote — a line without ``>`` there is a
+    lazy continuation of the quote's own paragraph, never a cut; for anything
+    else (code, html, table, rule), any non-blank line indented less than
+    *column*. ``None`` when *span* is taken whole."""
+    kind = _kind(span)
+    if kind in _TAIL_OPEN_KINDS:
+        return None
+    if kind == "list":
+        return next(
+            (first for first, _raw in span.items[1:] if indent_width(lines[first]) < column),
+            None,
+        )
+    for i in range(span.start + 1, span.end):
+        line = lines[i]
+        if not line.strip() or indent_width(line) >= column:
+            continue
+        if kind != "quote" or _BLOCK_QUOTE_RE.match(line):
+            return i
+    return None
+
+
+def _tail_end(lines: list[str], following: list[_BlockSpan], column: int) -> int | None:
+    """Where a tail indented to *column*, taken from *following* (the spans
+    after a list, in order), ends: ``None`` when the very first of them is
+    not indented enough (CommonMark closes the item before it). Otherwise the
+    walk admits each span in turn — stopping at the first cut inside one
+    (``_tail_cut``), which ends the tail there and stops it for good, since a
+    closed item does not reopen further down the source."""
+    end = None
+    for span in following:
+        if indent_width(lines[span.start]) < column:
+            break
+        cut = _tail_cut(lines, span, column)
+        if cut is not None:
+            return cut
+        end = span.end
+    return end
 
 
 # A list item's marker, as the parser's LIST_ITEM_RE reads it.
@@ -373,16 +413,20 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
     starts = [first for first, _raw in items] + [span.end]
     listed = []  # the items the model keeps: it drops empty ones
     for k, (first, raw) in enumerate(items):
-        own_end, indent = starts[k + 1], indent_width(lines[first])
+        own_end, column = starts[k + 1], _content_column(lines[first])
         full_end = next(
-            (s for s, _raw in items[k + 1:] if indent_width(lines[s]) <= indent), None
+            (s for s, _raw in items[k + 1:] if indent_width(lines[s]) < column), None
         )
         if full_end is None:
-            full_end, column = span.end, _content_column(lines[first])
-            for tail in tails if raw.strip() else ():
-                if indent_width(lines[tail.start]) < column:
-                    break  # CommonMark closes the item here
-                full_end = tail.end
+            # A chain item: no later item ends it, so it (or, if it is itself
+            # empty, none of its later, nested items either) may run into the
+            # tail. An empty item takes none when it is the list's last: it
+            # can begin with at most one blank line (CommonMark).
+            full_end = span.end
+            if raw.strip() or k + 1 < len(items):
+                end = _tail_end(lines, tails, column)
+                if end is not None:
+                    full_end = end
         text_lines = raw.count("\n") + 1
         paragraph_end = own_end - (text_lines - 1)
         if raw.strip():
@@ -394,7 +438,16 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
 
         for note_first, note_last in _note_lines(raw, inside_list=True):
             source.notes.update(range(source_line(note_first), source_line(note_last) + 1))
-        source.code.update(source_line(row) for row in _fenced(raw))
+        # The model strips an item's text (models._clean_list), and the
+        # validator lexes that: one line there has no fence.
+        for row in _fenced(raw) if "\n" in raw.strip() else ():
+            if row == 0:
+                # Row 0 is the item's joined first paragraph: a fence found
+                # there is written across all of its source lines, not just
+                # the first.
+                source.code.update(range(first, paragraph_end))
+            else:
+                source.code.add(source_line(row))
     for marker in markers:
         if marker.marker.condition and marker.fragment < len(listed):
             first, end, paragraph_end = listed[marker.fragment]
@@ -406,7 +459,12 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
 def _fenced(text: str) -> Iterator[int]:
     """The lines of *text* — a list item's or a quote's, as the parser hands
     it to the validator — inside fenced code, which the lexer blanks there
-    (§11.4)."""
+    (§11.4). One-line text (a single-row item or quote) has none, mirroring
+    ``_blank_fenced_code``'s own single-line shortcut: assembly must read a
+    fence opener there exactly as the validator does, or it would fill a
+    placeholder the validator does not consider blanked."""
+    if "\n" not in text:
+        return
     rows = text.split("\n")
     index = 0
     while index < len(rows):
@@ -548,12 +606,40 @@ _DASH_RE = re.compile(r"[ \t]*-(?:[ \t]+|$)")
 _SCALAR_OPENERS = frozenset("-:,[{?")
 
 
-def _quoted_scalars(line: str) -> list[tuple[int, int, str]]:
+def _scan_scalar(line: str, start: int, quote: str) -> int:
+    """The offset of *quote*'s matching close, scanning *line* from *start*
+    (just past the opening quote, or 0 for one carried from a previous line):
+    ``""`` doubles for a literal ``'``, a backslash escapes for ``"``.
+    ``len(line)`` when it does not close on this line."""
+    end = start
+    while end < len(line):
+        if quote == '"' and line[end] == "\\":
+            end += 2
+            continue
+        if line[end] == quote:
+            if quote == "'" and line[end + 1:end + 2] == "'":
+                end += 2
+                continue
+            return end
+        end += 1
+    return end
+
+
+def _quoted_scalars(line: str, carry: str = "") -> tuple[list[tuple[int, int, str]], str]:
     """``(start, end, quote)`` of every quoted scalar on frontmatter *line*,
     in block and flow style alike (``- {name: a, legal_name: "..."}``), so a
-    placeholder is filled wherever §3.10 lets it stand. Stops at a comment."""
+    placeholder is filled wherever §3.10 lets it stand; a comment ends the
+    scan. *carry* is the quote a previous line's scalar left open, which
+    *line* then starts inside (``start`` ``-1``); the second of the pair
+    returned is *line*'s own such quote, when its last scalar runs on."""
     spans: list[tuple[int, int, str]] = []
     index = 0
+    if carry:
+        end = _scan_scalar(line, 0, carry)
+        spans.append((-1, end + 1, carry))
+        if end >= len(line):
+            return spans, carry
+        index = end + 1
     while index < len(line):
         char = line[index]
         before = line[:index].rstrip(" \t")
@@ -562,22 +648,14 @@ def _quoted_scalars(line: str) -> list[tuple[int, int, str]]:
         if char in "\"'" and (index == 0 or line[index - 1] in " \t[{,") and (
             not before or before[-1] in _SCALAR_OPENERS
         ):
-            end = index + 1
-            while end < len(line):
-                if char == '"' and line[end] == "\\":
-                    end += 2
-                    continue
-                if line[end] == char:
-                    if char == "'" and line[end + 1:end + 2] == "'":
-                        end += 2
-                        continue
-                    break
-                end += 1
+            end = _scan_scalar(line, index + 1, char)
             spans.append((index, end + 1, char))
+            if end >= len(line):
+                return spans, char
             index = end + 1
             continue
         index += 1
-    return spans
+    return spans, ""
 
 
 def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -> None:
@@ -587,10 +665,12 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
     if front.attachments is not None:
         front.items = _attachment_items(lines, front.attachments, document, questions)
     skip = set(range(*front.questions)) if front.questions else set()
+    carry = ""
     for index, line in enumerate(lines):
-        if index in skip or _is_comment(line) or "{{" not in line:
+        entering = carry
+        scalars, carry = _quoted_scalars(line, carry)
+        if index in skip or (not entering and _is_comment(line)) or "{{" not in line:
             continue
-        scalars = _quoted_scalars(line)
         for directive in lex(line).directives:
             if directive.name == "placeholder" and directive.malformed:
                 # One in a quoted scalar that runs on to the next line: YAML
