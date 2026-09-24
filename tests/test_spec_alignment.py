@@ -1534,6 +1534,8 @@ def test_nothing_in_an_html_block_is_validated():
         ("<b>bold</b> text\n", ["paragraph"]),  # an inline tag
         ("    <div>\n", ["paragraph"]),  # indented four columns
         ("| a |\n|---|\n<span>\n", ["table", "html"]),
+        ("<pre-x>\n## Not a heading\n", ["html"]),  # only the exact names are excluded
+        ("<style-guide x>\n", ["html"]),
     ],
 )
 def test_which_lines_start_an_html_block(body, kinds):
@@ -1552,3 +1554,11 @@ def test_an_html_block_in_the_model_keeps_its_indentation():
     )
     assert document.sections[0].blocks[0].text == "   <div>\n  x\n</div>"
     assert parse_document(serialize_document(document)).sections == document.sections
+
+
+@pytest.mark.parametrize("prefix", ["<div> see", "# see", "```"])
+def test_a_lifted_reference_that_would_open_a_block_stays_indented(prefix):
+    source = f"{_BARE}    {prefix} {{{{ref: sec-a}}}} here\n\n# A {{#sec-a}}\n\nx\n"
+    document = parse_document(source)
+    assert document.preamble[0].kind == "ref"
+    assert parse_document(serialize_document(document)) == document

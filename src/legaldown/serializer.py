@@ -169,11 +169,11 @@ def _render_block(block: Block) -> str:
         return f"{anchor} {body}" if body else anchor
     if block.kind == "ref":
         target = format_value(block.target, positional=True)
-        return f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}".strip()
+        return _paragraph(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}".strip())
     if block.kind == "term":
         target = format_value(block.target, positional=True)
         label_part = f", label={format_value(block.label)}" if block.label else ""
-        return f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip()
+        return _paragraph(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip())
     if block.kind == "unordered_list":
         items = [item for item in block.items if item.strip()]
         # An item whose text begins with dashes, such as "--", would make a

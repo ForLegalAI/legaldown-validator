@@ -39,7 +39,7 @@ _HTML_BLOCK_6 = (
 # name. It cannot interrupt a paragraph.
 _ATTRIBUTE = r"""(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ \t"'=<>`]+|'[^']*'|"[^"]*"))?)"""
 _HTML_BLOCK_7_RE = re.compile(
-    r" {0,3}(?:<(?!(?:script|style|pre|textarea)\b)[A-Za-z][A-Za-z0-9-]*" + _ATTRIBUTE + r"*[ \t]*/?>"
+    r" {0,3}(?:<(?!(?:script|style|pre|textarea)(?![A-Za-z0-9-]))[A-Za-z][A-Za-z0-9-]*" + _ATTRIBUTE + r"*[ \t]*/?>"
     r"|</[A-Za-z][A-Za-z0-9-]*[ \t]*>)[ \t]*$",
     re.IGNORECASE,
 )
