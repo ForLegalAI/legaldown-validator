@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import Directive, iter_directives, lex
+from .directives import Directive, is_escaped, iter_directives, lex
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
@@ -120,6 +120,8 @@ SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 RULE_RE = re.compile(r"^[ \t]*-{3,}[ \t]*$")
 # A list item marker: ``-`` for an unordered list, ``1.`` for an ordered one.
 LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)\.|-)\s+")
+# A cell of a table's delimiter row (GFM): colons mark the alignment.
+_DELIMITER_CELL_RE = re.compile(r":?-+:?")
 
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -333,13 +335,59 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
     return Block(kind=kind, items=items), end, lazy
 
 
-def _parse_table(lines: list[str]) -> Block:
-    rows = [line.strip().strip("|") for line in lines]
-    headers = [cell.strip() for cell in rows[0].split("|")]
-    data_rows: list[list[str]] = []
-    for row in rows[2:]:
-        data_rows.append([cell.strip() for cell in row.split("|")])
-    return Block(kind="table", headers=headers, rows=data_rows)
+def _split_row(line: str) -> list[str]:
+    """The cells of the table row *line* (GFM): it is split at each ``|``
+    not escaped by a backslash, and a leading and a trailing ``|`` delimit
+    the row rather than a cell. An escaped pipe is cell text, its escaping
+    backslash removed; a pipe inside a code span splits the row like any
+    other (GFM), so it too is written ``\\|``."""
+    row = line.strip()
+    cells: list[str] = []
+    cell: list[str] = []
+    for pos, char in enumerate(row):
+        if char != "|":
+            cell.append(char)
+        elif is_escaped(row, pos):
+            cell[-1] = "|"  # replaces the escaping backslash
+        else:
+            cells.append("".join(cell))
+            cell = []
+    cells.append("".join(cell))
+    if row.startswith("|"):
+        cells.pop(0)
+    if len(cells) > 1 and row.endswith("|") and not is_escaped(row, len(row) - 1):
+        cells.pop()
+    return [cell.strip() for cell in cells]
+
+
+_ALIGNMENTS = {(True, False): "left", (False, True): "right", (True, True): "center", (False, False): ""}
+
+
+def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
+    """Parse the table starting at ``lines[index]``; return it with the index
+    just past it, or None when the lines there are not a table.
+
+    A table is a header row, then a delimiter row with as many cells, each
+    ``:?-+:?`` (GFM), then its body rows; every row starts with ``|``. A body
+    row is padded with empty cells or cut to the header's width, as GFM
+    renders it. Each column's alignment comes from its delimiter cell.
+    """
+    if not (lines[index].lstrip().startswith("|") and lines[index + 1:index + 2]):
+        return None
+    if not lines[index + 1].lstrip().startswith("|"):
+        return None
+    headers = _split_row(lines[index])
+    delimiters = _split_row(lines[index + 1])
+    if len(delimiters) != len(headers) or not all(_DELIMITER_CELL_RE.fullmatch(cell) for cell in delimiters):
+        return None
+    align = [_ALIGNMENTS[cell.startswith(":"), cell.endswith(":")] for cell in delimiters]
+    rows: list[list[str]] = []
+    end = index + 2
+    while end < len(lines) and lines[end].lstrip().startswith("|"):
+        cells = _split_row(lines[end])[: len(headers)]
+        rows.append(cells + [""] * (len(headers) - len(cells)))
+        end += 1
+    return Block(kind="table", headers=headers, rows=rows, align=align), end
 
 
 def _parse_paragraph(paragraph: str) -> Block:
@@ -539,14 +587,9 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             # The quote took every line it could continue; a paragraph after
             # it is lazy only if the quote's is still open.
             lazy = quote.paragraph
-        elif line.lstrip().startswith("|") and lines[index + 1:index + 2] and (
-            lines[index + 1].lstrip().startswith("|")
-        ):
-            end = index
-            while end < len(lines) and lines[end].lstrip().startswith("|"):
-                end += 1
-            blocks.append(_parse_table(lines[index:end]))
-            index = end
+        elif table := _parse_table(lines, index):
+            block, index = table
+            blocks.append(block)
             lazy = True
         elif marker:
             block, index, lazy = _parse_list(

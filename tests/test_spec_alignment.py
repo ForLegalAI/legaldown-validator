@@ -1208,3 +1208,102 @@ def test_only_some_list_items_interrupt_a_paragraph(second_line, kinds, headings
     source = _FRONTMATTER + "Some paragraph\n" + second_line + "\n"
     assert _kinds(source) == kinds
     assert [title for title, _level, _id in _outline(source)[1:]] == headings
+
+
+# ── Tables (§9.1, GFM) ────────────────────────────────────────────
+
+
+def _table(body: str) -> Block:
+    [block] = parse_document(_FRONTMATTER + body).sections[0].blocks
+    return block
+
+
+def _round_trips(body: str) -> None:
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+def test_an_escaped_pipe_is_cell_text_and_alignment_is_kept():
+    body = "| a \\| b | c | d | e |\n|:---|---:|:-:|---|\n| 1 | 2 | 3 | 4 |\n"
+    block = _table(body)
+    assert block.headers == ["a | b", "c", "d", "e"]
+    assert block.align == ["left", "right", "center", ""]
+    assert block.rows == [["1", "2", "3", "4"]]
+    assert "| a \\| b | c | d | e |\n| :--- | ---: | :---: | --- |" in serialize_document(
+        parse_document(_FRONTMATTER + body)
+    )
+    _round_trips(body)
+
+
+def test_a_pipe_in_a_code_span_splits_the_row_unless_escaped():
+    """GFM: a pipe is escaped "including inside other inline spans"."""
+    assert _table("| a | b |\n|---|---|\n| `x|y` | 2 |\n").rows == [["`x", "y`"]]
+    assert _table("| a | b |\n|---|---|\n| `x\\|y` | 2 |\n").rows == [["`x|y`", "2"]]
+
+
+def test_backslashes_before_a_pipe_escape_it_only_when_odd():
+    block = _table("| a | b | c |\n|---|---|---|\n| x\\\\| y | z\\\\\\| w |\n")
+    assert block.rows == [["x\\\\", "y", "z\\\\| w"]]
+    _round_trips("| a | b | c |\n|---|---|---|\n| x\\\\| y | z\\\\\\| w |\n")
+
+
+def test_an_escaped_pipe_in_a_directive_value_reaches_the_directive():
+    block = _table('| a |\n|---|\n| {{term: fee, label="x\\|y"}} |\n')
+    (directive,) = iter_directives(block.rows[0][0])
+    assert directive.params["label"] == "x|y"
+
+
+def test_an_empty_header_cell_keeps_its_column():
+    block = _table("| | b |\n|---|---|\n| 1 | 2 |\n")
+    assert (block.headers, block.rows) == (["", "b"], [["1", "2"]])
+    _round_trips("| | b |\n|---|---|\n| 1 | 2 |\n")
+
+
+def test_rows_take_the_header_width_and_empty_rows_are_kept():
+    body = "| a | b |\n|---|---|\n|  |  |\n| 1 | 2 | 3 |\n| 4\n| 5 | 6\n"
+    assert _table(body).rows == [["", ""], ["1", "2"], ["4", ""], ["5", "6"]]
+    _round_trips(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "| a | b |\n| c | d |\n",  # no delimiter row
+        "| a | b |\n|---|\n| c | d |\n",  # fewer delimiter cells than headers
+        "| a |\n|---|---|\n| c |\n",  # more
+        "| a | b |\n|---|-x-|\n",  # not a delimiter cell
+    ],
+)
+def test_rows_without_a_matching_delimiter_row_are_a_paragraph(body):
+    block = _table(body)
+    assert block.kind == "paragraph"
+    assert block.text == " ".join(body.split("\n")).strip()
+    _round_trips(body)
+
+
+def test_table_cells_are_positional_in_the_model():
+    block = document_from_dict(
+        {"sections": [{"title": "A", "blocks": [
+            {"kind": "table", "headers": ["", "b"], "rows": [["", ""], ["1"], ["1", "2", "3"]], "align": ["RIGHT", "x"]}
+        ]}]}
+    ).sections[0].blocks[0]
+    assert (block.headers, block.rows, block.align) == (["", "b"], [["", ""], ["1", ""], ["1", "2"]], ["right", ""])
+    assert document_from_dict(document_to_dict(parse_document(
+        _FRONTMATTER + "| a | b |\n|:--|--:|\n"
+    ))).sections[0].blocks[0].align == ["left", "right"]
+    assert document_from_dict({"sections": [{"blocks": [{"kind": "table"}]}]}).sections[0].blocks[0].rows == [["", ""]]
+
+
+def test_the_serializer_escapes_pipes_in_model_built_cells():
+    def written(block: Block) -> list[str]:
+        document = document_from_dict({"sections": [{"title": "A", "blocks": [block]}]})
+        return serialize_document(document).split("# A\n\n")[1].splitlines()
+
+    assert written({"kind": "table", "headers": ["a|b"], "rows": [["c|d"]]}) == [
+        "| a\\|b |", "| --- |", "| c\\|d |"
+    ]
+    # Already escaped: kept, so it is not read as an escaped backslash and a
+    # pipe; the parser then reads the pipe as text, as a renderer shows it.
+    assert written({"kind": "table", "headers": ["a\\|b"], "rows": []}) == ["| a\\|b |", "| --- |"]
+    # Without a header row, one is written as wide as the widest row.
+    assert written({"kind": "table", "headers": [], "rows": [["1", "2"]]}) == ["|  |  |", "| --- | --- |", "| 1 | 2 |"]

@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from .directives import format_value
+from .directives import format_value, is_escaped
 from .markdown import FENCE_OPEN_RE, close_fences
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata
@@ -141,6 +141,24 @@ def _paragraph(text: str) -> str:
     return text
 
 
+_DELIMITERS = {"left": ":---", "right": "---:", "center": ":---:"}
+
+
+def _table_cell(text: str) -> str:
+    """A table cell's text with each pipe escaped, so that it does not split
+    the row (GFM): the parser removes the escaping backslash. A pipe already
+    escaped — after an odd run of backslashes — is left as it is."""
+    text = " ".join(text.split("\n")).strip()
+    return "".join(
+        "\\|" if char == "|" and not is_escaped(text, pos) else char
+        for pos, char in enumerate(text)
+    )
+
+
+def _table_row(cells: list[str]) -> str:
+    return "| " + " | ".join(_table_cell(cell) for cell in cells) + " |"
+
+
 def _render_block(block: Block) -> str:
     if block.kind == "paragraph":
         return _paragraph(block.text.strip())
@@ -174,24 +192,17 @@ def _render_block(block: Block) -> str:
         lines = block.text.splitlines() or [""]
         return "\n".join(f"> {line}".rstrip() for line in lines)
     if block.kind == "table":
-        headers = [
-            header.strip() or f"Column {index + 1}"
-            for index, header in enumerate(block.headers)
-        ]
-        separator = ["---"] * len(headers)
-        rows = []
-        for row in block.rows:
-            padded = row + [""] * max(0, len(headers) - len(row))
-            rows.append(
-                "| "
-                + " | ".join(cell.strip() for cell in padded[: len(headers)])
-                + " |"
-            )
+        # GFM needs a header row; a table built without one gets empty
+        # header cells, as wide as its widest row.
+        width = len(block.headers) or max((len(row) for row in block.rows), default=1)
+        headers = block.headers + [""] * (width - len(block.headers))
+        align = block.align[:width] + [""] * (width - len(block.align))
+        rows = [row[:width] + [""] * (width - len(row)) for row in block.rows]
         return "\n".join(
             [
-                "| " + " | ".join(headers) + " |",
-                "| " + " | ".join(separator) + " |",
-                *rows,
+                _table_row(headers),
+                _table_row([_DELIMITERS.get(column, "---") for column in align]),
+                *(_table_row(row) for row in rows),
             ]
         )
     if block.kind == "rule":

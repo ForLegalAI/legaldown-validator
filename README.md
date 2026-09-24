@@ -217,8 +217,14 @@ grammar — parameters in any order, quoted values decoded — and is what the v
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it
 valid, so what you authored is exactly what the validator judges. The serializer, by contrast,
 normalizes: frontmatter is re-emitted as canonical YAML, paragraphs are written as single
-lines, and setext (underlined) headings are written as `#` headings, so expect a
+lines, setext (underlined) headings are written as `#` headings, and table rows are written
+with a pipe at each end and every `|` in a cell escaped as `\|`, so expect a
 formatting-normalized file rather than a byte-for-byte copy.
+
+Tables follow GFM: a table needs a delimiter row with one cell per header, rows take the
+header's width, and a `|` inside a cell — a code span's included — is written `\|`. A
+table block's `headers` and `rows` hold the cell text with those escapes removed, and
+`align` holds each column's alignment (`"left"`, `"right"`, `"center"`, or `""`).
 
 ## What gets checked
 
