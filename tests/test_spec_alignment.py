@@ -1793,3 +1793,40 @@ def test_the_indented_run_stops_at_text_that_reads_as_another_block():
     ]}]})
     blocks = parse_document(serialize_document(document)).sections[0].blocks
     assert (blocks[-1].kind, blocks[-1].text) == ("paragraph", "\\# foo")
+
+
+# ── Review follow-ups: table rows, kind-7 tags, the indented run ──
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("| a |\n    |---|\n| {{ref: terms}} |\n", ["ref"]),  # an indented delimiter row: no table
+        ("| a |\n|---|\n    | {{ref: nope}} |\n", ["table", "code"]),  # an indented row is code
+        ("| a |\n|---|\n\t| b |\n", ["table", "code"]),
+        ("| a |\n|---|\n  | b |\n", ["table"]),  # up to three columns: a row
+        ("Text\n|\n|---|\n", ["paragraph"]),  # a lone | is no header
+        ("| a |\n|---|\n|\n| b |\n", ["table", "paragraph"]),  # a lone | ends the table
+    ],
+)
+def test_table_rows_are_indented_at_most_three_columns_and_have_cells(body, kinds):
+    assert [kind for kind, _text in _code_blocks(body)] == kinds
+    assert "ref-broken" not in validate_document(parse_document(_FRONTMATTER + body)).rules()
+
+
+@pytest.mark.parametrize("tag", ["<pre/>", "<SCRIPT/>", "<style />", "<textarea/>"])
+def test_a_self_closing_raw_text_tag_is_an_html_block(tag):
+    """cmark-gfm reads these as kind 7, which kind 1 does not take."""
+    assert _html(f"{tag}\n# x\n") == (["Terms"], [("html", f"{tag}\n# x")])
+
+
+@pytest.mark.parametrize("first", ["| b", "| {{ref: terms}}", "| x |"])
+def test_a_pipe_paragraph_does_not_end_the_indented_run_after_a_list(first):
+    body = f"- a\n\n    {first}\n\n    # foo\n"
+    assert [kind for kind, _text in _code_blocks(body)][-1] == "paragraph"
+    assert _code_blocks(body)[-1] == ("paragraph", "# foo")
+
+
+def test_an_empty_named_value_is_written_unquoted():
+    assert format_value("") == ""
+    assert format_value("“x”") == '"“x”"'

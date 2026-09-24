@@ -151,8 +151,9 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, boo
         if not isinstance(node, yaml.MappingNode):
             return [], {}, source, True
         if node.tag != "tag:yaml.org,2002:map":
-            # A mapping tagged as something else (!!set, !!omap) is meant
-            # as frontmatter, but holds no fields.
+            # A mapping tagged as something else (!!set, a flow !!omap) is
+            # meant as frontmatter, but holds no fields. (A block !!omap is
+            # a sequence: not frontmatter.)
             raise ValueError("Frontmatter must be a YAML mapping of fields.")
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
@@ -359,6 +360,12 @@ def _parse_list(lines: list[str], index: int, *, list_type: str) -> tuple[Block,
     return Block(kind=kind, items=items), end, lazy
 
 
+def _is_row(line: str) -> bool:
+    """True if *line* can continue a table: it starts with ``|``, indented
+    at most three columns."""
+    return line.lstrip().startswith("|") and indent_width(line) <= 3
+
+
 def _split_row(line: str) -> list[str]:
     """The cells of the table row *line* (GFM): it is split at each ``|``
     not directly after a backslash, and a leading and a trailing ``|``
@@ -367,6 +374,8 @@ def _split_row(line: str) -> list[str]:
     (cmark-gfm). A pipe inside a code span splits the row like any other
     (GFM), so it too is written ``\\|``."""
     row = line.strip()
+    if row == "|":
+        return []  # no cells (GFM)
     cells: list[str] = []
     cell: list[str] = []
     for pos, char in enumerate(row):
@@ -395,21 +404,26 @@ def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
     A table is a header row, then a delimiter row with as many cells, each
     ``:?-+:?`` (GFM), then its body rows; every row starts with ``|``. A body
     row is padded with empty cells or cut to the header's width, as GFM
-    renders it. Each column's alignment comes from its delimiter cell.
+    renders it. Each column's alignment comes from its delimiter cell. The
+    delimiter and body rows are indented at most three columns (a line
+    indented further is code), and a row that is only ``|`` has no cells:
+    it is not a header and it ends the body.
     """
     if not (lines[index].lstrip().startswith("|") and lines[index + 1:index + 2]):
         return None
-    if not lines[index + 1].lstrip().startswith("|"):
+    if not _is_row(lines[index + 1]):
         return None
     headers = _split_row(lines[index])
     delimiters = _split_row(lines[index + 1])
-    if len(delimiters) != len(headers) or not all(_DELIMITER_CELL_RE.fullmatch(cell) for cell in delimiters):
+    if not headers or len(delimiters) != len(headers) or not all(
+        _DELIMITER_CELL_RE.fullmatch(cell) for cell in delimiters
+    ):
         return None
     align = [_ALIGNMENTS[cell.startswith(":"), cell.endswith(":")] for cell in delimiters]
     rows: list[list[str]] = []
     end = index + 2
-    while end < len(lines) and lines[end].lstrip().startswith("|"):
-        cells = _split_row(lines[end])[: len(headers)]
+    while end < len(lines) and _is_row(lines[end]) and (cells := _split_row(lines[end])):
+        cells = cells[: len(headers)]
         rows.append(cells + [""] * (len(headers) - len(cells)))
         end += 1
     return Block(kind="table", headers=headers, rows=rows, align=align), end

@@ -35,11 +35,13 @@ _HTML_BLOCK_6 = (
     r"|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr"
     r"|track|ul)(?:[ \t]|/?>|$)"
 )
-# Kind 7: a line holding only a complete open or closing tag of any other
-# name. It cannot interrupt a paragraph.
+# Kind 7: a line holding only a complete open or closing tag. It cannot
+# interrupt a paragraph. The four kind-1 names are tested first, as kind 1,
+# so here they only match forms kind 1 does not take, such as <pre/>, which
+# CommonMark implementations read as kind 7.
 _ATTRIBUTE = r"""(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ \t"'=<>`]+|'[^']*'|"[^"]*"))?)"""
 _HTML_BLOCK_7_RE = re.compile(
-    r" {0,3}(?:<(?!(?:script|style|pre|textarea)(?![A-Za-z0-9-]))[A-Za-z][A-Za-z0-9-]*" + _ATTRIBUTE + r"*[ \t]*/?>"
+    r" {0,3}(?:<[A-Za-z][A-Za-z0-9-]*" + _ATTRIBUTE + r"*[ \t]*/?>"
     r"|</[A-Za-z][A-Za-z0-9-]*[ \t]*>)[ \t]*$",
     re.IGNORECASE,
 )

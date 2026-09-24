@@ -415,7 +415,7 @@ def format_value(value: str, *, positional: bool = False) -> str:
         or "}" in value
         or value.startswith('"')
         # Unquoted, it would read as an auto-curled quote (value-curly-quote).
-        or value[:1] in CURLY_DOUBLE_QUOTES
+        or (value[:1] != "" and value[0] in CURLY_DOUBLE_QUOTES)
         or value != value.strip(_WS)
         or (positional and _PARAM_NAME_RE.match(value) is not None)
     )

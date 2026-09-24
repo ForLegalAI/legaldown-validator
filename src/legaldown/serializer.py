@@ -250,7 +250,8 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
     (``parser._parse_body``). So the paragraphs directly after a list, up
     to the last one that would otherwise open another block, are written
     indented; the run stops at one the parser reads as another block even
-    when indented (a quote, a list item, a rule, a table row)."""
+    when indented (a quote, a list item, a rule). A one-line paragraph
+    starting with ``|`` stays a paragraph: a table needs a second row."""
     parts: list[str] = []
     indented: set[int] = set()
     for index, block in enumerate(blocks):
@@ -260,7 +261,7 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
             run = index + 1
             while run < len(blocks) and blocks[run].kind in _PARAGRAPHS:
                 text = _render_block(blocks[run], indent=True)[4:]
-                if text.startswith((">", "|")) or RULE_RE.match(text) or LIST_ITEM_RE.match(text):
+                if text.startswith(">") or RULE_RE.match(text) or LIST_ITEM_RE.match(text):
                     break
                 if _opens_block(text):
                     indented.update(range(index + 1, run + 1))
