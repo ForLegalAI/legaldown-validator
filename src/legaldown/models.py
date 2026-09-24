@@ -106,6 +106,11 @@ class Metadata:
     #: ``id``. Only ``parse_document`` sets it: a document built or rebuilt
     #: from a dict has no source, and the serializer writes block style.
     not_line_editable: list[str] = field(default_factory=list)
+    #: True when the parsed source has no frontmatter (§3.1): no ``---``
+    #: block opens it, or the block's YAML is not a mapping of fields, in
+    #: which case the source is all body. Only ``parse_document`` sets it,
+    #: like ``not_line_editable``.
+    frontmatter_absent: bool = False
 
 
 @dataclass(slots=True)

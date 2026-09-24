@@ -7,6 +7,7 @@ its input, and the §11.4 recognition contexts.
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from legaldown import (
     Block,
@@ -926,9 +927,64 @@ def test_empty_frontmatter_and_byte_order_mark_are_not_body(source):
     assert document.sections[0].identifier == "a"
 
 
-def test_frontmatter_that_is_not_a_mapping_is_rejected():
-    with pytest.raises(ValueError, match="mapping"):
-        parse_document("---\njust text\n---\n# A\n")
+# ── Frontmatter presence (§3.1, §3.2, §16.6) ──────────────────────
+
+
+def _presence(source: str) -> tuple[bool, list[str], list[str], set[str]]:
+    """Whether the frontmatter is absent, the preamble's block kinds, the
+    section titles, and the rules reported."""
+    document = parse_document(source)
+    return (
+        document.metadata.frontmatter_absent,
+        [b.kind for b in document.preamble],
+        [s.title for s in document.sections],
+        validate_document(document).rules(),
+    )
+
+
+def test_a_document_without_frontmatter_draws_only_the_warning():
+    """§16.6: not title-missing, not sides-absent."""
+    assert _presence("# Scope {#scope}\n\nBody.\n") == (True, [], ["Scope"], {"frontmatter-absent"})
+    result = validate_document(parse_document("# Scope\n\nBody.\n"))
+    assert [d.level for d in result.diagnostics] == ["warning"]
+
+
+def test_unclosed_frontmatter_is_absent_and_its_lines_are_body():
+    absent, preamble, titles, rules = _presence("---\ntitle: T\n# A\n\nText {{ref: nope}}.\n")
+    assert (absent, preamble, titles) == (True, ["rule", "paragraph"], ["A"])
+    assert rules == {"frontmatter-absent", "ref-broken"}
+
+
+@pytest.mark.parametrize(
+    "block",
+    ["\nThis Agreement is made today.\n", "just text", "- a\n- b", "'quoted'", "42"],
+)
+def test_a_block_whose_yaml_is_not_a_mapping_is_body(block):
+    """A body that opens with a thematic break: everything is validated as
+    body, the text directly above the second "---" as a setext heading."""
+    absent, preamble, titles, rules = _presence(f"---\n{block}\n---\n\n# Terms\n\nSee {{{{ref: nope}}}}.\n")
+    assert (absent, preamble[0], titles[-1]) == (True, "rule", "Terms")
+    assert {"frontmatter-absent", "ref-broken"} <= rules
+    assert not {"title-missing", "sides-absent"} & rules
+
+
+@pytest.mark.parametrize("block", ["---\n---\n", "---\n# just a comment\n---\n", "---\n\n---\n"])
+def test_empty_frontmatter_is_present(block):
+    absent, _preamble, titles, rules = _presence(block + "\n# A\n\nText.\n")
+    assert (absent, titles) == (False, ["A"])
+    assert {"title-missing", "sides-absent"} <= rules and "frontmatter-absent" not in rules
+
+
+def test_invalid_yaml_is_still_an_error():
+    with pytest.raises(yaml.YAMLError):
+        parse_document("---\ntitle: [unclosed\n---\n# A\n")
+
+
+def test_frontmatter_absent_is_not_read_from_frontmatter_or_a_dict():
+    document = parse_document("---\ntitle: T\nfrontmatter_absent: true\n---\n\n# A\n")
+    assert document.metadata.frontmatter_absent is False
+    assert document_from_dict(document_to_dict(parse_document("# A\n"))).metadata.frontmatter_absent is False
+    assert "frontmatter-absent" not in validate_document(document_from_dict({"sections": []})).rules()
 
 
 def test_only_a_comment_may_follow_an_anchor():

@@ -131,18 +131,24 @@ _DELIMITER_CELL_RE = re.compile(r":?-+:?")
 
 # ── Internal helpers ──────────────────────────────────────────────
 
-def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str]:
+def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, bool]:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
-    body)``; the first is read from how the YAML is written, which the
-    parsed data loses."""
+    body, absent)``; the first is read from how the YAML is written, which
+    the parsed data loses. The frontmatter is *absent* when no closed
+    ``---`` block opens the source, or when the block's YAML is a scalar or
+    a list rather than a mapping of fields: then its ``---`` lines are
+    thematic breaks, and the whole source is body. A block that is empty or
+    holds only comments is present and empty."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return [], {}, source
+        return [], {}, source, True
     loader = _StrDateSafeLoader(match.group(1) or "")
     try:
         node = loader.get_single_node()
         if node is None:
-            return [], {}, source[match.end():]
+            return [], {}, source[match.end():], False
+        if not isinstance(node, yaml.MappingNode):
+            return [], {}, source, True
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
         if isinstance(node, yaml.MappingNode):
@@ -152,11 +158,9 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str]:
         metadata = loader.construct_document(node)
     finally:
         loader.dispose()
-    if not isinstance(metadata, dict):
-        raise ValueError("Frontmatter must be a YAML mapping of fields.")
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
-    return not_line_editable, metadata, source[match.end():]
+    return not_line_editable, metadata, source[match.end():], False
 
 
 def _has_flow_style(node: yaml.Node) -> bool:
@@ -653,7 +657,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     silently corrected).
     """
     # A byte-order mark is an encoding artifact, not content.
-    not_line_editable, metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
+    not_line_editable, metadata, body, absent = _split_frontmatter((source or "").removeprefix("\ufeff"))
     preamble, sections = _parse_body(body.splitlines())
     payload: dict[str, Any] = {
         "metadata": metadata,
@@ -674,6 +678,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     }
     document = document_from_dict(payload)
     document.metadata.not_line_editable = not_line_editable
+    document.metadata.frontmatter_absent = absent
     return document
 
 
