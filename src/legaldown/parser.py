@@ -25,6 +25,7 @@ from .markdown import (
     fence_end,
     html_block_end,
     indent_width,
+    indented_code_end,
 )
 from .markers import Marker, split_heading
 from .models import Block, Document, document_from_dict
@@ -114,7 +115,7 @@ def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
 FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)", re.DOTALL)
 # An ATX heading: its level and its text, which may end in a marker (split
 # off by markers.split_heading).
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")  # the text is stripped by split_heading
+HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.+)$")  # the text is stripped by split_heading
 # A setext underline under a paragraph: ``===`` makes a level-1 heading,
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
@@ -210,7 +211,10 @@ def _is_lazy_line(line: str) -> bool:
     block of its own: a *lazy continuation line* (CommonMark), which joins
     the list item or block quote whose paragraph it continues. Any list item
     marker is taken to start a list, and a ``|`` line a table, as this
-    parser has always read them."""
+    parser has always read them. A line indented four or more columns
+    starts none: indented code cannot interrupt a paragraph."""
+    if indent_width(line) >= 4:
+        return bool(line.strip())
     return (
         bool(line.strip())
         and not FENCE_OPEN_RE.match(line)
@@ -533,7 +537,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     (CommonMark): a fence, an ATX heading, a block quote, an HTML block of
     kinds 1–6, a table (GFM), a thematic break
     other than a setext underline, or a list item (an ordered one only when
-    numbered 1). A *lazy* paragraph continues a
+    numbered 1), none of them indented four or more columns. A *lazy* paragraph continues a
     list, block quote, or table (no blank line between), so it cannot be
     setext text: ``---`` under it is a rule.
     """
@@ -543,10 +547,10 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
         if (
             FENCE_OPEN_RE.match(line)
             or HEADING_RE.match(line)
-            or line.lstrip().startswith(">")
+            or (line.lstrip().startswith(">") and indent_width(line) <= 3)
             or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
-            or _parse_table(lines, end) is not None
+            or (indent_width(line) <= 3 and _parse_table(lines, end) is not None)
             or (RULE_RE.match(line) and not SETEXT_UNDERLINE_RE.match(line) and indent_width(line) <= 3)
         ):
             break
@@ -560,6 +564,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
 
 
 _Heading = tuple[str, Marker, int]  # title, marker, level
+_LIST_KINDS = ("ordered_list", "unordered_list")
 
 
 def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
@@ -581,6 +586,16 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             lazy = False
             continue
         heading: _Heading | None = None
+        if indent_width(line) >= 4 and not (blocks and blocks[-1].kind in _LIST_KINDS):
+            # Indented code (§11.4). A paragraph's own lines, and a list's
+            # or quote's lazy lines, never get here. After a list this
+            # parser ends at a blank line, CommonMark keeps an indented
+            # line in the list's last item: it stays a paragraph here.
+            end = indented_code_end(lines, index)
+            blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
+            index = end
+            lazy = False
+            continue
         opening = FENCE_OPEN_RE.match(line)
         atx = HEADING_RE.match(line)
         marker = LIST_ITEM_RE.match(line)

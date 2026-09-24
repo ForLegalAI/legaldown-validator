@@ -106,6 +106,25 @@ def dedent(line: str, columns: int) -> str:
     return " " * max(column - columns, 0) + line[index:]
 
 
+def indented_code_end(lines: list[str], index: int) -> int:
+    """Index just past the indented code block starting at ``lines[index]``
+    (CommonMark): its lines are blank or indented four or more columns, and
+    it ends before its trailing blank lines."""
+    end = last = index + 1
+    while end < len(lines) and (not lines[end].strip() or indent_width(lines[end]) >= 4):
+        end += 1
+        if lines[end - 1].strip():
+            last = end
+    return last
+
+
+def is_indented_code(text: str) -> bool:
+    """True if every non-blank line of *text* is indented four or more
+    columns, as an indented code block's are (CommonMark)."""
+    lines = [line for line in text.split("\n") if line.strip()]
+    return bool(lines) and all(indent_width(line) >= 4 for line in lines)
+
+
 def closes_fence(line: str, fence: str) -> bool:
     """True if *line* closes a code block opened with *fence*: at most three
     columns of indentation, then the same character at least as many times,

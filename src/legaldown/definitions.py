@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex, mask_directives
+from .markdown import is_indented_code
 from .models import Block, Document
 from .validator.helpers import generate_identifier
 
@@ -181,8 +182,11 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
     one the parser split around a lifted {{ref:}} or {{term:}}) and the end
     of a list item; a block quote or a table cell never is one.
     """
-    if block.kind == "html":
-        return []  # raw HTML: no directive or marker is recognized (§11.4)
+    if block.kind == "html" or (block.kind == "code" and is_indented_code(block.text)):
+        # Raw HTML and indented code: no directive or marker is recognized
+        # (§11.4). A fenced block's text is lexed, which blanks the fence:
+        # text a model puts after its closing fence is checked.
+        return []
     paragraph = block.kind in ("paragraph", "definition")
     lifted = block.kind in ("ref", "term")
     listed = block.kind in ("ordered_list", "unordered_list")

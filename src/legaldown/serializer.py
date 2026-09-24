@@ -5,12 +5,13 @@ The output is deterministic for a given Document input.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import yaml
 
 from .directives import format_value
-from .markdown import FENCE_OPEN_RE, close_fences, html_block_end
+from .markdown import FENCE_OPEN_RE, close_fences, dedent, html_block_end, is_indented_code
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata, metadata_from_dict
 from .parser import HEADING_RE, RULE_RE
@@ -133,12 +134,26 @@ def _list_item(marker: str, item: str) -> str:
 
 
 def _paragraph(text: str) -> str:
-    """A paragraph's text, indented four columns if at the margin it would
-    open a code block, a heading, or an HTML block: the parser only reads
-    such text as a paragraph when it was indented like that in the source."""
+    """A paragraph's text, with a backslash before its first character if at
+    the margin it would open a code block, a heading, or an HTML block. The
+    parser never reads such text as a paragraph, so only a model built in
+    code has it; the backslash renders as nothing (CommonMark)."""
     if FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or html_block_end([text], 0) is not None:
-        return "    " + text
+        return "\\" + text
     return text
+
+
+def _code(text: str, *, after_list: bool) -> str:
+    """A code block, fenced or indented, as it is; other text as it is, to
+    be read as what it is. Indented code directly after a list is written
+    fenced: there the parser reads an indented line as paragraph text."""
+    if FENCE_OPEN_RE.match(text):
+        return close_fences(text)
+    if not (after_list and is_indented_code(text)):
+        return text
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)  # longer than any backtick run in the code
+    return "\n".join([fence, *(dedent(line, 4) for line in text.split("\n")), fence])
 
 
 _DELIMITERS = {"left": ":---", "right": "---:", "center": ":---:"}
@@ -207,7 +222,7 @@ def _render_block(block: Block) -> str:
     if block.kind == "rule":
         return "---"
     if block.kind == "code":
-        return close_fences(block.text)
+        return _code(block.text, after_list=False)
     if block.kind == "html":
         return block.text
     return block.text.strip()
@@ -216,10 +231,12 @@ def _render_block(block: Block) -> str:
 def _render_blocks(blocks: list[Block]) -> list[str]:
     """Rendered blocks, each preceded by a blank separator line."""
     parts: list[str] = []
+    after_list = False
     for block in blocks:
-        rendered = _render_block(block)
+        rendered = _code(block.text, after_list=True) if after_list and block.kind == "code" else _render_block(block)
         if rendered:
             parts.extend(["", rendered])
+            after_list = block.kind in ("ordered_list", "unordered_list")
     return parts
 
 
@@ -257,7 +274,8 @@ def serialize_document(document: Document) -> str:
             heading += " " + marker
         parts.extend(["", heading])
         parts.extend(_render_blocks(section.blocks))
-    return "\n".join(parts).strip() + "\n"
+    # Only line breaks are trimmed: a document may open with indented code.
+    return "\n".join(parts).strip("\n") + "\n"
 
 
 

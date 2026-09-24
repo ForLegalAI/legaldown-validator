@@ -229,6 +229,11 @@ header's width, and a `|` inside a cell — a code span's included — is writte
 table block's `headers` and `rows` hold the cell text with those escapes removed, and
 `align` holds each column's alignment (`"left"`, `"right"`, `"center"`, or `""`).
 
+Lines indented four or more columns are an indented code block, as in CommonMark, so a
+paragraph indented that far is code: its directives and anchors are literal (§11.4). A
+paragraph that a model holds but that would, written at the margin, open a heading, a fence,
+or an HTML block is written with a backslash before it.
+
 Raw HTML follows CommonMark's HTML blocks: a block of raw HTML, or an HTML comment on
 lines of its own, is an `html` block holding its source as written. No heading, directive,
 or anchor inside it is recognized (§8.6, §11.4), so a clause commented out with

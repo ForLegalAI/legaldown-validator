@@ -1211,8 +1211,10 @@ def test_blank_line_ends_the_lazy_context_even_inside_a_list_fence():
     assert _outline(source)[-1] == ("Heading", 2, "heading")
 
 
-def test_indented_dashes_are_still_a_rule():
-    assert _kinds(_FRONTMATTER + "Text.\n\n    ---\n\nMore.\n") == ["paragraph", "rule", "paragraph"]
+def test_indented_dashes_are_code():
+    """Indented four columns, a line is code, not a rule (CommonMark)."""
+    assert _kinds(_FRONTMATTER + "Text.\n\n    ---\n\nMore.\n") == ["paragraph", "code", "paragraph"]
+    assert _kinds(_FRONTMATTER + "Text.\n\n   ---\n\nMore.\n") == ["paragraph", "rule", "paragraph"]
 
 
 def test_a_single_pipe_line_is_a_paragraph_not_dropped():
@@ -1627,7 +1629,7 @@ def test_nothing_in_an_html_block_is_validated():
         ("</span>\n", ["html"]),
         ("<https://example.com>\n", ["paragraph"]),  # an autolink
         ("<b>bold</b> text\n", ["paragraph"]),  # an inline tag
-        ("    <div>\n", ["paragraph"]),  # indented four columns
+        ("    <div>\n", ["code"]),  # indented four columns
         ("| a |\n|---|\n<span>\n", ["table", "html"]),
         ("<pre-x>\n## Not a heading\n", ["html"]),  # only the exact names are excluded
         ("<style-guide x>\n", ["html"]),
@@ -1652,8 +1654,76 @@ def test_an_html_block_in_the_model_keeps_its_indentation():
 
 
 @pytest.mark.parametrize("prefix", ["<div> see", "# see", "```"])
-def test_a_lifted_reference_that_would_open_a_block_stays_indented(prefix):
-    source = f"{_BARE}    {prefix} {{{{ref: sec-a}}}} here\n\n# A {{#sec-a}}\n\nx\n"
-    document = parse_document(source)
-    assert document.preamble[0].kind == "ref"
+def test_a_model_built_reference_that_would_open_a_block_is_escaped(prefix):
+    """The parser never lifts such text; a model can hold it. A backslash
+    keeps it text, and renders as nothing (CommonMark)."""
+    document = document_from_dict(
+        {"sections": [{"title": "A", "identifier": "sec-a", "blocks": [
+            {"kind": "ref", "prefix": f"{prefix} ", "target": "sec-a", "suffix": " here"},
+            {"kind": "paragraph", "text": f"{prefix} text"},
+        ]}]}
+    )
+    reparsed = parse_document(serialize_document(document)).sections[0].blocks
+    assert [(b.kind, b.prefix or b.text) for b in reparsed] == [("ref", f"\\{prefix} "), ("paragraph", f"\\{prefix} text")]
+
+
+# ── Indented code blocks (§11.4, CommonMark 4.4) ──────────────────
+
+
+def _code_blocks(body: str) -> list[tuple[str, str]]:
+    document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)) == document
+    return [(b.kind, b.text) for b in document.sections[0].blocks]
+
+
+def test_directives_in_indented_code_are_literal():
+    body = "Text.\n\n    {{ref: nope}} {#anchor} \"Fee\" {{def: fee}}\n    {{bogus: x}}\n\nSee {{ref: anchor}}.\n"
+    result = validate_document(parse_document(_FRONTMATTER + body))
+    assert result.rules() == {"ref-broken"}
+    assert [d.message for d in result.diagnostics] == ["Broken section reference: 'anchor'."]
+
+
+def test_an_indented_code_block_keeps_its_lines():
+    body = "Text.\n\n    a\n\n\t  b\n      c\n\n\nAfter.\n"
+    assert _code_blocks(body) == [("paragraph", "Text."), ("code", "    a\n\n\t  b\n      c"), ("paragraph", "After.")]
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("Text.\n    more {{ref: nope}}\n", ["ref"]),  # continues the paragraph
+        ("- item\n\n    more\n", ["unordered_list", "paragraph"]),  # CommonMark keeps it in the item
+        ("> quote\n\n    code\n", ["quote", "code"]),
+        ("> quote\n    lazy\n", ["quote"]),  # a lazy line of the quote
+        ("| a |\n|---|\n    code\n", ["table", "code"]),
+        ("    - x\n", ["code"]),
+        ("    > q\n", ["code"]),
+        ("    | a |\n    |---|\n", ["code"]),
+        ("   # Heading\n", []),  # up to three spaces: a heading
+        ("Text.\n    > q\n", ["paragraph"]),  # not a quote: continues the paragraph
+        ("Text.\n    | a |\n    |---|\n", ["paragraph"]),  # not a table
+    ],
+)
+def test_where_indented_code_starts(body, kinds):
+    assert [kind for kind, _text in _code_blocks(body)] == kinds
+
+
+def test_a_heading_indented_up_to_three_spaces_interrupts_a_paragraph():
+    document = parse_document(_FRONTMATTER + "Text.\n   ## Sub\n")
+    assert [s.title for s in document.sections] == ["Terms", "Sub"]
+
+
+def test_a_document_can_open_with_indented_code():
+    document = parse_document("    code\n\n# A\n")
+    assert [(b.kind, b.text) for b in document.preamble] == [("code", "    code")]
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_model_built_indented_code_after_a_list_is_written_fenced():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["one"]},
+        {"kind": "code", "text": "    x = `y`\n\n      z"},
+    ]}]})
+    written = serialize_document(document)
+    assert "- one\n\n```\nx = `y`\n\n  z\n```" in written
+    assert [b.kind for b in parse_document(written).sections[0].blocks] == ["unordered_list", "code"]
