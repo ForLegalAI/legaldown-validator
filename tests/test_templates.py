@@ -1081,3 +1081,28 @@ def test_question_default_rejects_datetime_and_unicode_line_breaks():
     assert any(
         "must not contain a line break" in d.message for d in res_text.diagnostics
     )
+
+
+# ── The template decision (§15.1), shared with assembly ───────────
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "body", "template"),
+    [
+        ("questions:\n  x:\n    type: boolean\n", "Text.", True),
+        ("", "# A {#a when=x}\n\nText.", True),
+        ("", "# A\n\nText. {when=x}", True),
+        ("", "Text. {when=x}", False),  # in the preamble, only a template places it (§5.7)
+        ("", 'Pick {{choose: x, true="a", false="b"}}.', True),
+        ('governing_law: "{{choose: x, true=a, false=b}}"\n', "Text.", True),
+        ("", "# A {{choose: x, true=a, false=b}}\n\nText.", True),
+        ("attachments:\n  - id: a\n    title: A\n    file: a.pdf\n    when: x\n", "See {{attach: a}}.", True),
+        ("", "Text. `{when=x}` and <!-- {{choose: x}} -->", False),
+        ("", "Text.", False),
+    ],
+)
+def test_is_template_decides_as_the_validator_does(frontmatter, body, template):
+    from legaldown.validator.core import is_template
+
+    document = parse_document(f"---\ntitle: T\n{frontmatter}---\n\n{body}\n")
+    assert is_template(document) is template

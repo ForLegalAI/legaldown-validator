@@ -26,6 +26,9 @@ terms, duplicate identifiers, malformed party metadata, bad dates and money valu
 📤 **Serializes** the model back to LegalDown source, so you can edit documents programmatically
 and write them out again.
 
+🧩 **Assembles** templates (§15.7): a template and an answers set in, the finished document out,
+byte for byte as the specification defines it.
+
 🏷️ **Names every finding.** Each diagnostic carries the specification's stable rule id (§16.1)
 alongside its severity and message, so you can suppress one check, escalate another, or gate a
 build on exactly the rules you care about. Rule ids survive specification renumbering — they are
@@ -122,6 +125,19 @@ Directories are searched recursively for `*.lgd`, `*.legaldown`, and `*.legal.md
 
 **Exit codes:** `0` clean · `1` diagnostics found (errors, or any diagnostic under `--strict`) ·
 `2` a file could not be read.
+
+### Assembling a template
+
+```bash
+legaldown assemble template.lgd --answers answers.yaml          # the document to stdout
+legaldown assemble template.lgd --answers answers.yaml -o out/  # with its fragments and attachment files
+```
+
+The answers set is a YAML mapping of question ids to answers (§15.7.1). Include fragments and
+LegalDown attachment files are read relative to the template, never from outside its directory;
+the ones assembly keeps are written under `-o` at their relative paths. Answer problems are
+reported as `answer-invalid`, `answer-missing` and `answer-unknown` (§16.12) on stderr, and
+nothing is written when there is an Error. Exit codes are as for `validate`.
 
 ### JSON output
 
@@ -254,18 +270,40 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |
 | **Placeholders** | Malformed ids, invalid types, one blank with two types, currencies, or units, placeholders in structural and format-checked frontmatter fields |
-| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, invalid or contradictory conditions, references whose target a condition can remove, identifiers shared by units that can appear together, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term or against Markdown punctuation, fragments included twice; with `--final`, anything left unfilled |
+| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, invalid or contradictory conditions, references whose target a condition can remove, identifiers shared by units that can appear together, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term or against Markdown punctuation, fragments included twice; with `--final`, anything left unfilled; on assembly, answers that are invalid, missing, or unknown |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
 | **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2 |
 
 Each check reports at the severity the specification assigns it — Error, Warning, or Info.
 
+## Assembly
+
+```python
+from legaldown import assemble, needed_questions, template_questions
+
+result = assemble(template_source, {"forum": "courts", "fee": {"amount": "5000", "currency": "EUR"}})
+if result.ok:
+    contract = result.output        # the assembled template file
+    files = result.files            # assembled fragments and attachment files, by relative path
+for diagnostic in result.diagnostics:
+    print(diagnostic.level, diagnostic.rule, diagnostic.message)
+
+template_questions(template_source)            # every question, declared and implicit (§15.2)
+needed_questions(template_source, answers)     # what to ask next, given the answers so far
+```
+
+Assembly edits the template as written — "no other byte of the template changes" — so its
+output is identical to any other conforming implementation's. A template with include fragments
+or LegalDown attachment files needs `load_file=`, a function from a relative path to the file's
+text; without it such a template is refused rather than assembled partially (§17.6).
+
 ## Scope
 
-This implementation claims **Level 1 — Core** (§17.2): everything above applies to a single
-document, in memory, with no filesystem access beyond reading the file you point it at. That
-covers authoring, editing, and CI validation of individual documents.
+This implementation claims **Level 1 — Core** (§17.2) and the **Assembly** capability (§17.6):
+everything above applies to a single document, in memory, with no filesystem access beyond
+reading the file you point it at, and the files an assembled template includes when you supply
+them. That covers authoring, editing, CI validation, and assembly of individual documents.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — every rule it

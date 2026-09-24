@@ -1,11 +1,12 @@
 # Conformance
 
 `legaldown-validator` implements **Level 1 — Core** of the LegalDown specification 0.2 (§17.2):
-parse and validate a single document in memory.
+parse and validate a single document in memory. It also claims the **Assembly** capability
+(§17.6): a template and an answers set in, the assembled document out (§15.7).
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **81 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **84 of the
 corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes.**
 
 The specification defines 116 rules. The corpus has no fixture for three of them, since a
@@ -34,7 +35,6 @@ files other than the document itself.
 | Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`, `path-not-relative`, `path-outside-root` |
 | Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip` |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
-| Assembly capability (§17.6) — not claimed | `answer-invalid`, `answer-missing`, `answer-unknown` |
 | Rendering (§17.3) | `ref-not-enumerated` |
 | Lexer-level grammar (§11.2–11.4) | `raw-html` |
 | Other | `frontmatter-invalid-yaml` (reported by the CLI, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
@@ -46,8 +46,7 @@ and CI validation are fully covered.
 The template constructs of specification 0.2 (§15) are validated within the document: questions,
 conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, insertion
 boundaries, and the final option (§15.9, `validate_document(final=True)` or
-`legaldown validate --final`). Assembly itself (§15.7) is a capability this implementation does not
-claim. Four limits apply:
+`legaldown validate --final`); assembly is described below. Three limits apply:
 
 - A template's include fragments and LegalDown attachment files are not read (Full, §17.4), so
   `question-unused` is not reported for a template that has either: a question may be used there.
@@ -100,11 +99,33 @@ git clone https://github.com/ForLegalAI/LegalDown ../LegalDown
 LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
-Cases for the rules above are skipped by name, so the 32 `not implemented` skips reproduce this
-table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 41 skips in
-total: eight are the implemented rules named above, skipped as `multi-file case` or
-`requires conformance level full`, and one is the multi-file assembly case, whose template the
-harness would otherwise check for Errors. Cases that need the final option run with it. CI runs this on every push and pull request.
+Cases for the rules above are skipped by name, so the 29 `not implemented` skips reproduce this
+table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 37 skips in
+total: the other eight are the implemented rules named above, skipped as `multi-file case` or
+`requires conformance level full`. Cases that need the final option run with it; cases that need
+an answers set are assembled with it, and each assembly case is compared byte for byte with its
+expected output. CI runs this on every push and pull request.
+
+## Assembly (§15.7, §17.6)
+
+`assemble(template, answers)` and `legaldown assemble` perform §15.7.2 byte for byte and report
+the answer rules of §16.12 (`answer-invalid`, `answer-missing`, `answer-unknown`). The block
+structure assembly edits is recorded by the parser's own walk, so assembly and validation read a
+template the same way. `template_questions` and `needed_questions` list the questions a template
+asks, all of them or those an answers set still leaves open.
+
+- A single-file template is assembled at Core, as §17.6 permits ("Core + Assembly").
+- A template with include fragments or LegalDown attachment files is assembled when the caller
+  passes `load_file`, which reads them; the CLI reads them relative to the template and refuses a
+  path that leads out of its directory. Reading them is a Full capability (§17.4) that this
+  implementation provides for assembly without claiming Full, as §17.1 allows. Without
+  `load_file`, such a template is refused with `include-file-missing` or
+  `attachment-file-missing`, never assembled partially (§17.6).
+- A template with `translations` is refused with `translation-file-missing`: its linked templates
+  are assembled with it (§15.7.2), which this implementation does not do.
+
+All six cases of the corpus's `fixtures/assembly` assemble byte for byte, the multi-file case
+included, and each output validates without Errors (§15.7.4).
 
 ## Declaring conformance in code
 
@@ -115,6 +136,7 @@ import legaldown
 
 legaldown.SPEC_VERSION       # "0.2"  — specification version targeted
 legaldown.CONFORMANCE_LEVEL  # "core" — conformance level claimed
+legaldown.CAPABILITIES       # frozenset({"assembly"}) — capabilities claimed (§17.6)
 legaldown.__version__        # implementation version
 ```
 

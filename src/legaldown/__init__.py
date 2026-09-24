@@ -17,6 +17,17 @@ Quick start::
 """
 from __future__ import annotations
 
+# Assembly (§15.7): a named capability (§17.6)
+from .assembly import (
+    AssemblyError,
+    AssemblyResult,
+    LoadFile,
+    Question,
+    assemble,
+    needed_questions,
+    template_questions,
+)
+
 # Definitions (§7)
 from .definitions import (
     DELIMITER_PAIRS,
@@ -80,15 +91,29 @@ __version__ = "0.2.0"
 #: https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md
 CONFORMANCE_LEVEL = "core"
 
+#: Named capabilities claimed besides the level (§17.6): template assembly,
+#: for single-file templates; a caller-supplied ``load_file`` also lets it
+#: read include fragments and LegalDown attachment files.
+CAPABILITIES: frozenset[str] = frozenset({"assembly"})
+
 __all__ = [
     # Package metadata
     "__version__",
     "SPEC_VERSION",
     "CONFORMANCE_LEVEL",
+    "CAPABILITIES",
     # Core workflow
     "parse_document",
     "serialize_document",
     "validate_document",
+    # Assembly (§15.7, §17.6)
+    "assemble",
+    "template_questions",
+    "needed_questions",
+    "AssemblyResult",
+    "AssemblyError",
+    "Question",
+    "LoadFile",
     # Definitions (§7)
     "collect_definitions",
     "definition_lookup",
