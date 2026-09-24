@@ -12,7 +12,7 @@ import yaml
 from .directives import format_value
 from .markdown import FENCE_OPEN_RE, close_fences, html_block_end
 from .markers import Marker, format_marker
-from .models import Amends, Block, Document, Metadata
+from .models import Amends, Block, Document, Metadata, metadata_from_dict
 from .parser import HEADING_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -235,19 +235,21 @@ class _BlockDumper(yaml.SafeDumper):
 # ── Public API ────────────────────────────────────────────────────
 
 def serialize_document(document: Document) -> str:
-    """Serialize a Document object to LegalDown (.legal.md) source text."""
-    frontmatter = yaml.dump(
-        _metadata_to_frontmatter(document.metadata),
-        Dumper=_BlockDumper,
-        sort_keys=False,
-        allow_unicode=True,
-    ).strip()
-    parts = [
-        "---",
-        frontmatter,
-        "---",
-    ]
-    parts.extend(_render_blocks(document.preamble))
+    """Serialize a Document object to LegalDown (.legal.md) source text.
+
+    A document parsed without frontmatter (§3.1) is written without it, as
+    long as its metadata is still empty; a thematic break opening it is then
+    written ``***``, which cannot open frontmatter."""
+    payload = _metadata_to_frontmatter(document.metadata)
+    bare = document.metadata.frontmatter_absent and payload == _metadata_to_frontmatter(metadata_from_dict({}))
+    parts: list[str] = []
+    if not bare:
+        frontmatter = yaml.dump(payload, Dumper=_BlockDumper, sort_keys=False, allow_unicode=True).strip()
+        parts = ["---", frontmatter, "---"]
+    preamble = _render_blocks(document.preamble)
+    if bare and preamble[1:2] == ["---"]:
+        preamble[1] = "***"
+    parts.extend(preamble)
     for section in document.sections:
         heading = f"{'#' * section.level} {section.title.strip()}"
         marker = format_marker(Marker(section.identifier.strip(), section.condition.strip()))

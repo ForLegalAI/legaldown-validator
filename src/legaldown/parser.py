@@ -149,10 +149,13 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, boo
             return [], {}, source[match.end():], False
         if not isinstance(node, yaml.MappingNode):
             return [], {}, source, True
+        if node.tag != "tag:yaml.org,2002:map":
+            # A mapping tagged as something else (!!set, !!omap) is meant
+            # as frontmatter, but holds no fields.
+            raise ValueError("Frontmatter must be a YAML mapping of fields.")
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
-        if isinstance(node, yaml.MappingNode):
-            loader.flatten_mapping(node)
+        loader.flatten_mapping(node)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)

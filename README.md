@@ -210,7 +210,8 @@ it has none. The identifiers the validator generates (§5.3, §5.5) are not writ
 model: read them from `ValidationResult.sections`.
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
-structures, and `render_block()` renders a single block when you are driving your own layout.
+structures, except the two fields that describe the parsed source rather than the document,
+`Metadata.not_line_editable` and `Metadata.frontmatter_absent`. `render_block()` renders a single block when you are driving your own layout.
 `iter_directives()` lexes the directives in a piece of text by the §11.2
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 

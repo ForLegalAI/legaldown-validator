@@ -991,6 +991,34 @@ def test_invalid_yaml_is_still_an_error():
         parse_document("---\ntitle: [unclosed\n---\n# A\n")
 
 
+def test_a_mapping_of_another_type_is_not_frontmatter_fields():
+    with pytest.raises(ValueError, match="mapping of fields"):
+        parse_document("---\n!!set {title: T}\n---\n# A\n")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "# Scope {#scope}\n\nBody.\n",
+        "---\n\nThis Agreement.\n\n---\n# Terms\n\nx\n",
+        "---\ntitle: T\n# A\n\nText.\n",
+        "***\n\nNote: see below\n\n***\n\n# A\n",
+    ],
+)
+def test_a_document_without_frontmatter_is_written_without_it(source):
+    document = parse_document(source)
+    written = serialize_document(document)
+    assert not written.startswith("---")
+    assert parse_document(written) == document
+    assert validate_document(parse_document(written)).rules() <= {"frontmatter-absent"}
+
+
+def test_metadata_set_on_a_bare_document_is_written_as_frontmatter():
+    document = parse_document("# A\n\nText.\n")
+    document.metadata.title = "Terms"
+    assert serialize_document(document).startswith("---\ntitle: Terms\n")
+
+
 def test_frontmatter_absent_is_not_read_from_frontmatter_or_a_dict():
     document = parse_document("---\ntitle: T\nfrontmatter_absent: true\n---\n\n# A\n")
     assert document.metadata.frontmatter_absent is False
