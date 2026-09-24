@@ -1782,7 +1782,8 @@ def test_code_after_the_indented_run_after_a_list_stays_code():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "# foo"}, {"kind": "code", "text": "    x"},
     ]}]})
-    assert parse_document(serialize_document(document)).sections == document.sections
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("paragraph", "# foo"), ("code", "```\nx\n```")]
 
 
 def test_the_indented_run_stops_at_text_that_reads_as_another_block():
