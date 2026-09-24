@@ -279,6 +279,10 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
     defaults = BLOCK_DEFAULTS.get(kind, BLOCK_DEFAULTS["paragraph"])
     merged = {**defaults, **payload}
     headers = [_cell(header) for header in list(merged.get("headers") or [])]
+    if kind == "table" and "headers" not in payload:
+        # The default headers widen to the widest row, so no cell is cut.
+        width = max((len(row) for row in merged.get("rows") or [] if isinstance(row, (list, tuple))), default=0)
+        headers += [f"Column {index + 1}" for index in range(len(headers), width)]
     return Block(
         kind=kind,
         text=_block_text(kind, merged.get("text")),

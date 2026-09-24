@@ -1317,10 +1317,13 @@ def test_a_pipe_in_a_code_span_splits_the_row_unless_escaped():
     assert _table("| a | b |\n|---|---|\n| `x\\|y` | 2 |\n").rows == [["`x|y`", "2"]]
 
 
-def test_backslashes_before_a_pipe_escape_it_only_when_odd():
-    block = _table("| a | b | c |\n|---|---|---|\n| x\\\\| y | z\\\\\\| w |\n")
-    assert block.rows == [["x\\\\", "y", "z\\\\| w"]]
-    _round_trips("| a | b | c |\n|---|---|---|\n| x\\\\| y | z\\\\\\| w |\n")
+def test_a_pipe_after_any_backslash_is_escaped():
+    """cmark-gfm: a pipe directly after a backslash is cell text, and only
+    that backslash is removed, however many precede it."""
+    body = "| a | b | c |\n|---|---|---|\n| x\\\\| y | z\\\\\\| w |\n"
+    assert _table(body).rows == [["x\\| y", "z\\\\| w", ""]]
+    assert _table("| a \\\\| b |\n|---|\n").headers == ["a \\| b"]
+    _round_trips(body)
 
 
 def test_an_escaped_pipe_in_a_directive_value_reaches_the_directive():
@@ -1378,11 +1381,35 @@ def test_the_serializer_escapes_pipes_in_model_built_cells():
     assert written({"kind": "table", "headers": ["a|b"], "rows": [["c|d"]]}) == [
         "| a\\|b |", "| --- |", "| c\\|d |"
     ]
-    # Already escaped: kept, so it is not read as an escaped backslash and a
-    # pipe; the parser then reads the pipe as text, as a renderer shows it.
-    assert written({"kind": "table", "headers": ["a\\|b"], "rows": []}) == ["| a\\|b |", "| --- |"]
+    # A backslash before a pipe is text too: one more is written, and the
+    # parser removes exactly that one.
+    assert written({"kind": "table", "headers": ["a\\|b"], "rows": []}) == ["| a\\\\|b |", "| --- |"]
     # Without a header row, one is written as wide as the widest row.
     assert written({"kind": "table", "headers": [], "rows": [["1", "2"]]}) == ["|  |  |", "| --- | --- |", "| 1 | 2 |"]
+    assert written({"kind": "table", "headers": [], "rows": [[]]}) == ["|  |", "| --- |", "|  |"]
+    block = {"kind": "table", "headers": ["a\\|b", "c\\\\|"], "rows": [["\\", "|"]]}
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [block]}]})
+    assert parse_document(serialize_document(document)).sections == document.sections
+    # Nothing to take a width from: one empty column, still a table.
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "table", "headers": [], "rows": [[]]}]}]})
+    assert parse_document(serialize_document(document)).sections[0].blocks[0].kind == "table"
+
+
+def test_default_headers_widen_to_the_widest_row():
+    block = document_from_dict({"sections": [{"blocks": [{"kind": "table", "rows": [["a", "b", "c"]]}]}]}).sections[0].blocks[0]
+    assert (block.headers, block.rows) == (["Column 1", "Column 2", "Column 3"], [["a", "b", "c"]])
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [("Text\n| a |\n|---|\n", ["paragraph", "table"]), ("| a |\n| b |\n|---|\n| c |\n", ["paragraph", "table"]),
+     ("Text\n| a |\n| b |\n", ["paragraph"])],
+)
+def test_a_table_interrupts_a_paragraph(body, kinds):
+    """GFM: a paragraph's last line and a delimiter row under it start a table."""
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == kinds
+    _round_trips(body)
 
 
 # ── HTML blocks (§8.6, §8.7, CommonMark 4.6) ──────────────────────

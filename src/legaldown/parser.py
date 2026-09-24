@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 
 from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import Directive, is_escaped, iter_directives, lex
+from .directives import Directive, iter_directives, lex
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
@@ -350,17 +350,18 @@ def _parse_list(lines: list[str], index: int, *, list_type: str) -> tuple[Block,
 
 def _split_row(line: str) -> list[str]:
     """The cells of the table row *line* (GFM): it is split at each ``|``
-    not escaped by a backslash, and a leading and a trailing ``|`` delimit
-    the row rather than a cell. An escaped pipe is cell text, its escaping
-    backslash removed; a pipe inside a code span splits the row like any
-    other (GFM), so it too is written ``\\|``."""
+    not directly after a backslash, and a leading and a trailing ``|``
+    delimit the row rather than a cell. A pipe after a backslash is cell
+    text, and that one backslash is removed, whatever precedes it
+    (cmark-gfm). A pipe inside a code span splits the row like any other
+    (GFM), so it too is written ``\\|``."""
     row = line.strip()
     cells: list[str] = []
     cell: list[str] = []
     for pos, char in enumerate(row):
         if char != "|":
             cell.append(char)
-        elif is_escaped(row, pos):
+        elif row[pos - 1:pos] == "\\":
             cell[-1] = "|"  # replaces the escaping backslash
         else:
             cells.append("".join(cell))
@@ -368,7 +369,7 @@ def _split_row(line: str) -> list[str]:
     cells.append("".join(cell))
     if row.startswith("|"):
         cells.pop(0)
-    if len(cells) > 1 and row.endswith("|") and not is_escaped(row, len(row) - 1):
+    if len(cells) > 1 and row.endswith("|") and not row.endswith("\\|"):
         cells.pop()
     return [cell.strip() for cell in cells]
 
@@ -519,7 +520,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
 
     A paragraph ends at a blank line or at a block that can interrupt it
     (CommonMark): a fence, an ATX heading, a block quote, an HTML block of
-    kinds 1–6, a thematic break
+    kinds 1–6, a table (GFM), a thematic break
     other than a setext underline, or a list item (an ordered one only when
     numbered 1). A *lazy* paragraph continues a
     list, block quote, or table (no blank line between), so it cannot be
@@ -534,6 +535,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
             or line.lstrip().startswith(">")
             or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
+            or _parse_table(lines, end) is not None
             or (RULE_RE.match(line) and not SETEXT_UNDERLINE_RE.match(line) and indent_width(line) <= 3)
         ):
             break

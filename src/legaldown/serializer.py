@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from .directives import format_value, is_escaped
+from .directives import format_value
 from .markdown import FENCE_OPEN_RE, close_fences, html_block_end
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata
@@ -145,14 +145,9 @@ _DELIMITERS = {"left": ":---", "right": "---:", "center": ":---:"}
 
 
 def _table_cell(text: str) -> str:
-    """A table cell's text with each pipe escaped, so that it does not split
-    the row (GFM): the parser removes the escaping backslash. A pipe already
-    escaped — after an odd run of backslashes — is left as it is."""
-    text = " ".join(text.split("\n")).strip()
-    return "".join(
-        "\\|" if char == "|" and not is_escaped(text, pos) else char
-        for pos, char in enumerate(text)
-    )
+    """A table cell's text with a backslash before each pipe, so that it
+    does not split the row (GFM): the parser removes exactly that one."""
+    return " ".join(text.split("\n")).strip().replace("|", "\\|")
 
 
 def _table_row(cells: list[str]) -> str:
@@ -198,7 +193,7 @@ def _render_block(block: Block) -> str:
     if block.kind == "table":
         # GFM needs a header row; a table built without one gets empty
         # header cells, as wide as its widest row.
-        width = len(block.headers) or max((len(row) for row in block.rows), default=1)
+        width = len(block.headers) or max((len(row) for row in block.rows), default=0) or 1
         headers = block.headers + [""] * (width - len(block.headers))
         align = block.align[:width] + [""] * (width - len(block.align))
         rows = [row[:width] + [""] * (width - len(row)) for row in block.rows]
