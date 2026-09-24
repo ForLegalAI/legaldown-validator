@@ -231,11 +231,11 @@ def _check_directive_arguments(
             f"Parameter '{param}' is not defined for {{{{{name}:}}}} and is ignored: "
             f"'{directive.source}'.",
         )
-    for param, _value in directive.curly_quoted():
+    for param, value in directive.curly_quoted():
         of = f" of '{param}'" if param else ""
         result.warning(
             "value-curly-quote",
-            f"Unquoted value{of} begins with a typographic quotation mark, which does not "
+            f"Unquoted value{of}, '{value}', begins with a typographic quotation mark, which does not "
             f"quote it (§11.3); write a straight double quote (\") if one was meant: "
             f"'{directive.source}'.",
         )

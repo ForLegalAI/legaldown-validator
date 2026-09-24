@@ -309,6 +309,17 @@ def test_a_curly_quoted_reference_stays_paragraph_text():
     assert "value-curly-quote" in validate_document(document).rules("warning")
 
 
+@pytest.mark.parametrize(
+    "text",
+    ['"Fee" {{def: fee}} x.\n\nSee {{term: fee, label="“Curly”"}}.', 'See {{ref: "“terms”"}}.', '"Fee" {{def: "«fee»"}} x.'],
+)
+def test_a_quoted_curly_value_stays_quoted_through_a_round_trip(text):
+    document = parse_document(_FRONTMATTER + text + "\n")
+    reparsed = parse_document(serialize_document(document))
+    assert reparsed.sections == document.sections
+    assert "value-curly-quote" not in validate_document(reparsed).rules()
+
+
 def test_a_curly_quote_in_a_frontmatter_placeholder_is_a_warning():
     source = _FRONTMATTER.replace("title: Fixture", "title: '{{placeholder: t, note=“x”}}'")
     assert "value-curly-quote" in validate_document(parse_document(source + "Text.\n")).rules("warning")
