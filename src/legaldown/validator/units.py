@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..directives import Directive, Lexed, is_escaped
-from ..markers import HTML_COMMENT_RE, MARKER_RE, Marker, is_look_alike, parse_marker
+from ..markdown import HTML_COMMENT_RE
+from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
 from ..models import Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 

@@ -210,15 +210,35 @@ it has none. The identifiers the validator generates (§5.3, §5.5) are not writ
 model: read them from `ValidationResult.sections`.
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
-structures, and `render_block()` renders a single block when you are driving your own layout.
+structures, except the two fields that describe the parsed source rather than the document,
+`Metadata.not_line_editable` and `Metadata.frontmatter_absent`. `render_block()` renders a single block when you are driving your own layout.
 `iter_directives()` lexes the directives in a piece of text by the §11.2
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it
 valid, so what you authored is exactly what the validator judges. The serializer, by contrast,
 normalizes: frontmatter is re-emitted as canonical YAML, paragraphs are written as single
-lines, and setext (underlined) headings are written as `#` headings, so expect a
+lines, setext (underlined) headings are written as `#` headings, list items are written with
+`-` (`+` where `-` would read as a thematic break) or `1.`, `2.`, … whichever marker they
+had, and table rows are written
+with a pipe at each end and every `|` in a cell escaped as `\|`, so expect a
 formatting-normalized file rather than a byte-for-byte copy.
+
+Tables follow GFM: a table needs a delimiter row with one cell per header, rows take the
+header's width, and a `|` inside a cell — a code span's included — is written `\|`. A
+table block's `headers` and `rows` hold the cell text with those escapes removed, and
+`align` holds each column's alignment (`"left"`, `"right"`, `"center"`, or `""`).
+
+Lines indented four or more columns are an indented code block, as in CommonMark, so a
+paragraph indented that far is code: its directives and anchors are literal (§11.4). A
+paragraph that a model holds but that would, written at the margin, open a heading, a fence,
+or an HTML block is written with a backslash before it.
+
+Raw HTML follows CommonMark's HTML blocks: a block of raw HTML, or an HTML comment on
+lines of its own, is an `html` block holding its source as written. No heading, directive,
+or anchor inside it is recognized (§8.6, §11.4), so a clause commented out with
+`<!-- … -->` is not a section. As in CommonMark, a comment left unclosed runs to the end of
+the document.
 
 ## What gets checked
 
@@ -227,7 +247,7 @@ The full rule set with severities and examples lives in the specification (§16)
 | Area | Checks include |
 |---|---|
 | **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title |
-| **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, stray `{{` |
+| **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, unquoted values that begin with a curly quote, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
 | **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions and lost letters, markers outside an anchor position |
 | **Definitions** | Undefined `{{term:}}`, duplicate ids, auto-generated ids that lost letters, missing quoted span, ambiguous quoting, unreferenced definitions |
@@ -237,7 +257,7 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, invalid or contradictory conditions, references whose target a condition can remove, identifiers shared by units that can appear together, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term or against Markdown punctuation, fragments included twice; with `--final`, anything left unfilled |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
-| **Metadata** | Invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2 |
+| **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2 |
 
 Each check reports at the severity the specification assigns it — Error, Warning, or Info.
 

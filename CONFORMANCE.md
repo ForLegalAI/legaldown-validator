@@ -5,7 +5,7 @@ parse and validate a single document in memory.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **79 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **81 of the
 corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes.**
 
 The specification defines 116 rules. The corpus has no fixture for three of them, since a
@@ -36,8 +36,8 @@ files other than the document itself.
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Assembly capability (§17.6) — not claimed | `answer-invalid`, `answer-missing`, `answer-unknown` |
 | Rendering (§17.3) | `ref-not-enumerated` |
-| Lexer-level grammar (§11.2–11.4) | `value-curly-quote`, `raw-html` |
-| Other | `frontmatter-absent`, `frontmatter-invalid-yaml` (reported by the CLI, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
+| Lexer-level grammar (§11.2–11.4) | `raw-html` |
+| Other | `frontmatter-invalid-yaml` (reported by the CLI, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means multi-file processing is out of scope: includes, attachment file contents,
 and bilingual document sets are not resolved or cross-checked. Single-document authoring, editing,
@@ -57,6 +57,12 @@ claim. Four limits apply:
   standalone document: conditions, placeholders, and terms that refer to its template's
   questions and definitions are reported as undeclared.
 
+Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body.
+Indented code inside a block quote or a list item is not recognized, so directives in it are
+checked. Indented lines directly after a list, past the blank line that ends the list here,
+stay paragraphs for as long as each is indented, as CommonMark keeps them in the list's last item
+rather than making them code.
+
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy
 continuation line of a nested quote. Either needs a full CommonMark container parser.
@@ -67,6 +73,13 @@ also emits that id when an attachment declares no `file` at all, which is visibl
 itself. The specification provides no separate id for the absent key, so a diagnostic carrying
 `attachment-file-missing` from this implementation always means the key is missing, never that the
 path failed to resolve.
+
+`frontmatter-absent` is reported for a document that does not open with a closed `---` block,
+and for one whose `---` block holds YAML that is a scalar or a list rather than a mapping of
+fields: that block is not frontmatter, its `---` lines are thematic breaks, and the whole document
+is validated as body. A block that is not valid YAML at all is `frontmatter-invalid-yaml`, which
+the CLI reports; `parse_document` raises for it. As §16.6 requires, a document without
+frontmatter draws that Warning alone: not `title-missing`, and not `sides-absent`.
 
 `directive-malformed` is evaluated on the text the parser hands the validator. The parser joins
 the lines of a paragraph (and a list item's continuation lines) with a space, so a directive
@@ -82,8 +95,8 @@ git clone https://github.com/ForLegalAI/LegalDown ../LegalDown
 LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
-Cases for the rules above are skipped by name, so the 34 `not implemented` skips reproduce this
-table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 43 skips in
+Cases for the rules above are skipped by name, so the 32 `not implemented` skips reproduce this
+table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 41 skips in
 total: eight are the implemented rules named above, skipped as `multi-file case` or
 `requires conformance level full`, and one is the multi-file assembly case, whose template the
 harness would otherwise check for Errors. Cases that need the final option run with it. CI runs this on every push and pull request.

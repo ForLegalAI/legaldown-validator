@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .markdown import HTML_COMMENT_RE
+
 # A candidate marker: braces on one line opening with ``#`` or ``when=``.
 # Whether it looks like a marker is decided by is_look_alike, and whether it
 # is one by parse_marker. A single character class keeps the scan linear.
@@ -80,8 +82,6 @@ def parse_marker(text: str) -> Marker | None:
         return None
     return Marker(identifier, condition)
 
-
-HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 # A heading's trailing marker, after its text and at least one space. It is
 # sought with comments blanked: a marker inside a comment is not one, and a

@@ -23,7 +23,9 @@ from .markdown import (
     closes_fence,
     dedent,
     fence_end,
+    html_block_end,
     indent_width,
+    indented_code_end,
 )
 from .markers import Marker, split_heading
 from .models import Block, Document, document_from_dict
@@ -113,43 +115,57 @@ def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
 FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)", re.DOTALL)
 # An ATX heading: its level and its text, which may end in a marker (split
 # off by markers.split_heading).
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")  # the text is stripped by split_heading
+HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.+)$")  # the text is stripped by split_heading
 # A setext underline under a paragraph: ``===`` makes a level-1 heading,
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
-RULE_RE = re.compile(r"^[ \t]*-{3,}[ \t]*$")
-# A list item marker: ``-`` for an unordered list, ``1.`` for an ordered one.
-LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)\.|-)\s+")
+# A thematic break: three or more ``-``, ``*``, or ``_``, the same one,
+# with optional spaces or tabs between them.
+RULE_RE = re.compile(r"^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$")
+# A list item marker (CommonMark): ``-``, ``*``, or ``+`` for an unordered
+# list, a number and ``.`` or ``)`` for an ordered one. A thematic break
+# such as ``* * *`` matches too; callers test RULE_RE first.
+LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)(?P<delimiter>[.)])|(?P<bullet>[-*+]))\s+")
+# A cell of a table's delimiter row (GFM): colons mark the alignment.
+_DELIMITER_CELL_RE = re.compile(r":?-+:?")
 
 
 # ── Internal helpers ──────────────────────────────────────────────
 
-def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str]:
+def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, bool]:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
-    body)``; the first is read from how the YAML is written, which the
-    parsed data loses."""
+    body, absent)``; the first is read from how the YAML is written, which
+    the parsed data loses. The frontmatter is *absent* when no closed
+    ``---`` block opens the source, or when the block's YAML is a scalar or
+    a list rather than a mapping of fields: then its ``---`` lines are
+    thematic breaks, and the whole source is body. A block that is empty or
+    holds only comments is present and empty."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return [], {}, source
+        return [], {}, source, True
     loader = _StrDateSafeLoader(match.group(1) or "")
     try:
         node = loader.get_single_node()
         if node is None:
-            return [], {}, source[match.end():]
+            return [], {}, source[match.end():], False
+        if not isinstance(node, yaml.MappingNode):
+            return [], {}, source, True
+        if node.tag != "tag:yaml.org,2002:map":
+            # A mapping tagged as something else (!!set, a flow !!omap) is
+            # meant as frontmatter, but holds no fields. (A block !!omap is
+            # a sequence: not frontmatter.)
+            raise ValueError("Frontmatter must be a YAML mapping of fields.")
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
-        if isinstance(node, yaml.MappingNode):
-            loader.flatten_mapping(node)
+        loader.flatten_mapping(node)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
     finally:
         loader.dispose()
-    if not isinstance(metadata, dict):
-        raise ValueError("Frontmatter must be a YAML mapping of fields.")
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
-    return not_line_editable, metadata, source[match.end():]
+    return not_line_editable, metadata, source[match.end():], False
 
 
 def _has_flow_style(node: yaml.Node) -> bool:
@@ -196,7 +212,10 @@ def _is_lazy_line(line: str) -> bool:
     block of its own: a *lazy continuation line* (CommonMark), which joins
     the list item or block quote whose paragraph it continues. Any list item
     marker is taken to start a list, and a ``|`` line a table, as this
-    parser has always read them."""
+    parser has always read them. A line indented four or more columns
+    starts none: indented code cannot interrupt a paragraph."""
+    if indent_width(line) >= 4:
+        return bool(line.strip())
     return (
         bool(line.strip())
         and not FENCE_OPEN_RE.match(line)
@@ -216,7 +235,7 @@ def _opens_paragraph(content: str) -> bool:
     inner = content.lstrip()
     while inner.startswith(">"):
         inner = inner[1:].lstrip()
-    marker = LIST_ITEM_RE.match(inner)
+    marker = None if RULE_RE.match(inner) else LIST_ITEM_RE.match(inner)
     if marker:
         inner = inner[marker.end():]
     return (
@@ -255,7 +274,14 @@ class _Quote:
         return self.paragraph and _is_lazy_line(line)
 
 
-def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int, bool]:
+def _list_type(marker: re.Match[str]) -> str:
+    """What a list item's marker makes it (CommonMark): the bullet of an
+    unordered item, the delimiter (``.`` or ``)``) of an ordered one. A
+    marker of another type starts a new list."""
+    return marker.group("delimiter") or marker.group("bullet")
+
+
+def _parse_list(lines: list[str], index: int, *, list_type: str) -> tuple[Block, int, bool]:
     """Parse the list starting at ``lines[index]``.
 
     Returns ``(block, end, lazy)``: *end* is the index just past the list,
@@ -264,7 +290,8 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
 
     The list runs through its items, their continuation lines (indented two
     or more columns, or lazy continuation lines after item text), and nested
-    items; an unindented item of the other kind ends it. A fenced code block
+    items; an unindented item of another type (``_list_type``) or a thematic
+    break ends it. A fenced code block
     in an item stays in that item, one line per line, indented relative to
     the item, blank lines included, until it closes or an unindented line
     ends the item (and the fence with it). A block quote in an item (a
@@ -291,9 +318,9 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
             fence = None
         if not line.strip():
             break
-        marker = LIST_ITEM_RE.match(line)
+        marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
-        if marker and ((marker.group("number") is not None) == ordered or indented):
+        if marker and (_list_type(marker) == list_type or indented):
             content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
             content = line[marker.end():].strip()
             items.append(content)
@@ -329,17 +356,77 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
             fence = opening.group("fence") if opening else None
             lazy = fence is None and bool(content.strip())  # an empty item has no text
         end += 1
-    kind = "ordered_list" if ordered else "unordered_list"
+    kind = "ordered_list" if list_type in ".)" else "unordered_list"
     return Block(kind=kind, items=items), end, lazy
 
 
-def _parse_table(lines: list[str]) -> Block:
-    rows = [line.strip().strip("|") for line in lines]
-    headers = [cell.strip() for cell in rows[0].split("|")]
-    data_rows: list[list[str]] = []
-    for row in rows[2:]:
-        data_rows.append([cell.strip() for cell in row.split("|")])
-    return Block(kind="table", headers=headers, rows=data_rows)
+def _is_row(line: str) -> bool:
+    """True if *line* can continue a table: it starts with ``|``, indented
+    at most three columns."""
+    return line.lstrip().startswith("|") and indent_width(line) <= 3
+
+
+def _split_row(line: str) -> list[str]:
+    """The cells of the table row *line* (GFM): it is split at each ``|``
+    not directly after a backslash, and a leading and a trailing ``|``
+    delimit the row rather than a cell. A pipe after a backslash is cell
+    text, and that one backslash is removed, whatever precedes it
+    (cmark-gfm). A pipe inside a code span splits the row like any other
+    (GFM), so it too is written ``\\|``."""
+    row = line.strip()
+    if row == "|":
+        return []  # no cells (GFM)
+    cells: list[str] = []
+    cell: list[str] = []
+    for pos, char in enumerate(row):
+        if char != "|":
+            cell.append(char)
+        elif row[pos - 1:pos] == "\\":
+            cell[-1] = "|"  # replaces the escaping backslash
+        else:
+            cells.append("".join(cell))
+            cell = []
+    cells.append("".join(cell))
+    if row.startswith("|"):
+        cells.pop(0)
+    if len(cells) > 1 and row.endswith("|") and not row.endswith("\\|"):
+        cells.pop()
+    return [cell.strip() for cell in cells]
+
+
+_ALIGNMENTS = {(True, False): "left", (False, True): "right", (True, True): "center", (False, False): ""}
+
+
+def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
+    """Parse the table starting at ``lines[index]``; return it with the index
+    just past it, or None when the lines there are not a table.
+
+    A table is a header row, then a delimiter row with as many cells, each
+    ``:?-+:?`` (GFM), then its body rows; every row starts with ``|``. A body
+    row is padded with empty cells or cut to the header's width, as GFM
+    renders it. Each column's alignment comes from its delimiter cell. The
+    delimiter and body rows are indented at most three columns (a line
+    indented further is code), and a row that is only ``|`` has no cells:
+    it is not a header and it ends the body.
+    """
+    if not (lines[index].lstrip().startswith("|") and lines[index + 1:index + 2]):
+        return None
+    if not _is_row(lines[index + 1]):
+        return None
+    headers = _split_row(lines[index])
+    delimiters = _split_row(lines[index + 1])
+    if not headers or len(delimiters) != len(headers) or not all(
+        _DELIMITER_CELL_RE.fullmatch(cell) for cell in delimiters
+    ):
+        return None
+    align = [_ALIGNMENTS[cell.startswith(":"), cell.endswith(":")] for cell in delimiters]
+    rows: list[list[str]] = []
+    end = index + 2
+    while end < len(lines) and _is_row(lines[end]) and (cells := _split_row(lines[end])):
+        cells = cells[: len(headers)]
+        rows.append(cells + [""] * (len(headers) - len(cells)))
+        end += 1
+    return Block(kind="table", headers=headers, rows=rows, align=align), end
 
 
 def _parse_paragraph(paragraph: str) -> Block:
@@ -416,12 +503,15 @@ def _is_liftable_definition(
         and not directive.malformed
         and not directive.params
         and directive.positional != ""
+        and not directive.curly_quoted()
     )
 
 
 def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
     """The first *name* directive the ref/term block fields hold without loss:
-    well-formed, with a target and only the parameters it defines."""
+    well-formed, with a target and only the parameters it defines. One whose
+    arguments the validator warns about stays paragraph text, where it is
+    checked."""
     for directive in directives:
         if (
             directive.name == name
@@ -432,6 +522,7 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
             # Block fields hold "" for an absent parameter, so an explicitly
             # empty one (label=) would be dropped on serialization.
             and all(directive.params.values())
+            and not directive.curly_quoted()
         ):
             return directive
     return None
@@ -440,10 +531,11 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
 def _starts_interrupting_item(line: str) -> bool:
     """True if *line* is a list item that may interrupt a paragraph
     (CommonMark): indented at most three columns, not empty, and, if
-    ordered, numbered 1."""
+    ordered, numbered 1. A thematic break is not one."""
     marker = LIST_ITEM_RE.match(line)
     return (
         marker is not None
+        and not RULE_RE.match(line)
         and indent_width(line) <= 3
         and bool(line[marker.end():].strip())
         and marker.group("number") in (None, "1")
@@ -456,8 +548,10 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     of a setext heading, whose underline is ``lines[end - 1]``, else 0.
 
     A paragraph ends at a blank line or at a block that can interrupt it
-    (CommonMark): a fence, an ATX heading, a block quote, or a list item
-    (an ordered one only when numbered 1). A *lazy* paragraph continues a
+    (CommonMark): a fence, an ATX heading, a block quote, an HTML block of
+    kinds 1–6, a table (GFM), a thematic break
+    other than a setext underline, or a list item (an ordered one only when
+    numbered 1), none of them indented four or more columns. A *lazy* paragraph continues a
     list, block quote, or table (no blank line between), so it cannot be
     setext text: ``---`` under it is a rule.
     """
@@ -467,8 +561,12 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
         if (
             FENCE_OPEN_RE.match(line)
             or HEADING_RE.match(line)
-            or line.lstrip().startswith(">")
+            or (line.lstrip().startswith(">") and indent_width(line) <= 3)
+            or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
+            # The delimiter row decides: the header row is paragraph text.
+            or (end + 1 < len(lines) and indent_width(lines[end + 1]) <= 3 and _parse_table(lines, end) is not None)
+            or (RULE_RE.match(line) and not SETEXT_UNDERLINE_RE.match(line) and indent_width(line) <= 3)
         ):
             break
         underline = SETEXT_UNDERLINE_RE.match(line)
@@ -481,19 +579,26 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
 
 
 _Heading = tuple[str, Marker, int]  # title, marker, level
+_LIST_KINDS = ("ordered_list", "unordered_list")
+_PARAGRAPH_KINDS = ("paragraph", "definition", "ref", "term")
 
 
 def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
     """Parse body lines into the preamble's blocks (§4.4) and the sections'.
 
     Headings (ATX and setext, §4.1) and blocks are recognized in one pass, so
-    a fenced code block is literal everywhere (§11.4): no line inside one is
-    a heading or starts another block.
+    a fenced code block (§11.4) or an HTML block (§8.6) is literal
+    everywhere: no line inside one is a heading or starts another block.
     """
     preamble: list[Block] = []
     sections: list[tuple[_Heading, list[Block]]] = []
     blocks = preamble
     lazy = False  # the last block was a list, quote, or table, with no blank line since
+    # After a list, which this parser ends at a blank line, indented lines
+    # stay paragraphs rather than code: CommonMark keeps them in the list's
+    # last item. The run lasts through such paragraphs.
+    list_tail = False
+    interrupted = -1  # the line at which a paragraph was interrupted
     index = 0
     while index < len(lines):
         line = lines[index]
@@ -502,6 +607,18 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             lazy = False
             continue
         heading: _Heading | None = None
+        in_tail = list_tail and indent_width(line) >= 4
+        # A table that interrupted a paragraph may have an indented header
+        # row: the paragraph ended there (_paragraph_end).
+        interrupting_table = index == interrupted and _parse_table(lines, index) is not None
+        if indent_width(line) >= 4 and not in_tail and not interrupting_table:
+            # Indented code (§11.4). A paragraph's own lines, and a list's
+            # or quote's lazy lines, never get here.
+            end = indented_code_end(lines, index)
+            blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
+            index = end
+            lazy = list_tail = False
+            continue
         opening = FENCE_OPEN_RE.match(line)
         atx = HEADING_RE.match(line)
         marker = LIST_ITEM_RE.match(line)
@@ -539,20 +656,21 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             # The quote took every line it could continue; a paragraph after
             # it is lazy only if the quote's is still open.
             lazy = quote.paragraph
-        elif line.lstrip().startswith("|") and lines[index + 1:index + 2] and (
-            lines[index + 1].lstrip().startswith("|")
-        ):
-            end = index
-            while end < len(lines) and lines[end].lstrip().startswith("|"):
-                end += 1
-            blocks.append(_parse_table(lines[index:end]))
-            index = end
+        elif table := _parse_table(lines, index):
+            block, index = table
+            blocks.append(block)
             lazy = True
         elif marker:
             block, index, lazy = _parse_list(
-                lines, index, ordered=marker.group("number") is not None
+                lines, index, list_type=_list_type(marker)
             )
             blocks.append(block)
+        elif (end := html_block_end(lines, index)) is not None:
+            # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
+            # no heading or other block starts inside it.
+            blocks.append(Block(kind="html", text="\n".join(lines[index:end])))
+            index = end
+            lazy = False
         else:
             end, setext_level = _paragraph_end(lines, index, lazy)
             if setext_level:
@@ -560,14 +678,16 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
                 heading = (*split_heading(text), setext_level)
             else:
                 blocks.append(_parse_paragraph(" ".join(lines[index:end])))
+                interrupted = end
             index = end
             lazy = False
         if heading is not None:
-            if heading[0] == "Signature Block" and heading[1].identifier == "signature-block":
-                break
             blocks = []
             sections.append((heading, blocks))
             lazy = False
+        list_tail = bool(blocks) and (
+            blocks[-1].kind in _LIST_KINDS or (in_tail and blocks[-1].kind in _PARAGRAPH_KINDS)
+        )
     return preamble, sections
 
 
@@ -582,7 +702,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     silently corrected).
     """
     # A byte-order mark is an encoding artifact, not content.
-    not_line_editable, metadata, body = _split_frontmatter((source or "").removeprefix("\ufeff"))
+    not_line_editable, metadata, body, absent = _split_frontmatter((source or "").removeprefix("\ufeff"))
     preamble, sections = _parse_body(body.splitlines())
     payload: dict[str, Any] = {
         "metadata": metadata,
@@ -603,6 +723,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     }
     document = document_from_dict(payload)
     document.metadata.not_line_editable = not_line_editable
+    document.metadata.frontmatter_absent = absent
     return document
 
 

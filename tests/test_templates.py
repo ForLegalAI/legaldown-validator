@@ -833,7 +833,7 @@ def test_the_final_check_covers_headings():
     ("body", "kinds"),
     [
         ("- \nlazy text\n", ["unordered_list", "paragraph"]),
-        ("> quote\n<!-- editor note -->\n", ["quote", "paragraph"]),
+        ("> quote\n<!-- editor note -->\n", ["quote", "html"]),
     ],
 )
 def test_lines_that_cannot_continue_a_paragraph_are_not_lazy(body, kinds):
@@ -1019,7 +1019,7 @@ def test_an_autolink_or_inline_tag_continues_a_drafting_note(continuation):
 @pytest.mark.parametrize("html", ["<div>", "<!-- note -->", "</table>"])
 def test_an_html_block_start_ends_a_quote(html):
     document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n> quote\n{html}\n")
-    assert [b.kind for b in document.sections[0].blocks] == ["quote", "paragraph"]
+    assert [b.kind for b in document.sections[0].blocks] == ["quote", "html"]
 
 
 def test_text_after_a_link_reference_label_is_a_paragraph():

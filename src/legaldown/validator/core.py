@@ -231,6 +231,14 @@ def _check_directive_arguments(
             f"Parameter '{param}' is not defined for {{{{{name}:}}}} and is ignored: "
             f"'{directive.source}'.",
         )
+    for param, value in directive.curly_quoted():
+        of = f" of '{param}'" if param else ""
+        result.warning(
+            "value-curly-quote",
+            f"Unquoted value{of}, '{value}', begins with a typographic quotation mark, which does not "
+            f"quote it (§11.3); write a straight double quote (\") if one was meant: "
+            f"'{directive.source}'.",
+        )
     note = directive.params.get("note")
     if note is not None and "note" in DIRECTIVE_PARAMS.get(name, ()) and _MARKDOWN_RE.search(note):
         result.error(
@@ -443,8 +451,18 @@ def validate_document(
             f"implementation supports {SPEC_VERSION}, so constructs added since may not "
             f"be recognized (§3.2).",
         )
+    # Without frontmatter a document is valid, but has no metadata to
+    # check: it draws this Warning alone (§3.2, §16.6).
+    frontmatter_absent = document.metadata.frontmatter_absent
+    if frontmatter_absent:
+        result.warning(
+            "frontmatter-absent",
+            "The document has no frontmatter (§3.1), so it has no title, parties, or other "
+            "metadata. Frontmatter is a mapping of YAML fields between a '---' line at the "
+            "very start and a closing '---' line.",
+        )
     title = document.metadata.title.strip()
-    if not title:
+    if not title and not frontmatter_absent:
         result.error("title-missing", "The document title is required.")
 
     # Imported here to avoid a module-level import cycle (definitions ->
@@ -596,11 +614,13 @@ def validate_document(
     total_sides = len(document.metadata.sides)
     total_parties = sum(len(s.parties) for s in document.metadata.sides)
     if total_sides == 0:
-        result.warning(
-            "sides-absent",
-            f"No sides are declared, so the document_type '{doc_type}' "
-            f"side/party constraints cannot be verified.",
-        )
+        # Without frontmatter, frontmatter-absent is reported instead (§16.6).
+        if not frontmatter_absent:
+            result.warning(
+                "sides-absent",
+                f"No sides are declared, so the document_type '{doc_type}' "
+                f"side/party constraints cannot be verified.",
+            )
     elif doc_type == "contract":
         if total_sides < 2:
             result.error(

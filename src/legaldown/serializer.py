@@ -5,15 +5,16 @@ The output is deterministic for a given Document input.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import yaml
 
 from .directives import format_value
-from .markdown import FENCE_OPEN_RE, close_fences
+from .markdown import FENCE_OPEN_RE, close_fences, dedent, html_block_end, is_indented_code
 from .markers import Marker, format_marker
-from .models import Amends, Block, Document, Metadata
-from .parser import HEADING_RE
+from .models import Amends, Block, Document, Metadata, metadata_from_dict
+from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -132,18 +133,55 @@ def _list_item(marker: str, item: str) -> str:
     return "\n".join([first, *(" " * len(marker) + line if line else line for line in rest)])
 
 
-def _paragraph(text: str) -> str:
-    """A paragraph's text, indented four columns if at the margin it would
-    open a code block or a heading: the parser only reads such text as a
-    paragraph when it was indented like that in the source."""
-    if FENCE_OPEN_RE.match(text) or HEADING_RE.match(text):
+def _opens_block(text: str) -> bool:
+    """True if *text* at the margin would open a code block, a heading, or
+    an HTML block rather than a paragraph."""
+    return bool(FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or html_block_end([text], 0) is not None)
+
+
+def _paragraph(text: str, *, indent: bool = False) -> str:
+    """A paragraph's text. *indent* writes it indented four columns, which
+    after a list the parser reads as paragraph text whatever it begins with.
+    Elsewhere, text that would open another block gets a backslash before
+    it, which renders as nothing (CommonMark): the parser reads such text as
+    a paragraph only after a list, so otherwise only a model built in code
+    holds it."""
+    if indent:
         return "    " + text
-    return text
+    return "\\" + text if _opens_block(text) else text
 
 
-def _render_block(block: Block) -> str:
+def _code(text: str, *, after_list: bool) -> str:
+    """A code block, fenced or indented, as it is; other text as it is, to
+    be read as what it is. Indented code directly after a list is written
+    fenced: there the parser reads an indented line as paragraph text."""
+    if FENCE_OPEN_RE.match(text):
+        return close_fences(text)
+    if not (after_list and is_indented_code(text)):
+        return text
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)  # longer than any backtick run in the code
+    return "\n".join([fence, *(dedent(line, 4) for line in text.split("\n")), fence])
+
+
+_DELIMITERS = {"left": ":---", "right": "---:", "center": ":---:"}
+
+
+def _table_cell(text: str) -> str:
+    """A table cell's text with a backslash before each pipe, so that it
+    does not split the row (GFM): the parser removes exactly that one."""
+    return " ".join(text.split("\n")).strip().replace("|", "\\|")
+
+
+def _table_row(cells: list[str]) -> str:
+    return "| " + " | ".join(_table_cell(cell) for cell in cells) + " |"
+
+
+def _render_block(block: Block, *, indent: bool = False) -> str:
+    """*block* as source; *indent* writes a paragraph-like block indented
+    four columns (``_paragraph``)."""
     if block.kind == "paragraph":
-        return _paragraph(block.text.strip())
+        return _paragraph(block.text.strip(), indent=indent)
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()
@@ -153,16 +191,20 @@ def _render_block(block: Block) -> str:
             else f'"{term}" {{{{def:}}}}'
         )
         body = block.text.strip()
-        return f"{anchor} {body}" if body else anchor
+        return _paragraph(f"{anchor} {body}" if body else anchor, indent=indent)
     if block.kind == "ref":
         target = format_value(block.target, positional=True)
-        return f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}".strip()
+        return _paragraph(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}".strip(), indent=indent)
     if block.kind == "term":
         target = format_value(block.target, positional=True)
         label_part = f", label={format_value(block.label)}" if block.label else ""
-        return f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip()
+        return _paragraph(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip(), indent=indent)
     if block.kind == "unordered_list":
-        return "\n".join(_list_item("- ", item) for item in block.items if item.strip())
+        items = [item for item in block.items if item.strip()]
+        # An item whose text begins with dashes, such as "--", would make a
+        # "- " line a thematic break; "+" never forms one.
+        bullet = "+ " if any(RULE_RE.match("- " + item.split("\n")[0]) for item in items) else "- "
+        return "\n".join(_list_item(bullet, item) for item in items)
     if block.kind == "ordered_list":
         return "\n".join(
             _list_item(f"{index}. ", item)
@@ -174,38 +216,60 @@ def _render_block(block: Block) -> str:
         lines = block.text.splitlines() or [""]
         return "\n".join(f"> {line}".rstrip() for line in lines)
     if block.kind == "table":
-        headers = [
-            header.strip() or f"Column {index + 1}"
-            for index, header in enumerate(block.headers)
-        ]
-        separator = ["---"] * len(headers)
-        rows = []
-        for row in block.rows:
-            padded = row + [""] * max(0, len(headers) - len(row))
-            rows.append(
-                "| "
-                + " | ".join(cell.strip() for cell in padded[: len(headers)])
-                + " |"
-            )
+        # GFM needs a header row; a table built without one gets empty
+        # header cells, as wide as its widest row.
+        width = len(block.headers) or max((len(row) for row in block.rows), default=0) or 1
+        headers = block.headers + [""] * (width - len(block.headers))
+        align = block.align[:width] + [""] * (width - len(block.align))
+        rows = [row[:width] + [""] * (width - len(row)) for row in block.rows]
         return "\n".join(
             [
-                "| " + " | ".join(headers) + " |",
-                "| " + " | ".join(separator) + " |",
-                *rows,
+                _table_row(headers),
+                _table_row([_DELIMITERS.get(column, "---") for column in align]),
+                *(_table_row(row) for row in rows),
             ]
         )
     if block.kind == "rule":
         return "---"
     if block.kind == "code":
-        return close_fences(block.text)
+        return _code(block.text, after_list=False)
+    if block.kind == "html":
+        return block.text
     return block.text.strip()
 
 
+_LISTS = ("ordered_list", "unordered_list")
+_PARAGRAPHS = ("paragraph", "definition", "ref", "term")
+
+
 def _render_blocks(blocks: list[Block]) -> list[str]:
-    """Rendered blocks, each preceded by a blank separator line."""
+    """Rendered blocks, each preceded by a blank separator line.
+
+    After a list the parser reads indented lines as paragraphs, whatever
+    they begin with, for as long as each paragraph is indented
+    (``parser._parse_body``). So the paragraphs directly after a list, up
+    to the last one that would otherwise open another block, are written
+    indented; the run stops at one the parser reads as another block even
+    when indented (a quote, a list item, a rule). A one-line paragraph
+    starting with ``|`` stays a paragraph: a table needs a second row."""
     parts: list[str] = []
-    for block in blocks:
-        rendered = _render_block(block)
+    indented: set[int] = set()
+    for index, block in enumerate(blocks):
+        # Indented code here would read as one more paragraph after the list.
+        after_list = index > 0 and (blocks[index - 1].kind in _LISTS or index - 1 in indented)
+        if block.kind in _LISTS:
+            run = index + 1
+            while run < len(blocks) and blocks[run].kind in _PARAGRAPHS:
+                text = _render_block(blocks[run], indent=True)[4:]
+                if text.startswith(">") or RULE_RE.match(text) or LIST_ITEM_RE.match(text):
+                    break
+                if _opens_block(text):
+                    indented.update(range(index + 1, run + 1))
+                run += 1
+        if after_list and block.kind == "code":
+            rendered = _code(block.text, after_list=True)
+        else:
+            rendered = _render_block(block, indent=index in indented)
         if rendered:
             parts.extend(["", rendered])
     return parts
@@ -223,19 +287,21 @@ class _BlockDumper(yaml.SafeDumper):
 # ── Public API ────────────────────────────────────────────────────
 
 def serialize_document(document: Document) -> str:
-    """Serialize a Document object to LegalDown (.legal.md) source text."""
-    frontmatter = yaml.dump(
-        _metadata_to_frontmatter(document.metadata),
-        Dumper=_BlockDumper,
-        sort_keys=False,
-        allow_unicode=True,
-    ).strip()
-    parts = [
-        "---",
-        frontmatter,
-        "---",
-    ]
-    parts.extend(_render_blocks(document.preamble))
+    """Serialize a Document object to LegalDown (.legal.md) source text.
+
+    A document parsed without frontmatter (§3.1) is written without it, as
+    long as its metadata is still empty; a thematic break opening it is then
+    written ``***``, which cannot open frontmatter."""
+    payload = _metadata_to_frontmatter(document.metadata)
+    bare = document.metadata.frontmatter_absent and payload == _metadata_to_frontmatter(metadata_from_dict({}))
+    parts: list[str] = []
+    if not bare:
+        frontmatter = yaml.dump(payload, Dumper=_BlockDumper, sort_keys=False, allow_unicode=True).strip()
+        parts = ["---", frontmatter, "---"]
+    preamble = _render_blocks(document.preamble)
+    if bare and preamble[1:2] == ["---"]:
+        preamble[1] = "***"
+    parts.extend(preamble)
     for section in document.sections:
         heading = f"{'#' * section.level} {section.title.strip()}"
         marker = format_marker(Marker(section.identifier.strip(), section.condition.strip()))
@@ -243,7 +309,8 @@ def serialize_document(document: Document) -> str:
             heading += " " + marker
         parts.extend(["", heading])
         parts.extend(_render_blocks(section.blocks))
-    return "\n".join(parts).strip() + "\n"
+    # Only line breaks are trimmed: a document may open with indented code.
+    return "\n".join(parts).strip("\n") + "\n"
 
 
 

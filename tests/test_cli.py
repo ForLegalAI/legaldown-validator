@@ -100,6 +100,13 @@ def test_malformed_frontmatter_is_reported_not_raised(write, capsys):
     assert payload["diagnostics"][0]["rule"] == "frontmatter-invalid-yaml"
 
 
+def test_a_document_without_frontmatter_is_a_warning(write, capsys):
+    path = write("bare.lgd", "# Scope {#scope}\n\nBody.\n")
+    assert main(["validate", "--format", "json", str(path)]) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert [(d["rule"], d["level"]) for d in payload["diagnostics"]] == [("frontmatter-absent", "warning")]
+
+
 def test_final_rejects_a_remaining_blank(write, capsys):
     path = write("draft.lgd", _VALID + "\nThe fee is {{placeholder: fee, type=money}}.\n")
     assert main(["validate", str(path)]) == EXIT_OK

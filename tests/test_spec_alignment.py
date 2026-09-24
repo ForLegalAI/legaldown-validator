@@ -7,6 +7,7 @@ its input, and the §11.4 recognition contexts.
 from __future__ import annotations
 
 import pytest
+import yaml
 
 from legaldown import (
     Block,
@@ -16,9 +17,11 @@ from legaldown import (
     iter_directives,
     serialize_document,
 )
-from legaldown.directives import format_value
+from legaldown.directives import format_value, lex
+from legaldown.markers import Marker, split_heading
 from legaldown.parser import collect_source_directives, parse_document
 from legaldown.validator import validate_document
+from legaldown.validator.helpers import generate_identifier
 
 _FRONTMATTER = """---
 title: Fixture
@@ -267,6 +270,66 @@ def test_frontmatter_placeholder_with_unknown_parameter_is_checked():
     assert "directive-unknown-param" in result.rules("warning")
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        '"Fee" {{def: fee}} x. See {{term: fee, label=“Curly”}}.',  # the spec fixture
+        '"Fee" {{def: fee}} x. See {{term: “fee”}}.',
+        '"Fee" {{def: fee}} x. See {{term: fee, label=  „Low“}}.',
+        '"Fee" {{def: fee}} x. See {{term: fee, label=«Guillemets»}}.',
+        "Pay {{money: 5, currency=EUR, note=”closing”}}.",
+        "Pay {{money: 5, currency=EUR, note=“a”, note=b}}.",
+    ],
+)
+def test_an_unquoted_value_beginning_with_a_curly_quote_is_a_warning(text):
+    result = _validate(text)
+    assert [d.level for d in result.diagnostics if d.rule == "value-curly-quote"] == ["warning"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '"Fee" {{def: fee}} x. See {{term: fee, label="“Curly”"}}.',  # quoted
+        '"Fee" {{def: fee}} x. See {{term: fee, label=x“y”}}.',  # not at the start
+        '"Fee" {{def: fee}} x. See {{term: fee, label=’s-Hertogenbosch}}.',  # a single mark
+        '"Fee" {{def: fee}} x. See {{term: fee, label=}}.',  # empty
+        "See {{term: fee, label=“x, y”}} in {{ref: terms}}.",  # malformed: positional after named
+    ],
+)
+def test_other_values_are_not_curly_quote_warnings(text):
+    assert "value-curly-quote" not in _validate(text).rules()
+
+
+def test_a_curly_quoted_reference_stays_paragraph_text():
+    """A lifted {{ref:}} or {{term:}} is not lexed again, so a directive the
+    validator warns about is not lifted."""
+    document = parse_document(_FRONTMATTER + "See {{ref: “terms”}}.\n")
+    assert document.sections[0].blocks[0].kind == "paragraph"
+    assert parse_document(serialize_document(document)).sections == document.sections
+    assert "value-curly-quote" in validate_document(document).rules("warning")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['"Fee" {{def: fee}} x.\n\nSee {{term: fee, label="“Curly”"}}.', 'See {{ref: "“terms”"}}.', '"Fee" {{def: "«fee»"}} x.'],
+)
+def test_a_quoted_curly_value_stays_quoted_through_a_round_trip(text):
+    document = parse_document(_FRONTMATTER + text + "\n")
+    reparsed = parse_document(serialize_document(document))
+    assert reparsed.sections == document.sections
+    assert "value-curly-quote" not in validate_document(reparsed).rules()
+
+
+def test_a_curly_quote_in_a_frontmatter_placeholder_is_a_warning():
+    source = _FRONTMATTER.replace("title: Fixture", "title: '{{placeholder: t, note=“x”}}'")
+    assert "value-curly-quote" in validate_document(parse_document(source + "Text.\n")).rules("warning")
+
+
+def test_the_lexer_records_which_values_were_unquoted():
+    (directive,) = lex('{{term: a, label="b", note= c , label=d, x=}}').directives
+    assert directive.unquoted == (("", "a"), ("note", "c"), ("label", "d"))
+
+
 def test_collect_source_directives_sees_every_parameter_shape():
     document = parse_document(
         _FRONTMATTER + "See {{ref: a, colour=red}} and {{term: b, label=\"x, y\"}}.\n"
@@ -436,6 +499,43 @@ def test_escaped_placeholder_in_metadata_is_not_a_placeholder():
 def test_comment_opener_inside_code_span_is_code():
     result = _validate("Use `<!--` to open. {{ref: nope}} and `-->` closes.")
     assert "ref-broken" in result.rules("error")
+
+
+@pytest.mark.parametrize("comment", ["<!-->", "<!--->"])
+def test_an_empty_comment_ends_at_its_own_closing_bracket(comment):
+    """CommonMark 0.31: ``<!-->`` and ``<!--->`` are complete comments, not
+    openers that run on to a later ``-->``."""
+    lexed = lex(f"Text {comment} {{{{party: x}}}} more --> end")
+    assert [d.source for d in lexed.directives] == ["{{party: x}}"]
+    assert lexed.view.startswith("Text " + " " * len(comment) + " {{party: x}}")
+    assert "ref-broken" in _validate(f"First. {comment}{{{{ref: nowhere}}}} shown -->").rules("error")
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a <!----> {{ref: nope}}", "a <!-- x -- y --> {{ref: nope}}", "a <!--><!--> {{ref: nope}}", "a <!-- {{ref: nope}}"],
+)
+def test_comments_around_the_empty_forms_keep_their_extent(text):
+    assert [d.source for d in lex(text).directives] == ["{{ref: nope}}"]
+
+
+def test_an_empty_comment_in_a_quoted_value_is_part_of_the_value():
+    (directive,) = lex('{{term: x, label="<!-->"}} and <!-- {{ref: y}} -->').directives
+    assert directive.params["label"] == "<!-->"
+
+
+def test_an_empty_comment_after_a_heading_marker_keeps_the_marker():
+    assert split_heading("Scope {#scope} <!-->") == ("Scope <!-->", Marker("scope"))
+    assert generate_identifier("Scope <!--> Terms") == ("scope-terms", False)
+
+
+def test_text_after_an_empty_comment_is_not_a_comment():
+    # The marker is followed by text, so it is not in an anchor position.
+    rules = _validate("Deliver. {#delivery} <!--> tail -->\n\nSee {{ref: delivery}}.").rules()
+    assert {"anchor-misplaced", "ref-broken"} <= rules
+    # Text after the include, so the paragraph is not include-only (§12.2)
+    # and its anchor is kept.
+    assert _validate("{{include: parts/a.lgd}} <!--> more --> {#part-a}\n\nSee {{ref: part-a}}.").rules() == set()
 
 
 def test_format_value_rejects_line_breaks_and_quotes_openers():
@@ -838,9 +938,92 @@ def test_empty_frontmatter_and_byte_order_mark_are_not_body(source):
     assert document.sections[0].identifier == "a"
 
 
-def test_frontmatter_that_is_not_a_mapping_is_rejected():
-    with pytest.raises(ValueError, match="mapping"):
-        parse_document("---\njust text\n---\n# A\n")
+# ── Frontmatter presence (§3.1, §3.2, §16.6) ──────────────────────
+
+
+def _presence(source: str) -> tuple[bool, list[str], list[str], set[str]]:
+    """Whether the frontmatter is absent, the preamble's block kinds, the
+    section titles, and the rules reported."""
+    document = parse_document(source)
+    return (
+        document.metadata.frontmatter_absent,
+        [b.kind for b in document.preamble],
+        [s.title for s in document.sections],
+        validate_document(document).rules(),
+    )
+
+
+def test_a_document_without_frontmatter_draws_only_the_warning():
+    """§16.6: not title-missing, not sides-absent."""
+    assert _presence("# Scope {#scope}\n\nBody.\n") == (True, [], ["Scope"], {"frontmatter-absent"})
+    result = validate_document(parse_document("# Scope\n\nBody.\n"))
+    assert [d.level for d in result.diagnostics] == ["warning"]
+
+
+def test_unclosed_frontmatter_is_absent_and_its_lines_are_body():
+    absent, preamble, titles, rules = _presence("---\ntitle: T\n# A\n\nText {{ref: nope}}.\n")
+    assert (absent, preamble, titles) == (True, ["rule", "paragraph"], ["A"])
+    assert rules == {"frontmatter-absent", "ref-broken"}
+
+
+@pytest.mark.parametrize(
+    "block",
+    ["\nThis Agreement is made today.\n", "just text", "- a\n- b", "'quoted'", "42"],
+)
+def test_a_block_whose_yaml_is_not_a_mapping_is_body(block):
+    """A body that opens with a thematic break: everything is validated as
+    body, the text directly above the second "---" as a setext heading."""
+    absent, preamble, titles, rules = _presence(f"---\n{block}\n---\n\n# Terms\n\nSee {{{{ref: nope}}}}.\n")
+    assert (absent, preamble[0], titles[-1]) == (True, "rule", "Terms")
+    assert {"frontmatter-absent", "ref-broken"} <= rules
+    assert not {"title-missing", "sides-absent"} & rules
+
+
+@pytest.mark.parametrize("block", ["---\n---\n", "---\n# just a comment\n---\n", "---\n\n---\n"])
+def test_empty_frontmatter_is_present(block):
+    absent, _preamble, titles, rules = _presence(block + "\n# A\n\nText.\n")
+    assert (absent, titles) == (False, ["A"])
+    assert {"title-missing", "sides-absent"} <= rules and "frontmatter-absent" not in rules
+
+
+def test_invalid_yaml_is_still_an_error():
+    with pytest.raises(yaml.YAMLError):
+        parse_document("---\ntitle: [unclosed\n---\n# A\n")
+
+
+def test_a_mapping_of_another_type_is_not_frontmatter_fields():
+    with pytest.raises(ValueError, match="mapping of fields"):
+        parse_document("---\n!!set {title: T}\n---\n# A\n")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "# Scope {#scope}\n\nBody.\n",
+        "---\n\nThis Agreement.\n\n---\n# Terms\n\nx\n",
+        "---\ntitle: T\n# A\n\nText.\n",
+        "***\n\nNote: see below\n\n***\n\n# A\n",
+    ],
+)
+def test_a_document_without_frontmatter_is_written_without_it(source):
+    document = parse_document(source)
+    written = serialize_document(document)
+    assert not written.startswith("---")
+    assert parse_document(written) == document
+    assert validate_document(parse_document(written)).rules() <= {"frontmatter-absent"}
+
+
+def test_metadata_set_on_a_bare_document_is_written_as_frontmatter():
+    document = parse_document("# A\n\nText.\n")
+    document.metadata.title = "Terms"
+    assert serialize_document(document).startswith("---\ntitle: Terms\n")
+
+
+def test_frontmatter_absent_is_not_read_from_frontmatter_or_a_dict():
+    document = parse_document("---\ntitle: T\nfrontmatter_absent: true\n---\n\n# A\n")
+    assert document.metadata.frontmatter_absent is False
+    assert document_from_dict(document_to_dict(parse_document("# A\n"))).metadata.frontmatter_absent is False
+    assert "frontmatter-absent" not in validate_document(document_from_dict({"sections": []})).rules()
 
 
 def test_only_a_comment_may_follow_an_anchor():
@@ -886,6 +1069,30 @@ def test_dashes_not_under_a_paragraph_are_a_rule(body):
     document = parse_document(_FRONTMATTER + body)
     assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms")]
     assert "rule" in [b.kind for b in document.sections[0].blocks]
+
+
+@pytest.mark.parametrize("hashes", ["#", "##"])
+def test_a_signature_block_heading_is_an_ordinary_section(hashes):
+    """§2.2: signature blocks are not LegalDown markup, so a heading named
+    like one is a section, and what follows it is content."""
+    source = (
+        f"{_BARE}# A\n\nSee {{{{ref: signature-block}}}}.\n\n"
+        f"{hashes} Signature Block {{#signature-block}}\n\nSigned by the parties. {{{{ref: nowhere}}}}\n\n# After\n\nText.\n"
+    )
+    document = parse_document(source)
+    assert [s.title for s in document.sections] == ["A", "Signature Block", "After"]
+    result = validate_document(document)
+    assert [d.message for d in result.diagnostics if d.rule == "ref-broken"] == [
+        "Broken section reference: 'nowhere'."
+    ]
+    serialized = serialize_document(document)
+    assert "Signed by the parties." in serialized
+    assert parse_document(serialized) == document
+
+
+def test_a_second_signature_block_identifier_is_a_duplicate():
+    source = _BARE + "# Signature Block {#signature-block}\n\nA.\n\n# Signature Block {#signature-block}\n\nB.\n"
+    assert "anchor-duplicate" in validate_document(parse_document(source)).rules()
 
 
 def test_setext_heading_round_trips_as_an_atx_heading():
@@ -1004,8 +1211,10 @@ def test_blank_line_ends_the_lazy_context_even_inside_a_list_fence():
     assert _outline(source)[-1] == ("Heading", 2, "heading")
 
 
-def test_indented_dashes_are_still_a_rule():
-    assert _kinds(_FRONTMATTER + "Text.\n\n    ---\n\nMore.\n") == ["paragraph", "rule", "paragraph"]
+def test_indented_dashes_are_code():
+    """Indented four columns, a line is code, not a rule (CommonMark)."""
+    assert _kinds(_FRONTMATTER + "Text.\n\n    ---\n\nMore.\n") == ["paragraph", "code", "paragraph"]
+    assert _kinds(_FRONTMATTER + "Text.\n\n   ---\n\nMore.\n") == ["paragraph", "rule", "paragraph"]
 
 
 def test_a_single_pipe_line_is_a_paragraph_not_dropped():
@@ -1145,3 +1354,479 @@ def test_only_some_list_items_interrupt_a_paragraph(second_line, kinds, headings
     source = _FRONTMATTER + "Some paragraph\n" + second_line + "\n"
     assert _kinds(source) == kinds
     assert [title for title, _level, _id in _outline(source)[1:]] == headings
+
+
+# ── List markers and thematic breaks (§8.2, CommonMark) ───────────
+
+
+def _blocks(body: str) -> list[tuple[str, str | list[str]]]:
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)).sections == document.sections
+    return [(b.kind, b.items if b.kind.endswith("list") else b.text) for b in document.sections[0].blocks]
+
+
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [
+        ("- one\n- two\n", "unordered_list"),
+        ("* one\n* two\n", "unordered_list"),
+        ("+ one\n+ two\n", "unordered_list"),
+        ("1. one\n2. two\n", "ordered_list"),
+        ("1) one\n2) two\n", "ordered_list"),
+        ("5. one\n6. two\n", "ordered_list"),
+    ],
+)
+def test_every_commonmark_list_marker_makes_a_list(body, kind):
+    assert _blocks(body) == [(kind, ["one", "two"])]
+
+
+@pytest.mark.parametrize("body", ["- a\n* b\n", "* a\n+ b\n", "1. a\n1) b\n", "1) a\n- b\n"])
+def test_a_change_of_marker_type_starts_a_new_list(body):
+    assert [items for _kind, items in _blocks(body)] == [["a"], ["b"]]
+
+
+@pytest.mark.parametrize("body", ["* --\n", "+ - -\n+ b\n", "* a\n* ---\n", "* a\n* - - -x\n"])
+def test_an_item_beginning_with_dashes_is_not_written_as_a_rule(body):
+    assert [kind for kind, _items in _blocks(body)] == ["unordered_list"]
+
+
+def test_a_nested_item_of_another_type_stays_in_the_list():
+    assert _blocks("- parent\n  * child\n  1) child\n- next\n") == [
+        ("unordered_list", ["parent", "child", "child", "next"])
+    ]
+
+
+@pytest.mark.parametrize("rule", ["***", "* * *", "___", "_ _ _", "- - -", "---", "*\t*\t*"])
+def test_a_thematic_break_is_a_rule_not_a_list(rule):
+    assert _blocks(f"Intro.\n\n{rule}\n") == [("paragraph", "Intro."), ("rule", "")]
+    assert _blocks(f"- a\n{rule}\n") == [("unordered_list", ["a"]), ("rule", "")]
+    assert _blocks(f"* a\n{rule}\n") == [("unordered_list", ["a"]), ("rule", "")]
+
+
+@pytest.mark.parametrize("rule", ["***", "* * *", "___", "- - -"])
+def test_a_thematic_break_interrupts_a_paragraph(rule):
+    assert _blocks(f"Para\n{rule}\n") == [("paragraph", "Para"), ("rule", "")]
+
+
+@pytest.mark.parametrize("text", ["**Bold** x", "*emph* x", "+1 vote", "2)x", "- * -", "--", "**", "Para\n    ***"])
+def test_text_that_is_neither_a_list_nor_a_rule(text):
+    assert [kind for kind, _ in _blocks(text + "\n")] == ["unordered_list" if text == "- * -" else "paragraph"]
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [("Text\n+ tax\n", ["paragraph", "unordered_list"]), ("Text\n1) x\n", ["paragraph", "ordered_list"]),
+     ("Text\n2) x\n", ["paragraph"])],
+)
+def test_new_markers_interrupt_a_paragraph_as_commonmark_says(body, kinds):
+    assert [kind for kind, _ in _blocks(body)] == kinds
+
+
+def test_a_rule_in_a_quote_leaves_no_paragraph_open():
+    assert [kind for kind, _ in _blocks("> * * *\nlazy\n")] == ["quote", "paragraph"]
+
+
+def test_a_drafting_note_in_a_star_item_is_recognized():
+    body = '* item\n  > [!DRAFTING]\n  > "Fee" {{def: fee}} means the fee.\n\nPay the {{term: fee}}.'
+    assert _blocks(body)[0] == ("unordered_list", ['item\n> [!DRAFTING]\n> "Fee" {{def: fee}} means the fee.'])
+    assert "drafting-note-def" in _validate(body).rules("error")
+
+
+# ── Tables (§9.1, GFM) ────────────────────────────────────────────
+
+
+def _table(body: str) -> Block:
+    [block] = parse_document(_FRONTMATTER + body).sections[0].blocks
+    return block
+
+
+def _round_trips(body: str) -> None:
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+def test_an_escaped_pipe_is_cell_text_and_alignment_is_kept():
+    body = "| a \\| b | c | d | e |\n|:---|---:|:-:|---|\n| 1 | 2 | 3 | 4 |\n"
+    block = _table(body)
+    assert block.headers == ["a | b", "c", "d", "e"]
+    assert block.align == ["left", "right", "center", ""]
+    assert block.rows == [["1", "2", "3", "4"]]
+    assert "| a \\| b | c | d | e |\n| :--- | ---: | :---: | --- |" in serialize_document(
+        parse_document(_FRONTMATTER + body)
+    )
+    _round_trips(body)
+
+
+def test_a_pipe_in_a_code_span_splits_the_row_unless_escaped():
+    """GFM: a pipe is escaped "including inside other inline spans"."""
+    assert _table("| a | b |\n|---|---|\n| `x|y` | 2 |\n").rows == [["`x", "y`"]]
+    assert _table("| a | b |\n|---|---|\n| `x\\|y` | 2 |\n").rows == [["`x|y`", "2"]]
+
+
+def test_a_pipe_after_any_backslash_is_escaped():
+    """cmark-gfm: a pipe directly after a backslash is cell text, and only
+    that backslash is removed, however many precede it."""
+    body = "| a | b | c |\n|---|---|---|\n| x\\\\| y | z\\\\\\| w |\n"
+    assert _table(body).rows == [["x\\| y", "z\\\\| w", ""]]
+    assert _table("| a \\\\| b |\n|---|\n").headers == ["a \\| b"]
+    _round_trips(body)
+
+
+def test_an_escaped_pipe_in_a_directive_value_reaches_the_directive():
+    block = _table('| a |\n|---|\n| {{term: fee, label="x\\|y"}} |\n')
+    (directive,) = iter_directives(block.rows[0][0])
+    assert directive.params["label"] == "x|y"
+
+
+def test_an_empty_header_cell_keeps_its_column():
+    block = _table("| | b |\n|---|---|\n| 1 | 2 |\n")
+    assert (block.headers, block.rows) == (["", "b"], [["1", "2"]])
+    _round_trips("| | b |\n|---|---|\n| 1 | 2 |\n")
+
+
+def test_rows_take_the_header_width_and_empty_rows_are_kept():
+    body = "| a | b |\n|---|---|\n|  |  |\n| 1 | 2 | 3 |\n| 4\n| 5 | 6\n"
+    assert _table(body).rows == [["", ""], ["1", "2"], ["4", ""], ["5", "6"]]
+    _round_trips(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "| a | b |\n| c | d |\n",  # no delimiter row
+        "| a | b |\n|---|\n| c | d |\n",  # fewer delimiter cells than headers
+        "| a |\n|---|---|\n| c |\n",  # more
+        "| a | b |\n|---|-x-|\n",  # not a delimiter cell
+    ],
+)
+def test_rows_without_a_matching_delimiter_row_are_a_paragraph(body):
+    block = _table(body)
+    assert block.kind == "paragraph"
+    assert block.text == " ".join(body.split("\n")).strip()
+    _round_trips(body)
+
+
+def test_table_cells_are_positional_in_the_model():
+    block = document_from_dict(
+        {"sections": [{"title": "A", "blocks": [
+            {"kind": "table", "headers": ["", "b"], "rows": [["", ""], ["1"], ["1", "2", "3"]], "align": ["RIGHT", "x"]}
+        ]}]}
+    ).sections[0].blocks[0]
+    assert (block.headers, block.rows, block.align) == (["", "b"], [["", ""], ["1", ""], ["1", "2"]], ["right", ""])
+    assert document_from_dict(document_to_dict(parse_document(
+        _FRONTMATTER + "| a | b |\n|:--|--:|\n"
+    ))).sections[0].blocks[0].align == ["left", "right"]
+    assert document_from_dict({"sections": [{"blocks": [{"kind": "table"}]}]}).sections[0].blocks[0].rows == [["", ""]]
+
+
+def test_the_serializer_escapes_pipes_in_model_built_cells():
+    def written(block: Block) -> list[str]:
+        document = document_from_dict({"sections": [{"title": "A", "blocks": [block]}]})
+        return serialize_document(document).split("# A\n\n")[1].splitlines()
+
+    assert written({"kind": "table", "headers": ["a|b"], "rows": [["c|d"]]}) == [
+        "| a\\|b |", "| --- |", "| c\\|d |"
+    ]
+    # A backslash before a pipe is text too: one more is written, and the
+    # parser removes exactly that one.
+    assert written({"kind": "table", "headers": ["a\\|b"], "rows": []}) == ["| a\\\\|b |", "| --- |"]
+    # Without a header row, one is written as wide as the widest row.
+    assert written({"kind": "table", "headers": [], "rows": [["1", "2"]]}) == ["|  |  |", "| --- | --- |", "| 1 | 2 |"]
+    assert written({"kind": "table", "headers": [], "rows": [[]]}) == ["|  |", "| --- |", "|  |"]
+    block = {"kind": "table", "headers": ["a\\|b", "c\\\\|"], "rows": [["\\", "|"]]}
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [block]}]})
+    assert parse_document(serialize_document(document)).sections == document.sections
+    # Nothing to take a width from: one empty column, still a table.
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "table", "headers": [], "rows": [[]]}]}]})
+    assert parse_document(serialize_document(document)).sections[0].blocks[0].kind == "table"
+
+
+def test_default_headers_widen_to_the_widest_row():
+    block = document_from_dict({"sections": [{"blocks": [{"kind": "table", "rows": [["a", "b", "c"]]}]}]}).sections[0].blocks[0]
+    assert (block.headers, block.rows) == (["Column 1", "Column 2", "Column 3"], [["a", "b", "c"]])
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [("Text\n| a |\n|---|\n", ["paragraph", "table"]), ("| a |\n| b |\n|---|\n| c |\n", ["paragraph", "table"]),
+     ("Text\n| a |\n| b |\n", ["paragraph"])],
+)
+def test_a_table_interrupts_a_paragraph(body, kinds):
+    """GFM: a paragraph's last line and a delimiter row under it start a table."""
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == kinds
+    _round_trips(body)
+
+
+# ── HTML blocks (§8.6, §8.7, CommonMark 4.6) ──────────────────────
+
+
+def _html(body: str, *, bare: bool = False) -> tuple[list[str], list[tuple[str, str]]]:
+    """Section titles, and the (kind, text) of every block, preamble first."""
+    source = (_BARE if bare else _FRONTMATTER) + body
+    document = parse_document(source)
+    assert parse_document(serialize_document(document)) == document
+    blocks = [(b.kind, b.text) for _section, _index, b in document.iter_blocks()]
+    return [s.title for s in document.sections], blocks
+
+
+def test_a_heading_inside_a_multi_line_comment_is_not_a_section():
+    titles, blocks = _html("Zero.\n\n<!--\n# Old clause\n-->\n\n# Next\n\nText.\n")
+    assert titles == ["Terms", "Next"]
+    assert ("html", "<!--\n# Old clause\n-->") in blocks
+
+
+def test_an_html_block_runs_to_a_blank_line():
+    assert _html("<div>\n# X\n{{ref: nope}}\n</div>\n")[0] == ["Terms"]
+    titles, blocks = _html("<div>\n\n# X\n\n</div>\n")
+    assert titles == ["Terms", "X"]
+    assert blocks == [("html", "<div>"), ("html", "</div>")]
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<!-- a -->", "<!-->", "<!--->", "<?php echo 1; ?>", "<!DOCTYPE html>", "<![CDATA[ x ]]>",
+        "<script>\nlet a;\n\n# not a heading\n</script>", "<?\n# x\n?>", "<!X\n# x\n>", "<![CDATA[\n# x\n]]>",
+    ],
+)
+def test_html_block_kinds_one_to_five_end_at_their_marker(html):
+    titles, blocks = _html(f"{html}\nAfter.\n")
+    assert titles == ["Terms"]
+    assert blocks == [("html", html), ("paragraph", "After.")]
+
+
+@pytest.mark.parametrize("opener", ["<!--", "<?", "<!DOCTYPE", "<![CDATA[", "<pre>"])
+def test_an_unclosed_html_block_runs_to_the_end(opener):
+    titles, blocks = _html(f"Intro.\n\n# A\n\n{opener}\n# B\n\nText.\n", bare=True)
+    assert titles == ["A"]
+    assert blocks == [("paragraph", "Intro."), ("html", f"{opener}\n# B\n\nText.")]
+    assert _html(f"{opener}\n# A\n", bare=True) == ([], [("html", f"{opener}\n# A")])
+
+
+def test_a_whole_line_after_a_comment_is_raw_html():
+    """CommonMark: the line that ends a comment block belongs to it, so its
+    text is not rendered and its directives are not recognized (§11.4)."""
+    source = _FRONTMATTER + "<!-- TODO --> The Buyer pays {{money: 5}} under {{ref: nope}}.\n"
+    result = validate_document(parse_document(source))
+    assert result.diagnostics == [] and result.inline_money == []
+
+
+def test_nothing_in_an_html_block_is_validated():
+    source = _FRONTMATTER + '<div>{{ref: nope}} {{bogus: x}} {{ "Fee" {{def: fee}}\n{#anchor}</div>\n\nSee {{ref: anchor}}.\n'
+    assert validate_document(parse_document(source)).rules() == {"ref-broken"}
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("Text\n<div>\n", ["paragraph", "html"]),
+        ("Text\n<!-- note -->\n", ["paragraph", "html"]),
+        ('"Fee" {{def: fee}} means x.\n<div>\n', ["definition", "html"]),
+        ("Text\n<span>\n", ["paragraph"]),  # kind 7 cannot interrupt a paragraph
+        ("<span>\n", ["html"]),
+        ('<a href="x" title=\'y\'>\n', ["html"]),
+        ("</span>\n", ["html"]),
+        ("<https://example.com>\n", ["paragraph"]),  # an autolink
+        ("<b>bold</b> text\n", ["paragraph"]),  # an inline tag
+        ("    <div>\n", ["code"]),  # indented four columns
+        ("| a |\n|---|\n<span>\n", ["table", "html"]),
+        ("<pre-x>\n## Not a heading\n", ["html"]),  # only the exact names are excluded
+        ("<style-guide x>\n", ["html"]),
+    ],
+)
+def test_which_lines_start_an_html_block(body, kinds):
+    assert [kind for kind, _text in _html(body)[1]] == kinds
+
+
+def test_a_fence_inside_an_html_block_is_raw_html():
+    titles, blocks = _html("<div>\n```\n# X\n</div>\n\n# Y\n")
+    assert titles == ["Terms", "Y"]
+    assert blocks == [("html", "<div>\n```\n# X\n</div>")]
+
+
+def test_an_html_block_in_the_model_keeps_its_indentation():
+    document = document_from_dict(
+        {"sections": [{"title": "A", "blocks": [{"kind": "html", "text": "\n\n   <div>\n  x\n</div>  \n\n"}]}]}
+    )
+    assert document.sections[0].blocks[0].text == "   <div>\n  x\n</div>"
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+@pytest.mark.parametrize("prefix", ["<div> see", "# see", "```"])
+def test_a_model_built_reference_that_would_open_a_block_is_escaped(prefix):
+    """The parser never lifts such text; a model can hold it. A backslash
+    keeps it text, and renders as nothing (CommonMark)."""
+    document = document_from_dict(
+        {"sections": [{"title": "A", "identifier": "sec-a", "blocks": [
+            {"kind": "ref", "prefix": f"{prefix} ", "target": "sec-a", "suffix": " here"},
+            {"kind": "paragraph", "text": f"{prefix} text"},
+        ]}]}
+    )
+    reparsed = parse_document(serialize_document(document)).sections[0].blocks
+    assert [(b.kind, b.prefix or b.text) for b in reparsed] == [("ref", f"\\{prefix} "), ("paragraph", f"\\{prefix} text")]
+
+
+# ── Indented code blocks (§11.4, CommonMark 4.4) ──────────────────
+
+
+def _code_blocks(body: str) -> list[tuple[str, str]]:
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
+    return [(b.kind, b.text) for b in document.sections[0].blocks]
+
+
+def test_directives_in_indented_code_are_literal():
+    body = "Text.\n\n    {{ref: nope}} {#anchor} \"Fee\" {{def: fee}}\n    {{bogus: x}}\n\nSee {{ref: anchor}}.\n"
+    result = validate_document(parse_document(_FRONTMATTER + body))
+    assert result.rules() == {"ref-broken"}
+    assert [d.message for d in result.diagnostics] == ["Broken section reference: 'anchor'."]
+
+
+def test_an_indented_code_block_keeps_its_lines():
+    body = "Text.\n\n    a\n\n\t  b\n      c\n\n\nAfter.\n"
+    assert _code_blocks(body) == [("paragraph", "Text."), ("code", "    a\n\n\t  b\n      c"), ("paragraph", "After.")]
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("Text.\n    more {{ref: nope}}\n", ["ref"]),  # continues the paragraph
+        ("- item\n\n    more\n", ["unordered_list", "paragraph"]),  # CommonMark keeps it in the item
+        ("> quote\n\n    code\n", ["quote", "code"]),
+        ("> quote\n    lazy\n", ["quote"]),  # a lazy line of the quote
+        ("| a |\n|---|\n    code\n", ["table", "code"]),
+        ("    - x\n", ["code"]),
+        ("    > q\n", ["code"]),
+        ("    | a |\n    |---|\n", ["code"]),
+        ("   # Heading\n", []),  # up to three spaces: a heading
+        ("Text.\n    > q\n", ["paragraph"]),  # not a quote: continues the paragraph
+        ("Text.\n    | a |\n    |---|\n", ["paragraph"]),  # not a table
+    ],
+)
+def test_where_indented_code_starts(body, kinds):
+    assert [kind for kind, _text in _code_blocks(body)] == kinds
+
+
+def test_a_heading_indented_up_to_three_spaces_interrupts_a_paragraph():
+    document = parse_document(_FRONTMATTER + "Text.\n   ## Sub\n")
+    assert [s.title for s in document.sections] == ["Terms", "Sub"]
+
+
+def test_a_document_can_open_with_indented_code():
+    document = parse_document("    code\n\n# A\n")
+    assert [(b.kind, b.text) for b in document.preamble] == [("code", "    code")]
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_model_built_indented_code_after_a_list_is_written_fenced():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["one"]},
+        {"kind": "code", "text": "    x = `y`\n\n      z"},
+    ]}]})
+    written = serialize_document(document)
+    assert "- one\n\n```\nx = `y`\n\n  z\n```" in written
+    assert [b.kind for b in parse_document(written).sections[0].blocks] == ["unordered_list", "code"]
+
+
+def test_every_indented_paragraph_after_a_list_stays_a_paragraph():
+    """CommonMark keeps them all in the list's last item, so their
+    directives are checked; an unindented paragraph ends the run."""
+    body = "1. Clause.\n\n    Second.\n\n    Pay {{placeholder: fee}}.\n\nThird.\n\n    code {{ref: nope}}\n"
+    assert [kind for kind, _text in _code_blocks(body)] == ["ordered_list", "paragraph", "paragraph", "paragraph", "code"]
+    result = validate_document(parse_document(_FRONTMATTER + body), final=True)
+    assert "placeholder-unfilled" in result.rules("error") and "ref-broken" not in result.rules()
+
+
+@pytest.mark.parametrize("opener", ["# foo", "<div>", "```", "~~~", "<!-- c -->"])
+def test_an_indented_paragraph_after_a_list_round_trips_whatever_it_begins_with(opener):
+    body = f"- a\n\n    b\n\n    {opener}\n\nd\n\n    code\n"
+    assert _code_blocks(body) == [
+        ("unordered_list", ""), ("paragraph", "b"), ("paragraph", opener), ("paragraph", "d"), ("code", "    code")
+    ]
+    assert "\n    b\n\n    " in serialize_document(parse_document(_FRONTMATTER + body))
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("Text.\n    | a |\n|---|\n| 1 |\n", ["paragraph", "table"]),  # the delimiter row decides
+        ("Text.\n    | a |\n    |---|\n", ["paragraph"]),
+        ("{{ref: x}} y\n      <div>x</div>\n      | a | b |\n|---|---|\n", ["ref", "table"]),
+    ],
+)
+def test_a_table_with_an_indented_header_interrupts_a_paragraph(body, kinds):
+    assert [kind for kind, _text in _code_blocks(body)] == kinds
+
+
+@pytest.mark.parametrize(
+    "before", ["# H", "***", "<!-- c -->", "Title\n===", "```\nx\n```"],
+)
+def test_an_indented_header_row_after_another_block_is_code(before):
+    """Only an open paragraph can be interrupted by a table whose header row
+    is indented; elsewhere that row is indented code (CommonMark)."""
+    document = parse_document(f"{_BARE}{before}\n    | {{{{ref: nope}}}} |\n|---|\n")
+    assert "table" not in [b.kind for _s, _i, b in document.iter_blocks()]
+    assert "ref-broken" not in validate_document(document).rules()
+
+
+def test_code_after_the_indented_run_after_a_list_stays_code():
+    # The paragraph is written indented, to stay a paragraph after the list,
+    # so the code after it is written fenced, to stay code.
+    document = parse_document(_FRONTMATTER + "- a\n\n<a\nhref='x'>\n\n    code {{ref: nope}}\n")
+    reparsed = parse_document(serialize_document(document))
+    assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [
+        ("unordered_list", ""), ("paragraph", "<a href='x'>"), ("code", "```\ncode {{ref: nope}}\n```")
+    ]
+    assert "ref-broken" not in validate_document(reparsed).rules()
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "# foo"}, {"kind": "code", "text": "    x"},
+    ]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("paragraph", "# foo"), ("code", "```\nx\n```")]
+
+
+def test_the_indented_run_stops_at_text_that_reads_as_another_block():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "> q"},
+        {"kind": "paragraph", "text": "# foo"},
+    ]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert (blocks[-1].kind, blocks[-1].text) == ("paragraph", "\\# foo")
+
+
+# ── Review follow-ups: table rows, kind-7 tags, the indented run ──
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("| a |\n    |---|\n| {{ref: terms}} |\n", ["ref"]),  # an indented delimiter row: no table
+        ("| a |\n|---|\n    | {{ref: nope}} |\n", ["table", "code"]),  # an indented row is code
+        ("| a |\n|---|\n\t| b |\n", ["table", "code"]),
+        ("| a |\n|---|\n  | b |\n", ["table"]),  # up to three columns: a row
+        ("Text\n|\n|---|\n", ["paragraph"]),  # a lone | is no header
+        ("| a |\n|---|\n|\n| b |\n", ["table", "paragraph"]),  # a lone | ends the table
+    ],
+)
+def test_table_rows_are_indented_at_most_three_columns_and_have_cells(body, kinds):
+    assert [kind for kind, _text in _code_blocks(body)] == kinds
+    assert "ref-broken" not in validate_document(parse_document(_FRONTMATTER + body)).rules()
+
+
+@pytest.mark.parametrize("tag", ["<pre/>", "<SCRIPT/>", "<style />", "<textarea/>"])
+def test_a_self_closing_raw_text_tag_is_an_html_block(tag):
+    """cmark-gfm reads these as kind 7, which kind 1 does not take."""
+    assert _html(f"{tag}\n# x\n") == (["Terms"], [("html", f"{tag}\n# x")])
+
+
+@pytest.mark.parametrize("first", ["| b", "| {{ref: terms}}", "| x |"])
+def test_a_pipe_paragraph_does_not_end_the_indented_run_after_a_list(first):
+    body = f"- a\n\n    {first}\n\n    # foo\n"
+    assert [kind for kind, _text in _code_blocks(body)][-1] == "paragraph"
+    assert _code_blocks(body)[-1] == ("paragraph", "# foo")
+
+
+def test_an_empty_named_value_is_written_unquoted():
+    assert format_value("") == ""
+    assert format_value("“x”") == '"“x”"'

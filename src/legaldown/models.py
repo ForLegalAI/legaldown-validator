@@ -106,6 +106,11 @@ class Metadata:
     #: ``id``. Only ``parse_document`` sets it: a document built or rebuilt
     #: from a dict has no source, and the serializer writes block style.
     not_line_editable: list[str] = field(default_factory=list)
+    #: True when the parsed source has no frontmatter (§3.1): no ``---``
+    #: block opens it, or the block's YAML is not a mapping of fields, in
+    #: which case the source is all body. Only ``parse_document`` sets it,
+    #: like ``not_line_editable``.
+    frontmatter_absent: bool = False
 
 
 @dataclass(slots=True)
@@ -122,6 +127,9 @@ class Block:
     items: list[str] = field(default_factory=list)
     headers: list[str] = field(default_factory=list)
     rows: list[list[str]] = field(default_factory=list)
+    #: A table's column alignments, one per column: ``"left"``, ``"right"``,
+    #: ``"center"``, or ``""`` for none (§9.1).
+    align: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -180,6 +188,9 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     "quote": {"kind": "quote", "text": ""},
     # A fenced code block, fences included; its content is literal (§11.4).
     "code": {"kind": "code", "text": ""},
+    # An HTML block (CommonMark), a comment included: raw source, not
+    # rendered (§8.6, §8.7), and no directive is recognized in it (§11.4).
+    "html": {"kind": "html", "text": ""},
     "table": {"kind": "table", "headers": ["Column 1", "Column 2"], "rows": [["", ""]]},
     "rule": {"kind": "rule"},
 }
@@ -200,13 +211,30 @@ def _clean_list(values: list) -> list[str]:
     return [str(v).strip() for v in values if str(v).strip()]
 
 
-def _clean_rows(rows: list[list]) -> list[list[str]]:
-    """Strip cells and drop fully-empty rows."""
-    return [
-        [str(cell).strip() for cell in row]
-        for row in rows
-        if any(str(cell).strip() for cell in row)
-    ]
+def _cell(value: Any) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _table_rows(rows: list, width: int) -> list[list[str]]:
+    """Strip cells, keeping empty ones and empty rows: a table's cells are
+    positional. With a header (*width* > 0), each row is padded with empty
+    cells or cut to its width, as GFM renders it."""
+    cleaned = [[_cell(cell) for cell in (row if isinstance(row, (list, tuple)) else [row])] for row in rows]
+    if not width:
+        return cleaned
+    return [row[:width] + [""] * (width - len(row)) for row in cleaned]
+
+
+_ALIGNMENTS = frozenset({"left", "right", "center"})
+
+
+def _table_align(values: list, width: int) -> list[str]:
+    """A table's column alignments: an unknown value is none (``""``), and
+    with a header there is one per column."""
+    align = [value if value in _ALIGNMENTS else "" for value in (_cell(v).lower() for v in values)]
+    if not width:
+        return align
+    return align[:width] + [""] * (width - len(align))
 
 
 def _to_bool(value: Any, *, default: bool = False) -> bool:
@@ -237,6 +265,13 @@ def _block_text(kind: str, value: Any) -> str:
     text = str(value or "")
     if kind == "code":
         return text
+    if kind == "html":
+        # Kept as written, but for blank lines at its ends, which the
+        # serializer's block separation would not keep.
+        lines = text.split("\n")
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        return "\n".join(lines).rstrip()
     if kind == "quote":
         return text.rstrip().lstrip(" \t")
     return text.strip()
@@ -248,6 +283,11 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
     kind = str(payload.get("kind") or "paragraph")
     defaults = BLOCK_DEFAULTS.get(kind, BLOCK_DEFAULTS["paragraph"])
     merged = {**defaults, **payload}
+    headers = [_cell(header) for header in list(merged.get("headers") or [])]
+    if kind == "table" and "headers" not in payload:
+        # The default headers widen to the widest row, so no cell is cut.
+        width = max((len(row) for row in merged.get("rows") or [] if isinstance(row, (list, tuple))), default=0)
+        headers += [f"Column {index + 1}" for index in range(len(headers), width)]
     return Block(
         kind=kind,
         text=_block_text(kind, merged.get("text")),
@@ -259,8 +299,9 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         label=_str(merged.get("label")),
         items=_clean_list(list(merged.get("items") or []))
         or ([""] if kind.endswith("list") else []),
-        headers=_clean_list(list(merged.get("headers") or [])),
-        rows=_clean_rows(list(merged.get("rows") or [])),
+        headers=headers,
+        rows=_table_rows(list(merged.get("rows") or []), len(headers)),
+        align=_table_align(list(merged.get("align") or []), len(headers)),
     )
 
 
