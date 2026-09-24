@@ -7,6 +7,7 @@ import pytest
 from legaldown import Amends, document_from_dict, document_to_dict, serialize_document
 from legaldown.parser import parse_document
 from legaldown.validator import validate_document
+from legaldown.validator.templates import answer_problem
 
 _SIDES = """sides:
   - name: providers
@@ -1024,3 +1025,59 @@ def test_an_html_block_start_ends_a_quote(html):
 
 def test_text_after_a_link_reference_label_is_a_paragraph():
     assert "insertion-boundary" not in _validate(body="[Note]: {{placeholder: x}} shall pay.").rules()
+
+
+# ── Fifth review: date/text answer validation (§15.7.1) ─────────────
+
+
+def test_answer_problem_rejects_datetime_for_date_question():
+    import datetime
+
+    dt = datetime.datetime(2026, 10, 1, 12, 0)
+    d = datetime.date(2026, 10, 1)
+    assert answer_problem("date", dt) == "must be an ISO 8601 date (YYYY-MM-DD)"
+    assert answer_problem("date", d) is None
+    assert answer_problem("date", "2026-10-01") is None
+    assert answer_problem("date", "2026-10-01 12:00") == "must be an ISO 8601 date (YYYY-MM-DD)"
+
+
+@pytest.mark.parametrize(
+    "char",
+    ["\n", "\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"],
+)
+def test_answer_problem_rejects_unicode_line_breaks_for_text_question(char):
+    assert answer_problem("text", f"Acme{char}Ltd") == "must not contain a line break"
+
+
+def test_question_default_rejects_datetime_and_unicode_line_breaks():
+    source_date = (
+        "---\ntitle: T\n"
+        f"{_SIDES}"
+        "questions:\n"
+        "  start:\n"
+        "    type: date\n"
+        "    prompt: When?\n"
+        "    default: 2026-10-01 12:00\n"
+        "---\n\n# Terms {#terms}\n\nStart date: {{placeholder: start}}.\n"
+    )
+    res_date = validate_document(parse_document(source_date, filename="t.lgd"))
+    assert "question-invalid" in res_date.rules("error")
+    assert any(
+        "must be an ISO 8601 date (YYYY-MM-DD)" in d.message for d in res_date.diagnostics
+    )
+
+    source_text = (
+        "---\ntitle: T\n"
+        f"{_SIDES}"
+        "questions:\n"
+        "  company:\n"
+        "    type: text\n"
+        "    prompt: Who?\n"
+        "    default: \"Acme\\u2028Ltd\"\n"
+        "---\n\n# Terms {#terms}\n\nCompany: {{placeholder: company}}.\n"
+    )
+    res_text = validate_document(parse_document(source_text, filename="t.lgd"))
+    assert "question-invalid" in res_text.rules("error")
+    assert any(
+        "must not contain a line break" in d.message for d in res_text.diagnostics
+    )

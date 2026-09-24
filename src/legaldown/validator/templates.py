@@ -10,7 +10,7 @@ import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
@@ -27,6 +27,7 @@ from .patterns import (
 from .result import ValidationResult
 
 _CURRENCY_RE = re.compile(r"[A-Z]{3}")
+_LINE_BREAK_RE = re.compile(r"[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 
 #: Questions filled through ``{{placeholder:}}`` (§15.2): the placeholder
 #: types (§10.7).
@@ -81,7 +82,7 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
     if qtype == "text":
         if not isinstance(answer, str) or not answer:
             return "must be a non-empty string"
-        if "\n" in answer or "\r" in answer:
+        if _LINE_BREAK_RE.search(answer):
             return "must not contain a line break"
         if answer != answer.strip(" \t"):
             return "must not begin or end with a space or tab"
@@ -89,7 +90,9 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
             return "must not contain '{{' when it fills a placeholder in frontmatter"
         return None
     if qtype == "date":
-        if isinstance(answer, date) or (isinstance(answer, str) and is_valid_iso_date(answer)):
+        if (isinstance(answer, date) and not isinstance(answer, datetime)) or (
+            isinstance(answer, str) and is_valid_iso_date(answer)
+        ):
             return None
         return "must be an ISO 8601 date (YYYY-MM-DD)"
     if qtype == "money":
