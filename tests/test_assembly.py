@@ -766,8 +766,16 @@ class TestLoadedFiles:
     def test_a_template_attachment_file_may_hold_conditions_but_no_include(self):
         """Its conditions are its own, beneath its attachment's (§15.3)."""
         assert self._assemble("## B\n\nText. {when=x}\n", attachment=True).ok
-        result = self._assemble("## B\n\n{{include: g.lgd}}\n", attachment=True)
-        assert _rules(result) == [("template-fragment-invalid", "error")]
+        for text in ("{{include: g.lgd}}", "> [!DRAFTING]\n> {{include: g.lgd}}"):
+            result = self._assemble(f"## B\n\n{text}\n", attachment=True)
+            assert _rules(result) == [("template-fragment-invalid", "error")]
+
+    def test_what_only_looks_like_a_condition_or_an_include_is_not_refused(self):
+        """Marker text mid-paragraph is not a condition; an include in a
+        drafting note is removed with it, unread."""
+        assert self._assemble("## B {#b}\n\nThe text {when=x} goes on.\n").ok
+        note = "## B\n\n> [!DRAFTING]\n> See {{include: g.lgd}}\n\nText.\n"
+        assert self._assemble(note, questions="").ok
 
     def test_an_include_in_a_fragment_of_a_document_is_not_assembled(self):
         result = self._assemble("## B\n\n{{include: g.lgd}}\n", questions="")

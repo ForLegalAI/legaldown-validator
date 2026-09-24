@@ -217,7 +217,7 @@ class _Source:
     #: marker there is a container marker (§15.7.3).
     item_lines: frozenset[int] = frozenset()
     malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
-    nested: bool = False  # an ``{{include:}}`` is written in it
+    include_lines: list[int] = field(default_factory=list)  # where ``{{include:}}`` is written
 
 
 def _unix(text: str) -> tuple[str, str]:
@@ -256,7 +256,7 @@ def _read_body(
         elif _kind(span) == "quote":
             for first, last in _note_lines(block.text):
                 source.notes.update(range(span.start + first, span.start + last + 1))
-    source.occurrences, source.malformed, source.nested = _occurrences(layout, lines)
+    source.occurrences, source.malformed, source.include_lines = _occurrences(layout, lines)
     source.item_lines = frozenset(
         first for blocks in layout.containers() for block in blocks for first, _raw in block.items
     )
@@ -389,14 +389,14 @@ def _note_lines(text: str, *, inside_list: bool = False) -> Iterator[tuple[int, 
 
 def _occurrences(
     layout: _Layout, lines: list[str]
-) -> tuple[list[_Occurrence], list[Directive], bool]:
+) -> tuple[list[_Occurrence], list[Directive], list[int]]:
     """Every placeholder and choice in the body, lexed block by block as the
     validator lexes them, so a code span or comment hides the same ones. No
     directive is recognized in code or raw HTML (§11.4). Also the malformed
-    ones, and whether an ``{{include:}}`` is written anywhere."""
+    ones, and the lines each ``{{include:}}`` is written on."""
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
-    includes = False
+    includes: list[int] = []
     for blocks in layout.containers():
         for block in blocks:
             if _kind(block) in ("code", "rule", "html"):
@@ -404,7 +404,9 @@ def _occurrences(
             text = "\n".join(lines[block.start:block.end])
             offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
             for directive in lex(text).directives:
-                includes |= directive.name == "include"
+                row = bisect.bisect_right(offsets, directive.start) - 1
+                if directive.name == "include" and not directive.malformed:
+                    includes.append(block.start + row)
                 if directive.name not in ("placeholder", "choose"):
                     continue
                 if directive.malformed:
@@ -413,7 +415,6 @@ def _occurrences(
                     # validator — and could not be filled here.
                     malformed.append(directive)
                     continue
-                row = bisect.bisect_right(offsets, directive.start) - 1
                 column = directive.start - offsets[row]
                 found.append(_Occurrence(directive, block.start + row, column,
                                          column + directive.end - directive.start,
@@ -681,7 +682,9 @@ def _file_problems(path: str, kind: str, source: _Source, front: _Frontmatter | 
     if any(section.level == 1 for section in document.sections):
         error(f"{kind}-has-h1", "has a level 1 heading, which it cannot have; the template is "
                                 "not assembled.")
-    if source.nested:
+    # Outside a template, an include in a drafting note is removed with it,
+    # unread (§15.6); in one, it is template-fragment-invalid wherever it is.
+    if any(template or line not in source.notes for line in source.include_lines):
         if template:
             error("template-fragment-invalid", "holds an {{include:}}; in a template an include "
                                                "belongs in the template's own body (§15.3).")
@@ -694,7 +697,7 @@ def _file_problems(path: str, kind: str, source: _Source, front: _Frontmatter | 
         # every heading an explicit identifier. An attachment file may hold
         # conditions: its own, beneath its attachment's `when`.
         conditions = any(section.condition for section in document.sections) or any(
-            marker.marker is not None and marker.marker.condition
+            marker.marker is not None and marker.marker.condition and marker.placed(True)
             for marker in find_markers(document, cache(lex))
         )
         if conditions:
