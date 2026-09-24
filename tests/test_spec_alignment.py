@@ -1210,6 +1210,77 @@ def test_only_some_list_items_interrupt_a_paragraph(second_line, kinds, headings
     assert [title for title, _level, _id in _outline(source)[1:]] == headings
 
 
+# ── List markers and thematic breaks (§8.2, CommonMark) ───────────
+
+
+def _blocks(body: str) -> list[tuple[str, str | list[str]]]:
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)).sections == document.sections
+    return [(b.kind, b.items if b.kind.endswith("list") else b.text) for b in document.sections[0].blocks]
+
+
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [
+        ("- one\n- two\n", "unordered_list"),
+        ("* one\n* two\n", "unordered_list"),
+        ("+ one\n+ two\n", "unordered_list"),
+        ("1. one\n2. two\n", "ordered_list"),
+        ("1) one\n2) two\n", "ordered_list"),
+        ("5. one\n6. two\n", "ordered_list"),
+    ],
+)
+def test_every_commonmark_list_marker_makes_a_list(body, kind):
+    assert _blocks(body) == [(kind, ["one", "two"])]
+
+
+@pytest.mark.parametrize("body", ["- a\n* b\n", "* a\n+ b\n", "1. a\n1) b\n", "1) a\n- b\n"])
+def test_a_change_of_marker_type_starts_a_new_list(body):
+    assert [items for _kind, items in _blocks(body)] == [["a"], ["b"]]
+
+
+def test_a_nested_item_of_another_type_stays_in_the_list():
+    assert _blocks("- parent\n  * child\n  1) child\n- next\n") == [
+        ("unordered_list", ["parent", "child", "child", "next"])
+    ]
+
+
+@pytest.mark.parametrize("rule", ["***", "* * *", "___", "_ _ _", "- - -", "---", "*\t*\t*"])
+def test_a_thematic_break_is_a_rule_not_a_list(rule):
+    assert _blocks(f"Intro.\n\n{rule}\n") == [("paragraph", "Intro."), ("rule", "")]
+    assert _blocks(f"- a\n{rule}\n") == [("unordered_list", ["a"]), ("rule", "")]
+    assert _blocks(f"* a\n{rule}\n") == [("unordered_list", ["a"]), ("rule", "")]
+
+
+@pytest.mark.parametrize("rule", ["***", "* * *", "___", "- - -"])
+def test_a_thematic_break_interrupts_a_paragraph(rule):
+    assert _blocks(f"Para\n{rule}\n") == [("paragraph", "Para"), ("rule", "")]
+
+
+@pytest.mark.parametrize("text", ["**Bold** x", "*emph* x", "+1 vote", "2)x", "- * -", "--", "**", "Para\n    ***"])
+def test_text_that_is_neither_a_list_nor_a_rule(text):
+    assert [kind for kind, _ in _blocks(text + "\n")] == ["unordered_list" if text == "- * -" else "paragraph"]
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [("Text\n+ tax\n", ["paragraph", "unordered_list"]), ("Text\n1) x\n", ["paragraph", "ordered_list"]),
+     ("Text\n2) x\n", ["paragraph"])],
+)
+def test_new_markers_interrupt_a_paragraph_as_commonmark_says(body, kinds):
+    assert [kind for kind, _ in _blocks(body)] == kinds
+
+
+def test_a_rule_in_a_quote_leaves_no_paragraph_open():
+    assert [kind for kind, _ in _blocks("> * * *\nlazy\n")] == ["quote", "paragraph"]
+
+
+def test_a_drafting_note_in_a_star_item_is_recognized():
+    body = '* item\n  > [!DRAFTING]\n  > "Fee" {{def: fee}} means the fee.\n\nPay the {{term: fee}}.'
+    assert _blocks(body)[0] == ("unordered_list", ['item\n> [!DRAFTING]\n> "Fee" {{def: fee}} means the fee.'])
+    assert "drafting-note-def" in _validate(body).rules("error")
+
+
 # ── Tables (§9.1, GFM) ────────────────────────────────────────────
 
 

@@ -117,9 +117,13 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")  # the text is stripped by split_h
 # A setext underline under a paragraph: ``===`` makes a level-1 heading,
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
-RULE_RE = re.compile(r"^[ \t]*-{3,}[ \t]*$")
-# A list item marker: ``-`` for an unordered list, ``1.`` for an ordered one.
-LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)\.|-)\s+")
+# A thematic break: three or more ``-``, ``*``, or ``_``, the same one,
+# with optional spaces or tabs between them.
+RULE_RE = re.compile(r"^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$")
+# A list item marker (CommonMark): ``-``, ``*``, or ``+`` for an unordered
+# list, a number and ``.`` or ``)`` for an ordered one. A thematic break
+# such as ``* * *`` matches too; callers test RULE_RE first.
+LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)(?P<delimiter>[.)])|(?P<bullet>[-*+]))\s+")
 # A cell of a table's delimiter row (GFM): colons mark the alignment.
 _DELIMITER_CELL_RE = re.compile(r":?-+:?")
 
@@ -218,7 +222,7 @@ def _opens_paragraph(content: str) -> bool:
     inner = content.lstrip()
     while inner.startswith(">"):
         inner = inner[1:].lstrip()
-    marker = LIST_ITEM_RE.match(inner)
+    marker = None if RULE_RE.match(inner) else LIST_ITEM_RE.match(inner)
     if marker:
         inner = inner[marker.end():]
     return (
@@ -257,7 +261,14 @@ class _Quote:
         return self.paragraph and _is_lazy_line(line)
 
 
-def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, int, bool]:
+def _list_type(marker: re.Match[str]) -> str:
+    """What a list item's marker makes it (CommonMark): the bullet of an
+    unordered item, the delimiter (``.`` or ``)``) of an ordered one. A
+    marker of another type starts a new list."""
+    return marker.group("delimiter") or marker.group("bullet")
+
+
+def _parse_list(lines: list[str], index: int, *, list_type: str) -> tuple[Block, int, bool]:
     """Parse the list starting at ``lines[index]``.
 
     Returns ``(block, end, lazy)``: *end* is the index just past the list,
@@ -266,7 +277,8 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
 
     The list runs through its items, their continuation lines (indented two
     or more columns, or lazy continuation lines after item text), and nested
-    items; an unindented item of the other kind ends it. A fenced code block
+    items; an unindented item of another type (``_list_type``) or a thematic
+    break ends it. A fenced code block
     in an item stays in that item, one line per line, indented relative to
     the item, blank lines included, until it closes or an unindented line
     ends the item (and the fence with it). A block quote in an item (a
@@ -293,9 +305,9 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
             fence = None
         if not line.strip():
             break
-        marker = LIST_ITEM_RE.match(line)
+        marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
-        if marker and ((marker.group("number") is not None) == ordered or indented):
+        if marker and (_list_type(marker) == list_type or indented):
             content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
             content = line[marker.end():].strip()
             items.append(content)
@@ -331,7 +343,7 @@ def _parse_list(lines: list[str], index: int, *, ordered: bool) -> tuple[Block, 
             fence = opening.group("fence") if opening else None
             lazy = fence is None and bool(content.strip())  # an empty item has no text
         end += 1
-    kind = "ordered_list" if ordered else "unordered_list"
+    kind = "ordered_list" if list_type in ".)" else "unordered_list"
     return Block(kind=kind, items=items), end, lazy
 
 
@@ -488,10 +500,11 @@ def _first_liftable(directives: list[Directive], name: str) -> Directive | None:
 def _starts_interrupting_item(line: str) -> bool:
     """True if *line* is a list item that may interrupt a paragraph
     (CommonMark): indented at most three columns, not empty, and, if
-    ordered, numbered 1."""
+    ordered, numbered 1. A thematic break is not one."""
     marker = LIST_ITEM_RE.match(line)
     return (
         marker is not None
+        and not RULE_RE.match(line)
         and indent_width(line) <= 3
         and bool(line[marker.end():].strip())
         and marker.group("number") in (None, "1")
@@ -504,8 +517,9 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     of a setext heading, whose underline is ``lines[end - 1]``, else 0.
 
     A paragraph ends at a blank line or at a block that can interrupt it
-    (CommonMark): a fence, an ATX heading, a block quote, or a list item
-    (an ordered one only when numbered 1). A *lazy* paragraph continues a
+    (CommonMark): a fence, an ATX heading, a block quote, a thematic break
+    other than a setext underline, or a list item (an ordered one only when
+    numbered 1). A *lazy* paragraph continues a
     list, block quote, or table (no blank line between), so it cannot be
     setext text: ``---`` under it is a rule.
     """
@@ -517,6 +531,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
             or HEADING_RE.match(line)
             or line.lstrip().startswith(">")
             or _starts_interrupting_item(line)
+            or (RULE_RE.match(line) and not SETEXT_UNDERLINE_RE.match(line) and indent_width(line) <= 3)
         ):
             break
         underline = SETEXT_UNDERLINE_RE.match(line)
@@ -593,7 +608,7 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             lazy = True
         elif marker:
             block, index, lazy = _parse_list(
-                lines, index, ordered=marker.group("number") is not None
+                lines, index, list_type=_list_type(marker)
             )
             blocks.append(block)
         else:

@@ -217,7 +217,8 @@ grammar — parameters in any order, quoted values decoded — and is what the v
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it
 valid, so what you authored is exactly what the validator judges. The serializer, by contrast,
 normalizes: frontmatter is re-emitted as canonical YAML, paragraphs are written as single
-lines, setext (underlined) headings are written as `#` headings, and table rows are written
+lines, setext (underlined) headings are written as `#` headings, list items are written with
+`-` or `1.`, `2.`, … whichever marker they had (`*`, `+`, `1)`), and table rows are written
 with a pipe at each end and every `|` in a cell escaped as `\|`, so expect a
 formatting-normalized file rather than a byte-for-byte copy.
 
