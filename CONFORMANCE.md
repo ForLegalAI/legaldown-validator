@@ -152,6 +152,10 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   blocks apart with text that stays.
 - A drafting note that starts on a list item's marker line (`- > [!DRAFTING]`) is removed with that
   line, the marker included.
+- A file is written back with one line ending: its first LF or CRLF, or CR in a file without LF.
+  A file that mixes them comes out with that one throughout.
+- A frontmatter placeholder in a double-quoted scalar is found in the line as written, so one
+  whose `note` uses the scalar's own escapes (`\"`) is not recognized, and is left unfilled.
 
 All six cases of the corpus's `fixtures/assembly` assemble byte for byte, the multi-file case
 included, and each output validates without Errors (§15.7.4).

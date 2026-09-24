@@ -38,7 +38,7 @@ from functools import cache
 from typing import Any
 
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
-from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, LINE_ENDING_RE, indent_width
+from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, LINE_ENDING_RE, fence_end, indent_width
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import Block, Document
 from .parser import FRONTMATTER_RE, _BlockSpan, _Layout, _layout, _opens_paragraph, parse_document
@@ -218,17 +218,19 @@ class _Source:
     item_lines: frozenset[int] = frozenset()
     malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
     include_lines: list[int] = field(default_factory=list)  # where ``{{include:}}`` is written
+    code: set[int] = field(default_factory=set)  # fenced code in list items and quotes
 
 
 def _unix(text: str) -> tuple[str, str]:
     """*text* without a byte-order mark and with LF line breaks — the line
     endings CommonMark and the parser know: LF, CR, CRLF — and the line
-    break it was written with, its first one. A CRLF (or CR) file is
+    break it was written with: its first LF or CRLF, or CR in a file without
+    LF, where a lone CR is a stray. A CRLF (or CR) file is
     assembled as LF and written back with it, so that no byte assembly does
     not edit changes."""
     text = text.removeprefix("\ufeff")
-    first = LINE_ENDING_RE.search(text)
-    newline = first.group(0) if first else "\n"
+    first = re.search(r"\r?\n", text)
+    newline = first.group(0) if first else "\r" if "\r" in text else "\n"
     return LINE_ENDING_RE.sub("\n", text), newline
 
 
@@ -246,7 +248,7 @@ def _read_body(
         if marker.placed(template) and marker.marker is not None:
             found.setdefault((marker.section, marker.block), []).append(marker)
     source = _Source(path, lines, _section_units(layout, document, lines, questions), set(), [], [])
-    tails = _tails(layout)
+    tails = _tails(layout, lines)
     for section, index, span, block in _pairs(layout, document):
         markers = found.get((section, index), [])
         if _kind(span) == "list":
@@ -254,32 +256,52 @@ def _read_body(
         elif _kind(span) == "paragraph":
             _read_paragraph(source, span, block, markers, questions)
         elif _kind(span) == "quote":
+            # The parser's quote text holds one line per source line.
             for first, last in _note_lines(block.text):
                 source.notes.update(range(span.start + first, span.start + last + 1))
-    source.occurrences, source.malformed, source.include_lines = _occurrences(layout, lines)
+            source.code.update(span.start + k for k in _fenced(block.text))
+    source.occurrences, source.malformed, source.include_lines = _occurrences(layout, lines, source.code)
     source.item_lines = frozenset(
         first for blocks in layout.containers() for block in blocks for first, _raw in block.items
     )
     return source
 
 
-def _tails(layout: _Layout) -> dict[int, list[_BlockSpan]]:
-    """The paragraphs after each list (by ``id``) that CommonMark reads as
-    part of its last item: indented, and read as paragraphs only because
-    they follow the list (``_BlockSpan.tail``)."""
+def _tails(layout: _Layout, lines: list[str]) -> dict[int, list[_BlockSpan]]:
+    """The blocks after each list (by ``id``) that CommonMark reads as part of
+    its last items: each is indented to the content of the list's last
+    top-level item, as a later paragraph, a nested list, a quote or code of
+    that item is. The parser ends a list at a blank line and reads them as
+    blocks of their own. An empty item takes none: an item can begin with at
+    most one blank line (CommonMark)."""
     tails: dict[int, list[_BlockSpan]] = {}
     for spans in layout.containers():
         for k, span in enumerate(spans):
-            if _kind(span) == "list":
-                tails[id(span)] = list(itertools.takewhile(lambda s: s.tail, spans[k + 1:]))
+            if _kind(span) != "list" or not span.items:
+                continue
+            outer, raw = min(
+                reversed(span.items), key=lambda item: indent_width(lines[item[0]])
+            )
+            if not raw.strip():
+                continue
+            column = _content_column(lines[outer])
+            tails[id(span)] = list(itertools.takewhile(
+                lambda s: indent_width(lines[s.start]) >= column, spans[k + 1:]  # noqa: B023
+            ))
     return tails
+
+
+# A list item's marker, as the parser's LIST_ITEM_RE reads it.
+_ITEM_START_RE = re.compile(r"\s*(?:\d+[.)]|[-*+])")
 
 
 def _content_column(line: str) -> int:
     """The column where the content of the list item beginning on *line*
     starts (CommonMark): after its marker and one to four columns of spacing,
     or one column when there are more, or when the item is empty."""
-    marker = re.match(r"[ \t]*(?:[-*+]|[0-9]{1,9}[.)])", line)
+    marker = _ITEM_START_RE.match(line)
+    if marker is None:  # never: the parser read *line* as an item
+        return indent_width(line) + 2
     after = len(line[:marker.end()].expandtabs(4))
     rest = line[marker.end():]
     if not rest.strip():
@@ -357,7 +379,7 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
         )
         if full_end is None:
             full_end, column = span.end, _content_column(lines[first])
-            for tail in tails:
+            for tail in tails if raw.strip() else ():
                 if indent_width(lines[tail.start]) < column:
                     break  # CommonMark closes the item here
                 full_end = tail.end
@@ -365,17 +387,36 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
         paragraph_end = own_end - (text_lines - 1)
         if raw.strip():
             listed.append((first, _trim(lines, first, full_end), paragraph_end))
+        # The item text's first line is its first paragraph, joined; each
+        # later one is a source line, the last ending where the item does.
+        def source_line(row: int) -> int:
+            return first if row == 0 else paragraph_end + row - 1  # noqa: B023
+
         for note_first, note_last in _note_lines(raw, inside_list=True):
-            source.notes.update(range(
-                first if note_first == 0 else paragraph_end + note_first - 1,
-                paragraph_end + note_last,
-            ))
+            source.notes.update(range(source_line(note_first), source_line(note_last) + 1))
+        source.code.update(source_line(row) for row in _fenced(raw))
     for marker in markers:
         if marker.marker.condition and marker.fragment < len(listed):
             first, end, paragraph_end = listed[marker.fragment]
             line = _marker_line(lines, first, paragraph_end, marker.source)
             source.units.append(_Unit(first, end, _test(marker.marker.condition, questions),
                                       line, marker.source))
+
+
+def _fenced(text: str) -> Iterator[int]:
+    """The lines of *text* — a list item's or a quote's, as the parser hands
+    it to the validator — inside fenced code, which the lexer blanks there
+    (§11.4)."""
+    rows = text.split("\n")
+    index = 0
+    while index < len(rows):
+        opening = FENCE_OPEN_RE.match(rows[index])
+        if opening is None:
+            index += 1
+            continue
+        end = fence_end(rows, index, opening.group("fence"))
+        yield from range(index, end)
+        index = end
 
 
 def _note_lines(text: str, *, inside_list: bool = False) -> Iterator[tuple[int, int]]:
@@ -388,12 +429,13 @@ def _note_lines(text: str, *, inside_list: bool = False) -> Iterator[tuple[int, 
 
 
 def _occurrences(
-    layout: _Layout, lines: list[str]
+    layout: _Layout, lines: list[str], code: set[int]
 ) -> tuple[list[_Occurrence], list[Directive], list[int]]:
     """Every placeholder and choice in the body, lexed block by block as the
     validator lexes them, so a code span or comment hides the same ones. No
-    directive is recognized in code or raw HTML (§11.4). Also the malformed
-    ones, and the lines each ``{{include:}}`` is written on."""
+    directive is recognized in code or raw HTML (§11.4), fenced code inside a
+    list item or quote (*code*) included. Also the malformed ones, and the
+    lines each ``{{include:}}`` is written on."""
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
     includes: list[int] = []
@@ -401,7 +443,9 @@ def _occurrences(
         for block in blocks:
             if _kind(block) in ("code", "rule", "html"):
                 continue
-            text = "\n".join(lines[block.start:block.end])
+            text = "\n".join(
+                " " * len(lines[i]) if i in code else lines[i] for i in range(block.start, block.end)
+            )
             offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
             for directive in lex(text).directives:
                 row = bisect.bisect_right(offsets, directive.start) - 1
@@ -549,7 +593,12 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
         scalars = _quoted_scalars(line)
         for directive in lex(line).directives:
             if directive.name == "placeholder" and directive.malformed:
-                front.malformed.append(directive)  # a YAML scalar across lines
+                # One in a quoted scalar that runs on to the next line: YAML
+                # joins the lines, so the validator reads it whole. Any other
+                # is left as written: YAML drops one in a comment, and one
+                # the scalar's own escapes (\") confuse here is not filled.
+                if any(start < directive.start and end > len(line) for start, end, _q in scalars):
+                    front.malformed.append(directive)
             elif directive.name == "placeholder":
                 # Only a quoted scalar can hold one (§3.10); any other is
                 # left for the validator, never filled with unescaped text.

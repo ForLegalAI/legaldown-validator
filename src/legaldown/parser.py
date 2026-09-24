@@ -604,15 +604,12 @@ class _HeadingSpan:
 class _BlockSpan:
     """Where a block lies in the body: lines ``[start, end)``. *kind* is the
     parsed block's. *items*: a list's items, each with the line it starts on
-    and its text as parsed, empty items included (the model drops them).
-    *tail*: a paragraph read as such only because it follows a list, whose
-    last item CommonMark reads it as part of (``_parse_body``)."""
+    and its text as parsed, empty items included (the model drops them)."""
 
     kind: str
     start: int
     end: int
     items: list[tuple[int, str]] = field(default_factory=list)
-    tail: bool = False
 
 
 @dataclass(slots=True)
@@ -755,7 +752,7 @@ def _parse_body(
             elif len(blocks) > count:
                 block = blocks[-1]
                 raw = list(zip(item_starts, block.items, strict=True)) if item_starts else []
-                spans.append(_BlockSpan(block.kind, start, index, raw, in_tail and block.kind in _PARAGRAPH_KINDS))
+                spans.append(_BlockSpan(block.kind, start, index, raw))
         if heading is not None:
             blocks = []
             sections.append((heading, blocks))
@@ -776,9 +773,14 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     says (a bare ``unit=M`` surfaces as duration-invalid-unit rather than being
     silently corrected).
     """
-    # A byte-order mark is an encoding artifact, not content.
-    not_line_editable, metadata, body, absent = _split_frontmatter((source or "").removeprefix("\ufeff"))
-    preamble, sections = _parse_body(LINE_ENDING_RE.split(body))
+    # A byte-order mark is an encoding artifact, not content. Lines end at
+    # LF, CR, or CRLF (CommonMark), and nowhere else.
+    source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
+    not_line_editable, metadata, body, absent = _split_frontmatter(source)
+    lines = body.split("\n")
+    if lines[-1] == "":
+        lines.pop()  # the last line's ending, not a line
+    preamble, sections = _parse_body(lines)
     payload: dict[str, Any] = {
         "metadata": metadata,
         "sections": [

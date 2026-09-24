@@ -645,6 +645,11 @@ class TestCurrentBlockStructure:
         result = assemble(_template(body, _BOOL), {"x": False})
         assert _body(result) == f"\n# A\n\n- one {character}- two\n\nAfter.\n"
 
+    def test_a_stray_cr_does_not_set_the_line_ending(self):
+        template = "<!-- note\rmore -->\n\n# One {#one}\n\nHello {{placeholder: who}}.\n"
+        result = assemble(template, {"who": "Bob"})
+        assert result.output == "<!-- note\nmore -->\n\n# One {#one}\n\nHello Bob.\n"
+
     def test_a_cr_only_file_is_assembled_and_written_back_with_cr(self):
         template = _template("# A\n\nKept.\n\nDropped. {when=x}\n", _BOOL).replace("\n", "\r")
         result = assemble(template, {"x": False})
@@ -698,6 +703,27 @@ class TestCurrentBlockStructure:
         result = assemble(_template(body, _BOOL), {"x": False})
         assert _body(result) == "\n# A\n\n- one\n  - nested a\n    - deep a\n\n    Nested a's.\n\nAfter.\n"
 
+    @pytest.mark.parametrize("item", ["1234567890. a", " - a", "\x0c- a"])
+    def test_any_item_the_parser_reads_is_assembled(self, item):
+        result = assemble(_template(f"Text\n\n{item}\n"), {})
+        assert _body(result) == f"\nText\n\n{item}\n"
+
+    @pytest.mark.parametrize("after", [
+        "  Its second paragraph.\n",
+        "  Its second paragraph.\n\n    Its third.\n",
+        "    - A nested item.\n",
+        "    > A quote.\n",
+        "   ~~~\n   code\n   ~~~\n",
+    ])
+    def test_a_conditional_last_item_goes_with_whatever_is_indented_to_it(self, after):
+        body = f"# A\n\n- Kept.\n- Dropped. {{when=x}}\n\n{after}\nAfter.\n"
+        assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n- Kept.\n\nAfter.\n"
+
+    def test_an_empty_last_item_takes_no_later_paragraph(self):
+        """An item can begin with at most one blank line (CommonMark)."""
+        body = "# A\n\n- Kept.\n-\n\n  Not the item's.\n\nAfter.\n"
+        assert _body(assemble(_template(body), {})) == "\n" + body
+
     def test_an_escaped_pipe_in_a_choice_in_a_table_cell_is_a_pipe(self):
         """The row's ``\\|`` is a pipe before the cell is read (GFM): the
         phrase is p|q, inserted escaped once."""
@@ -705,6 +731,34 @@ class TestCurrentBlockStructure:
         body = '# A\n\n| X |\n|---|\n| {{choose: c, p="p\\|q", o="other"}} |\n'
         result = assemble(_template(body, choice), {"c": "p"})
         assert _body(result) == "\n# A\n\n| X |\n|---|\n| p\\|q |\n"
+
+
+class TestFencedCodeInContainers:
+    """Fenced code inside a list item or a quote is literal (§11.4), as the
+    validator reads the parser's item and quote text."""
+
+    @pytest.mark.parametrize("body", [
+        "- a\n  - b\n    ~~~\n    {{placeholder: name}}\n    ~~~\n",
+        "> ~~~\n> {{placeholder: name}}\n> ~~~\n",
+        "- ~~~\n  {{placeholder: name}}\n  ~~~\n",
+    ])
+    def test_nothing_in_it_is_filled(self, body):
+        result = assemble(_template(f"# A\n\n{body}\nHi {{{{placeholder: name}}}}.\n", _TEXT), {"name": "Ann"})
+        assert _body(result) == f"\n# A\n\n{body}\nHi Ann.\n"
+
+    def test_nothing_in_it_is_malformed(self):
+        body = "# A\n\n> [!DRAFTING]\n> Example:\n>\n> ~~~\n> {{placeholder: name\n> ~~~\n\nText.\n"
+        assert _body(assemble(_template(body), {})) == "\n# A\n\nText.\n"
+
+    def test_a_continuation_line_is_not_a_fence(self):
+        body = "# A\n\n- b\n      ~~~ text\n  more {{placeholder: name}}\n"
+        result = assemble(_template(body, _TEXT), {"name": "Ann"})
+        assert _body(result) == "\n# A\n\n- b\n      ~~~ text\n  more Ann\n"
+
+    def test_an_include_in_it_is_not_one(self):
+        fragment = "## B {#b}\n\n- a\n  - b\n    ~~~\n    {{include: other.lgd}}\n    ~~~\n"
+        template = _template("# A\n\n{{include: f.lgd}}\n\nB. {when=x}\n", _BOOL)
+        assert assemble(template, {"x": True}, load_file={"f.lgd": fragment}.get).ok
 
 
 class TestMalformed:
@@ -718,6 +772,16 @@ class TestMalformed:
     def test_a_choice_written_across_lines_in_an_item_is_refused(self):
         body = '# A\n\n- For {{choose: x,\n  true="a", false="b"}}.\n'
         assert _rules(assemble(_template(body, _BOOL), {"x": True})) == [("directive-malformed", "error")]
+
+    @pytest.mark.parametrize("front", [
+        'note: "T" # use {{placeholder: name\n',
+        '# was {{placeholder: name, a, b}}\n',
+        'note: "{{placeholder: name, note=\\"a, b\\"}}"\n',
+    ])
+    def test_what_only_looks_malformed_in_frontmatter_is_not_refused(self, front):
+        """YAML drops a comment, and decodes a scalar's escapes."""
+        result = assemble(_template("# A\n\nFor {{placeholder: name}}.\n", _TEXT, front=front), {"name": "Ann"})
+        assert result.ok and "For Ann." in result.output
 
     def test_a_blank_across_frontmatter_lines_is_refused(self):
         front = 'note: "For {{placeholder:\n  name}}"\n'

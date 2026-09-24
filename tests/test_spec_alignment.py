@@ -1146,6 +1146,17 @@ def test_only_lf_cr_and_crlf_end_a_line(character):
     assert _outline(source) == [("Heading", 1, "heading")]
 
 
+def test_an_unclosed_fence_at_the_end_holds_no_extra_line():
+    document = parse_document(_FRONTMATTER + "```\ncode\n")
+    assert document.sections[0].blocks[0].text == "```\ncode"
+
+
+def test_frontmatter_with_cr_line_endings_is_frontmatter():
+    document = parse_document("---\rtitle: X\r---\r\r# A\r")
+    assert not document.metadata.frontmatter_absent
+    assert document.metadata.title == "X"
+
+
 def test_a_quote_round_trips_a_character_that_is_not_a_line_ending():
     document = parse_document(_FRONTMATTER + "> One\x0ctwo.\n> Three.\n")
     assert serialize_document(document).endswith("> One\x0ctwo.\n> Three.\n")
