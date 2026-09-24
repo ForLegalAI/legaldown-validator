@@ -183,6 +183,9 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     "quote": {"kind": "quote", "text": ""},
     # A fenced code block, fences included; its content is literal (§11.4).
     "code": {"kind": "code", "text": ""},
+    # An HTML block (CommonMark), a comment included: raw source, not
+    # rendered (§8.6, §8.7), and no directive is recognized in it (§11.4).
+    "html": {"kind": "html", "text": ""},
     "table": {"kind": "table", "headers": ["Column 1", "Column 2"], "rows": [["", ""]]},
     "rule": {"kind": "rule"},
 }
@@ -257,6 +260,13 @@ def _block_text(kind: str, value: Any) -> str:
     text = str(value or "")
     if kind == "code":
         return text
+    if kind == "html":
+        # Kept as written, but for blank lines at its ends, which the
+        # serializer's block separation would not keep.
+        lines = text.split("\n")
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        return "\n".join(lines).rstrip()
     if kind == "quote":
         return text.rstrip().lstrip(" \t")
     return text.strip()

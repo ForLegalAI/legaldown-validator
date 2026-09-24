@@ -15,19 +15,65 @@ import re
 # backtick.
 FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
 
+# HTML blocks (CommonMark 0.31, 4.6). Kinds 1–5 run until a line holding
+# their end marker, the start line included, or to the end of the text.
+_HTML_BLOCKS_TO_MARKER: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
+    (
+        re.compile(r" {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)", re.IGNORECASE),
+        re.compile(r"</(?:script|pre|style|textarea)>", re.IGNORECASE),
+    ),
+    (re.compile(r" {0,3}<!--"), re.compile(r"-->")),
+    (re.compile(r" {0,3}<\?"), re.compile(r"\?>")),
+    (re.compile(r" {0,3}<![A-Za-z]"), re.compile(r">")),
+    (re.compile(r" {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
+)
+# Kind 6: a block-level tag. Kinds 6 and 7 run until a blank line.
+_HTML_BLOCK_6 = (
+    r" {0,3}</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup"
+    r"|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset"
+    r"|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol"
+    r"|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr"
+    r"|track|ul)(?:[ \t]|/?>|$)"
+)
+# Kind 7: a line holding only a complete open or closing tag of any other
+# name. It cannot interrupt a paragraph.
+_ATTRIBUTE = r"""(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ \t"'=<>`]+|'[^']*'|"[^"]*"))?)"""
+_HTML_BLOCK_7_RE = re.compile(
+    r" {0,3}(?:<(?!(?:script|style|pre|textarea)\b)[A-Za-z][A-Za-z0-9-]*" + _ATTRIBUTE + r"*[ \t]*/?>"
+    r"|</[A-Za-z][A-Za-z0-9-]*[ \t]*>)[ \t]*$",
+    re.IGNORECASE,
+)
+
 # The start of an HTML block that may interrupt a paragraph (CommonMark
 # kinds 1–6): script, pre, style, or textarea; a comment; a processing
 # instruction; a declaration; CDATA; or a block-level tag. A line starting
 # with any other ``<`` — an autolink, an inline tag — is paragraph text.
 HTML_BLOCK_START_RE = re.compile(
-    r" {0,3}(?:<(?:script|pre|style|textarea)(?:[ \t>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\["
-    r"|</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup"
-    r"|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset"
-    r"|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol"
-    r"|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr"
-    r"|track|ul)(?:[ \t]|/?>|$))",
+    "|".join([*(start.pattern for start, _end in _HTML_BLOCKS_TO_MARKER), _HTML_BLOCK_6]),
     re.IGNORECASE,
 )
+_HTML_BLOCK_6_RE = re.compile(_HTML_BLOCK_6, re.IGNORECASE)
+
+
+def html_block_end(lines: list[str], index: int) -> int | None:
+    """The index just past the HTML block (CommonMark kinds 1–7) starting
+    at ``lines[index]``, or None when none starts there. The caller rules
+    out a paragraph that the line would continue, which only kinds 1–6
+    interrupt (``HTML_BLOCK_START_RE``)."""
+    line = lines[index]
+    for start, end_marker in _HTML_BLOCKS_TO_MARKER:
+        if start.match(line):
+            return next(
+                (end + 1 for end in range(index, len(lines)) if end_marker.search(lines[end])),
+                len(lines),
+            )
+    if _HTML_BLOCK_6_RE.match(line) or _HTML_BLOCK_7_RE.match(line):
+        end = index + 1
+        while end < len(lines) and lines[end].strip():
+            end += 1
+        return end
+    return None
+
 
 # An HTML comment (CommonMark 0.31): ``<!-->``, ``<!--->``, or ``<!--``, text
 # not containing ``-->``, and ``-->``. The empty forms end at their own ``>``.

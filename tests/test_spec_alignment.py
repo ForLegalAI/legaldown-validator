@@ -1378,3 +1378,96 @@ def test_the_serializer_escapes_pipes_in_model_built_cells():
     assert written({"kind": "table", "headers": ["a\\|b"], "rows": []}) == ["| a\\|b |", "| --- |"]
     # Without a header row, one is written as wide as the widest row.
     assert written({"kind": "table", "headers": [], "rows": [["1", "2"]]}) == ["|  |  |", "| --- | --- |", "| 1 | 2 |"]
+
+
+# ── HTML blocks (§8.6, §8.7, CommonMark 4.6) ──────────────────────
+
+
+def _html(body: str, *, bare: bool = False) -> tuple[list[str], list[tuple[str, str]]]:
+    """Section titles, and the (kind, text) of every block, preamble first."""
+    source = (_BARE if bare else _FRONTMATTER) + body
+    document = parse_document(source)
+    assert parse_document(serialize_document(document)) == document
+    blocks = [(b.kind, b.text) for _section, _index, b in document.iter_blocks()]
+    return [s.title for s in document.sections], blocks
+
+
+def test_a_heading_inside_a_multi_line_comment_is_not_a_section():
+    titles, blocks = _html("Zero.\n\n<!--\n# Old clause\n-->\n\n# Next\n\nText.\n")
+    assert titles == ["Terms", "Next"]
+    assert ("html", "<!--\n# Old clause\n-->") in blocks
+
+
+def test_an_html_block_runs_to_a_blank_line():
+    assert _html("<div>\n# X\n{{ref: nope}}\n</div>\n")[0] == ["Terms"]
+    titles, blocks = _html("<div>\n\n# X\n\n</div>\n")
+    assert titles == ["Terms", "X"]
+    assert blocks == [("html", "<div>"), ("html", "</div>")]
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<!-- a -->", "<!-->", "<!--->", "<?php echo 1; ?>", "<!DOCTYPE html>", "<![CDATA[ x ]]>",
+        "<script>\nlet a;\n\n# not a heading\n</script>", "<?\n# x\n?>", "<!X\n# x\n>", "<![CDATA[\n# x\n]]>",
+    ],
+)
+def test_html_block_kinds_one_to_five_end_at_their_marker(html):
+    titles, blocks = _html(f"{html}\nAfter.\n")
+    assert titles == ["Terms"]
+    assert blocks == [("html", html), ("paragraph", "After.")]
+
+
+@pytest.mark.parametrize("opener", ["<!--", "<?", "<!DOCTYPE", "<![CDATA[", "<pre>"])
+def test_an_unclosed_html_block_runs_to_the_end(opener):
+    titles, blocks = _html(f"Intro.\n\n# A\n\n{opener}\n# B\n\nText.\n", bare=True)
+    assert titles == ["A"]
+    assert blocks == [("paragraph", "Intro."), ("html", f"{opener}\n# B\n\nText.")]
+    assert _html(f"{opener}\n# A\n", bare=True) == ([], [("html", f"{opener}\n# A")])
+
+
+def test_a_whole_line_after_a_comment_is_raw_html():
+    """CommonMark: the line that ends a comment block belongs to it, so its
+    text is not rendered and its directives are not recognized (§11.4)."""
+    source = _FRONTMATTER + "<!-- TODO --> The Buyer pays {{money: 5}} under {{ref: nope}}.\n"
+    result = validate_document(parse_document(source))
+    assert result.diagnostics == [] and result.inline_money == []
+
+
+def test_nothing_in_an_html_block_is_validated():
+    source = _FRONTMATTER + '<div>{{ref: nope}} {{bogus: x}} {{ "Fee" {{def: fee}}\n{#anchor}</div>\n\nSee {{ref: anchor}}.\n'
+    assert validate_document(parse_document(source)).rules() == {"ref-broken"}
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("Text\n<div>\n", ["paragraph", "html"]),
+        ("Text\n<!-- note -->\n", ["paragraph", "html"]),
+        ('"Fee" {{def: fee}} means x.\n<div>\n', ["definition", "html"]),
+        ("Text\n<span>\n", ["paragraph"]),  # kind 7 cannot interrupt a paragraph
+        ("<span>\n", ["html"]),
+        ('<a href="x" title=\'y\'>\n', ["html"]),
+        ("</span>\n", ["html"]),
+        ("<https://example.com>\n", ["paragraph"]),  # an autolink
+        ("<b>bold</b> text\n", ["paragraph"]),  # an inline tag
+        ("    <div>\n", ["paragraph"]),  # indented four columns
+        ("| a |\n|---|\n<span>\n", ["table", "html"]),
+    ],
+)
+def test_which_lines_start_an_html_block(body, kinds):
+    assert [kind for kind, _text in _html(body)[1]] == kinds
+
+
+def test_a_fence_inside_an_html_block_is_raw_html():
+    titles, blocks = _html("<div>\n```\n# X\n</div>\n\n# Y\n")
+    assert titles == ["Terms", "Y"]
+    assert blocks == [("html", "<div>\n```\n# X\n</div>")]
+
+
+def test_an_html_block_in_the_model_keeps_its_indentation():
+    document = document_from_dict(
+        {"sections": [{"title": "A", "blocks": [{"kind": "html", "text": "\n\n   <div>\n  x\n</div>  \n\n"}]}]}
+    )
+    assert document.sections[0].blocks[0].text == "   <div>\n  x\n</div>"
+    assert parse_document(serialize_document(document)).sections == document.sections

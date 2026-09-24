@@ -23,6 +23,7 @@ from .markdown import (
     closes_fence,
     dedent,
     fence_end,
+    html_block_end,
     indent_width,
 )
 from .markers import Marker, split_heading
@@ -517,7 +518,8 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     of a setext heading, whose underline is ``lines[end - 1]``, else 0.
 
     A paragraph ends at a blank line or at a block that can interrupt it
-    (CommonMark): a fence, an ATX heading, a block quote, a thematic break
+    (CommonMark): a fence, an ATX heading, a block quote, an HTML block of
+    kinds 1–6, a thematic break
     other than a setext underline, or a list item (an ordered one only when
     numbered 1). A *lazy* paragraph continues a
     list, block quote, or table (no blank line between), so it cannot be
@@ -530,6 +532,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
             FENCE_OPEN_RE.match(line)
             or HEADING_RE.match(line)
             or line.lstrip().startswith(">")
+            or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
             or (RULE_RE.match(line) and not SETEXT_UNDERLINE_RE.match(line) and indent_width(line) <= 3)
         ):
@@ -550,8 +553,8 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
     """Parse body lines into the preamble's blocks (§4.4) and the sections'.
 
     Headings (ATX and setext, §4.1) and blocks are recognized in one pass, so
-    a fenced code block is literal everywhere (§11.4): no line inside one is
-    a heading or starts another block.
+    a fenced code block (§11.4) or an HTML block (§8.6) is literal
+    everywhere: no line inside one is a heading or starts another block.
     """
     preamble: list[Block] = []
     sections: list[tuple[_Heading, list[Block]]] = []
@@ -611,6 +614,12 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
                 lines, index, list_type=_list_type(marker)
             )
             blocks.append(block)
+        elif (end := html_block_end(lines, index)) is not None:
+            # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
+            # no heading or other block starts inside it.
+            blocks.append(Block(kind="html", text="\n".join(lines[index:end])))
+            index = end
+            lazy = False
         else:
             end, setext_level = _paragraph_end(lines, index, lazy)
             if setext_level:

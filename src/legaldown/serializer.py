@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 
 from .directives import format_value, is_escaped
-from .markdown import FENCE_OPEN_RE, close_fences
+from .markdown import FENCE_OPEN_RE, close_fences, html_block_end
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata
 from .parser import HEADING_RE
@@ -134,9 +134,9 @@ def _list_item(marker: str, item: str) -> str:
 
 def _paragraph(text: str) -> str:
     """A paragraph's text, indented four columns if at the margin it would
-    open a code block or a heading: the parser only reads such text as a
-    paragraph when it was indented like that in the source."""
-    if FENCE_OPEN_RE.match(text) or HEADING_RE.match(text):
+    open a code block, a heading, or an HTML block: the parser only reads
+    such text as a paragraph when it was indented like that in the source."""
+    if FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or html_block_end([text], 0) is not None:
         return "    " + text
     return text
 
@@ -209,6 +209,8 @@ def _render_block(block: Block) -> str:
         return "---"
     if block.kind == "code":
         return close_fences(block.text)
+    if block.kind == "html":
+        return block.text
     return block.text.strip()
 
 
