@@ -182,7 +182,7 @@ so a renderer or a UI can reuse the work instead of re-deriving it:
 | `is_valid` | `True` when no Error-level diagnostic was reported |
 | `errors` / `warnings` / `infos` | Message strings by severity |
 | `rules(level=None)` | Set of rule ids present, optionally filtered by severity |
-| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives (§15.8) |
+| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
 | `inline_dates`, `inline_money`, `inline_durations`, `inline_fields`, `inline_placeholders` | Field-spec values found in the body |
 
