@@ -81,6 +81,11 @@ is validated as body. A block that is not valid YAML at all is `frontmatter-inva
 the CLI reports; `parse_document` raises for it. As §16.6 requires, a document without
 frontmatter draws that Warning alone: not `title-missing`, and not `sides-absent`.
 
+`heading-skip` covers the first heading too: in a document with frontmatter, a main document,
+the first heading is at level 1 (§4.1). A document without frontmatter may be an include
+fragment or an attachment file validated on its own, which has no level-1 heading (§12), so
+its first heading is not checked; the skips after it are.
+
 `directive-malformed` is evaluated on the text the parser hands the validator. The parser joins
 the lines of a paragraph (and a list item's continuation lines) with a space, so a directive
 broken across two of those lines reaches the validator on one line and is not reported. A
