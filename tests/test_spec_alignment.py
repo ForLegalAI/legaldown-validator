@@ -6,6 +6,8 @@ its input, and the §11.4 recognition contexts.
 """
 from __future__ import annotations
 
+import random
+
 import pytest
 import yaml
 
@@ -651,6 +653,81 @@ def test_diagnostics_expose_rule_ids_and_levels():
 
 
 # ── Index alignment and amendment severity ────────────────────────
+
+
+def _numbers(headings: str) -> list[str]:
+    """The section numbers of a document with *headings*; one that opens
+    below level 1 is also a heading-skip, numbered all the same."""
+    source = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + headings
+    return [entry.number for entry in validate_document(parse_document(source)).sections]
+
+
+@pytest.mark.parametrize(
+    ("headings", "numbers"),
+    [
+        ("# A\n\n# B\n\n# Dispute\n\n### Deep\n\n## Sub Two\n", ["1", "2", "3", "3.1.1", "3.2"]),  # #38
+        ("# A\n\n#### D\n\n## B\n\n### C\n", ["1", "1.1.1.1", "1.2", "1.2.1"]),
+        ("### X\n\n# A\n", ["1.1.1", "2"]),  # a first heading deeper than a later one
+        ("## A\n\n## B\n\n# C\n", ["1.1", "1.2", "2"]),
+        ("###### Six\n\n# A\n", ["1.1.1.1.1", "2"]),  # level 6 is clamped to 5
+    ],
+)
+def test_a_skipped_level_counts_as_its_first_so_numbers_stay_unique(headings, numbers):
+    assert _numbers(headings) == numbers
+
+
+def test_a_fragment_starting_at_level_two_is_numbered_from_one():
+    """An attachment or include file has neither frontmatter nor a # heading
+    (§12, §13.8)."""
+    result = validate_document(parse_document("## A\n\n## B\n\n### B1\n\n## C\n"))
+    assert [entry.number for entry in result.sections] == ["1", "2", "2.1", "3"]
+    assert "heading-skip" not in result.rules()
+
+
+@pytest.mark.parametrize(
+    ("body", "level"),
+    [("## A\n\nText.\n", 2), ("### A\n\nText.\n", 3), ("Preamble.\n\n## A\n\nText.\n", 2), ("## A\n\n# B\n", 2)],
+)
+def test_a_main_document_opening_below_level_one_skips_a_level(body, level):
+    """§4.1: a document with frontmatter is a main document, whose first
+    heading is at level 1."""
+    result = validate_document(parse_document(_BARE + body))
+    assert [d.message for d in result.diagnostics if d.rule == "heading-skip"] == [
+        f"Heading levels must not skip. 'A' is at level {level}, but the document has no level-1 heading before it."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "skips"),
+    [
+        ("---\n---\n\n## A\n", True),  # empty frontmatter is still frontmatter
+        ("## A\n\n#### B\n", True),  # a fragment's own skips are still reported
+        ("## A\n\n### B\n\n## C\n", False),
+        ("---\ntitle: T\n---\n\n# A {#a when=x}\n\n## B\n", False),  # B goes with A (§15.3)
+    ],
+)
+def test_where_a_first_heading_below_level_one_is_a_skip(source, skips):
+    assert ("heading-skip" in validate_document(parse_document(source)).rules()) is skips
+
+
+def test_numbers_are_unique_and_unchanged_without_a_skip():
+    """Random heading sequences: every number is unique, and a document
+    that skips no level and opens at its shallowest level is numbered as
+    before (dotted counters, from that level)."""
+    rng = random.Random(38)
+    for _ in range(1000):
+        levels = [rng.randint(1, 5) for _ in range(rng.randint(1, 9))]
+        numbers = _numbers("".join(f"{'#' * level} H{index}\n\n" for index, level in enumerate(levels)))
+        assert len(set(numbers)) == len(numbers), (levels, numbers)
+        skips = any(b - a > 1 for a, b in zip(levels, levels[1:], strict=False))
+        if not skips and levels[0] == min(levels):
+            counters = [0] * 6
+            expected = []
+            for level in levels:
+                counters[level] += 1
+                counters[level + 1:] = [0] * (5 - level)
+                expected.append(".".join(str(c) for c in counters[levels[0]:level + 1]))
+            assert numbers == expected, (levels, numbers)
 
 
 def test_out_of_range_heading_keeps_its_index_entry():

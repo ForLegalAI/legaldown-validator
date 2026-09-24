@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class SectionIndexEntry:
-    """A section's position in the document's numbered index."""
+    """A section's position in the document's numbered index.
+
+    ``number`` is the decimal number (§13.1), counted from the document's
+    shallowest heading level. A level a heading skips (heading-skip) counts
+    as 1, so ``# A``, ``### B``, ``## C`` are 1, 1.1.1, 1.2: no two sections
+    share a number, except alternatives and what they contain (§15.8).
+    ``path`` joins the identifiers of the section and its ancestors."""
     title: str
     identifier: str
     path: str

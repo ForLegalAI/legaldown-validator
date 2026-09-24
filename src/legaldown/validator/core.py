@@ -716,8 +716,18 @@ def validate_document(
         return candidate
 
     counters = [0] * 7
+    # Numbers count from the shallowest heading level: a document whose
+    # headings all start at ## (an attachment or include file, which has no
+    # # heading) numbers them 1, 2, … A level that a heading skips counts
+    # as 1 (see below), so no two sections get the same number (#38).
+    shallowest = min((min(max(s.level, 1), 5) for s in document.sections), default=1)
     path_stack: list[str] = []
-    last_level = 0
+    # The level before the first heading: 0 in a main document, whose first
+    # heading must be at level 1 (§4.1). A document without frontmatter may
+    # be an include fragment or an attachment file validated on its own,
+    # which has no level-1 heading and to which §4.1 does not apply alone
+    # (§12): its first heading sets the level.
+    last_level: int | None = None if document.metadata.frontmatter_absent else 0
     # The last section at each open level: (identifier, presence). An
     # alternative to it shares its number (§15.8).
     previous_sibling: dict[int, tuple[str, Presence]] = {}
@@ -736,7 +746,13 @@ def validate_document(
                 f"{section.level}. LegalDown supports levels 1-5 (§4.1).",
             )
             level = min(max(level, 1), 5)
-        if last_level > 0 and level - last_level > 1:
+        if last_level == 0 and level > 1:
+            result.error(
+                "heading-skip",
+                f"Heading levels must not skip. '{section.title}' is at level {level}, but the "
+                f"document has no level-1 heading before it.",
+            )
+        elif last_level and level - last_level > 1:
             result.error(
                 "heading-skip",
                 f"Heading levels must not skip. '{section.title}' jumps from level {last_level} to {level}.",
@@ -797,6 +813,12 @@ def validate_document(
         alternative = sibling_id == identifier and exclusive(presence, sibling_presence, questions)
         previous_sibling = {lvl: v for lvl, v in previous_sibling.items() if lvl < level}
         previous_sibling[level] = (identifier, presence)
+        # A level between this heading and its nearest ancestor that has no
+        # heading of its own (a skip, heading-skip) counts as its first:
+        # # A, ### B, ## C are 1, 1.1.1, 1.2. Numbers stay unique, except
+        # that alternatives, and what they contain, share them (§15.8).
+        for idx in range(shallowest, level):
+            counters[idx] = counters[idx] or 1
         for idx in range(level, 7):
             if idx == level:
                 counters[idx] += 0 if alternative else 1
