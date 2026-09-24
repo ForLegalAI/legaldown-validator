@@ -1239,6 +1239,11 @@ def test_a_change_of_marker_type_starts_a_new_list(body):
     assert [items for _kind, items in _blocks(body)] == [["a"], ["b"]]
 
 
+@pytest.mark.parametrize("body", ["* --\n", "+ - -\n+ b\n", "* a\n* ---\n", "* a\n* - - -x\n"])
+def test_an_item_beginning_with_dashes_is_not_written_as_a_rule(body):
+    assert [kind for kind, _items in _blocks(body)] == ["unordered_list"]
+
+
 def test_a_nested_item_of_another_type_stays_in_the_list():
     assert _blocks("- parent\n  * child\n  1) child\n- next\n") == [
         ("unordered_list", ["parent", "child", "child", "next"])

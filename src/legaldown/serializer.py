@@ -13,7 +13,7 @@ from .directives import format_value, is_escaped
 from .markdown import FENCE_OPEN_RE, close_fences, html_block_end
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata
-from .parser import HEADING_RE
+from .parser import HEADING_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -180,7 +180,11 @@ def _render_block(block: Block) -> str:
         label_part = f", label={format_value(block.label)}" if block.label else ""
         return f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip()
     if block.kind == "unordered_list":
-        return "\n".join(_list_item("- ", item) for item in block.items if item.strip())
+        items = [item for item in block.items if item.strip()]
+        # An item whose text begins with dashes, such as "--", would make a
+        # "- " line a thematic break; "+" never forms one.
+        bullet = "+ " if any(RULE_RE.match("- " + item.split("\n")[0]) for item in items) else "- "
+        return "\n".join(_list_item(bullet, item) for item in items)
     if block.kind == "ordered_list":
         return "\n".join(
             _list_item(f"{index}. ", item)
