@@ -602,14 +602,12 @@ class _HeadingSpan:
 @dataclass(slots=True)
 class _BlockSpan:
     """Where a block lies in the body: lines ``[start, end)``. *kind* is the
-    parsed block's. *lazy*: a paragraph read as continuing the block before
-    it. *items*: a list's items, each with the line it starts on and its
-    text as parsed, empty items included (the model drops them)."""
+    parsed block's. *items*: a list's items, each with the line it starts on
+    and its text as parsed, empty items included (the model drops them)."""
 
     kind: str
     start: int
     end: int
-    lazy: bool = False
     items: list[tuple[int, str]] = field(default_factory=list)
 
 
@@ -668,7 +666,7 @@ def _parse_body(
             lazy = False
             continue
         heading: _Heading | None = None
-        start, was_lazy, count, item_starts = index, lazy, len(blocks), []
+        start, count, item_starts = index, len(blocks), []
         in_tail = list_tail and indent_width(line) >= 4
         # A table that interrupted a paragraph may have an indented header
         # row: the paragraph ended there (_paragraph_end).
@@ -753,7 +751,7 @@ def _parse_body(
             elif len(blocks) > count:
                 block = blocks[-1]
                 raw = list(zip(item_starts, block.items, strict=True)) if item_starts else []
-                spans.append(_BlockSpan(block.kind, start, index, was_lazy, raw))
+                spans.append(_BlockSpan(block.kind, start, index, raw))
         if heading is not None:
             blocks = []
             sections.append((heading, blocks))

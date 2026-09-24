@@ -179,3 +179,39 @@ def test_assemble_reads_no_file_outside_the_template_directory(tmp_path, capsys,
     template.write_text(_VALID + f"\n{{{{include: {include}}}}}\n", encoding="utf-8")
     assert main(["assemble", str(template)]) == EXIT_DIAGNOSTICS
     assert "[include-file-missing]" in capsys.readouterr().err
+
+
+def test_assemble_refuses_a_kept_file_named_as_the_template(tmp_path, capsys):
+    folder = tmp_path / "t"
+    folder.mkdir()
+    (folder / "main.lgd").write_text(
+        _VALID.replace("---\n\n# Scope", "attachments:\n  - id: s\n    title: S\n    file: main.lgd\n---\n\n# Scope")
+        + "\nSee {{attach: s}}.\n",
+        encoding="utf-8",
+    )
+    assert main(["assemble", str(folder / "main.lgd"), "-o", str(tmp_path / "out")]) == EXIT_ERROR
+    assert "both the template and a file it keeps" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("include", ["a\x00.lgd", "x" * 300 + ".lgd", "loop/x.lgd"])
+def test_assemble_treats_an_impossible_path_as_unreadable(tmp_path, capsys, include):
+    (tmp_path / "loop").symlink_to(tmp_path / "loop")
+    template = tmp_path / "t.lgd"
+    template.write_text(_VALID + f"\n{{{{include: {include}}}}}\n", encoding="utf-8")
+    assert main(["assemble", str(template)]) == EXIT_DIAGNOSTICS
+    assert "[include-file-missing]" in capsys.readouterr().err
+
+
+def test_assemble_refuses_an_output_path_that_is_a_file(write, capsys, tmp_path):
+    template = write("t.lgd", _VALID)
+    target = write("taken", "")
+    assert main(["assemble", str(template), "-o", str(target)]) == EXIT_ERROR
+    assert "is not a directory" in capsys.readouterr().err
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "parts").write_text("", encoding="utf-8")
+    (tmp_path / "parts").mkdir()
+    (tmp_path / "parts" / "a.lgd").write_text("## A {#a}\n\nText.\n", encoding="utf-8")
+    template.write_text(_VALID + "\n{{include: parts/a.lgd}}\n", encoding="utf-8")
+    assert main(["assemble", str(template), "-o", str(tmp_path / "out")]) == EXIT_ERROR
+    assert "the output is incomplete" in capsys.readouterr().err

@@ -212,10 +212,20 @@ def _iter_assembly_templates():
         yield pytest.param(case, id=case.name)
 
 
+def _skip_above_core(case: Path) -> None:
+    """Skip a case whose ``case.json`` asks for a level above Core (fixtures
+    README, step 4)."""
+    if (case / "case.json").exists():
+        level = json.loads((case / "case.json").read_text(encoding="utf-8")).get("requires_level", "core")
+        if level != "core":
+            pytest.skip(f"requires conformance level {level}")
+
+
 @pytest.mark.parametrize("case", list(_iter_assembly_templates()))
 def test_assembly_template_validates_without_errors(case: Path):
     """Each assembly case's template MUST produce no Errors (fixtures README,
     step 3)."""
+    _skip_above_core(case)
     result = _validate_file(case / "template.lgd", {})
     assert not result.errors, (
         f"template produced errors: {[d for d in result.diagnostics if d.level == 'error']}"
@@ -234,8 +244,9 @@ def _expected_tree(case: Path) -> dict[str, str]:
 @pytest.mark.parametrize("case", list(_iter_assembly_templates()))
 def test_assembly_case_assembles_byte_for_byte(case: Path):
     """§15.7.2: the same template and answers set give byte-identical output.
-    A case marked Full reads include fragments and attachment files, which
-    this implementation does when given a loader (§17.1, §17.6)."""
+    (The Full multi-file case is skipped here, and assembled by
+    tests/test_assembly.py.)"""
+    _skip_above_core(case)
     result = _assemble_case(case / "template.lgd", case / "answers.yaml")
     assert result.ok, result.diagnostics
     assert {"template.lgd": result.output, **result.files} == _expected_tree(case)

@@ -148,12 +148,15 @@ def _write(path: Path, text: str) -> None:
 
 
 def _within(base: Path, relative: str) -> Path | None:
-    """*relative* under directory *base*, or None when it is absolute or
-    leads out of it (§2.3)."""
+    """*relative* under directory *base*, or None when it is absolute, leads
+    out of it (§2.3), or is no path at all (a null byte, a symlink loop)."""
     if not relative or posixpath.isabs(relative) or Path(relative).is_absolute():
         return None
-    root = base.resolve()
-    target = (root / relative).resolve()
+    try:
+        root = base.resolve()
+        target = (root / relative).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None
     return target if target.is_relative_to(root) else None
 
 
@@ -190,11 +193,9 @@ def _run_assemble(args: argparse.Namespace) -> int:
 
     def load_file(relative: str) -> str | None:
         target = _within(base, relative)
-        if target is None or not target.is_file():
-            return None
         try:
-            return _read(target)
-        except (OSError, UnicodeDecodeError):
+            return _read(target) if target is not None and target.is_file() else None
+        except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
             return None
 
     result = assemble(template, answers, load_file=load_file)
@@ -211,24 +212,38 @@ def _run_assemble(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return EXIT_ERROR
-        sys.stdout.write(result.output)
+        # Bytes, so that no platform translates the template's line breaks.
+        sys.stdout.flush()
+        stream = getattr(sys.stdout, "buffer", None)
+        if stream is not None:
+            stream.write(result.output.encode("utf-8"))
+            stream.flush()
+        else:
+            sys.stdout.write(result.output)
         return EXIT_OK
 
     out = Path(args.output)
+    problem = None
+    if out.exists() and not out.is_dir():
+        problem = f"{out} is not a directory"
+    elif template_path.name in result.files:
+        problem = f"{template_path.name} is both the template and a file it keeps"
     outputs = {template_path.name: result.output, **result.files}
     targets = {relative: _within(out, relative) for relative in outputs}
-    unsafe = [relative for relative, target in targets.items() if target is None]
-    overwrites = [
-        relative for relative, target in targets.items()
-        if target is not None and target == template_path.resolve()
-    ]
-    if unsafe or overwrites:
-        what = unsafe[0] if unsafe else overwrites[0]
-        reason = "leads out of the output directory" if unsafe else "would overwrite the template"
-        print(f"error: {what} {reason}; nothing was written", file=sys.stderr)
+    for relative, target in targets.items():
+        if problem is None and target is None:
+            problem = f"{relative} leads out of the output directory"
+        elif problem is None and target == template_path.resolve():
+            problem = f"{relative} would overwrite the template"
+    if problem is not None:
+        print(f"error: {problem}; nothing was written", file=sys.stderr)
         return EXIT_ERROR
     for relative, text in outputs.items():
-        _write(targets[relative], text)  # an emptied file is written as zero bytes
+        try:
+            _write(targets[relative], text)  # an emptied file is written as zero bytes
+        except OSError as exc:
+            print(f"error: cannot write {relative}: {exc}; the output is incomplete", file=sys.stderr)
+            return EXIT_ERROR
     return EXIT_OK
 
 
