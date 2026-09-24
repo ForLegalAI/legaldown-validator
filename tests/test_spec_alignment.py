@@ -1757,3 +1757,38 @@ def test_an_indented_paragraph_after_a_list_round_trips_whatever_it_begins_with(
 )
 def test_a_table_with_an_indented_header_interrupts_a_paragraph(body, kinds):
     assert [kind for kind, _text in _code_blocks(body)] == kinds
+
+
+@pytest.mark.parametrize(
+    "before", ["# H", "***", "<!-- c -->", "Title\n===", "```\nx\n```"],
+)
+def test_an_indented_header_row_after_another_block_is_code(before):
+    """Only an open paragraph can be interrupted by a table whose header row
+    is indented; elsewhere that row is indented code (CommonMark)."""
+    document = parse_document(f"{_BARE}{before}\n    | {{{{ref: nope}}}} |\n|---|\n")
+    assert "table" not in [b.kind for _s, _i, b in document.iter_blocks()]
+    assert "ref-broken" not in validate_document(document).rules()
+
+
+def test_code_after_the_indented_run_after_a_list_stays_code():
+    # The paragraph is written indented, to stay a paragraph after the list,
+    # so the code after it is written fenced, to stay code.
+    document = parse_document(_FRONTMATTER + "- a\n\n<a\nhref='x'>\n\n    code {{ref: nope}}\n")
+    reparsed = parse_document(serialize_document(document))
+    assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [
+        ("unordered_list", ""), ("paragraph", "<a href='x'>"), ("code", "```\ncode {{ref: nope}}\n```")
+    ]
+    assert "ref-broken" not in validate_document(reparsed).rules()
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "# foo"}, {"kind": "code", "text": "    x"},
+    ]}]})
+    assert parse_document(serialize_document(document)).sections == document.sections
+
+
+def test_the_indented_run_stops_at_text_that_reads_as_another_block():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "> q"},
+        {"kind": "paragraph", "text": "# foo"},
+    ]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert (blocks[-1].kind, blocks[-1].text) == ("paragraph", "\\# foo")

@@ -14,7 +14,7 @@ from .directives import format_value
 from .markdown import FENCE_OPEN_RE, close_fences, dedent, html_block_end, is_indented_code
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata, metadata_from_dict
-from .parser import HEADING_RE, RULE_RE
+from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -249,15 +249,20 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
     they begin with, for as long as each paragraph is indented
     (``parser._parse_body``). So the paragraphs directly after a list, up
     to the last one that would otherwise open another block, are written
-    indented."""
+    indented; the run stops at one the parser reads as another block even
+    when indented (a quote, a list item, a rule, a table row)."""
     parts: list[str] = []
     indented: set[int] = set()
     for index, block in enumerate(blocks):
-        after_list = index > 0 and blocks[index - 1].kind in _LISTS
+        # Indented code here would read as one more paragraph after the list.
+        after_list = index > 0 and (blocks[index - 1].kind in _LISTS or index - 1 in indented)
         if block.kind in _LISTS:
             run = index + 1
             while run < len(blocks) and blocks[run].kind in _PARAGRAPHS:
-                if _opens_block(_render_block(blocks[run], indent=True)[4:]):
+                text = _render_block(blocks[run], indent=True)[4:]
+                if text.startswith((">", "|")) or RULE_RE.match(text) or LIST_ITEM_RE.match(text):
+                    break
+                if _opens_block(text):
                     indented.update(range(index + 1, run + 1))
                 run += 1
         if after_list and block.kind == "code":

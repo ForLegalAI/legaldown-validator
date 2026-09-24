@@ -584,6 +584,7 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
     # stay paragraphs rather than code: CommonMark keeps them in the list's
     # last item. The run lasts through such paragraphs.
     list_tail = False
+    interrupted = -1  # the line at which a paragraph was interrupted
     index = 0
     while index < len(lines):
         line = lines[index]
@@ -595,7 +596,7 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
         in_tail = list_tail and indent_width(line) >= 4
         # A table that interrupted a paragraph may have an indented header
         # row: the paragraph ended there (_paragraph_end).
-        interrupting_table = index > 0 and bool(lines[index - 1].strip()) and _parse_table(lines, index) is not None
+        interrupting_table = index == interrupted and _parse_table(lines, index) is not None
         if indent_width(line) >= 4 and not in_tail and not interrupting_table:
             # Indented code (§11.4). A paragraph's own lines, and a list's
             # or quote's lazy lines, never get here.
@@ -663,6 +664,7 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
                 heading = (*split_heading(text), setext_level)
             else:
                 blocks.append(_parse_paragraph(" ".join(lines[index:end])))
+                interrupted = end
             index = end
             lazy = False
         if heading is not None:
