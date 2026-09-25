@@ -64,11 +64,10 @@ checked. Indented lines directly after a list, past the blank line that ends the
 stay paragraphs for as long as each is indented, as CommonMark keeps them in the list's last item
 rather than making them code. A fence or an HTML block there is read as paragraph text too, so
 directives in it are checked; CommonMark reads it as code or raw HTML in the item
-([#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)). A fence that opens on the
-last line of a list item's or a quote's text, behind nested markers (`- > ~~~`), is code: it
-cannot run past that line. A fence behind such markers that runs over several lines
-(`- a` / `  > ~~~` / `  > text` / `  > ~~~`) is not recognized, so directives in it are
-checked where CommonMark reads code.
+([#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)). A fence that opens a list item's or
+a quote's text on its only line (`- ~~~ …`) is code. One behind nested markers (`- > ~~~ …`,
+`> - ~~~ …`), or one running over several lines of a nested quote or item, is not recognized:
+directives in it are checked where CommonMark reads code.
 
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy

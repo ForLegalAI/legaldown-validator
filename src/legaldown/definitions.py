@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex, mask_directives
-from .markdown import FENCE_OPEN_RE, is_indented_code, last_line_fence_start
+from .markdown import FENCE_OPEN_RE, is_indented_code
 from .models import Block, Document
 from .validator.helpers import generate_identifier
 
@@ -212,18 +212,14 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
 
 
 def _code_if_fence(text: str) -> str:
-    """A list item's or quote's text, blanked from where its last line opens
-    a fence, behind zero or more nested container markers: that and
-    everything after it on the line is the fence's opening line and info
-    string, code (§11.4), since the fence cannot continue past *text*'s own
-    last line. The lexer blanks a fence spanning several of *text*'s own
-    lines; one line of paragraph text, a heading or a table cell cannot open
-    one. Blanked rather than dropped, so the fragments keep their indices."""
-    offset = last_line_fence_start(text)
-    if offset is None:
-        return text
-    last_start = text.rfind("\n") + 1
-    return text[: last_start + offset] + " " * (len(text) - last_start - offset)
+    """A list item's or quote's text, blanked when it is one line that opens
+    a fence: all of it is the fence's opening line and info string, code
+    (§11.4). The lexer blanks a fence in text of several lines; one line of
+    paragraph text, a heading or a table cell cannot open one. Blanked
+    rather than dropped, so the fragments keep their indices."""
+    if "\n" not in text and FENCE_OPEN_RE.match(text):
+        return " " * len(text)
+    return text
 
 
 def text_fragments(block: Block) -> list[str]:

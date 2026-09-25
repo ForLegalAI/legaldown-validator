@@ -327,6 +327,15 @@ def _parse_list(
             break
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
+        if (
+            marker and lazy and quote is None and items
+            and indent_width(line) >= content_indent and not _may_interrupt(line, marker)
+        ):
+            # A nested list would interrupt the item's own open paragraph,
+            # which only an item that may interrupt one does: the line is
+            # text. (A quote's paragraph is not the item's: after it, such
+            # a line starts a list.)
+            marker = None
         if marker and (_list_type(marker) == list_type or indented):
             content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
             content = line[marker.end():].strip()
@@ -546,8 +555,16 @@ def _starts_interrupting_item(line: str) -> bool:
         marker is not None
         and not RULE_RE.match(line)
         and indent_width(line) <= 3
-        and bool(line[marker.end():].strip())
-        and marker.group("number") in (None, "1")
+        and _may_interrupt(line, marker)
+    )
+
+
+def _may_interrupt(line: str, marker: re.Match[str]) -> bool:
+    """True if the list item *marker* opens on *line* may interrupt a
+    paragraph (CommonMark): it is not empty and, if ordered, its number is
+    1 — ``01.`` included."""
+    return bool(line[marker.end():].strip()) and (
+        marker.group("number") is None or int(marker.group("number")) == 1
     )
 
 

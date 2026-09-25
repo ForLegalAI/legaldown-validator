@@ -1189,21 +1189,25 @@ def test_a_list_item_or_quote_that_is_one_fence_line_is_code(body):
     assert "ref-broken" not in _validate(body).rules()
 
 
-@pytest.mark.parametrize(("body", "live"), [
-    ("- > ~~~ {{ref: nowhere}}\n", False),
-    ("> - ~~~ {{ref: nowhere}}\n", False),
-    ("- - ~~~ {{ref: nowhere}}\n", False),
-    ("> > ~~~ {{ref: nowhere}}\n", False),
-    ("- a\n  > ~~~ {{ref: nowhere}}\n", False),
-    ("> a\n> 1. ~~~ {{ref: nowhere}}\n", False),
-    # An item numbered 2 cannot interrupt the paragraph: it is text.
-    ("> a\n> 2. ~~~ {{ref: nowhere}}\n", True),
-    ("> a\n>\n> 2. ~~~ {{ref: nowhere}}\n", False),
+@pytest.mark.parametrize(("body", "items"), [
+    ("- a\n  2. ~~~ {{ref: x}}\n", [("unordered_list", ["a 2. ~~~ {{ref: x}}"])]),
+    ("1. a\n   2. b\n   3. c\n", [("ordered_list", ["a 2. b 3. c"])]),
+    ("- a\n  1. b\n", [("unordered_list", ["a", "b"])]),
+    ("- a\n  - b\n", [("unordered_list", ["a", "b"])]),
+    ("- a\n  > b\n  2. x\n", [("unordered_list", ["a\n> b", "x"])]),
 ])
-def test_a_fence_behind_nested_markers_on_the_last_line_is_code(body, live):
-    """It cannot run past that line, so the rest of it is its info string,
-    code (§11.4; cmark-gfm)."""
-    assert ("ref-broken" in _validate(body).rules()) is live
+def test_a_nested_item_interrupts_its_items_paragraph_only_as_commonmark_allows(body, items):
+    """Only a bullet with text, or an ordered item numbered 1, may
+    interrupt a paragraph — the item's own too (cmark-gfm)."""
+    document = parse_document(_FRONTMATTER + body)
+    assert [(b.kind, b.items) for b in document.sections[0].blocks] == items
+
+
+@pytest.mark.parametrize("number", ["1", "01", "001"])
+def test_an_item_numbered_1_however_written_interrupts_a_paragraph(number):
+    """#57: the number is compared as a number."""
+    document = parse_document(_FRONTMATTER + f"Text\n{number}. item\n")
+    assert [b.kind for b in document.sections[0].blocks] == ["paragraph", "ordered_list"]
 
 
 def test_a_table_cell_opening_like_a_fence_is_text():
