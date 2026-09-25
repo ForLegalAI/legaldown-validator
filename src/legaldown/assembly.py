@@ -37,7 +37,14 @@ from functools import cache
 from typing import Any
 
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
-from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, LINE_ENDING_RE, fence_end, indent_width
+from .markdown import (
+    FENCE_OPEN_RE,
+    HTML_BLOCK_START_RE,
+    LINE_ENDING_RE,
+    fence_end,
+    indent_width,
+    last_line_fence_start,
+)
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import Block, Document
 from .parser import FRONTMATTER_RE, _BlockSpan, _Layout, _layout, _opens_paragraph, parse_document
@@ -458,7 +465,9 @@ def _fenced(text: str) -> Iterator[int]:
     """The lines of *text* — a list item's or a quote's, as the parser hands
     it to the validator — inside fenced code, which the lexer blanks there
     (§11.4), a one-line text's opening line included
-    (``definitions.block_fragments``)."""
+    (``definitions.block_fragments``). Its last line is included whole when
+    a fence opens there behind nested container markers a further-nested
+    item or quote cannot continue past (``markdown.last_line_fence_start``)."""
     rows = text.split("\n")
     index = 0
     while index < len(rows):
@@ -469,6 +478,8 @@ def _fenced(text: str) -> Iterator[int]:
         end = fence_end(rows, index, opening.group("fence"))
         yield from range(index, end)
         index = end
+    if last_line_fence_start(text) is not None:
+        yield len(rows) - 1
 
 
 def _note_lines(text: str, *, inside_list: bool = False) -> Iterator[tuple[int, int]]:

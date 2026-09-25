@@ -181,7 +181,7 @@ def _render_block(block: Block, *, indent: bool = False) -> str:
     """*block* as source; *indent* writes a paragraph-like block indented
     four columns (``_paragraph``)."""
     if block.kind == "paragraph":
-        return _paragraph(block.text.strip(), indent=indent)
+        return _paragraph(block.text.strip(" \t\n\r"), indent=indent)
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()

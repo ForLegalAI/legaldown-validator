@@ -439,7 +439,7 @@ def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
 
 
 def _parse_paragraph(paragraph: str) -> Block:
-    stripped = paragraph.strip()
+    stripped = paragraph.strip(" \t\n\r")
     # Definition: a paragraph whose leading token is a quoted term followed by a
     # ``{{def: id}}`` anchor. The id may be omitted (derived at validation time).
     # Directives are lifted into block fields only when the serializer writes

@@ -774,6 +774,12 @@ class TestFencedCodeInContainers:
         # A blank line inside the open fence is code: step 8 keeps it.
         assert _body(result) == f"\n# A\n\n- ~~~ {{{{placeholder: name}}}}\n{end}\nHi Ann.\n"
 
+    @pytest.mark.parametrize("line", ["- > ~~~", "> - ~~~", "> > ~~~"])
+    def test_a_fence_behind_nested_markers_is_code(self, line):
+        body = f"# A\n\n{line} {{{{placeholder: name}}}}\n\nHi {{{{placeholder: name}}}}.\n"
+        result = assemble(_template(body, _TEXT), {"name": "Ann"})
+        assert _body(result) == f"\n# A\n\n{line} {{{{placeholder: name}}}}\n\nHi Ann.\n"
+
     def test_a_continuation_line_is_not_a_fence(self):
         body = "# A\n\n- b\n      ~~~ text\n  more {{placeholder: name}}\n"
         result = assemble(_template(body, _TEXT), {"name": "Ann"})

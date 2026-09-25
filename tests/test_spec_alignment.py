@@ -1138,9 +1138,10 @@ def test_only_spaces_and_tabs_and_nine_digits_make_a_heading_or_an_item(line):
     """CommonMark: other whitespace and longer or non-ASCII numbers are
     paragraph text (cmark-gfm)."""
     document = parse_document(_FRONTMATTER + f"{line}\n")
-    assert [(b.kind, b.text) for b in document.sections[0].blocks] == [("paragraph", line.strip())]
-    if line == line.strip():  # the model strips a leading no-break space (#47)
-        assert parse_document(serialize_document(document)) == document
+    assert [(b.kind, b.text) for b in document.sections[0].blocks] == [
+        ("paragraph", line.strip(" \t\n\r"))
+    ]
+    assert parse_document(serialize_document(document)) == document
 
 
 @pytest.mark.parametrize(("line", "kind"), [
@@ -1186,6 +1187,23 @@ def test_a_list_item_or_quote_that_is_one_fence_line_is_code(body):
     """CommonMark opens a fenced code block there; the rest of the line is its
     info string (§11.4)."""
     assert "ref-broken" not in _validate(body).rules()
+
+
+@pytest.mark.parametrize(("body", "live"), [
+    ("- > ~~~ {{ref: nowhere}}\n", False),
+    ("> - ~~~ {{ref: nowhere}}\n", False),
+    ("- - ~~~ {{ref: nowhere}}\n", False),
+    ("> > ~~~ {{ref: nowhere}}\n", False),
+    ("- a\n  > ~~~ {{ref: nowhere}}\n", False),
+    ("> a\n> 1. ~~~ {{ref: nowhere}}\n", False),
+    # An item numbered 2 cannot interrupt the paragraph: it is text.
+    ("> a\n> 2. ~~~ {{ref: nowhere}}\n", True),
+    ("> a\n>\n> 2. ~~~ {{ref: nowhere}}\n", False),
+])
+def test_a_fence_behind_nested_markers_on_the_last_line_is_code(body, live):
+    """It cannot run past that line, so the rest of it is its info string,
+    code (§11.4; cmark-gfm)."""
+    assert ("ref-broken" in _validate(body).rules()) is live
 
 
 def test_a_table_cell_opening_like_a_fence_is_text():

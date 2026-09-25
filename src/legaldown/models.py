@@ -274,7 +274,10 @@ def _block_text(kind: str, value: Any) -> str:
         return "\n".join(lines).rstrip()
     if kind == "quote":
         return text.rstrip().lstrip(" \t")
-    return text.strip()
+    # Only spaces, tabs, and line endings are insignificant whitespace here
+    # (CommonMark); other Unicode whitespace, such as a non-breaking space,
+    # is text a list or heading marker cannot open with, so it must survive.
+    return text.strip(" \t\n\r")
 
 
 def block_from_dict(data: dict[str, Any] | None) -> Block:

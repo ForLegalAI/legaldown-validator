@@ -15,6 +15,39 @@ import re
 # backtick.
 FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
 
+# Zero or more nested container markers at a line's start: a block quote's
+# ``>`` (with at most one space after it) or a list item's bullet or ordinal
+# marker (with its required spaces or tabs after it).
+_CONTAINER_PREFIX_RE = re.compile(r"(?:[ \t]*(?:>[ \t]?|(?:[-*+]|[0-9]{1,9}[.)])[ \t]+))*")
+# An ordered item's marker opening a line, its number captured.
+_ORDERED_MARKER_RE = re.compile(r"[ \t]*([0-9]{1,9})[.)][ \t]+")
+
+
+def last_line_fence_start(text: str) -> int | None:
+    """The offset within *text*'s last line where a fence opens behind zero
+    or more nested container markers, or None. A fence behind such markers
+    cannot continue past *text*'s last line — its container (a quote or a
+    further-nested item) ends there along with *text* itself — so once it
+    opens, the rest of that line is code (§11.4), info string included.
+
+    Reached only when the markers are genuine: the prefix consumed is
+    non-empty, or *text* is a single line. An unprefixed fence opener that
+    is merely the first of several lines of the same container's own text
+    is left to the ordinary multi-line scan (``directives._blank_fenced_code``),
+    which already handles it."""
+    before, _, last_line = text.rpartition("\n")
+    prefix_end = _CONTAINER_PREFIX_RE.match(last_line).end()
+    if not prefix_end and "\n" in text:
+        return None
+    ordered = _ORDERED_MARKER_RE.match(last_line)
+    if ordered and int(ordered.group(1)) != 1 and before.rsplit("\n", 1)[-1].strip():
+        # After paragraph text, an item numbered other than 1 cannot start
+        # a list (CommonMark): the line goes on the paragraph.
+        return None
+    if FENCE_OPEN_RE.match(last_line[prefix_end:]):
+        return prefix_end
+    return None
+
 # HTML blocks (CommonMark 0.31, 4.6). Kinds 1–5 run until a line holding
 # their end marker, the start line included, or to the end of the text.
 _HTML_BLOCKS_TO_MARKER: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
