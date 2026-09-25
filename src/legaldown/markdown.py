@@ -101,25 +101,6 @@ def indent_width(line: str) -> int:
     return column
 
 
-# A list item's marker and the spacing before it (the parser's LIST_ITEM_RE).
-_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
-
-
-def item_content_column(line: str) -> int:
-    """The column where the content of the list item beginning on *line*
-    starts (CommonMark): after its marker and one to four columns of spacing,
-    or one column when there are more, or when the item is empty."""
-    marker = _ITEM_START_RE.match(line)
-    if marker is None:  # never for a line the parser read as an item
-        return indent_width(line) + 2
-    after = len(line[:marker.end()].expandtabs(4))
-    rest = line[marker.end():]
-    if not rest.strip():
-        return after + 1
-    spacing = len(line[:len(line) - len(rest.lstrip(" \t"))].expandtabs(4)) - after
-    return after + 1 if spacing > 4 else after + spacing
-
-
 def dedent(line: str, columns: int) -> str:
     """*line* with up to *columns* columns of leading whitespace removed; a
     tab straddling the cut leaves its remaining columns as spaces. Only

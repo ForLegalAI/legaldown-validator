@@ -11,15 +11,7 @@ from typing import Any
 import yaml
 
 from .directives import format_value
-from .markdown import (
-    FENCE_OPEN_RE,
-    HTML_BLOCK_START_RE,
-    close_fences,
-    dedent,
-    html_block_end,
-    indent_width,
-    is_indented_code,
-)
+from .markdown import FENCE_OPEN_RE, close_fences, dedent, html_block_end, is_indented_code
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata, metadata_from_dict
 from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
@@ -147,51 +139,24 @@ def _opens_block(text: str) -> bool:
     return bool(FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or html_block_end([text], 0) is not None)
 
 
-def _opens_tail_block(text: str) -> bool:
-    """True if *text*, indented after a list, would still open a block: a
-    fence or an HTML block, which CommonMark reads in the list's last item
-    (``parser._tail_block``)."""
-    return bool(FENCE_OPEN_RE.match(text) or html_block_end([text], 0) is not None)
-
-
-def _is_tail_block(block: Block) -> bool:
-    """True if *block* is a fence or an HTML block the parser read in a
-    list's last item: written indented, after the list (``_tail_block``)."""
-    return (
-        block.kind in ("code", "html")
-        and indent_width(block.text) >= 4
-        and _opens_tail_block(block.text.lstrip(" \t"))
-    )
-
-
 def _paragraph(text: str, *, indent: bool = False) -> str:
     """A paragraph's text. *indent* writes it indented four columns, which
-    after a list the parser reads as paragraph text unless it opens a fence
-    or an HTML block. Elsewhere, text that would open another block gets a
-    backslash before it, which renders as nothing (CommonMark) — except a
-    lone tag, joined from two lines, which is split back at a space: the
-    parser reads it as a paragraph and joins it to the same text."""
+    after a list the parser reads as paragraph text whatever it begins with.
+    Elsewhere, text that would open another block gets a backslash before
+    it, which renders as nothing (CommonMark): the parser reads such text as
+    a paragraph only after a list, so otherwise only a model built in code
+    holds it."""
     if indent:
         return "    " + text
-    if not _opens_block(text):
-        return text
-    space = text.find(" ")
-    lone_tag = not (FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or HTML_BLOCK_START_RE.match(text))
-    if lone_tag and space > 0 and not _opens_block(text[:space]):
-        return text[:space] + "\n" + text[space + 1:]
-    return "\\" + text
+    return "\\" + text if _opens_block(text) else text
 
 
 def _code(text: str, *, after_list: bool) -> str:
     """A code block, fenced or indented, as it is; other text as it is, to
     be read as what it is. Indented code directly after a list is written
-    fenced: there the parser reads an indented line as paragraph text —
-    unless it opens a fence, which the parser reads in the list's last item
-    and which is written as it is."""
+    fenced: there the parser reads an indented line as paragraph text."""
     if FENCE_OPEN_RE.match(text):
         return close_fences(text)
-    if after_list and indent_width(text) >= 4 and FENCE_OPEN_RE.match(text.lstrip(" \t")):
-        return text
     if not (after_list and is_indented_code(text)):
         return text
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
@@ -281,40 +246,22 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
     """Rendered blocks, each preceded by a blank separator line.
 
     After a list the parser reads indented lines as paragraphs, whatever
-    they begin with but a fence or an HTML block, for as long as each is
-    indented (``parser._parse_body``). So the paragraphs directly after a
-    list, up to the last one that would otherwise open another block or
-    that comes before a fence or an HTML block of the list's last item, are
-    written indented; the run stops at one the parser reads as another block
-    even when indented (a quote, a list item, a rule, a fence, an HTML
-    block). A one-line paragraph starting with ``|`` stays a paragraph: a
-    table needs a second row."""
+    they begin with, for as long as each paragraph is indented
+    (``parser._parse_body``). So the paragraphs directly after a list, up
+    to the last one that would otherwise open another block, are written
+    indented; the run stops at one the parser reads as another block even
+    when indented (a quote, a list item, a rule). A one-line paragraph
+    starting with ``|`` stays a paragraph: a table needs a second row."""
     parts: list[str] = []
     indented: set[int] = set()
-    tails: set[int] = set()  # code or HTML written indented, in the list's last item
     for index, block in enumerate(blocks):
         # Indented code here would read as one more paragraph after the list.
-        after_list = index > 0 and (
-            blocks[index - 1].kind in _LISTS or index - 1 in indented or index - 1 in tails
-        )
-        if after_list and _is_tail_block(block):
-            tails.add(index)
+        after_list = index > 0 and (blocks[index - 1].kind in _LISTS or index - 1 in indented)
         if block.kind in _LISTS:
             run = index + 1
-            while run < len(blocks):
-                if _is_tail_block(blocks[run]):
-                    # The tail goes through it: the paragraphs before it
-                    # stay in it, indented.
-                    indented.update(i for i in range(index + 1, run) if blocks[i].kind in _PARAGRAPHS)
-                    run += 1
-                    continue
-                if blocks[run].kind not in _PARAGRAPHS:
-                    break
+            while run < len(blocks) and blocks[run].kind in _PARAGRAPHS:
                 text = _render_block(blocks[run], indent=True)[4:]
-                if (
-                    text.startswith(">") or RULE_RE.match(text) or LIST_ITEM_RE.match(text)
-                    or _opens_tail_block(text)
-                ):
+                if text.startswith(">") or RULE_RE.match(text) or LIST_ITEM_RE.match(text):
                     break
                 if _opens_block(text):
                     indented.update(range(index + 1, run + 1))

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex, mask_directives
-from .markdown import FENCE_OPEN_RE, indent_width, is_indented_code
+from .markdown import FENCE_OPEN_RE, is_indented_code
 from .models import Block, Document
 from .validator.helpers import generate_identifier
 
@@ -182,29 +182,24 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
     one the parser split around a lifted {{ref:}} or {{term:}}) and the end
     of a list item; a block quote or a table cell never is one.
     """
-    text = block.text
-    opening = text.split("\n", 1)[0]
     if block.kind == "html" or (
         block.kind == "code" and (
-            is_indented_code(text)
-            or ("\n" not in text and FENCE_OPEN_RE.match(text))
-            or (indent_width(opening) >= 4 and FENCE_OPEN_RE.match(opening.lstrip(" \t")))
+            is_indented_code(block.text)
+            or ("\n" not in block.text and FENCE_OPEN_RE.match(block.text))
         )
     ):
         # Raw HTML and indented code: no directive or marker is recognized
         # (§11.4). A fenced block's text is lexed, which blanks the fence:
         # text a model puts after its closing fence is checked -- which needs
         # at least the fence's own line and one more, so a fence with nothing
-        # after it (unclosed at EOF, one line) is code through and through,
-        # as is one indented in a list item's later content, which the
-        # parser reads to its end (``parser._tail_block``).
+        # after it (unclosed at EOF, one line) is code through and through.
         return []
     paragraph = block.kind in ("paragraph", "definition")
     lifted = block.kind in ("ref", "term")
     listed = block.kind in ("ordered_list", "unordered_list")
     fragments: list[tuple[str, bool]] = []
-    if text:
-        text = _code_if_fence(text) if block.kind == "quote" else text
+    if block.text:
+        text = _code_if_fence(block.text) if block.kind == "quote" else block.text
         fragments.append((text, paragraph))
     if block.prefix:
         fragments.append((block.prefix, False))
