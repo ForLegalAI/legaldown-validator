@@ -10,15 +10,21 @@ Usage::
     legaldown validate --format json *.lgd
     legaldown validate --ignore def-unreferenced --warnings-as-errors doc.lgd
     legaldown validate --final signed-contract.lgd
+    legaldown assemble template.lgd --answers answers.yaml -o out/
 """
 from __future__ import annotations
 
 import argparse
 import json
+import posixpath
 import sys
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from . import SPEC_VERSION, __version__
+from .assembly import assemble
 from .parser import parse_document
 from .validator import validate_document
 
@@ -128,6 +134,119 @@ def _run_validate(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _read(path: Path) -> str:
+    """*path* as written: no line-break translation, since assembly edits
+    the template byte for byte (§15.7.2)."""
+    with path.open(encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(text)
+
+
+def _within(base: Path, relative: str) -> Path | None:
+    """*relative* under directory *base*, or None when it is absolute, leads
+    out of it (§2.3), or is no path at all (a null byte, a symlink loop)."""
+    if not relative or posixpath.isabs(relative) or Path(relative).is_absolute():
+        return None
+    try:
+        root = base.resolve()
+        target = (root / relative).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return None
+    return target if target.is_relative_to(root) else None
+
+
+def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]:
+    """The answers set (§15.7.1): a YAML mapping, or empty without a file."""
+    if path is None:
+        return {}, None
+    try:
+        answers = yaml.safe_load(_read(path))
+    except OSError as exc:
+        return None, f"cannot read {path}: {exc}"
+    except (yaml.YAMLError, ValueError) as exc:  # a date such as 2026-13-45 raises ValueError
+        return None, f"cannot read the answers in {path}: {exc}"
+    if answers is None:
+        return {}, None
+    if not isinstance(answers, dict):
+        return None, f"the answers in {path} must be a YAML mapping of question ids to answers"
+    return answers, None
+
+
+def _run_assemble(args: argparse.Namespace) -> int:
+    template_path = Path(args.template)
+    answers, failure = _read_answers(Path(args.answers) if args.answers else None)
+    if failure is None:
+        try:
+            template = _read(template_path)
+        except (OSError, UnicodeDecodeError) as exc:
+            failure = f"cannot read {template_path}: {exc}"
+    if failure is not None:
+        print(f"error: {failure}", file=sys.stderr)
+        return EXIT_ERROR
+
+    base = template_path.parent
+
+    def load_file(relative: str) -> str | None:
+        target = _within(base, relative)
+        try:
+            return _read(target) if target is not None and target.is_file() else None
+        except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
+            return None
+
+    result = assemble(template, answers, load_file=load_file)
+    for d in result.diagnostics:
+        print(f"{template_path}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
+    if not result.ok:
+        return EXIT_DIAGNOSTICS
+
+    if args.output is None:
+        if result.files:
+            print(
+                f"error: assembly also writes {len(result.files)} other file(s); "
+                f"give an output directory with -o",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        # Bytes, so that no platform translates the template's line breaks.
+        sys.stdout.flush()
+        stream = getattr(sys.stdout, "buffer", None)
+        if stream is not None:
+            stream.write(result.output.encode("utf-8"))
+            stream.flush()
+        else:
+            sys.stdout.write(result.output)
+        return EXIT_OK
+
+    out = Path(args.output)
+    problem = None
+    if out.exists() and not out.is_dir():
+        problem = f"{out} is not a directory"
+    elif template_path.name in result.files:
+        problem = f"{template_path.name} is both the template and a file it keeps"
+    outputs = {template_path.name: result.output, **result.files}
+    targets = {relative: _within(out, relative) for relative in outputs}
+    for relative, target in targets.items():
+        if problem is None and target is None:
+            problem = f"{relative} leads out of the output directory"
+        elif problem is None and target == template_path.resolve():
+            problem = f"{relative} would overwrite the template"
+    if problem is not None:
+        print(f"error: {problem}; nothing was written", file=sys.stderr)
+        return EXIT_ERROR
+    for relative, text in outputs.items():
+        try:
+            _write(targets[relative], text)  # an emptied file is written as zero bytes
+        except OSError as exc:
+            print(f"error: cannot write {relative}: {exc}; the output is incomplete", file=sys.stderr)
+            return EXIT_ERROR
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="legaldown",
@@ -181,6 +300,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Suppress the trailing summary line.",
     )
     validate.set_defaults(func=_run_validate)
+
+    assemble_cmd = sub.add_parser(
+        "assemble",
+        help="Assemble a template with an answers set (§15.7).",
+        description=(
+            "Assemble a template with an answers set (§15.7). Include fragments and "
+            "LegalDown attachment files are read relative to the template."
+        ),
+    )
+    assemble_cmd.add_argument("template", help="The template file.")
+    assemble_cmd.add_argument(
+        "--answers", metavar="FILE", help="YAML mapping of question ids to answers (§15.7.1)."
+    )
+    assemble_cmd.add_argument(
+        "-o",
+        "--output",
+        metavar="DIR",
+        help=(
+            "Write the assembled template, and the fragments and attachment files it "
+            "keeps, under DIR at their relative paths. Without it the template is "
+            "written to standard output."
+        ),
+    )
+    assemble_cmd.set_defaults(func=_run_assemble)
     return parser
 
 

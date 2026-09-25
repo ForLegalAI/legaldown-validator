@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import yaml
@@ -20,6 +20,7 @@ from .directives import Directive, iter_directives, lex
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
+    LINE_ENDING_RE,
     closes_fence,
     dedent,
     fence_end,
@@ -281,7 +282,9 @@ def _list_type(marker: re.Match[str]) -> str:
     return marker.group("delimiter") or marker.group("bullet")
 
 
-def _parse_list(lines: list[str], index: int, *, list_type: str) -> tuple[Block, int, bool]:
+def _parse_list(
+    lines: list[str], index: int, *, list_type: str, item_starts: list[int] | None = None
+) -> tuple[Block, int, bool]:
     """Parse the list starting at ``lines[index]``.
 
     Returns ``(block, end, lazy)``: *end* is the index just past the list,
@@ -297,6 +300,8 @@ def _parse_list(lines: list[str], index: int, *, list_type: str) -> tuple[Block,
     ends the item (and the fence with it). A block quote in an item (a
     drafting note, §15.6) keeps its lines too, each with its ``>``: a lazy
     continuation line of the quote is kept as the quoted line it means.
+
+    *item_starts*, when given, receives the line each item starts on.
     """
     items: list[str] = []
     fence: str | None = None  # the open fence inside the current item
@@ -324,6 +329,8 @@ def _parse_list(lines: list[str], index: int, *, list_type: str) -> tuple[Block,
             content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
             content = line[marker.end():].strip()
             items.append(content)
+            if item_starts is not None:
+                item_starts.append(end)
             quote = None
         elif items and (indented or (lazy and _is_lazy_line(line))):
             content = dedent(line, content_indent) if indented else line.strip()
@@ -579,17 +586,70 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
 
 
 _Heading = tuple[str, Marker, int]  # title, marker, level
+
+
+@dataclass(slots=True)
+class _HeadingSpan:
+    """Where a heading lies in the body: lines ``[start, end)``, and the
+    line its marker is on (an ATX line, or a setext heading's last text
+    line)."""
+
+    start: int
+    end: int
+    level: int
+    marker_line: int
+
+
+@dataclass(slots=True)
+class _BlockSpan:
+    """Where a block lies in the body: lines ``[start, end)``. *kind* is the
+    parsed block's. *items*: a list's items, each with the line it starts on
+    and its text as parsed, empty items included (the model drops them)."""
+
+    kind: str
+    start: int
+    end: int
+    items: list[tuple[int, str]] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _Layout:
+    """Where the parser found each heading and block of a body
+    (``_parse_body``), for tools that edit the source as written, such as
+    assembly (§15.7): the same walk that builds the model records it."""
+
+    preamble: list[_BlockSpan] = field(default_factory=list)
+    sections: list[tuple[_HeadingSpan, list[_BlockSpan]]] = field(default_factory=list)
+
+    def containers(self) -> list[list[_BlockSpan]]:
+        """The preamble's blocks, then each section's."""
+        return [self.preamble, *(blocks for _heading, blocks in self.sections)]
+
+    @property
+    def headings(self) -> list[_HeadingSpan]:
+        return [heading for heading, _blocks in self.sections]
+
+
+def _layout(lines: list[str]) -> _Layout:
+    """Where each heading and block of body *lines* lies."""
+    layout = _Layout()
+    _parse_body(lines, layout)
+    return layout
 _LIST_KINDS = ("ordered_list", "unordered_list")
 _PARAGRAPH_KINDS = ("paragraph", "definition", "ref", "term")
 
 
-def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
+def _parse_body(
+    lines: list[str], layout: _Layout | None = None
+) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
     """Parse body lines into the preamble's blocks (§4.4) and the sections'.
 
     Headings (ATX and setext, §4.1) and blocks are recognized in one pass, so
     a fenced code block (§11.4) or an HTML block (§8.6) is literal
     everywhere: no line inside one is a heading or starts another block.
+    *layout*, when given, receives where each heading and block lies.
     """
+    spans = layout.preamble if layout is not None else None
     preamble: list[Block] = []
     sections: list[tuple[_Heading, list[Block]]] = []
     blocks = preamble
@@ -607,6 +667,7 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             lazy = False
             continue
         heading: _Heading | None = None
+        start, count, item_starts = index, len(blocks), []
         in_tail = list_tail and indent_width(line) >= 4
         # A table that interrupted a paragraph may have an indented header
         # row: the paragraph ended there (_paragraph_end).
@@ -618,6 +679,8 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
             index = end
             lazy = list_tail = False
+            if spans is not None:
+                spans.append(_BlockSpan("code", start, index))
             continue
         opening = FENCE_OPEN_RE.match(line)
         atx = HEADING_RE.match(line)
@@ -662,7 +725,7 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
             lazy = True
         elif marker:
             block, index, lazy = _parse_list(
-                lines, index, list_type=_list_type(marker)
+                lines, index, list_type=_list_type(marker), item_starts=item_starts
             )
             blocks.append(block)
         elif (end := html_block_end(lines, index)) is not None:
@@ -681,6 +744,15 @@ def _parse_body(lines: list[str]) -> tuple[list[Block], list[tuple[_Heading, lis
                 interrupted = end
             index = end
             lazy = False
+        if layout is not None and spans is not None:
+            if heading is not None:
+                marker_line = start if atx else index - 2  # a setext heading's last text line
+                spans = []
+                layout.sections.append((_HeadingSpan(start, index, heading[2], marker_line), spans))
+            elif len(blocks) > count:
+                block = blocks[-1]
+                raw = list(zip(item_starts, block.items, strict=True)) if item_starts else []
+                spans.append(_BlockSpan(block.kind, start, index, raw))
         if heading is not None:
             blocks = []
             sections.append((heading, blocks))
@@ -701,9 +773,14 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     says (a bare ``unit=M`` surfaces as duration-invalid-unit rather than being
     silently corrected).
     """
-    # A byte-order mark is an encoding artifact, not content.
-    not_line_editable, metadata, body, absent = _split_frontmatter((source or "").removeprefix("\ufeff"))
-    preamble, sections = _parse_body(body.splitlines())
+    # A byte-order mark is an encoding artifact, not content. Lines end at
+    # LF, CR, or CRLF (CommonMark), and nowhere else.
+    source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
+    not_line_editable, metadata, body, absent = _split_frontmatter(source)
+    lines = body.split("\n")
+    if lines[-1] == "":
+        lines.pop()  # the last line's ending, not a line
+    preamble, sections = _parse_body(lines)
     payload: dict[str, Any] = {
         "metadata": metadata,
         "sections": [

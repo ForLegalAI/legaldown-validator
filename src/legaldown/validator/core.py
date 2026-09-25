@@ -17,6 +17,7 @@ from ..directives import (
     KNOWN_DIRECTIVES,
     PLACEHOLDER_TYPE_PARAMS,
     Directive,
+    Lexed,
     iter_directives,
     lex,
 )
@@ -414,6 +415,36 @@ def _check_never_true(
             )
 
 
+def is_template(
+    document: Document,
+    markers: list[FoundMarker] | None = None,
+    lex_fragment: Callable[[str], Lexed] = lex,
+) -> bool:
+    """True if *document* is a template (§15.1): it declares ``questions``,
+    carries a condition — on a section, an attachment, or a placed marker —
+    or contains a ``{{choose:}}``, wherever it is. *markers* are
+    ``find_markers(document, lex_fragment)`` when the caller has them."""
+    from ..definitions import text_fragments  # see the import note in validate_document
+
+    meta = document.metadata
+    if markers is None:
+        markers = find_markers(document, lex_fragment)
+    structural_fields, value_fields = _frontmatter_fields(meta)
+    texts = [
+        *(text for _label, text in structural_fields),
+        *value_fields,
+        *(section.title for section in document.sections),
+        *(text for _s, _i, block in document.iter_indexed_blocks() for text in text_fragments(block)),
+    ]
+    return (
+        meta.questions is not None
+        or any(att.when for att in meta.attachments)
+        or any(section.condition for section in document.sections)
+        or any(found.marker and found.marker.condition and not found.misplaced for found in markers)
+        or any(d.name == "choose" for text in texts for d in lex_fragment(text or "").directives)
+    )
+
+
 def validate_document(
     document: Document,
     *,
@@ -500,25 +531,17 @@ def validate_document(
     ]
 
     # ── Templates and the presence of units (§15.1, §15.3) ──
-    # A document declaring questions, carrying a condition, or containing a
-    # {{choose:}} is a template. Its markers are found first: only a template
-    # gives a preamble paragraph's condition its place (§5.7).
+    # Markers are found first: only a template gives a preamble paragraph's
+    # condition its place (§5.7).
     markers = find_markers(document, lex_fragment)
+    template = is_template(document, markers, lex_fragment)
+    units = Units(document, markers, questions, template=template)
     body_directives = {
         directive.name
         for _s, _i, block in document.iter_indexed_blocks()
         for text in text_fragments(block)
         for directive in lex_fragment(text).directives
     }
-    template = (
-        questions is not None
-        or any(att.when for att in meta.attachments)
-        or any(section.condition for section in document.sections)
-        or any(found.marker and found.marker.condition and not found.misplaced for found in markers)
-        or "choose" in body_directives
-        or bool(misplaced_chooses)
-    )
-    units = Units(document, markers, questions, template=template)
 
     # ── Validate document_type (§16.6) ──
     doc_type = document.metadata.document_type or "contract"

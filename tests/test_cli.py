@@ -113,3 +113,107 @@ def test_final_rejects_a_remaining_blank(write, capsys):
     capsys.readouterr()
     assert main(["validate", "--final", str(path)]) == EXIT_DIAGNOSTICS
     assert "[placeholder-unfilled]" in capsys.readouterr().out
+
+
+# ── legaldown assemble (§15.7) ────────────────────────────────────
+
+_TEMPLATE = _VALID.replace(
+    "---\n\n# Scope", "questions:\n  x:\n    type: boolean\n---\n\n# Scope"
+) + "\nExtra. {when=x}\n\nHi {{placeholder: who}}.\n"
+
+
+def test_assemble_writes_the_template_to_stdout(write, capsys):
+    template = write("t.lgd", _TEMPLATE)
+    answers = write("a.yaml", "x: false\nwho: Ann\n")
+    assert main(["assemble", str(template), "--answers", str(answers)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "Extra." not in out and "Hi Ann." in out and "questions:" not in out
+
+
+def test_assemble_keeps_crlf_line_breaks(write, tmp_path):
+    template = tmp_path / "t.lgd"
+    template.write_bytes(_TEMPLATE.replace("\n", "\r\n").encode())
+    answers = write("a.yaml", "x: true\nwho: Ann\n")
+    assert main(["assemble", str(template), "--answers", str(answers), "-o", str(tmp_path / "out")]) == EXIT_OK
+    written = (tmp_path / "out" / "t.lgd").read_bytes()
+    assert b"\r\n" in written and b"\n" not in written.replace(b"\r\n", b"")
+
+
+def test_assemble_writes_kept_files_under_the_output_directory(tmp_path, capsys):
+    (tmp_path / "parts").mkdir()
+    (tmp_path / "parts" / "a.lgd").write_text("## Part {#part}\n\nFor {{placeholder: who}}.\n", encoding="utf-8")
+    template = tmp_path / "t.lgd"
+    template.write_text(_TEMPLATE + "\n{{include: parts/a.lgd}}\n", encoding="utf-8")
+    answers = tmp_path / "a.yaml"
+    answers.write_text("x: false\nwho: Ann\n", encoding="utf-8")
+    assert main(["assemble", str(template), "--answers", str(answers)]) == EXIT_ERROR
+    assert "-o" in capsys.readouterr().err
+    out = tmp_path / "out"
+    assert main(["assemble", str(template), "--answers", str(answers), "-o", str(out)]) == EXIT_OK
+    assert (out / "parts" / "a.lgd").read_text(encoding="utf-8") == "## Part {#part}\n\nFor Ann.\n"
+    assert main(["assemble", str(template), "--answers", str(answers), "-o", str(tmp_path)]) == EXIT_ERROR
+    assert "overwrite the template" in capsys.readouterr().err
+
+
+def test_assemble_reports_a_missing_answer(write, capsys):
+    template = write("t.lgd", _TEMPLATE)
+    assert main(["assemble", str(template)]) == EXIT_DIAGNOSTICS
+    captured = capsys.readouterr()
+    assert captured.out == "" and "[answer-missing]" in captured.err
+
+
+@pytest.mark.parametrize("answers", ["x: [unclosed\n", "when: 2026-13-45\n", "- a\n- b\n"])
+def test_assemble_refuses_unreadable_answers(write, capsys, answers):
+    template = write("t.lgd", _TEMPLATE)
+    path = write("a.yaml", answers)
+    assert main(["assemble", str(template), "--answers", str(path)]) == EXIT_ERROR
+    assert capsys.readouterr().err.startswith("error: ")
+
+
+@pytest.mark.parametrize("include", ["../outside.lgd", "/etc/hostname"])
+def test_assemble_reads_no_file_outside_the_template_directory(tmp_path, capsys, include):
+    (tmp_path / "outside.lgd").write_text("## Outside {#outside}\n\nText.\n", encoding="utf-8")
+    folder = tmp_path / "templates"
+    folder.mkdir()
+    template = folder / "t.lgd"
+    template.write_text(_VALID + f"\n{{{{include: {include}}}}}\n", encoding="utf-8")
+    assert main(["assemble", str(template)]) == EXIT_DIAGNOSTICS
+    assert "[include-file-missing]" in capsys.readouterr().err
+
+
+def test_assemble_refuses_a_template_that_keeps_itself(tmp_path, capsys):
+    # Its own attachment file: its frontmatter and level 1 heading stop it
+    # before the output could be written over by the kept file.
+    folder = tmp_path / "t"
+    folder.mkdir()
+    (folder / "main.lgd").write_text(
+        _VALID.replace("---\n\n# Scope", "attachments:\n  - id: s\n    title: S\n    file: main.lgd\n---\n\n# Scope")
+        + "\nSee {{attach: s}}.\n",
+        encoding="utf-8",
+    )
+    assert main(["assemble", str(folder / "main.lgd"), "-o", str(tmp_path / "out")]) == EXIT_DIAGNOSTICS
+    assert "[attachment-has-frontmatter]" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("include", ["a\x00.lgd", "x" * 300 + ".lgd", "loop/x.lgd"])
+def test_assemble_treats_an_impossible_path_as_unreadable(tmp_path, capsys, include):
+    (tmp_path / "loop").symlink_to(tmp_path / "loop")
+    template = tmp_path / "t.lgd"
+    template.write_text(_VALID + f"\n{{{{include: {include}}}}}\n", encoding="utf-8")
+    assert main(["assemble", str(template)]) == EXIT_DIAGNOSTICS
+    assert "[include-file-missing]" in capsys.readouterr().err
+
+
+def test_assemble_refuses_an_output_path_that_is_a_file(write, capsys, tmp_path):
+    template = write("t.lgd", _VALID)
+    target = write("taken", "")
+    assert main(["assemble", str(template), "-o", str(target)]) == EXIT_ERROR
+    assert "is not a directory" in capsys.readouterr().err
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "parts").write_text("", encoding="utf-8")
+    (tmp_path / "parts").mkdir()
+    (tmp_path / "parts" / "a.lgd").write_text("## A {#a}\n\nText.\n", encoding="utf-8")
+    template.write_text(_VALID + "\n{{include: parts/a.lgd}}\n", encoding="utf-8")
+    assert main(["assemble", str(template), "-o", str(tmp_path / "out")]) == EXIT_ERROR
+    assert "the output is incomplete" in capsys.readouterr().err

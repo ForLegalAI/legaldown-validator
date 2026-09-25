@@ -7,7 +7,10 @@ validator over that corpus and asserts:
 
 - **valid/** cases produce no Error-level diagnostics, and
 - **invalid/** cases for rules this implementation covers produce the
-  expected rule id at the expected severity.
+  expected rule id at the expected severity — the answer rules (§16.12)
+  through assembly, with the case's answers set, and
+- **assembly/** cases assemble byte for byte to their expected output
+  (§15.7, the Assembly capability, §17.6).
 
 Rules the implementation does not yet cover are skipped and reported, so
 this file doubles as the coverage ledger against the spec.
@@ -24,7 +27,9 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
+from legaldown import CAPABILITIES, assemble
 from legaldown.parser import parse_document
 from legaldown.validator import validate_document
 
@@ -44,6 +49,7 @@ pytestmark = [
 IMPLEMENTED_RULES = {
     "anchor-autogen-collision", "anchor-duplicate", "anchor-format", "anchor-lossy-slug",
     "anchor-misplaced", "value-curly-quote", "frontmatter-absent",
+    "answer-invalid", "answer-missing", "answer-unknown",
     "amends-title-empty", "amend-def-override", "amend-term-undefined",
     "amend-term-unresolvable",
     "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",
@@ -116,11 +122,36 @@ def _iter_valid_cases():
 
 
 # Runner configuration this harness can supply (fixtures README): the final
-# option (§15.9). Cases needing anything else are skipped.
-_SUPPORTED_CONFIG = {"final"}
+# option (§15.9), and an answers set for the Assembly capability (§17.6).
+# Cases needing anything else are skipped.
+_SUPPORTED_CONFIG = {"final", "answers"}
+
+
+def _read(path: Path) -> str:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return handle.read()
+
+
+def _loader(case: Path):
+    """``load_file`` for a case: files relative to its template."""
+
+    def load(relative: str) -> str | None:
+        target = case / relative
+        return _read(target) if target.is_file() else None
+
+    return load
+
+
+def _assemble_case(template: Path, answers: Path):
+    loaded = yaml.safe_load(_read(answers)) or {}
+    return assemble(_read(template), loaded, load_file=_loader(template.parent))
 
 
 def _validate_file(path: Path, config: dict):
+    """Validate *path*; with an answers set, assemble it instead, which
+    reports the answer rules (§16.12)."""
+    if "answers" in config:
+        return _assemble_case(path, path.parent / config["answers"])
     document = parse_document(path.read_text(encoding="utf-8"), filename=path.name)
     return validate_document(document, final=bool(config.get("final")))
 
@@ -135,13 +166,13 @@ def test_valid_fixture_produces_no_errors(case: Path):
     )
     if expected.get("requires_level", "core") != "core":
         pytest.skip(f"requires conformance level {expected['requires_level']}")
-    if expected.get("requires_capability"):
+    if expected.get("requires_capability") not in (None, *CAPABILITIES):
         pytest.skip(f"requires the {expected['requires_capability']} capability")
     config = expected.get("requires_config") or {}
     if not set(config) <= _SUPPORTED_CONFIG:
         pytest.skip("requires runner configuration")
     result = _validate_file(case, config)
-    assert not result.errors, (
+    assert not [d for d in result.diagnostics if d.level == "error"], (
         f"valid fixture produced errors: {[d for d in result.diagnostics if d.level == 'error']}"
     )
 
@@ -154,7 +185,7 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         pytest.skip(f"rule {rule_id} not implemented")
     if expected.get("requires_level", "core") != "core":
         pytest.skip(f"requires conformance level {expected['requires_level']}")
-    if expected.get("requires_capability"):
+    if expected.get("requires_capability") not in (None, *CAPABILITIES):
         pytest.skip(f"requires the {expected['requires_capability']} capability")
     config = expected.get("requires_config") or {}
     if not set(config) <= _SUPPORTED_CONFIG:
@@ -181,18 +212,43 @@ def _iter_assembly_templates():
         yield pytest.param(case, id=case.name)
 
 
+def _skip_above_core(case: Path) -> None:
+    """Skip a case whose ``case.json`` asks for a level above Core (fixtures
+    README, step 4)."""
+    if (case / "case.json").exists():
+        level = json.loads((case / "case.json").read_text(encoding="utf-8")).get("requires_level", "core")
+        if level != "core":
+            pytest.skip(f"requires conformance level {level}")
+
+
 @pytest.mark.parametrize("case", list(_iter_assembly_templates()))
 def test_assembly_template_validates_without_errors(case: Path):
     """Each assembly case's template MUST produce no Errors (fixtures README,
-    step 3); assembling it needs the Assembly capability, not claimed here."""
-    level = "core"
-    if (case / "case.json").exists():
-        level = json.loads((case / "case.json").read_text(encoding="utf-8")).get(
-            "requires_level", "core"
-        )
-    if level != "core":
-        pytest.skip(f"requires conformance level {level}")
+    step 3)."""
+    _skip_above_core(case)
     result = _validate_file(case / "template.lgd", {})
     assert not result.errors, (
         f"template produced errors: {[d for d in result.diagnostics if d.level == 'error']}"
     )
+
+
+def _expected_tree(case: Path) -> dict[str, str]:
+    """Every file the case expects assembly to write, by relative path; the
+    template's output is ``template.lgd`` (fixtures README)."""
+    if (case / "expected.lgd").is_file():
+        return {"template.lgd": _read(case / "expected.lgd")}
+    tree = case / "expected"
+    return {path.relative_to(tree).as_posix(): _read(path) for path in sorted(tree.rglob("*")) if path.is_file()}
+
+
+@pytest.mark.parametrize("case", list(_iter_assembly_templates()))
+def test_assembly_case_assembles_byte_for_byte(case: Path):
+    """§15.7.2: the same template and answers set give byte-identical output.
+    (The Full multi-file case is skipped here, and assembled by
+    tests/test_assembly.py.)"""
+    _skip_above_core(case)
+    result = _assemble_case(case / "template.lgd", case / "answers.yaml")
+    assert result.ok, result.diagnostics
+    assert {"template.lgd": result.output, **result.files} == _expected_tree(case)
+    # The assembly guarantee (§15.7.4): the output has no Errors either.
+    assert not validate_document(parse_document(result.output)).errors

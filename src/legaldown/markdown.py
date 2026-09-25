@@ -81,6 +81,10 @@ def html_block_end(lines: list[str], index: int) -> int | None:
 # not containing ``-->``, and ``-->``. The empty forms end at their own ``>``.
 HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)
 
+# A line ending (CommonMark): LF, CR, or CRLF. Other characters that
+# str.splitlines() breaks at — form feed, U+2028, … — are characters.
+LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
+
 _TAB = 4  # a tab advances to the next multiple of four columns
 
 
