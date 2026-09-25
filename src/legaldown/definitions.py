@@ -199,15 +199,27 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
     listed = block.kind in ("ordered_list", "unordered_list")
     fragments: list[tuple[str, bool]] = []
     if block.text:
-        fragments.append((block.text, paragraph))
+        text = _code_if_fence(block.text) if block.kind == "quote" else block.text
+        fragments.append((text, paragraph))
     if block.prefix:
         fragments.append((block.prefix, False))
     if block.suffix:
         fragments.append((block.suffix, lifted))
-    fragments.extend((item, listed) for item in block.items if item)
+    fragments.extend((_code_if_fence(item), listed) for item in block.items if item)
     fragments.extend((cell, False) for cell in block.headers if cell)
     fragments.extend((cell, False) for row in block.rows for cell in row if cell)
     return fragments
+
+
+def _code_if_fence(text: str) -> str:
+    """A list item's or quote's text, blanked when it is one line that opens
+    a fence: all of it is the fence's opening line and info string, code
+    (§11.4). The lexer blanks a fence in text of several lines; one line of
+    paragraph text, a heading or a table cell cannot open one. Blanked
+    rather than dropped, so the fragments keep their indices."""
+    if "\n" not in text and FENCE_OPEN_RE.match(text):
+        return " " * len(text)
+    return text
 
 
 def text_fragments(block: Block) -> list[str]:

@@ -155,8 +155,6 @@ Assembly edits the template's source and so inherits a few limits of the parser'
 - A list is lexed as one text, so an unclosed code span or comment in one item can hide a
   placeholder in the next, which is then left unfilled
   ([#53](https://github.com/ForLegalAI/legaldown-validator/issues/53)).
-- A fence opener that is a list item's or quote's only line is read as text, as the validator
-  reads it ([#52](https://github.com/ForLegalAI/legaldown-validator/issues/52)).
 - A file is written back with one line ending: its first LF or CRLF, or CR in a file without LF.
   A file that mixes them comes out with that one throughout.
 - A frontmatter placeholder in a double-quoted scalar is found in the line as written, so one

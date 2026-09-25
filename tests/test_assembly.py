@@ -767,11 +767,12 @@ class TestFencedCodeInContainers:
         assert _body(assemble(_template(body), {})) == "\n# A\n\nText.\n"
 
     @pytest.mark.parametrize("end", ["", "\n"])
-    def test_a_one_line_item_is_lexed_as_the_validator_lexes_it(self, end):
-        """The validator sees a directive after a one-line item's fence
-        opener (issue #52), and so assembly fills it."""
-        body = f"# A\n\n- ~~~ {{{{placeholder: name}}}}\n{end}"
-        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == "\n# A\n\n- ~~~ Ann\n"
+    def test_a_one_line_item_opening_a_fence_is_code(self, end):
+        """Its info string is code (§11.4), as the validator reads it (#52)."""
+        body = f"# A\n\n- ~~~ {{{{placeholder: name}}}}\n{end}\nHi {{{{placeholder: name}}}}.\n"
+        result = assemble(_template(body, _TEXT), {"name": "Ann"})
+        # A blank line inside the open fence is code: step 8 keeps it.
+        assert _body(result) == f"\n# A\n\n- ~~~ {{{{placeholder: name}}}}\n{end}\nHi Ann.\n"
 
     def test_a_continuation_line_is_not_a_fence(self):
         body = "# A\n\n- b\n      ~~~ text\n  more {{placeholder: name}}\n"

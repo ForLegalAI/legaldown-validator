@@ -1179,6 +1179,19 @@ def test_nothing_in_an_unclosed_one_line_fence_is_checked():
     assert not _validate("~~~ {{ref: nowhere}}\n").errors
 
 
+@pytest.mark.parametrize("body", [
+    "- ~~~ {{ref: nowhere}}\n- b\n", "> ~~~ {{ref: nowhere}}\n", "-\t\n   ~~~ {{ref: nowhere}}\n\nText.\n",
+])
+def test_a_list_item_or_quote_that_is_one_fence_line_is_code(body):
+    """CommonMark opens a fenced code block there; the rest of the line is its
+    info string (§11.4)."""
+    assert "ref-broken" not in _validate(body).rules()
+
+
+def test_a_table_cell_opening_like_a_fence_is_text():
+    assert "ref-broken" in _validate("| a |\n|---|\n| ~~~ {{ref: nowhere}} |\n").rules()
+
+
 def test_frontmatter_with_cr_line_endings_is_frontmatter():
     document = parse_document("---\rtitle: X\r---\r\r# A\r")
     assert not document.metadata.frontmatter_absent

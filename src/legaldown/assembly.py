@@ -438,9 +438,7 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
 
         for note_first, note_last in _note_lines(raw, inside_list=True):
             source.notes.update(range(source_line(note_first), source_line(note_last) + 1))
-        # The model strips an item's text (models._clean_list), and the
-        # validator lexes that: one line there has no fence.
-        for row in _fenced(raw) if "\n" in raw.strip() else ():
+        for row in _fenced(raw):
             if row == 0:
                 # Row 0 is the item's joined first paragraph: a fence found
                 # there is written across all of its source lines, not just
@@ -459,12 +457,8 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
 def _fenced(text: str) -> Iterator[int]:
     """The lines of *text* — a list item's or a quote's, as the parser hands
     it to the validator — inside fenced code, which the lexer blanks there
-    (§11.4). One-line text (a single-row item or quote) has none, mirroring
-    ``_blank_fenced_code``'s own single-line shortcut: assembly must read a
-    fence opener there exactly as the validator does, or it would fill a
-    placeholder the validator does not consider blanked."""
-    if "\n" not in text:
-        return
+    (§11.4), a one-line text's opening line included
+    (``definitions.block_fragments``)."""
     rows = text.split("\n")
     index = 0
     while index < len(rows):
