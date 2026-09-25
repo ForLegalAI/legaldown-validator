@@ -22,7 +22,7 @@ from .markdown import (
 )
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata, metadata_from_dict
-from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
+from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE, _paragraph_end, _parse_body
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -148,20 +148,13 @@ def _opens_block(text: str) -> bool:
 
 
 def _opens_tail_block(text: str) -> bool:
-    """True if *text*, indented after a list, would still open a block: a
-    fence or an HTML block, which CommonMark reads in the list's last item
-    (``parser._tail_block``)."""
-    return bool(FENCE_OPEN_RE.match(text) or html_block_end([text], 0) is not None)
-
-
-def _is_tail_block(block: Block) -> bool:
-    """True if *block* is a fence or an HTML block the parser read in a
-    list's last item: written indented, after the list (``_tail_block``)."""
-    return (
-        block.kind in ("code", "html")
-        and indent_width(block.text) >= 4
-        and _opens_tail_block(block.text.lstrip(" \t"))
-    )
+    """True if *text*'s first line, indented after a list, would still open
+    a block: a fence or an HTML block, which CommonMark reads in the list's
+    last item (``parser._tail_block``). Only the first line is judged, as
+    the parser does: a fence's or an HTML block's own extent, over several
+    lines, does not bear on whether it opens one."""
+    first = text.split("\n", 1)[0]
+    return bool(FENCE_OPEN_RE.match(first) or html_block_end([first], 0) is not None)
 
 
 def _paragraph(text: str, *, indent: bool = False) -> str:
@@ -177,21 +170,30 @@ def _paragraph(text: str, *, indent: bool = False) -> str:
         return text
     space = text.find(" ")
     lone_tag = not (FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or HTML_BLOCK_START_RE.match(text))
-    if lone_tag and space > 0 and not _opens_block(text[:space]):
-        return text[:space] + "\n" + text[space + 1:]
+    if lone_tag and space > 0:
+        first, second = text[:space], text[space + 1:]
+        # Splitting a lone tag at a space is safe only if the two resulting
+        # lines are still read back as one paragraph of two lines: not a
+        # setext heading, and not interrupted (a heading, a list item, a
+        # fence, …) by the second line.
+        end, setext_level = _paragraph_end([first, second], 0, False)
+        if end == 2 and not setext_level:
+            return first + "\n" + second
     return "\\" + text
 
 
 def _code(text: str, *, after_list: bool) -> str:
     """A code block, fenced or indented, as it is; other text as it is, to
     be read as what it is. Indented code directly after a list is written
-    fenced: there the parser reads an indented line as paragraph text —
-    unless it opens a fence, which the parser reads in the list's last item
-    and which is written as it is."""
+    fenced: there the parser reads an indented line as paragraph text. A
+    fence indented there (one the parser read in a list's last item, which
+    would not read back so written as is) is written at the margin."""
     if FENCE_OPEN_RE.match(text):
         return close_fences(text)
-    if after_list and indent_width(text) >= 4 and FENCE_OPEN_RE.match(text.lstrip(" \t")):
-        return text
+    opening = text.split("\n", 1)[0]
+    if after_list and indent_width(opening) >= 4 and FENCE_OPEN_RE.match(opening.lstrip(" \t")):
+        depth = indent_width(opening)
+        return close_fences("\n".join(dedent(line, depth) for line in text.split("\n")))
     if not (after_list and is_indented_code(text)):
         return text
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
@@ -291,26 +293,42 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
     table needs a second row."""
     parts: list[str] = []
     indented: set[int] = set()
-    tails: set[int] = set()  # code or HTML written indented, in the list's last item
+    tails: set[int] = set()  # code or HTML verified to round-trip written as is, in the tail
+    chain_ends: set[int] = set()  # a verified tail block after which nothing else is reached
     for index, block in enumerate(blocks):
         # Indented code here would read as one more paragraph after the list.
-        after_list = index > 0 and (
+        after_list = index > 0 and (index - 1) not in chain_ends and (
             blocks[index - 1].kind in _LISTS or index - 1 in indented or index - 1 in tails
         )
-        if after_list and _is_tail_block(block):
-            tails.add(index)
         if block.kind in _LISTS:
+            # The blocks the tail could still reach, tried as written: the
+            # list itself, and — as the run goes on — each paragraph and
+            # verified tail block after it. Reparsing rather than predicting
+            # the parser's column arithmetic (``parser._parse_body``) makes
+            # the two self-consistent by construction.
+            written = [_render_block(block)]
             run = index + 1
             while run < len(blocks):
-                if _is_tail_block(blocks[run]):
-                    # The tail goes through it: the paragraphs before it
-                    # stay in it, indented.
-                    indented.update(i for i in range(index + 1, run) if blocks[i].kind in _PARAGRAPHS)
-                    run += 1
-                    continue
-                if blocks[run].kind not in _PARAGRAPHS:
+                candidate = blocks[run]
+                if candidate.kind in ("code", "html") and indent_width(candidate.text) >= 4:
+                    if _reparses_as_written(written, candidate.text, blocks[index:run + 1]):
+                        tails.add(run)
+                        indented.update(i for i in range(index + 1, run) if blocks[i].kind in _PARAGRAPHS)
+                        written.append(candidate.text)
+                        run += 1
+                        if candidate.kind == "code" and _fence_left_open(candidate.text):
+                            # An unclosed tail fence: its own last line does
+                            # not close it, so it runs to its bound and
+                            # swallows anything written into the same run
+                            # after it. Nothing after it is reached, in this
+                            # run or the next block's ``after_list``.
+                            chain_ends.add(run - 1)
+                            break
+                        continue
                     break
-                text = _render_block(blocks[run], indent=True)[4:]
+                if candidate.kind not in _PARAGRAPHS:
+                    break
+                text = _render_block(candidate, indent=True)[4:]
                 if (
                     text.startswith(">") or RULE_RE.match(text) or LIST_ITEM_RE.match(text)
                     or _opens_tail_block(text)
@@ -318,14 +336,39 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
                     break
                 if _opens_block(text):
                     indented.update(range(index + 1, run + 1))
+                written.append("    " + text)
                 run += 1
-        if after_list and block.kind == "code":
+        if index in tails:
+            rendered = block.text  # verified above: written as is, it round-trips
+        elif after_list and block.kind == "code":
             rendered = _code(block.text, after_list=True)
         else:
             rendered = _render_block(block, indent=index in indented)
         if rendered:
             parts.extend(["", rendered])
     return parts
+
+
+def _reparses_as_written(written: list[str], candidate: str, expected: list[Block]) -> bool:
+    """True if the list and any run after it already *written*, followed by
+    *candidate* written as is, are read back as *expected* (kind, text, and
+    items, in order): so *candidate* round-trips written as is, in the tail
+    of the list ``expected[0]``."""
+    lines = "\n\n".join([*written, candidate]).split("\n")
+    got, _sections = _parse_body(lines)
+    tail = got[-len(expected):]
+    return tail == expected
+
+
+def _fence_left_open(candidate: str) -> bool:
+    """True if the fenced code block opening *candidate* (a tail block's
+    text, indented to a list item's content) is not closed by its own last
+    line: written as is, it would run on — through a blank line, and
+    whatever came after it in the same run — to its bound or to the end of
+    the text (``parser._tail_block``)."""
+    indent = len(candidate) - len(candidate.lstrip(" \t"))
+    dedented = "\n".join(dedent(line, indent) for line in candidate.split("\n"))
+    return close_fences(dedented) != dedented
 
 
 class _BlockDumper(yaml.SafeDumper):

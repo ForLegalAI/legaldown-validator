@@ -19,6 +19,7 @@ from legaldown import (
     iter_directives,
     serialize_document,
 )
+from legaldown.definitions import text_fragments
 from legaldown.directives import format_value, lex
 from legaldown.markers import Marker, split_heading
 from legaldown.parser import collect_source_directives, parse_document
@@ -1932,6 +1933,65 @@ def test_an_indented_header_row_after_another_block_is_code(before):
     document = parse_document(f"{_BARE}{before}\n    | {{{{ref: nope}}}} |\n|---|\n")
     assert "table" not in [b.kind for _s, _i, b in document.iter_blocks()]
     assert "ref-broken" not in validate_document(document).rules()
+
+
+def _placeholders(body: str) -> int:
+    document = parse_document(_FRONTMATTER + body)
+    return sum(
+        1 for _s, _i, block in document.iter_blocks() for fragment in text_fragments(block)
+        for directive in lex(fragment).directives if directive.name == "placeholder" and not directive.malformed
+    )
+
+
+@pytest.mark.parametrize(("body", "count"), [
+    # A fence in a nested item closes at its own column (cmark-gfm).
+    ("- a\n  - b\n\n      ~~~\n      x\n      ~~~\n    Name: {{placeholder: name}}\n", 1),
+    ("- a\n\n    - b\n\n      ```\n      x\n      ```\n\n    {{placeholder: p}}\n", 1),
+    # A line short of the nested item's column closes it, and its fence.
+    ("- a\n  - b\n\n    ~~~\n    x\n   {{placeholder: p}}\n", 1),
+    # Four columns past the item's content: indented code, not a fence.
+    ("- a\n\n      ~~~\n    Name: {{placeholder: name}}\n", 1),
+    ("- a\n\n      <div>\n    Name: {{placeholder: name}}\n", 1),
+    ("- a\n\n      foo {{placeholder: p}}\n", 0),
+    # Short of the item's content column: outside the list, indented code.
+    ("   - e\n\n    ~~~ {{placeholder: p}}\n", 0),
+    ("10.  a\n\n    {{placeholder: p}}\n", 0),
+    # An empty last item takes nothing after the blank line.
+    ("- \n\n    ~~~\n  {{placeholder: p}}\n", 1),
+])
+def test_the_lines_after_a_list_go_to_the_item_they_reach(body, count):
+    """Each indented line after a list is judged from the content column of
+    the deepest open item it reaches, as CommonMark does (#54)."""
+    assert _placeholders(body) == count
+
+
+@pytest.mark.parametrize("body", [
+    "- a\n\n    ```\n    x\n    ```\n",
+    "- a\n\n    x\n\n    <a href=\"y\">\n    z\n",
+    "1. Term\n   - sub\n\n     ```\n     code\n     ```\n",
+    "- a\n\n      foo\n      bar\n",
+    "- a\n  - b\n\n      ~~~\n      x\n      ~~~\n    Name: {{placeholder: name}}\n",
+])
+def test_blocks_in_a_lists_last_item_round_trip(body):
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_splitting_a_lone_tag_never_makes_a_heading():
+    document = parse_document(_FRONTMATTER + '<a\ttitle="x #\nz">\n')
+    reparsed = parse_document(serialize_document(document))
+    assert [b.kind for b in reparsed.sections[0].blocks] == ["paragraph"]
+    assert [s.title for s in reparsed.sections] == ["Terms"]
+
+
+def test_an_unclosed_fence_in_the_last_item_does_not_swallow_what_follows():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["a"]},
+        {"kind": "code", "text": "    ~~~\n    y"},
+        {"kind": "paragraph", "text": "# h {{placeholder: p}}"},
+    ]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert blocks[-1].kind == "paragraph" and "{{placeholder: p}}" in blocks[-1].text
 
 
 def test_a_tab_indented_line_does_not_close_a_fence_indented_less():

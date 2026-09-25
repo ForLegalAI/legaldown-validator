@@ -131,12 +131,14 @@ def dedent(line: str, columns: int) -> str:
     return " " * max(column - columns, 0) + line[index:]
 
 
-def indented_code_end(lines: list[str], index: int) -> int:
+def indented_code_end(lines: list[str], index: int, floor: int = 4) -> int:
     """Index just past the indented code block starting at ``lines[index]``
-    (CommonMark): its lines are blank or indented four or more columns, and
-    it ends before its trailing blank lines."""
+    (CommonMark): its lines are blank or indented *floor* or more columns
+    (four, by default), and it ends before its trailing blank lines. A
+    higher *floor* finds the indented code nested in a list's last item,
+    relative to its content column (``parser._parse_body``)."""
     end = last = index + 1
-    while end < len(lines) and (not lines[end].strip() or indent_width(lines[end]) >= 4):
+    while end < len(lines) and (not lines[end].strip() or indent_width(lines[end]) >= floor):
         end += 1
         if lines[end - 1].strip():
             last = end
