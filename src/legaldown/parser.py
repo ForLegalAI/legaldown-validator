@@ -124,10 +124,10 @@ SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 # with optional spaces or tabs between them.
 RULE_RE = re.compile(r"^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$")
 # A list item marker (CommonMark): ``-``, ``*``, or ``+`` for an unordered
-# list, a number and ``.`` or ``)`` for an ordered one. A thematic break
-# such as ``* * *`` matches too; callers test RULE_RE first.
-# A list item marker (CommonMark): at most nine ASCII digits, and only spaces
-# and tabs around it — other whitespace is text.
+# list, a number of at most nine ASCII digits and ``.`` or ``)`` for an
+# ordered one, with only spaces and tabs around it — other whitespace is
+# text. A thematic break such as ``* * *`` matches too; callers test
+# RULE_RE first.
 LIST_ITEM_RE = re.compile(r"^[ \t]*(?:(?P<number>[0-9]{1,9})(?P<delimiter>[.)])|(?P<bullet>[-*+]))[ \t]+")
 # A cell of a table's delimiter row (GFM): colons mark the alignment.
 _DELIMITER_CELL_RE = re.compile(r":?-+:?")
