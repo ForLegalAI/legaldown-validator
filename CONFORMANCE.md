@@ -62,7 +62,9 @@ Code is literal (§11.4): fenced code anywhere, and indented code at the top lev
 Indented code inside a block quote or a list item is not recognized, so directives in it are
 checked. Indented lines directly after a list, past the blank line that ends the list here,
 stay paragraphs for as long as each is indented, as CommonMark keeps them in the list's last item
-rather than making them code.
+rather than making them code. A fence or an HTML block there is read as paragraph text too, so
+directives in it are checked; CommonMark reads it as code or raw HTML in the item
+([#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)).
 
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy
