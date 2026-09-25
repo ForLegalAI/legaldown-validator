@@ -37,7 +37,14 @@ from functools import cache
 from typing import Any
 
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
-from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, LINE_ENDING_RE, fence_end, indent_width
+from .markdown import (
+    FENCE_OPEN_RE,
+    HTML_BLOCK_START_RE,
+    LINE_ENDING_RE,
+    fence_end,
+    indent_width,
+    item_content_column,
+)
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import Block, Document
 from .parser import FRONTMATTER_RE, _BlockSpan, _Layout, _layout, _opens_paragraph, parse_document
@@ -331,25 +338,6 @@ def _tail_end(lines: list[str], following: list[_BlockSpan], column: int) -> int
     return end
 
 
-# A list item's marker, as the parser's LIST_ITEM_RE reads it.
-_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
-
-
-def _content_column(line: str) -> int:
-    """The column where the content of the list item beginning on *line*
-    starts (CommonMark): after its marker and one to four columns of spacing,
-    or one column when there are more, or when the item is empty."""
-    marker = _ITEM_START_RE.match(line)
-    if marker is None:  # never: the parser read *line* as an item
-        return indent_width(line) + 2
-    after = len(line[:marker.end()].expandtabs(4))
-    rest = line[marker.end():]
-    if not rest.strip():
-        return after + 1
-    spacing = len(line[:len(line) - len(rest.lstrip(" \t"))].expandtabs(4)) - after
-    return after + 1 if spacing > 4 else after + spacing
-
-
 def _section_units(
     layout: _Layout, document: Document, lines: list[str], questions: Any
 ) -> list[_Unit]:
@@ -413,7 +401,7 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
     starts = [first for first, _raw in items] + [span.end]
     listed = []  # the items the model keeps: it drops empty ones
     for k, (first, raw) in enumerate(items):
-        own_end, column = starts[k + 1], _content_column(lines[first])
+        own_end, column = starts[k + 1], item_content_column(lines[first])
         full_end = next(
             (s for s, _raw in items[k + 1:] if indent_width(lines[s]) < column), None
         )

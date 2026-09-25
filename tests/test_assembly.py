@@ -785,6 +785,20 @@ class TestFencedCodeInContainers:
         assert assemble(template, {"x": True}, load_file={"f.lgd": fragment}.get).ok
 
 
+class TestBlocksInAListsLastItem:
+    """A fence or an HTML block indented after a list is in its last item
+    (#54): nothing in it is filled, and it goes with the item."""
+
+    def test_nothing_in_it_is_filled(self):
+        body = "# A\n\n- a\n\n    ~~~\n    {{placeholder: name}}\n    ~~~\n\n    Hi {{placeholder: name}}.\n"
+        expected = "\n# A\n\n- a\n\n    ~~~\n    {{placeholder: name}}\n    ~~~\n\n    Hi Ann.\n"
+        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == expected
+
+    def test_it_goes_with_a_conditional_last_item(self):
+        body = "# A\n\n- Kept.\n- Dropped. {when=x}\n\n    <div>\n    x\n    </div>\n\nAfter.\n"
+        assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n- Kept.\n\nAfter.\n"
+
+
 class TestItemsAreLexedApart:
     """Each list item is lexed on its own, as the validator lexes its text
     (#53): a code span or comment left open does not run into the next."""

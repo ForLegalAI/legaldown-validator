@@ -27,6 +27,7 @@ from .markdown import (
     html_block_end,
     indent_width,
     indented_code_end,
+    item_content_column,
 )
 from .markers import Marker, split_heading
 from .models import Block, Document, document_from_dict
@@ -641,6 +642,48 @@ _LIST_KINDS = ("ordered_list", "unordered_list")
 _PARAGRAPH_KINDS = ("paragraph", "definition", "ref", "term")
 
 
+def _tail_column(lines: list[str], item_starts: list[int]) -> int:
+    """The content column of a list's last top-level item: a later line
+    indented to it is in the list (CommonMark), in the last item it reaches.
+    An item is open at the list's end when every item after it is nested in
+    it, indented to its content."""
+    column = lowest = None  # lowest: the least indentation of the items after
+    for first in reversed(item_starts):
+        content = item_content_column(lines[first])
+        if lowest is None or lowest >= content:
+            column = content if column is None else min(column, content)
+        indent = indent_width(lines[first])
+        lowest = indent if lowest is None else min(lowest, indent)
+    return column if column is not None else 2
+
+
+def _tail_block(lines: list[str], index: int, column: int) -> tuple[str, int] | None:
+    """A fenced code block or an HTML block opening at the indented line
+    ``lines[index]`` after a list, which CommonMark reads in the list's last
+    item: ``(kind, end)``, or None. It ends at its closing fence, indented
+    at most three columns past the item's content *column*; at the end of an
+    HTML block; or where the item does, at a line indented less than
+    *column*, without the blank lines before it."""
+    content = lines[index].lstrip(" \t")
+    bound = next(
+        (e for e in range(index + 1, len(lines)) if lines[e].strip() and indent_width(lines[e]) < column),
+        len(lines),
+    )
+    opening = FENCE_OPEN_RE.match(content)
+    if opening:
+        fence = opening.group("fence")
+        kind = "code"
+        end = next((e + 1 for e in range(index + 1, bound) if closes_fence(dedent(lines[e], column), fence)), bound)
+    else:
+        length = html_block_end([content, *lines[index + 1:bound]], 0)
+        if length is None:
+            return None
+        kind, end = "html", index + length
+    while end > index + 1 and not lines[end - 1].strip():
+        end -= 1
+    return kind, end
+
+
 def _parse_body(
     lines: list[str], layout: _Layout | None = None
 ) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
@@ -660,6 +703,7 @@ def _parse_body(
     # stay paragraphs rather than code: CommonMark keeps them in the list's
     # last item. The run lasts through such paragraphs.
     list_tail = False
+    tail_column = 0  # the content column of the list's last top-level item
     interrupted = -1  # the line at which a paragraph was interrupted
     index = 0
     while index < len(lines):
@@ -683,6 +727,15 @@ def _parse_body(
             lazy = list_tail = False
             if spans is not None:
                 spans.append(_BlockSpan("code", start, index))
+            continue
+        if in_tail and indent_width(line) >= tail_column and (found := _tail_block(lines, index, tail_column)):
+            # A fence or an HTML block in the list's last item, indented
+            # to its content; the tail goes on after it.
+            kind, index = found
+            blocks.append(Block(kind=kind, text="\n".join(lines[start:index])))
+            lazy = False
+            if spans is not None:
+                spans.append(_BlockSpan(kind, start, index))
             continue
         opening = FENCE_OPEN_RE.match(line)
         atx = HEADING_RE.match(line)
@@ -730,6 +783,8 @@ def _parse_body(
                 lines, index, list_type=_list_type(marker), item_starts=item_starts
             )
             blocks.append(block)
+            column = _tail_column(lines, item_starts)
+            tail_column = min(tail_column, column) if in_tail else column
         elif (end := html_block_end(lines, index)) is not None:
             # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
             # no heading or other block starts inside it.
