@@ -642,31 +642,19 @@ _LIST_KINDS = ("ordered_list", "unordered_list")
 _PARAGRAPH_KINDS = ("paragraph", "definition", "ref", "term")
 
 
-def _tail_chain(lines: list[str], item_starts: list[int], items: list[str]) -> list[int] | None:
-    """The content columns (``markdown.item_content_column``) of the items
-    still open at the end of a list, outer to inner: a later line reaching
-    one of them is in the list (CommonMark), in the deepest item it reaches.
-
-    An item is open at the list's end when every item after it is indented
-    (its start line) at least to its own content column — so a line landing
-    between two open items' columns closes the inner ones but leaves the
-    outer ones open. The list's last item is excluded when its text is
-    empty: an item may open with at most one blank line, so an empty last
-    item is not itself open to further content. None when no item is open
-    (an empty single-item list, or the list has no items)."""
-    limit = len(item_starts)
-    if limit and not items[limit - 1].strip():
-        limit -= 1
-    chain: list[int] = []
-    lowest: int | None = None  # the least indentation of the items after
-    for first in reversed(item_starts[:limit]):
-        column = item_content_column(lines[first])
-        if lowest is None or lowest >= column:
-            chain.append(column)
+def _tail_column(lines: list[str], item_starts: list[int]) -> int:
+    """The content column of a list's last top-level item: a later line
+    indented to it is in the list (CommonMark), in the last item it reaches.
+    An item is open at the list's end when every item after it is nested in
+    it, indented to its content."""
+    column = lowest = None  # lowest: the least indentation of the items after
+    for first in reversed(item_starts):
+        content = item_content_column(lines[first])
+        if lowest is None or lowest >= content:
+            column = content if column is None else min(column, content)
         indent = indent_width(lines[first])
         lowest = indent if lowest is None else min(lowest, indent)
-    chain.reverse()
-    return chain or None
+    return column if column is not None else 2
 
 
 def _tail_block(lines: list[str], index: int, column: int) -> tuple[str, int] | None:
@@ -713,11 +701,9 @@ def _parse_body(
     lazy = False  # the last block was a list, quote, or table, with no blank line since
     # After a list, which this parser ends at a blank line, indented lines
     # stay paragraphs rather than code: CommonMark keeps them in the list's
-    # last item. The run lasts through such paragraphs. *tail*, while it is
-    # not None, holds the content columns of the items still open at the
-    # list's end (outer to inner, ``_tail_chain``): a later line reaching one
-    # of them is still in the tail, in the deepest item it reaches.
-    tail: list[int] | None = None
+    # last item. The run lasts through such paragraphs.
+    list_tail = False
+    tail_column = 0  # the content column of the list's last top-level item
     interrupted = -1  # the line at which a paragraph was interrupted
     index = 0
     while index < len(lines):
@@ -728,52 +714,29 @@ def _parse_body(
             continue
         heading: _Heading | None = None
         start, count, item_starts = index, len(blocks), []
-        width = indent_width(line)
-        in_tail = tail is not None and width >= 4
-        containers = [column for column in tail if column <= width] if in_tail else []
-        if in_tail and not containers:
-            # Every open item's column is past this line: the tail is over,
-            # and the line is judged as if none had been open.
-            in_tail = False
-            tail = None
+        in_tail = list_tail and indent_width(line) >= 4
         # A table that interrupted a paragraph may have an indented header
         # row: the paragraph ended there (_paragraph_end).
         interrupting_table = index == interrupted and _parse_table(lines, index) is not None
-        if width >= 4 and not in_tail and not interrupting_table:
+        if indent_width(line) >= 4 and not in_tail and not interrupting_table:
             # Indented code (§11.4). A paragraph's own lines, and a list's
             # or quote's lazy lines, never get here.
             end = indented_code_end(lines, index)
             blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
             index = end
-            lazy = False
-            tail = None
+            lazy = list_tail = False
             if spans is not None:
                 spans.append(_BlockSpan("code", start, index))
             continue
-        if in_tail:
-            column = containers[-1]  # the deepest item this line still reaches
-            tail = containers  # any item past it (nested deeper) closes
-            if width - column >= 4:
-                # Indented code in the item (CommonMark): a fence or an HTML
-                # block needs at most 3 columns past the item's content.
-                end = indented_code_end(lines, index, column + 4)
-                blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
-                index = end
-                lazy = False
-                if spans is not None:
-                    spans.append(_BlockSpan("code", start, index))
-                continue
-            if found := _tail_block(lines, index, column):
-                # A fence or an HTML block in the list's last item; the tail
-                # goes on after it.
-                kind, index = found
-                blocks.append(Block(kind=kind, text="\n".join(lines[start:index])))
-                lazy = False
-                if spans is not None:
-                    spans.append(_BlockSpan(kind, start, index))
-                continue
-            # Neither: a tail paragraph, quote, list, or table, judged below
-            # like any other line, with *containers* still the reached items.
+        if in_tail and indent_width(line) >= tail_column and (found := _tail_block(lines, index, tail_column)):
+            # A fence or an HTML block in the list's last item, indented
+            # to its content; the tail goes on after it.
+            kind, index = found
+            blocks.append(Block(kind=kind, text="\n".join(lines[start:index])))
+            lazy = False
+            if spans is not None:
+                spans.append(_BlockSpan(kind, start, index))
+            continue
         opening = FENCE_OPEN_RE.match(line)
         atx = HEADING_RE.match(line)
         marker = LIST_ITEM_RE.match(line)
@@ -820,11 +783,8 @@ def _parse_body(
                 lines, index, list_type=_list_type(marker), item_starts=item_starts
             )
             blocks.append(block)
-            chain = _tail_chain(lines, item_starts, block.items)
-            # A list read while still in the tail is itself in the item its
-            # start line reached (*containers*); its own open items, if any,
-            # nest deeper still.
-            tail = containers + (chain or []) if in_tail else chain
+            column = _tail_column(lines, item_starts)
+            tail_column = min(tail_column, column) if in_tail else column
         elif (end := html_block_end(lines, index)) is not None:
             # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
             # no heading or other block starts inside it.
@@ -854,13 +814,9 @@ def _parse_body(
             blocks = []
             sections.append((heading, blocks))
             lazy = False
-            tail = None
-        elif blocks and blocks[-1].kind in _LIST_KINDS:
-            pass  # tail set above, in the ``elif marker:`` branch
-        elif in_tail and blocks and blocks[-1].kind in _PARAGRAPH_KINDS:
-            pass  # the tail continues, in the items ``containers`` reached
-        else:
-            tail = None
+        list_tail = bool(blocks) and (
+            blocks[-1].kind in _LIST_KINDS or (in_tail and blocks[-1].kind in _PARAGRAPH_KINDS)
+        )
     return preamble, sections
 
 
