@@ -486,8 +486,10 @@ def _occurrences(
     """Every placeholder and choice in the body, lexed block by block as the
     validator lexes them, so a code span or comment hides the same ones. No
     directive is recognized in code or raw HTML (§11.4), fenced code inside a
-    list item or quote (*code*) included. Also the malformed ones, and the
-    lines each ``{{include:}}`` is written on."""
+    list item or quote (*code*) included. A list's items are lexed one by
+    one, as the validator lexes their text: a code span or comment left
+    open in one item does not run into the next. Also the malformed ones,
+    and the lines each ``{{include:}}`` is written on."""
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
     includes: list[int] = []
@@ -495,27 +497,33 @@ def _occurrences(
         for block in blocks:
             if _kind(block) in ("code", "rule", "html"):
                 continue
-            text = "\n".join(
-                " " * len(lines[i]) if i in code else lines[i] for i in range(block.start, block.end)
-            )
-            offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
-            for directive in lex(text).directives:
-                row = bisect.bisect_right(offsets, directive.start) - 1
-                if directive.name == "include" and not directive.malformed:
-                    includes.append(block.start + row)
-                if directive.name not in ("placeholder", "choose"):
-                    continue
-                if directive.malformed:
-                    # The parser joins a paragraph's lines with spaces, so
-                    # one written across lines is well-formed to the
-                    # validator — and could not be filled here.
-                    malformed.append(directive)
-                    continue
-                column = directive.start - offsets[row]
-                found.append(_Occurrence(directive, block.start + row, column,
-                                         column + directive.end - directive.start,
-                                         in_table=_kind(block) == "table"))
+            starts = [first for first, _raw in block.items] or [block.start]
+            for start, end in zip(starts, [*starts[1:], block.end], strict=True):
+                _lex_lines(block, start, end, lines, code, found, malformed, includes)
     return found, malformed, includes
+
+
+def _lex_lines(block: _BlockSpan, start: int, end: int, lines: list[str], code: set[int],
+               found: list[_Occurrence], malformed: list[Directive], includes: list[int]) -> None:
+    """``_occurrences`` for the source lines ``[start, end)`` of *block*."""
+    text = "\n".join(" " * len(lines[i]) if i in code else lines[i] for i in range(start, end))
+    offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
+    for directive in lex(text).directives:
+        row = bisect.bisect_right(offsets, directive.start) - 1
+        if directive.name == "include" and not directive.malformed:
+            includes.append(start + row)
+        if directive.name not in ("placeholder", "choose"):
+            continue
+        if directive.malformed:
+            # The parser joins a paragraph's lines with spaces, so one
+            # written across lines is well-formed to the validator — and
+            # could not be filled here.
+            malformed.append(directive)
+            continue
+        column = directive.start - offsets[row]
+        found.append(_Occurrence(directive, start + row, column,
+                                 column + directive.end - directive.start,
+                                 in_table=_kind(block) == "table"))
 
 
 # ── Frontmatter ──────────────────────────────────────────────────

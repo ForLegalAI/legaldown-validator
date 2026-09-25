@@ -785,6 +785,22 @@ class TestFencedCodeInContainers:
         assert assemble(template, {"x": True}, load_file={"f.lgd": fragment}.get).ok
 
 
+class TestItemsAreLexedApart:
+    """Each list item is lexed on its own, as the validator lexes its text
+    (#53): a code span or comment left open does not run into the next."""
+
+    @pytest.mark.parametrize(("first", "second"), [
+        ("- Use `x", "- For {{placeholder: name}}, see `y`."),
+        ("- See <!-- n", "- For {{placeholder: name}} -->."),
+        ("- > <!-- x", "- > For {{placeholder: name}}\n   -->"),
+        ("1. Use `x", "   1. For {{placeholder: name}}, see `y`."),
+    ])
+    def test_an_open_code_span_or_comment_stays_in_its_item(self, first, second):
+        body = f"# A\n\n{first}\n{second}\n"
+        filled = second.replace("{{placeholder: name}}", "Ann")
+        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == f"\n# A\n\n{first}\n{filled}\n"
+
+
 class TestMalformed:
     def test_a_blank_written_across_lines_is_refused(self):
         """The parser joins the lines, so the validator reads it; it could not
