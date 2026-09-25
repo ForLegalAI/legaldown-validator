@@ -116,7 +116,7 @@ def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
 FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)", re.DOTALL)
 # An ATX heading: its level and its text, which may end in a marker (split
 # off by markers.split_heading).
-HEADING_RE = re.compile(r"^ {0,3}(#{1,6})\s+(.+)$")  # the text is stripped by split_heading
+HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+)$")  # the text is stripped by split_heading
 # A setext underline under a paragraph: ``===`` makes a level-1 heading,
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
@@ -126,7 +126,9 @@ RULE_RE = re.compile(r"^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,
 # A list item marker (CommonMark): ``-``, ``*``, or ``+`` for an unordered
 # list, a number and ``.`` or ``)`` for an ordered one. A thematic break
 # such as ``* * *`` matches too; callers test RULE_RE first.
-LIST_ITEM_RE = re.compile(r"^\s*(?:(?P<number>\d+)(?P<delimiter>[.)])|(?P<bullet>[-*+]))\s+")
+# A list item marker (CommonMark): at most nine ASCII digits, and only spaces
+# and tabs around it — other whitespace is text.
+LIST_ITEM_RE = re.compile(r"^[ \t]*(?:(?P<number>[0-9]{1,9})(?P<delimiter>[.)])|(?P<bullet>[-*+]))[ \t]+")
 # A cell of a table's delimiter row (GFM): colons mark the alignment.
 _DELIMITER_CELL_RE = re.compile(r":?-+:?")
 

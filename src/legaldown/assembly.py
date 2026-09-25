@@ -332,7 +332,7 @@ def _tail_end(lines: list[str], following: list[_BlockSpan], column: int) -> int
 
 
 # A list item's marker, as the parser's LIST_ITEM_RE reads it.
-_ITEM_START_RE = re.compile(r"\s*(?:\d+[.)]|[-*+])")
+_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
 
 
 def _content_column(line: str) -> int:

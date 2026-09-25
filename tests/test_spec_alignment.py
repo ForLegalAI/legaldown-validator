@@ -1131,6 +1131,29 @@ def _outline(source: str) -> list[tuple[str, int, str]]:
     return [(entry.title, entry.level, entry.identifier) for entry in entries]
 
 
+@pytest.mark.parametrize("line", [
+    "# Title", "#\x0cTitle", "- item", " - item", "\x0c- item", "1234567890. item", "١. item",
+])
+def test_only_spaces_and_tabs_and_nine_digits_make_a_heading_or_an_item(line):
+    """CommonMark: other whitespace and longer or non-ASCII numbers are
+    paragraph text (cmark-gfm)."""
+    document = parse_document(_FRONTMATTER + f"{line}\n")
+    assert [(b.kind, b.text) for b in document.sections[0].blocks] == [("paragraph", line.strip())]
+    if line == line.strip():  # the model strips a leading no-break space (#47)
+        assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize(("line", "kind"), [
+    ("#\tTitle", None), ("123456789. item", "ordered_list"), ("-\titem", "unordered_list"),
+])
+def test_a_tab_or_nine_digits_still_make_a_heading_or_an_item(line, kind):
+    document = parse_document(_FRONTMATTER + f"{line}\n")
+    if kind is None:
+        assert [s.title for s in document.sections] == ["Terms", "Title"]
+    else:
+        assert [b.kind for b in document.sections[0].blocks] == [kind]
+
+
 def test_setext_headings_are_headings():
     """§4.1: === and --- underlines make level-1 and level-2 headings."""
     source = _BARE + "Intro.\n\nPayment\nTerms {#pay}\n=======\n\nText.\n\nLate Fees\n---\n\nMore.\n"
