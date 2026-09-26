@@ -19,6 +19,7 @@ from legaldown import (
     iter_directives,
     serialize_document,
 )
+from legaldown.definitions import text_fragments
 from legaldown.directives import format_value, lex
 from legaldown.markers import Marker, split_heading
 from legaldown.parser import collect_source_directives, parse_document
@@ -1230,6 +1231,158 @@ def test_a_paragraph_of_only_whitespace_is_empty():
     assert document.sections[0].blocks[0].text == ""
 
 
+@pytest.mark.parametrize("fence", ["  ~~~", "    ~~~", "  ```"])
+def test_a_fence_after_a_blank_line_in_an_item_is_code(fence):
+    """#54: it continues the item, where CommonMark reads code (§11.4)."""
+    closer = fence.strip()
+    body = f"- a\n\n{fence}\n  {{{{ref: nowhere}}}}\n  {closer}\n\nSee {{{{ref: missing}}}}.\n"
+    broken = [d.message for d in _validate(body).diagnostics if d.rule == "ref-broken"]
+    assert broken == ["Broken section reference: 'missing'."]
+
+
+def test_a_marker_on_an_items_later_paragraph_is_misplaced():
+    """§5.7: the paragraph is inside the item, not a top-level one."""
+    rules = _validate("- a\n\n  Second. {#p2}\n\nSee {{ref: p2}}.\n").rules()
+    assert "anchor-misplaced" in rules and "ref-broken" in rules
+
+
+@pytest.mark.parametrize(("body", "kinds", "titles"), [
+    # An empty item takes nothing after a blank line (CommonMark).
+    ("- \n\n  b\n", ["unordered_list", "paragraph"], ["Terms"]),
+    # An ATX heading stays a section heading.
+    ("- a\n\n  # Next\n", ["unordered_list"], ["Terms", "Next"]),
+    # Less indented than the item's content: the list ends.
+    ("- a\n\n b\n", ["unordered_list", "paragraph"], ["Terms"]),
+])
+def test_where_a_list_does_not_continue_past_a_blank_line(body, kinds, titles):
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == kinds
+    assert [s.title for s in document.sections] == titles
+    if "- \n" not in body:  # an empty item is not written back (#46)
+        assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize(("body", "items", "after"), [
+    # A lazy line continues an item only while its paragraph or quote's
+    # paragraph is open (cmark-gfm).
+    ("- > # H\nfoo {#q}\n", ["> # H"], ["paragraph"]),
+    ("- >\nfoo\n", [">"], ["paragraph"]),
+    # The blank line closed the item's paragraph: `2.` starts a list.
+    ("- a\n\n  2. b\n", ["a", "b"], []),
+])
+def test_what_an_items_later_content_is(body, items, after):
+    document = parse_document(_FRONTMATTER + body)
+    blocks = document.sections[0].blocks
+    assert blocks[0].items == items and [b.kind for b in blocks[1:]] == after
+
+
+@pytest.mark.parametrize("body", [
+    "100. Clause\n\n    more {{ref: nowhere}}\n",
+    "-    a\n\n    code {{ref: nowhere}}\n",
+])
+def test_a_line_short_of_every_open_items_content_is_code(body):
+    """No item reaches it, so it is indented code (cmark-gfm)."""
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == ["ordered_list" if body[0] == "1" else "unordered_list", "code"]
+    assert "ref-broken" not in _validate(body).rules()
+    assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize("body", [
+    "-   a\n\n  <div>\n",
+    "1.  a\n\n   ~~~\n   x {{ref: y}}\n   ~~~\n",
+    "100. a\n\n    <div class='x'>\n",
+])
+def test_a_block_after_a_wide_list_marker_round_trips(body):
+    """The list is written back with its last item's content past the
+    block's indentation, so the block stays after it."""
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize("text", ["<div class='x'>", "<a >", "</a >"])
+def test_a_tag_is_split_only_where_both_lines_stay_paragraph_text(text):
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": text}]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [b.kind for b in blocks] == ["paragraph"]
+
+
+@pytest.mark.parametrize(("body", "kinds", "titles"), [
+    # Indented code or a table in an item's later content is no paragraph:
+    # the lazy line is after the list (cmark-gfm).
+    ("- a\n\n      code\nlazy\n", ["unordered_list", "paragraph"], ["Terms"]),
+    ("- a\n\n  | x | y |\n  | - | - |\nlazy\n", ["unordered_list", "paragraph"], ["Terms"]),
+    # No paragraph is open after the list: a setext heading follows.
+    ("- a\n\n      code\ntext\n===\n", ["unordered_list"], ["Terms", "text"]),
+    ("- # h\ntext\n===\n", ["unordered_list"], ["Terms", "text"]),
+    # An empty last item closes its sibling: the line is indented code.
+    ("- a\n- \n\n    code\n", ["unordered_list", "code"], ["Terms"]),
+])
+def test_what_follows_a_list_item_that_holds_no_open_paragraph(body, kinds, titles):
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == kinds
+    assert [s.title for s in document.sections] == titles
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_wide_marker_spacing_sets_the_items_column_as_commonmark_does():
+    """Five spaces after the marker: the content column is one past it."""
+    document = parse_document(_FRONTMATTER + "-      foo\n\n      bar\n")
+    # `bar` is four columns past the content: indented code (cmark-gfm).
+    assert [b.items for b in document.sections[0].blocks] == [["foo\n\n    bar"]]
+
+
+def test_an_unclosed_fence_after_a_list_is_closed_when_written():
+    document = document_from_dict({"sections": [
+        {"title": "A", "blocks": [{"kind": "unordered_list", "items": ["a"]}, {"kind": "code", "text": "```\nx"}]},
+        {"title": "B", "blocks": []},
+    ]})
+    assert [s.title for s in parse_document(serialize_document(document)).sections] == ["A", "B"]
+
+
+def test_an_empty_list_does_not_stand_between_a_list_and_its_code():
+    document = parse_document(_FRONTMATTER + "- a\n\n* \n\n    code\n")
+    reparsed = parse_document(serialize_document(document))
+    assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [("unordered_list", ""), ("code", "    code")]
+
+
+def _placeholders(body: str) -> int:
+    document = parse_document(_FRONTMATTER + body)
+    return sum(
+        1 for _s, _i, block in document.iter_blocks() for fragment in text_fragments(block)
+        for directive in lex(fragment).directives if directive.name == "placeholder" and not directive.malformed
+    )
+
+
+@pytest.mark.parametrize(("body", "count"), [
+    # A nested item on the first line keeps its paragraph open: the next
+    # line is its lazy continuation, not a setext heading (cmark-gfm).
+    ("- 1. item\ntext {{placeholder: p}}\n---\n", 1),
+    # HTML and indented code in an item's later content hold no directive.
+    ("- a\n\n  <div>\n  {{placeholder: p}}\n  </div>\n", 0),
+    ("- a\n\n  b\n\n      {{placeholder: p}}\n", 0),
+    # A tab after the cut is as wide as it is where it stands.
+    ("- | x | c |\n\n  \t{{placeholder: p}} tail\n", 1),
+    # Content of an item nested on the first line is measured from it.
+    ("+ 1. y\n\n\t\ta {{placeholder: p}}\n", 1),
+    ("- 2. z\n\n\t\ta {{placeholder: p}}\n", 1),
+])
+def test_an_items_later_content_is_read_as_commonmark_reads_it(body, count):
+    assert _placeholders(body) == count
+
+
+@pytest.mark.parametrize("body", [
+    "-  a\n\n    # h\n",
+    "1. a {{placeholder: p}}\n\n     ~~~\n",
+    "1) > q\n\n\t\t~~~\n",
+])
+def test_an_items_later_content_round_trips(body):
+    """A `#` line in it is written in far enough not to read as a heading;
+    a fence left open in it ends with the item and is not closed."""
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
+
+
 def test_a_table_cell_opening_like_a_fence_is_text():
     assert "ref-broken" in _validate("| a |\n|---|\n| ~~~ {{ref: nowhere}} |\n").rules()
 
@@ -1876,7 +2029,7 @@ def test_an_indented_code_block_keeps_its_lines():
     ("body", "kinds"),
     [
         ("Text.\n    more {{ref: nope}}\n", ["ref"]),  # continues the paragraph
-        ("- item\n\n    more\n", ["unordered_list", "paragraph"]),  # CommonMark keeps it in the item
+        ("- item\n\n    more\n", ["unordered_list"]),  # CommonMark keeps it in the item (§5.7)
         ("> quote\n\n    code\n", ["quote", "code"]),
         ("> quote\n    lazy\n", ["quote"]),  # a lazy line of the quote
         ("| a |\n|---|\n    code\n", ["table", "code"]),
@@ -1903,32 +2056,42 @@ def test_a_document_can_open_with_indented_code():
     assert parse_document(serialize_document(document)) == document
 
 
-def test_model_built_indented_code_after_a_list_is_written_fenced():
+def test_indented_code_after_a_list_is_written_as_it_is():
+    """The list's last item is written with its content past the code's
+    indentation, so the code does not continue it (§5.7)."""
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["one"]},
         {"kind": "code", "text": "    x = `y`\n\n      z"},
     ]}]})
     written = serialize_document(document)
-    assert "- one\n\n```\nx = `y`\n\n  z\n```" in written
-    assert [b.kind for b in parse_document(written).sections[0].blocks] == ["unordered_list", "code"]
+    assert "-    one\n\n    x = `y`\n\n      z" in written
+    assert parse_document(written) == document
 
 
-def test_every_indented_paragraph_after_a_list_stays_a_paragraph():
-    """CommonMark keeps them all in the list's last item, so their
-    directives are checked; an unindented paragraph ends the run."""
+def test_every_indented_paragraph_after_a_list_is_the_items():
+    """CommonMark keeps every paragraph indented to the item's content in
+    the item itself (§5.7), so their directives are checked there; an
+    unindented paragraph ends the item (and the list)."""
     body = "1. Clause.\n\n    Second.\n\n    Pay {{placeholder: fee}}.\n\nThird.\n\n    code {{ref: nope}}\n"
-    assert [kind for kind, _text in _code_blocks(body)] == ["ordered_list", "paragraph", "paragraph", "paragraph", "code"]
+    assert [kind for kind, _text in _code_blocks(body)] == ["ordered_list", "paragraph", "code"]
     result = validate_document(parse_document(_FRONTMATTER + body), final=True)
     assert "placeholder-unfilled" in result.rules("error") and "ref-broken" not in result.rules()
 
 
 @pytest.mark.parametrize("opener", ["# foo", "<div>", "```", "~~~", "<!-- c -->"])
-def test_an_indented_paragraph_after_a_list_round_trips_whatever_it_begins_with(opener):
-    body = f"- a\n\n    b\n\n    {opener}\n\nd\n\n    code\n"
-    assert _code_blocks(body) == [
-        ("unordered_list", ""), ("paragraph", "b"), ("paragraph", opener), ("paragraph", "d"), ("code", "    code")
+def test_an_indented_line_after_a_list_round_trips_whatever_it_begins_with(opener):
+    """CommonMark keeps it in the item (§5.7); only a fence needs closing
+    for the item's own text to round-trip (``close_fences``)."""
+    # A continuation line dedents by the item's own content column (2); any
+    # further indentation, as this one carries, is the line's own text.
+    fence = f"\n  {opener}" if opener in ("```", "~~~") else ""
+    closer = f"\n    {opener}" if opener in ("```", "~~~") else ""
+    body = f"- a\n\n    b\n\n    {opener}{closer}\n\nd\n\n    code\n"
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
+    assert [(b.kind, b.text or b.items) for b in document.sections[0].blocks] == [
+        ("unordered_list", [f"a\n\n  b\n\n  {opener}{fence}"]), ("paragraph", "d"), ("code", "    code")
     ]
-    assert "\n    b\n\n    " in serialize_document(parse_document(_FRONTMATTER + body))
 
 
 @pytest.mark.parametrize(
@@ -1954,23 +2117,31 @@ def test_an_indented_header_row_after_another_block_is_code(before):
     assert "ref-broken" not in validate_document(document).rules()
 
 
-def test_code_after_the_indented_run_after_a_list_stays_code():
-    # The paragraph is written indented, to stay a paragraph after the list,
-    # so the code after it is written fenced, to stay code.
+def test_code_directly_after_a_list_is_written_so_it_stays_code():
+    """An indented line directly after a list is now the item's own content
+    (§5.7): the paragraph here is unindented enough to end the list first
+    (CommonMark), so the code after it is ordinary indented code, not the
+    item's; only code with no paragraph between it and the list needs
+    fencing to stay code rather than become the item's own text."""
     document = parse_document(_FRONTMATTER + "- a\n\n<a\nhref='x'>\n\n    code {{ref: nope}}\n")
     reparsed = parse_document(serialize_document(document))
     assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [
-        ("unordered_list", ""), ("paragraph", "<a href='x'>"), ("code", "```\ncode {{ref: nope}}\n```")
+        ("unordered_list", ""), ("paragraph", "<a href='x'>"), ("code", "    code {{ref: nope}}")
     ]
     assert "ref-broken" not in validate_document(reparsed).rules()
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["a"]}, {"kind": "code", "text": "    x"},
+    ]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("code", "    x")]
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "# foo"}, {"kind": "code", "text": "    x"},
     ]}]})
     blocks = parse_document(serialize_document(document)).sections[0].blocks
-    assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("paragraph", "# foo"), ("code", "```\nx\n```")]
+    assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("paragraph", "\\# foo"), ("code", "    x")]
 
 
-def test_the_indented_run_stops_at_text_that_reads_as_another_block():
+def test_text_after_a_list_that_would_open_a_block_is_escaped():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "> q"},
         {"kind": "paragraph", "text": "# foo"},
@@ -1979,7 +2150,7 @@ def test_the_indented_run_stops_at_text_that_reads_as_another_block():
     assert (blocks[-1].kind, blocks[-1].text) == ("paragraph", "\\# foo")
 
 
-# ── Review follow-ups: table rows, kind-7 tags, the indented run ──
+# ── Review follow-ups: table rows, kind-7 tags, paragraphs after a list ──
 
 
 @pytest.mark.parametrize(
@@ -2005,10 +2176,16 @@ def test_a_self_closing_raw_text_tag_is_an_html_block(tag):
 
 
 @pytest.mark.parametrize("first", ["| b", "| {{ref: terms}}", "| x |"])
-def test_a_pipe_paragraph_does_not_end_the_indented_run_after_a_list(first):
+def test_a_pipe_paragraph_does_not_end_the_list_item(first):
+    """A single ``|`` line, indented to the item's content, is not a table
+    (no delimiter row follows) and stays the item's own text (§5.7),
+    together with the heading-looking line after it."""
     body = f"- a\n\n    {first}\n\n    # foo\n"
-    assert [kind for kind, _text in _code_blocks(body)][-1] == "paragraph"
-    assert _code_blocks(body)[-1] == ("paragraph", "# foo")
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
+    assert [b.kind for b in document.sections[0].blocks] == ["unordered_list"]
+    assert document.sections[0].blocks[0].items == [f"a\n\n  {first}\n\n  # foo"]
+    assert "ref-broken" not in validate_document(document).rules()
 
 
 def test_an_empty_named_value_is_written_unquoted():

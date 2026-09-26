@@ -785,6 +785,34 @@ class TestFencedCodeInContainers:
         assert assemble(template, {"x": True}, load_file={"f.lgd": fragment}.get).ok
 
 
+class TestAnItemsLaterContent:
+    """After a blank line, content indented to the last item is the item's
+    (#54, §5.7)."""
+
+    def test_nothing_in_a_fence_there_is_filled(self):
+        body = "# A\n\n- a\n\n  ~~~\n  {{placeholder: name}}\n  ~~~\n\nHi {{placeholder: name}}.\n"
+        expected = "\n# A\n\n- a\n\n  ~~~\n  {{placeholder: name}}\n  ~~~\n\nHi Ann.\n"
+        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == expected
+
+    def test_it_goes_with_a_conditional_item(self):
+        body = "# A\n\n- Kept.\n- Dropped. {when=x}\n\n  More.\n\n  ~~~\n  code\n  ~~~\n\nAfter.\n"
+        assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n- Kept.\n\nAfter.\n"
+
+    def test_nothing_in_html_or_indented_code_there_is_filled(self):
+        body = "# A\n\n- a\n\n  <div>\n  {{placeholder: name}}\n  </div>\n\nHi {{placeholder: name}}.\n"
+        result = _body(assemble(_template(body, _TEXT), {"name": "Ann"}))
+        assert "  {{placeholder: name}}\n" in result and "Hi Ann." in result
+
+    def test_blank_lines_in_indented_code_there_are_kept(self):
+        body = "# A\n\n- a\n\n      x\n\n\n      y\n"
+        assert _body(assemble(_template(body), {})) == "\n" + body
+
+    def test_blank_lines_collapse_there_but_not_in_a_fence(self):
+        body = "# A\n\n- a\n\n\n  b\n\n  ~~~\n  x\n\n\n  y\n  ~~~\n"
+        expected = "\n# A\n\n- a\n\n  b\n\n  ~~~\n  x\n\n\n  y\n  ~~~\n"
+        assert _body(assemble(_template(body), {})) == expected
+
+
 class TestItemsAreLexedApart:
     """Each list item is lexed on its own, as the validator lexes its text
     (#53): a code span or comment left open does not run into the next."""

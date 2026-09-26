@@ -58,16 +58,28 @@ boundaries, and the final option (§15.9, `validate_document(final=True)` or
   standalone document: conditions, placeholders, and terms that refer to its template's
   questions and definitions are reported as undeclared.
 
-Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body.
-Indented code inside a block quote or a list item is not recognized, so directives in it are
-checked. Indented lines directly after a list, past the blank line that ends the list here,
-stay paragraphs for as long as each is indented, as CommonMark keeps them in the list's last item
-rather than making them code. A fence or an HTML block there is read as paragraph text too, so
-directives in it are checked; CommonMark reads it as code or raw HTML in the item
-([#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)). A fence that opens a list item's or
-a quote's text on its only line (`- ~~~ …`) is code. One behind nested markers (`- > ~~~ …`,
-`> - ~~~ …`), or one running over several lines of a nested quote or item, is not recognized:
-directives in it are checked where CommonMark reads code.
+Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body
+and in a list item's later content. Indented code inside a block quote is not recognized, so
+directives in it are checked. After a blank line, a line indented to the last list item's content continues that
+item, as CommonMark reads it (§5.7,
+[#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)): a later paragraph, a fence,
+indented code or an HTML block there is part of the item, so code and raw HTML there hold no
+directive, a marker at the end of a later paragraph is misplaced, and the item's condition
+removes it too. Raw HTML on an item's first line is read as the item's text, so directives in it
+are checked ([#59](https://github.com/ForLegalAI/legaldown-validator/issues/59)). Four limits
+follow from the flat list model
+([#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)):
+
+- An ATX heading indented after a list stays a section heading, where CommonMark reads it in the
+  item.
+- A setext heading in an item's later content is read as more of its text.
+- A line indented less than the last item's content but into an ancestor item stays a paragraph
+  after the list; written back, one that would open a block gets a backslash.
+- A blank line between two items still makes two lists.
+
+A fence that opens a list item's or a quote's text on its only line (`- ~~~ …`) is code. One
+behind nested markers (`- > ~~~ …`, `> - ~~~ …`), or one running over several lines of a nested
+quote or item, is not recognized: directives in it are checked where CommonMark reads code.
 
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy

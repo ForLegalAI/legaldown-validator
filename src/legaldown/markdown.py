@@ -9,6 +9,7 @@ starts or ends.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
 # A fenced code block opens with three or more backticks or tildes, indented
 # at most three columns; a backtick fence's info string cannot contain a
@@ -77,6 +78,29 @@ def html_block_end(lines: list[str], index: int) -> int | None:
     return None
 
 
+def split_lone_tag(text: str) -> str | None:
+    """*text*, with a line break in place of its first plain space, if
+    *text* (no line break of its own) is by itself a complete HTML tag
+    (kind 7): joined into one line, it would misread as an HTML block
+    rather than the paragraph text it is, and it cannot interrupt a
+    paragraph, so a preceding blank line is enough to start it. None when
+    *text* is not one, or holds no plain space to split at (a tab-only
+    attribute separator, or a bare tag): the caller falls back to escaping
+    it, since only a paragraph joined from two lines — always at a plain
+    space — can hold one (``strip_text`` leaves tabs elsewhere as text)."""
+    if not _HTML_BLOCK_7_RE.match(text):
+        return None
+    at = text.find(" ")
+    if at < 0:
+        return None
+    first, second = text[:at], text[at + 1:]
+    # Neither line may open a block of its own: a block-level tag name
+    # (``<div``) would, and so would a second line opening like a quote.
+    if HTML_BLOCK_START_RE.match(first) or second.lstrip(" ").startswith(">"):
+        return None
+    return f"{first}\n{second}"
+
+
 # An HTML comment (CommonMark 0.31): ``<!-->``, ``<!--->``, or ``<!--``, text
 # not containing ``-->``, and ``-->``. The empty forms end at their own ``>``.
 HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)
@@ -109,15 +133,111 @@ def indent_width(line: str) -> int:
     return column
 
 
-def dedent(line: str, columns: int) -> str:
+# A list item's marker, as the parser's LIST_ITEM_RE reads it.
+_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
+
+
+def item_content_column(line: str) -> int:
+    """The column where the content of the list item beginning on *line*
+    starts (CommonMark): after its marker and one to four columns of spacing,
+    or one column when there are more, or when the item is empty."""
+    marker = _ITEM_START_RE.match(line)
+    if marker is None:  # never: the parser read *line* as an item
+        return indent_width(line) + 2
+    after = len(line[:marker.end()].expandtabs(4))
+    rest = line[marker.end():]
+    if not rest.strip():
+        return after + 1
+    spacing = len(line[:len(line) - len(rest.lstrip(" \t"))].expandtabs(4)) - after
+    return after + 1 if spacing > 4 else after + spacing
+
+
+def open_items(lines: list[str], starts: list[int], texts: list[str]) -> list[int]:
+    """The indices of a list's items still open at its end (CommonMark): an
+    item every later one is nested in, indented at least to its content
+    column. An empty last item is not open, and closes the items it is not
+    nested in: an item can begin with at most one blank line."""
+    found: list[int] = []
+    lowest: int | None = None  # the least indentation of the items after
+    for k in range(len(starts) - 1, -1, -1):
+        column = item_content_column(lines[starts[k]])
+        empty_last = k == len(starts) - 1 and not texts[k].strip()
+        if not empty_last and (lowest is None or lowest >= column):
+            found.append(k)
+        indent = indent_width(lines[starts[k]])
+        lowest = indent if lowest is None else min(lowest, indent)
+    return found[::-1]
+
+
+# A list item's marker opening an item's own text: an item nested on its line.
+_NESTED_ITEM_RE = re.compile(r"(?:[0-9]{1,9}[.)]|[-*+])[ \t]+(?=\S)")
+
+
+def nested_offset(first: str) -> int:
+    """How much further in than a list item's content its innermost content
+    starts, when its text opens with items nested on its line (``1. y`` in
+    ``- 1. y``): its later content is measured from there (CommonMark)."""
+    offset = 0
+    while marker := _NESTED_ITEM_RE.match(first):
+        offset += item_content_column(first)
+        first = first[marker.end():]
+    return offset
+
+
+def indented_code_rows(text: str) -> Iterator[int]:
+    """The rows of a list item's text (its rows dedented to its content)
+    in indented code — four columns past its innermost content, after a
+    blank row — with the blank rows between them (CommonMark)."""
+    floor = 4 + nested_offset(text.split("\n", 1)[0])
+    blanks: list[int] = []
+    code = after_blank = False
+    for row, line in enumerate(text.split("\n")):
+        if not line.strip():
+            if code:
+                blanks.append(row)
+            after_blank = True
+            continue
+        code = row > 0 and indent_width(line) >= floor and (after_blank or code)
+        if code:
+            yield from blanks
+            yield row
+        blanks, after_blank = [], False
+
+
+def html_block_rows(text: str) -> Iterator[int]:
+    """The rows of a list item's text in an HTML block opening after a
+    blank row (CommonMark 4.6): raw HTML, where no directive is recognized
+    (§11.4)."""
+    rows = text.split("\n")
+    row = 1
+    while row < len(rows):
+        end = html_block_end(rows, row) if not rows[row - 1].strip() and rows[row].strip() else None
+        if end is None:
+            row += 1
+            continue
+        yield from range(row, end)
+        row = end
+
+
+def dedent(line: str, columns: int, *, expand: bool = False) -> str:
     """*line* with up to *columns* columns of leading whitespace removed; a
     tab straddling the cut leaves its remaining columns as spaces. Only
-    leading whitespace changes."""
+    leading whitespace changes. *expand*: the rest of the leading
+    whitespace is written as spaces too, each tab as wide as it is where it
+    stands — a list item's later lines, whose tabs would otherwise measure
+    differently once the item's marker is written another width."""
     column = index = 0
     while index < len(line) and line[index] in " \t" and column < columns:
         column += 1 if line[index] == " " else _TAB - column % _TAB
         index += 1
-    return " " * max(column - columns, 0) + line[index:]
+    rest = line[index:]
+    lead = len(rest) - len(rest.lstrip(" \t"))
+    if expand and "\t" in rest[:lead]:
+        end = column
+        for char in rest[:lead]:
+            end += 1 if char == " " else _TAB - end % _TAB
+        return " " * (end - columns) + rest[lead:]
+    return " " * max(column - columns, 0) + rest
 
 
 def indented_code_end(lines: list[str], index: int) -> int:

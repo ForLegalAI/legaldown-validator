@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex, mask_directives
-from .markdown import FENCE_OPEN_RE, is_indented_code
+from .markdown import FENCE_OPEN_RE, html_block_rows, indented_code_rows, is_indented_code
 from .models import Block, Document
 from .validator.helpers import generate_identifier
 
@@ -205,7 +205,7 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
         fragments.append((block.prefix, False))
     if block.suffix:
         fragments.append((block.suffix, lifted))
-    fragments.extend((_code_if_fence(item), listed) for item in block.items if item)
+    fragments.extend((_literal_blocks_blanked(_code_if_fence(item)), listed) for item in block.items if item)
     fragments.extend((cell, False) for cell in block.headers if cell)
     fragments.extend((cell, False) for row in block.rows for cell in row if cell)
     return fragments
@@ -220,6 +220,16 @@ def _code_if_fence(text: str) -> str:
     if "\n" not in text and FENCE_OPEN_RE.match(text):
         return " " * len(text)
     return text
+
+
+def _literal_blocks_blanked(item: str) -> str:
+    """A list item's text with its later indented code and HTML blocks
+    blanked, row by row: no directive is recognized there (§11.4)."""
+    rows = item.split("\n")
+    literal = {*indented_code_rows(item), *html_block_rows(item)}
+    if not literal:
+        return item
+    return "\n".join(" " * len(row) if k in literal else row for k, row in enumerate(rows))
 
 
 def text_fragments(block: Block) -> list[str]:

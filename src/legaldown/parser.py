@@ -27,6 +27,9 @@ from .markdown import (
     html_block_end,
     indent_width,
     indented_code_end,
+    item_content_column,
+    nested_offset,
+    open_items,
     strip_text,
 )
 from .markers import Marker, split_heading
@@ -297,7 +300,10 @@ def _parse_list(
     The list runs through its items, their continuation lines (indented two
     or more columns, or lazy continuation lines after item text), and nested
     items; an unindented item of another type (``_list_type``) or a thematic
-    break ends it. A fenced code block
+    break ends it. Past a blank line it goes on when the next line is
+    indented to the last item's content (not an ATX heading, not after an
+    empty item): the item's later content (§5.7), one row per line, blank
+    lines included. A fenced code block
     in an item stays in that item, one line per line, indented relative to
     the item, blank lines included, until it closes or an unindented line
     ends the item (and the fence with it). A block quote in an item (a
@@ -309,15 +315,20 @@ def _parse_list(
     items: list[str] = []
     fence: str | None = None  # the open fence inside the current item
     quote: _Quote | None = None  # the block quote the current item ends with
-    content_indent = 0  # columns before the current item's text
+    content_indent = 0  # the current item's content column (CommonMark)
     lazy = False
     paragraph = False  # the current item's own last content is paragraph text
+    open_paragraph = False  # so is it, or that of an item nested on its line
+    table = False  # the current item's content is in a table
+    previous: str | None = None  # the item's last content line
+    previous_code = False  # that line is indented code
+    offset = 0  # the current item's nested_offset
     end = index
     while end < len(lines):
         line = lines[end]
         if fence is not None:
             if not line.strip() or indent_width(line) >= 2:
-                code = dedent(line, content_indent)
+                code = dedent(line, content_indent, expand=True)
                 items[-1] += "\n" + code
                 end += 1
                 if closes_fence(code, fence):
@@ -326,7 +337,18 @@ def _parse_list(
                 continue
             fence = None
         if not line.strip():
-            break
+            following = next((k for k in range(end, len(lines)) if lines[k].strip()), None)
+            if (
+                following is None or not items or not items[-1]
+                or indent_width(lines[following]) < content_indent
+                or HEADING_RE.match(lines[following])  # it stays a section heading
+            ):
+                break
+            items[-1] += "\n" * (following - end)  # the blank lines, one row each
+            end = following
+            lazy = paragraph = open_paragraph = table = False  # the blank line closed the item's paragraph
+            quote = previous = None  # a later paragraph in the item is not the quote's
+            continue
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
         joined = False  # the line is paragraph text though it looks like an item
@@ -341,14 +363,15 @@ def _parse_list(
             marker = None
             joined = True
         if marker and (_list_type(marker) == list_type or indented):
-            content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
+            content_indent = item_content_column(line)
             content = line[marker.end():].strip()
             items.append(content)
             if item_starts is not None:
                 item_starts.append(end)
-            quote = None
-        elif items and (indented or (lazy and _is_lazy_line(line))):
-            content = dedent(line, content_indent) if indented else line.strip()
+            quote, table, previous = None, False, None
+            offset = nested_offset(content)  # an item nested on its line: its content is further in
+        elif items and (indented or ((quote.paragraph if quote is not None else open_paragraph) and _is_lazy_line(line))):
+            content = dedent(line, content_indent, expand=True) if indented else line.strip()
             if quote is not None and not content.startswith(">"):
                 # A lazy line (unindented) always continues the quote here:
                 # the list is lazy only while the quote's paragraph is open.
@@ -377,10 +400,24 @@ def _parse_list(
             opening = FENCE_OPEN_RE.match(content)
             fence = opening.group("fence") if opening else None
             lazy = fence is None and bool(content.strip())  # an empty item has no text
-        paragraph = lazy and quote is None and (joined or _is_paragraph_text(content))
+        # Content indented four more columns where no paragraph is open is
+        # indented code, and a table's rows are no paragraph: a lazy line
+        # continues neither (CommonMark).
+        code = indent_width(content) >= 4 + offset and not paragraph
+        table = table or (
+            previous is not None and not code and not previous_code
+            and _parse_table([previous, content], 0) is not None
+        )
+        prose = lazy and quote is None and not code and not table
+        paragraph = prose and (joined or _is_paragraph_text(content))
+        # Open in the item or in an item nested on its line: a lazy line
+        # continues either.
+        open_paragraph = prose and (joined or _is_paragraph_text(content, nested=True))
+        previous, previous_code = content, code
         end += 1
     kind = "ordered_list" if list_type in ".)" else "unordered_list"
-    return Block(kind=kind, items=items), end, lazy
+    # A following line is lazy only while a paragraph is open.
+    return Block(kind=kind, items=items), end, quote.paragraph if quote is not None else open_paragraph
 
 
 def _is_row(line: str) -> bool:
@@ -564,14 +601,24 @@ def _starts_interrupting_item(line: str) -> bool:
     )
 
 
-def _is_paragraph_text(content: str) -> bool:
+def _is_paragraph_text(content: str, *, nested: bool = False) -> bool:
     """True if *content*, a list item's text or one of its lines, is
     paragraph text rather than a block of its own: a heading, a thematic
-    break, a nested list item, a fence, or an HTML block."""
+    break, a nested list item, a fence, or an HTML block. *nested*: a nested
+    item's text counts too (`1. item` opens that item's paragraph)."""
+    while nested and not RULE_RE.match(content) and (marker := LIST_ITEM_RE.match(content)):
+        content = content[marker.end():]
     return bool(content.strip()) and not (
         HEADING_RE.match(content) or RULE_RE.match(content) or LIST_ITEM_RE.match(content)
         or FENCE_OPEN_RE.match(content) or HTML_BLOCK_START_RE.match(content)
     )
+
+
+def _open_columns(lines: list[str], item_starts: list[int], items: list[str]) -> list[int]:
+    """The content columns of a list's items still open at its end: the
+    last item and each item every later one is nested in. An empty last item
+    is not open past a blank line (CommonMark)."""
+    return [item_content_column(lines[item_starts[k]]) for k in open_items(lines, item_starts, items)]
 
 
 def _may_interrupt(line: str, marker: re.Match[str]) -> bool:
@@ -688,10 +735,12 @@ def _parse_body(
     sections: list[tuple[_Heading, list[Block]]] = []
     blocks = preamble
     lazy = False  # the last block was a list, quote, or table, with no blank line since
-    # After a list, which this parser ends at a blank line, indented lines
-    # stay paragraphs rather than code: CommonMark keeps them in the list's
-    # last item. The run lasts through such paragraphs.
+    # After a list, lines indented four or more columns that reach an item
+    # still open at its end but not the last item's content (a flat list
+    # holds no other place for them, #16) stay paragraphs rather than code:
+    # CommonMark keeps them in that item. The run lasts through them.
     list_tail = False
+    tail_columns: list[int] = []  # the content columns of the items open at the list's end
     interrupted = -1  # the line at which a paragraph was interrupted
     index = 0
     while index < len(lines):
@@ -702,7 +751,9 @@ def _parse_body(
             continue
         heading: _Heading | None = None
         start, count, item_starts = index, len(blocks), []
-        in_tail = list_tail and indent_width(line) >= 4
+        # Only a line reaching an item still open at the list's end is in it;
+        # one short of every such item is indented code (CommonMark).
+        in_tail = list_tail and indent_width(line) >= 4 and any(c <= indent_width(line) for c in tail_columns)
         # A table that interrupted a paragraph may have an indented header
         # row: the paragraph ended there (_paragraph_end).
         interrupting_table = index == interrupted and _parse_table(lines, index) is not None
@@ -762,6 +813,8 @@ def _parse_body(
                 lines, index, list_type=_list_type(marker), item_starts=item_starts
             )
             blocks.append(block)
+            columns = _open_columns(lines, item_starts, block.items)
+            tail_columns = sorted({*tail_columns, *columns}) if in_tail else columns
         elif (end := html_block_end(lines, index)) is not None:
             # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
             # no heading or other block starts inside it.
