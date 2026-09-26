@@ -326,7 +326,16 @@ def _parse_list(
                 continue
             fence = None
         if not line.strip():
-            break
+            following = next((k for k in range(end, len(lines)) if lines[k].strip()), None)
+            if (
+                following is None or not items or quote is not None
+                or indent_width(lines[following]) < max(content_indent, 2)
+            ):
+                break
+            items[-1] += "\n" * (following - end)  # the blank lines, one row each
+            end = following
+            lazy = False
+            continue
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
         joined = False  # the line is paragraph text though it looks like an item
