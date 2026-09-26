@@ -798,6 +798,10 @@ class TestAnItemsLaterContent:
         body = "# A\n\n- Kept.\n- Dropped. {when=x}\n\n  More.\n\n  ~~~\n  code\n  ~~~\n\nAfter.\n"
         assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n- Kept.\n\nAfter.\n"
 
+    def test_blank_lines_in_indented_code_there_are_kept(self):
+        body = "# A\n\n- a\n\n      x\n\n\n      y\n"
+        assert _body(assemble(_template(body), {})) == "\n" + body
+
     def test_blank_lines_collapse_there_but_not_in_a_fence(self):
         body = "# A\n\n- a\n\n\n  b\n\n  ~~~\n  x\n\n\n  y\n  ~~~\n"
         expected = "\n# A\n\n- a\n\n  b\n\n  ~~~\n  x\n\n\n  y\n  ~~~\n"

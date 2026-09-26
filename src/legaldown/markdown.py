@@ -151,6 +151,23 @@ def item_content_column(line: str) -> int:
     return after + 1 if spacing > 4 else after + spacing
 
 
+def open_items(lines: list[str], starts: list[int], texts: list[str]) -> list[int]:
+    """The indices of a list's items still open at its end (CommonMark): an
+    item every later one is nested in, indented at least to its content
+    column. An empty last item is not open, and closes the items it is not
+    nested in: an item can begin with at most one blank line."""
+    found: list[int] = []
+    lowest: int | None = None  # the least indentation of the items after
+    for k in range(len(starts) - 1, -1, -1):
+        column = item_content_column(lines[starts[k]])
+        empty_last = k == len(starts) - 1 and not texts[k].strip()
+        if not empty_last and (lowest is None or lowest >= column):
+            found.append(k)
+        indent = indent_width(lines[starts[k]])
+        lowest = indent if lowest is None else min(lowest, indent)
+    return found[::-1]
+
+
 def dedent(line: str, columns: int) -> str:
     """*line* with up to *columns* columns of leading whitespace removed; a
     tab straddling the cut leaves its remaining columns as spaces. Only

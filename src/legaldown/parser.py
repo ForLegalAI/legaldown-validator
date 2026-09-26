@@ -28,6 +28,7 @@ from .markdown import (
     indent_width,
     indented_code_end,
     item_content_column,
+    open_items,
     strip_text,
 )
 from .markers import Marker, split_heading
@@ -298,7 +299,10 @@ def _parse_list(
     The list runs through its items, their continuation lines (indented two
     or more columns, or lazy continuation lines after item text), and nested
     items; an unindented item of another type (``_list_type``) or a thematic
-    break ends it. A fenced code block
+    break ends it. Past a blank line it goes on when the next line is
+    indented to the last item's content (not an ATX heading, not after an
+    empty item): the item's later content (§5.7), one row per line, blank
+    lines included. A fenced code block
     in an item stays in that item, one line per line, indented relative to
     the item, blank lines included, until it closes or an unindented line
     ends the item (and the fence with it). A block quote in an item (a
@@ -311,8 +315,11 @@ def _parse_list(
     fence: str | None = None  # the open fence inside the current item
     quote: _Quote | None = None  # the block quote the current item ends with
     content_indent = 0  # columns before the current item's text
+    item_line = index  # the line the current item starts on
     lazy = False
     paragraph = False  # the current item's own last content is paragraph text
+    table = False  # the current item's content is in a table
+    previous: str | None = None  # the item's last content line
     end = index
     while end < len(lines):
         line = lines[end]
@@ -330,14 +337,14 @@ def _parse_list(
             following = next((k for k in range(end, len(lines)) if lines[k].strip()), None)
             if (
                 following is None or not items or not items[-1]
-                or indent_width(lines[following]) < max(content_indent, 2)
+                or indent_width(lines[following]) < item_content_column(lines[item_line])
                 or HEADING_RE.match(lines[following])
             ):
                 break
             items[-1] += "\n" * (following - end)  # the blank lines, one row each
             end = following
-            lazy = paragraph = False  # the blank line closed the item's paragraph
-            quote = None  # a later paragraph in the item is not the quote's
+            lazy = paragraph = table = False  # the blank line closed the item's paragraph
+            quote = previous = None  # a later paragraph in the item is not the quote's
             continue
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
@@ -358,7 +365,7 @@ def _parse_list(
             items.append(content)
             if item_starts is not None:
                 item_starts.append(end)
-            quote = None
+            item_line, quote, table, previous = end, None, False, None
         elif items and (indented or ((quote.paragraph if quote is not None else paragraph) and _is_lazy_line(line))):
             content = dedent(line, content_indent) if indented else line.strip()
             if quote is not None and not content.startswith(">"):
@@ -389,10 +396,17 @@ def _parse_list(
             opening = FENCE_OPEN_RE.match(content)
             fence = opening.group("fence") if opening else None
             lazy = fence is None and bool(content.strip())  # an empty item has no text
-        paragraph = lazy and quote is None and (joined or _is_paragraph_text(content))
+        # Content indented four more columns where no paragraph is open is
+        # indented code, and a table's rows are no paragraph: a lazy line
+        # continues neither (CommonMark).
+        code = indent_width(content) >= 4 and not paragraph
+        table = table or (previous is not None and _parse_table([previous, content], 0) is not None)
+        paragraph = lazy and quote is None and not code and not table and (joined or _is_paragraph_text(content))
+        previous = content
         end += 1
     kind = "ordered_list" if list_type in ".)" else "unordered_list"
-    return Block(kind=kind, items=items), end, lazy
+    # A following line is lazy only while a paragraph is open.
+    return Block(kind=kind, items=items), end, quote.paragraph if quote is not None else paragraph
 
 
 def _is_row(line: str) -> bool:
@@ -590,16 +604,7 @@ def _open_columns(lines: list[str], item_starts: list[int], items: list[str]) ->
     """The content columns of a list's items still open at its end: the
     last item and each item every later one is nested in. An empty last item
     is not open past a blank line (CommonMark)."""
-    starts = item_starts[:-1] if items and not items[-1].strip() else item_starts
-    columns: list[int] = []
-    lowest: int | None = None  # the least indentation of the items after
-    for first in reversed(starts):
-        column = item_content_column(lines[first])
-        if lowest is None or lowest >= column:
-            columns.append(column)
-        indent = indent_width(lines[first])
-        lowest = indent if lowest is None else min(lowest, indent)
-    return columns
+    return [item_content_column(lines[item_starts[k]]) for k in open_items(lines, item_starts, items)]
 
 
 def _may_interrupt(line: str, marker: re.Match[str]) -> bool:
@@ -716,9 +721,10 @@ def _parse_body(
     sections: list[tuple[_Heading, list[Block]]] = []
     blocks = preamble
     lazy = False  # the last block was a list, quote, or table, with no blank line since
-    # After a list, which this parser ends at a blank line, indented lines
-    # stay paragraphs rather than code: CommonMark keeps them in the list's
-    # last item. The run lasts through such paragraphs.
+    # After a list, lines indented four or more columns that reach an item
+    # still open at its end but not the last item's content (a flat list
+    # holds no other place for them, #16) stay paragraphs rather than code:
+    # CommonMark keeps them in that item. The run lasts through them.
     list_tail = False
     tail_columns: list[int] = []  # the content columns of the items open at the list's end
     interrupted = -1  # the line at which a paragraph was interrupted

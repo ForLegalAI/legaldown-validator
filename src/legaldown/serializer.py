@@ -166,8 +166,9 @@ def _paragraph(text: str) -> str:
 
 def _code(text: str, *, after_list: bool) -> str:
     """A code block, fenced or indented, as it is; other text as it is, to
-    be read as what it is. Indented code directly after a list is written
-    fenced: there the parser reads an indented line as paragraph text."""
+    be read as what it is. Indented code directly after a list that the
+    list could not be written to end before (``_render_list``) is written
+    fenced: indented, it would continue the list's last item."""
     if FENCE_OPEN_RE.match(text):
         return close_fences(text)
     if not (after_list and is_indented_code(text)):
@@ -266,13 +267,21 @@ def _render_list(block: Block, last_column: int = 0) -> str | None:
 def _render_blocks(blocks: list[Block]) -> list[str]:
     """Rendered blocks, each preceded by a blank separator line.
 
-    An indented line directly after a list, once a blank line has ended it,
-    now continues its last item (§5.7, ``parser._parse_list``); a paragraph
-    there is therefore written at the margin like any other (``_paragraph``).
-    Indented code directly after a list would still be read as the item's
-    own paragraph text, so it is written fenced instead (``_code``)."""
+    A line indented to a list's last item's content continues the item,
+    past a blank line too (§5.7, ``parser._parse_list``): a paragraph after
+    a list is written at the margin like any other (``_paragraph``), and a
+    list followed by indented code or HTML is written with its last item's
+    content past that indentation (``_render_list``), so the block is
+    written as it is; where no spacing reaches it, code is fenced
+    (``_code``)."""
     parts: list[str] = []
     as_written: set[int] = set()  # code or HTML after a list the list is written to end before
+    # A block that writes nothing does not stand between a list and what
+    # follows it.
+    blocks = [
+        block for block in blocks
+        if (any(item.strip() for item in block.items) if block.kind in _LISTS else _render_block(block))
+    ]
     for index, block in enumerate(blocks):
         following = blocks[index + 1] if index + 1 < len(blocks) else None
         if block.kind in _LISTS and following is not None and following.kind in ("code", "html"):
@@ -284,7 +293,7 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
             else:
                 rendered = _render_block(block)
         elif index in as_written:
-            rendered = block.text
+            rendered = close_fences(block.text) if block.kind == "code" else block.text
         elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":
             rendered = _code(block.text, after_list=True)
         else:

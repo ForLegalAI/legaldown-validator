@@ -44,6 +44,7 @@ from .markdown import (
     fence_end,
     indent_width,
     item_content_column,
+    open_items,
 )
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import Block, Document
@@ -408,23 +409,19 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
     content, which CommonMark reads as its later paragraphs."""
     lines, items = source.lines, span.items
     starts = [first for first, _raw in items] + [span.end]
+    still_open = set(open_items(lines, starts[:-1], [raw for _first, raw in items]))
     listed = []  # the items the model keeps: it drops empty ones
     for k, (first, raw) in enumerate(items):
         own_end, column = starts[k + 1], item_content_column(lines[first])
         full_end = next(
-            (s for s, _raw in items[k + 1:] if indent_width(lines[s]) < column), None
+            (s for s, _raw in items[k + 1:] if indent_width(lines[s]) < column), span.end
         )
-        if full_end is None:
-            # A chain item: no later item ends it, so it (or, if it is itself
-            # empty, none of its later, nested items either) may run into the
-            # tail. An empty item takes none when it is the list's last: it
-            # can begin with at most one blank line (CommonMark).
-            full_end = span.end
-            if raw.strip() or k + 1 < len(items):
-                end = _tail_end(lines, tails, column)
-                if end is not None:
-                    full_end = end
-        paragraph_end = _paragraph_end(first, raw, own_end)
+        if k in still_open:
+            # Open at the list's end: it may run into the tail.
+            end = _tail_end(lines, tails, column)
+            if end is not None:
+                full_end = end
+        paragraph_end = _first_paragraph_end(raw, own_end)
         if raw.strip():
             listed.append((first, _trim(lines, first, full_end), paragraph_end))
         for note_first, note_last in _note_lines(raw, inside_list=True):
@@ -440,7 +437,7 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
                                       line, marker.source))
 
 
-def _paragraph_end(first: int, raw: str, own_end: int) -> int:
+def _first_paragraph_end(raw: str, own_end: int) -> int:
     """The line after an item's first paragraph: its text's first row joins
     the paragraph's lines, and each later row is one source line, the last
     ending where the item's own lines do (*own_end*)."""
@@ -456,12 +453,31 @@ def _item_code_lines(first: int, raw: str, own_end: int) -> Iterator[int]:
     """The source lines of the item starting on line *first* that hold
     fenced code (§11.4) — a fence in its joined first row covers all of the
     row's lines."""
-    paragraph_end = _paragraph_end(first, raw, own_end)
+    paragraph_end = _first_paragraph_end(raw, own_end)
     for row in _fenced(raw):
         if row == 0:
             yield from range(first, paragraph_end)
         else:
             yield _row_line(first, paragraph_end, row)
+
+
+def _indented_code_rows(raw: str) -> Iterator[int]:
+    """The rows of an item's text in indented code (four columns past its
+    content, after a blank row) with the blank rows between them: step 8
+    keeps those as they are."""
+    blanks: list[int] = []
+    code = after_blank = False
+    for row, text in enumerate(raw.split("\n")):
+        if not text.strip():
+            if code:
+                blanks.append(row)
+            after_blank = True
+            continue
+        code = indent_width(text) >= 4 and (after_blank or code)
+        if code:
+            yield from blanks
+            yield row
+        blanks, after_blank = [], False
 
 
 def _fenced(text: str) -> Iterator[int]:
@@ -1533,6 +1549,8 @@ def _code_lines(lines: list[str]) -> set[int]:
                 starts = [first for first, _raw in block.items] + [block.end]
                 for k, (first, raw) in enumerate(block.items):
                     kept.update(_item_code_lines(first, raw, starts[k + 1]))
+                    paragraph_end = _first_paragraph_end(raw, starts[k + 1])
+                    kept.update(_row_line(first, paragraph_end, row) for row in _indented_code_rows(raw))
     return kept
 
 

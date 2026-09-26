@@ -1306,6 +1306,44 @@ def test_a_tag_is_split_only_where_both_lines_stay_paragraph_text(text):
     assert [b.kind for b in blocks] == ["paragraph"]
 
 
+@pytest.mark.parametrize(("body", "kinds", "titles"), [
+    # Indented code or a table in an item's later content is no paragraph:
+    # the lazy line is after the list (cmark-gfm).
+    ("- a\n\n      code\nlazy\n", ["unordered_list", "paragraph"], ["Terms"]),
+    ("- a\n\n  | x | y |\n  | - | - |\nlazy\n", ["unordered_list", "paragraph"], ["Terms"]),
+    # No paragraph is open after the list: a setext heading follows.
+    ("- a\n\n      code\ntext\n===\n", ["unordered_list"], ["Terms", "text"]),
+    ("- # h\ntext\n===\n", ["unordered_list"], ["Terms", "text"]),
+    # An empty last item closes its sibling: the line is indented code.
+    ("- a\n- \n\n    code\n", ["unordered_list", "code"], ["Terms"]),
+])
+def test_what_follows_a_list_item_that_holds_no_open_paragraph(body, kinds, titles):
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == kinds
+    assert [s.title for s in document.sections] == titles
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_wide_marker_spacing_sets_the_items_column_as_commonmark_does():
+    """Five spaces after the marker: the content column is one past it."""
+    document = parse_document(_FRONTMATTER + "-      foo\n\n      bar\n")
+    assert [b.items for b in document.sections[0].blocks] == [["foo\n\nbar"]]
+
+
+def test_an_unclosed_fence_after_a_list_is_closed_when_written():
+    document = document_from_dict({"sections": [
+        {"title": "A", "blocks": [{"kind": "unordered_list", "items": ["a"]}, {"kind": "code", "text": "```\nx"}]},
+        {"title": "B", "blocks": []},
+    ]})
+    assert [s.title for s in parse_document(serialize_document(document)).sections] == ["A", "B"]
+
+
+def test_an_empty_list_does_not_stand_between_a_list_and_its_code():
+    document = parse_document(_FRONTMATTER + "- a\n\n* \n\n    code\n")
+    reparsed = parse_document(serialize_document(document))
+    assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [("unordered_list", ""), ("code", "    code")]
+
+
 def test_a_table_cell_opening_like_a_fence_is_text():
     assert "ref-broken" in _validate("| a |\n|---|\n| ~~~ {{ref: nowhere}} |\n").rules()
 
