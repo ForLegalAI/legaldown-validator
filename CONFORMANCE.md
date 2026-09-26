@@ -48,12 +48,10 @@ its output depends on (see [Assembly](#assembly-157-176)); the validator still d
 The template constructs of specification 0.2 (§15) are validated within the document: questions,
 conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, insertion
 boundaries, and the final option (§15.9, `validate_document(final=True)` or
-`legaldown validate --final`); assembly is described below. Three limits apply:
+`legaldown validate --final`); assembly is described below. Two limits apply:
 
 - A template's include fragments and LegalDown attachment files are not read (Full, §17.4), so
   `question-unused` is not reported for a template that has either: a question may be used there.
-- The parser flattens nested lists ([#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)),
-  so a nested list item's presence does not include the conditions of the items it is nested in.
 - A LegalDown attachment file or include fragment validated on its own is checked as a
   standalone document: conditions, placeholders, and terms that refer to its template's
   questions and definitions are reported as undeclared.
@@ -66,9 +64,26 @@ item, as CommonMark reads it (§5.7,
 indented code or an HTML block there is part of the item, so code and raw HTML there hold no
 directive, a marker at the end of a later paragraph is misplaced, and the item's condition
 removes it too. Raw HTML on an item's first line is read as the item's text, so directives in it
-are checked ([#59](https://github.com/ForLegalAI/legaldown-validator/issues/59)). Four limits
-follow from the flat list model
-([#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)):
+are checked ([#59](https://github.com/ForLegalAI/legaldown-validator/issues/59)).
+
+A nested list item keeps its depth and its list's kind, and its presence includes the conditions
+of the items it is nested in (§15.3,
+[#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)). The model holds an item's
+text before the items nested in it, not after them, and reads a few list shapes more simply
+than CommonMark:
+
+- Content indented into an item after the items nested in it (`- a` / `  - b` / blank line /
+  `  more`) is not the item's: see the third point below.
+- An item that opens with a nested marker on its first line (`- - a`) is one item, so an item
+  indented under the inner one is nested one level, not two.
+- A nested list that changes its bullet (`-` to `+`) or delimiter (`.` to `)`) stays one list,
+  and an ordered item's number is not kept: a nested list is written numbered from 1.
+- An empty item is not kept; the items nested in it move up into its list. A list of nothing but
+  an empty item (an item of another type right after a list, `- a` / `1. `) is not written back.
+- A nested item that starts a list of another type while its sibling's paragraph is open starts
+  that list even where it may not interrupt the paragraph.
+
+Four limits follow from the list model:
 
 - An ATX heading indented after a list stays a section heading, where CommonMark reads it in the
   item.

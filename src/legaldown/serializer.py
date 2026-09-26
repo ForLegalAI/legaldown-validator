@@ -22,7 +22,7 @@ from .markdown import (
     strip_text,
 )
 from .markers import Marker, format_marker
-from .models import Amends, Block, Document, Metadata, metadata_from_dict
+from .models import Amends, Block, Document, Metadata, listed_items, metadata_from_dict
 from .parser import HEADING_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -134,13 +134,14 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
     return payload
 
 
-def _list_item(marker: str, item: str, *, close: bool = False) -> str:
-    """A list item: its later lines are indented to the item's content;
-    blank lines stay blank. A fence left open in it ends with the item, as
-    CommonMark reads it; *close* closes it, where the parser would read an
-    indented block after the list into it."""
-    first, *rest = (marker + (close_fences(item) if close else item)).split("\n")
-    return "\n".join([first, *(" " * len(marker) + line if line else line for line in rest)])
+def _list_item(prefix: str, item: str, *, close: bool = False) -> str:
+    """A list item written after *prefix*, its indentation and marker: its
+    later lines are indented to the item's content; blank lines stay blank.
+    A fence left open in it ends with the item, as CommonMark reads it;
+    *close* closes it, where the parser would read the indented lines after
+    it into it."""
+    first, *rest = (prefix + (close_fences(item) if close else item)).split("\n")
+    return "\n".join([first, *(" " * len(prefix) + line if line else line for line in rest)])
 
 
 def _opens_block(text: str) -> bool:
@@ -244,39 +245,79 @@ def _render_block(block: Block) -> str:
 _LISTS = ("ordered_list", "unordered_list")
 
 
+def list_runs(nesting: list[tuple[int, str]]) -> list[int]:
+    """Which list each item is in, as an index into the lists in order of
+    their first item: an item continues the list of the last item before it
+    at its depth, under the same parent and of the same kind, and otherwise
+    starts one. *nesting* holds each item's depth and kind, depths starting
+    at 0 and rising by at most one (``list_nesting``)."""
+    runs: list[int] = []
+    open_runs: list[tuple[int, str]] = []  # (list, kind) of the last item at each depth
+    for level, kind in nesting:
+        del open_runs[level + 1:]
+        if level < len(open_runs) and open_runs[level][1] == kind:
+            run = open_runs[level][0]
+        else:
+            run = max(runs, default=-1) + 1
+        open_runs[level:] = [(run, kind)]
+        runs.append(run)
+    return runs
+
+
 def _render_list(block: Block, last_column: int = 0, *, close_last: bool = False) -> str | None:
-    """A list, its last item's content starting at *last_column* or past it
-    — more spacing after its marker (at most four, CommonMark) — so that a
-    block written after it, indented less, is not read as that item's
-    (§5.7). None when no spacing reaches *last_column*. *close_last*: a
-    fence left open in the last item is closed, since another list follows
-    that it would otherwise run into."""
-    items = [item for item in block.items if item.strip()]
-    if block.kind == "unordered_list":
-        # An item whose text begins with dashes, such as "--", would make a
-        # "- " line a thematic break; "+" never forms one.
-        bullet = "+ " if any(RULE_RE.match("- " + item.split("\n")[0]) for item in items) else "- "
-        markers = [bullet] * len(items)
-    else:
-        markers = [f"{index}. " for index in range(1, len(items) + 1)]
-    # A later line of an item that reads as an ATX heading at the margin is
-    # written at least four columns in, where the parser keeps it the item's
-    # text (``parser._parse_list``): its item's content starts further in.
-    for k, item in enumerate(items):
+    """A list, its items nested as the model holds them (``listed_items``),
+    each at its parent's content column. The last item of the list itself
+    has its content start at *last_column* or past it — more spacing after
+    its marker (at most four, CommonMark) — so that a block written after
+    the list, indented less, is not read as that item's or as that of an
+    item nested in it (§5.7). None when no spacing reaches *last_column*.
+    *close_last*: a fence left open in the last item is closed, since
+    another list follows that it would otherwise run into."""
+    listed = listed_items(block)
+    nesting = [(level, kind) for _item, level, kind in listed]
+    runs = list_runs(nesting)
+    # An item whose text begins with dashes, such as "--", would make a
+    # "- " line a thematic break; "+" never forms one.
+    plus = {
+        run for run, (item, _level, kind) in zip(runs, listed, strict=True)
+        if kind == "unordered_list" and RULE_RE.match("- " + item.split("\n")[0])
+    }
+    numbers: dict[int, int] = {}
+    markers: list[str] = []
+    for run, (_item, _level, kind) in zip(runs, listed, strict=True):
+        if kind == "unordered_list":
+            markers.append("+ " if run in plus else "- ")
+        else:
+            numbers[run] = numbers.get(run, 0) + 1
+            markers.append(f"{numbers[run]}. ")
+    last = max((k for k, (_item, level, _kind) in enumerate(listed) if not level), default=None)
+    columns: list[int] = []  # the content column of the last item at each depth
+    prefixes: list[str] = []
+    for k, ((item, level, _kind), marker) in enumerate(zip(listed, markers, strict=True)):
+        indent = columns[level - 1] if level else 0
+        # A later line of an item that reads as an ATX heading at the
+        # margin is written at least four columns in, where the parser
+        # keeps it the item's text (``parser._parse_list``): its item's
+        # content starts further in.
         rows = [row for row in item.split("\n")[1:] if HEADING_RE.match(row)]
-        if rows:
-            needed = 4 - min(indent_width(row) for row in rows)
-            if len(markers[k]) < needed:
-                markers[k] = markers[k].rstrip() + " " * (needed - len(markers[k].rstrip()))
-    if markers and len(markers[-1]) < last_column:
-        spacing = last_column - len(markers[-1].rstrip())
-        if spacing > 4:
-            return None
-        markers[-1] = markers[-1].rstrip() + " " * spacing
-    return "\n".join(
-        _list_item(marker, item, close=(close_last or bool(last_column)) and k == len(items) - 1)
-        for k, (marker, item) in enumerate(zip(markers, items, strict=True))
-    )
+        needed = 4 - min((indent_width(row) for row in rows), default=4) - indent
+        if k == last:
+            needed = max(needed, last_column)  # an item of the list itself: at the margin
+        if len(marker) < needed:
+            spacing = needed - len(marker.rstrip())
+            if spacing > 4:
+                return None  # past last_column only: a heading row needs less
+            marker = marker.rstrip() + " " * spacing
+        prefixes.append(" " * indent + marker)
+        columns[level:] = [indent + len(marker)]
+    rendered = []
+    for k, ((item, level, _kind), prefix) in enumerate(zip(listed, prefixes, strict=True)):
+        # A fence left open in an item runs on into what is indented to its
+        # content after it: an item nested in it, or a block after the list.
+        following = k + 1 < len(listed) and listed[k + 1][1] > level
+        close = following or ((close_last or bool(last_column)) and k == len(listed) - 1)
+        rendered.append(_list_item(prefix, item, close=close))
+    return "\n".join(rendered)
 
 
 def _render_blocks(blocks: list[Block]) -> list[str]:
@@ -307,7 +348,9 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
                 as_written.add(index + 1)
             else:
                 rendered = _render_block(block)
-        elif block.kind in _LISTS and following is not None and following.kind in _LISTS:
+        elif block.kind in _LISTS and following is not None and following.kind == block.kind:
+            # A fence left open in the last item would run on through the
+            # blank line into the next list, which then continues this one.
             rendered = _render_list(block, close_last=True) or ""
         elif index in as_written:
             rendered = close_fences(block.text) if block.kind == "code" else block.text

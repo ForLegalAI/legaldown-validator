@@ -405,13 +405,13 @@ def _check_never_true(
             continue  # literal text, or a preamble paragraph (no enclosing section)
         if not units.own(found.section, found.block, found.fragment):
             continue
-        if satisfiable(units.presence(found.section), questions) and not satisfiable(
-            units.presence(found.section, found.block, found.fragment), questions
-        ):
+        if satisfiable(
+            units.enclosing_unit(found.section, found.block, found.fragment), questions
+        ) and not satisfiable(units.presence(found.section, found.block, found.fragment), questions):
             result.warning(
                 "condition-never-true",
                 f"'{found.source}' marks a unit that can never appear: its condition "
-                f"contradicts those of the sections enclosing it (§15.4).",
+                f"contradicts those of the sections and list items enclosing it (§15.4).",
             )
 
 

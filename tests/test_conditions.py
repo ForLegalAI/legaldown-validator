@@ -479,3 +479,41 @@ def test_an_amendments_term_is_not_checked_when_its_original_is_unread():
     frontmatter = _QUESTIONS + "amends:\n  title: Original\n  file: original.lgd\n"
     body = '# A\n\n"Fee" {{def: fee}} means x. {when=vat}\n\nThe {{term: fee}} applies.'
     assert "condition-reference-unsafe" not in _rules(body, frontmatter)
+
+
+# ── Nested list items (§15.3, #16) ────────────────────────────────
+
+
+def test_a_nested_items_presence_includes_the_items_it_is_nested_in():
+    body = "# A\n\n- parent {when=vat}\n  - child {when=!vat}\n- other"
+    result = validate_document(_parse(body))
+    messages = [d.message for d in result.diagnostics if d.rule == "condition-never-true"]
+    assert len(messages) == 1 and "'{when=!vat}'" in messages[0]
+
+
+def test_every_item_a_nested_item_is_in_counts():
+    body = "# A\n\n- a {when=vat}\n  - b\n    - c {when=!vat}"
+    assert "condition-never-true" in _rules(body)
+    # A sibling of the conditional item's parent is not in it.
+    assert "condition-never-true" not in _rules("# A\n\n- a {when=vat}\n  - b\n- c {when=!vat}")
+
+
+def test_an_item_nested_in_one_that_can_never_appear_is_not_reported_again():
+    body = "# A {when=vat}\n\n- a {when=!vat}\n  - b {when=!vat}"
+    result = validate_document(_parse(body))
+    assert [d.rule for d in result.diagnostics].count("condition-never-true") == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "unsafe"),
+    [
+        # The anchor is present only with its parent item.
+        ("# A\n\n- parent {when=vat}\n  - child {#c}\n\n# B\n\nSee {{ref: c}}.", True),
+        ("# A\n\n- parent {when=vat}\n  - child {#c}\n\n# B\n\nSee {{ref: c}}. {when=vat}", False),
+        # A reference nested in the same item is present only with it.
+        ("# A\n\n- parent {#p when=vat}\n  - See {{ref: p}}.", False),
+        ("# A\n\n- parent {when=vat}\n  - child {#c}\n- See {{ref: c}}.", True),
+    ],
+)
+def test_reference_safety_follows_nested_items(body, unsafe):
+    assert ("condition-reference-unsafe" in _rules(body)) == unsafe

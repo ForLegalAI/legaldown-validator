@@ -127,11 +127,57 @@ class Block:
     target: str = ""
     label: str = ""
     items: list[str] = field(default_factory=list)
+    #: A list's items' nesting depths, parallel to ``items``: 0 for an item
+    #: of the block's own list, one more for each item it is nested in
+    #: (§15.3). Empty when no item is nested. Read through ``list_nesting``.
+    levels: list[int] = field(default_factory=list)
+    #: The kind of the list each item is in (``ordered_list`` or
+    #: ``unordered_list``), parallel to ``items``: a nested list's own. Empty
+    #: when no item is nested.
+    item_kinds: list[str] = field(default_factory=list)
     headers: list[str] = field(default_factory=list)
     rows: list[list[str]] = field(default_factory=list)
     #: A table's column alignments, one per column: ``"left"``, ``"right"``,
     #: ``"center"``, or ``""`` for none (§9.1).
     align: list[str] = field(default_factory=list)
+
+
+LIST_KINDS = ("ordered_list", "unordered_list")
+
+
+def list_nesting(block: Block) -> list[tuple[int, str]]:
+    """Each of a list's items' nesting depth and the kind of the list it is
+    in, read leniently, as a model built or edited in code may hold them: a
+    missing depth is 0 and one more than one below the item before is one
+    below it; an item of depth 0 is in the block's own list, and a nested
+    item with no known kind in a list of the block's kind."""
+    nesting: list[tuple[int, str]] = []
+    previous = -1
+    for k in range(len(block.items)):
+        level = block.levels[k] if k < len(block.levels) else 0
+        level = level if isinstance(level, int) and not isinstance(level, bool) else 0
+        level = max(0, min(level, previous + 1))
+        kind = block.item_kinds[k] if k < len(block.item_kinds) else ""
+        nesting.append((level, kind if level and kind in LIST_KINDS else block.kind))
+        previous = level
+    return nesting
+
+
+def listed_items(block: Block) -> list[tuple[str, int, str]]:
+    """A list's items that hold text, each with its depth and its list's
+    kind (``list_nesting``). An empty item is not listed: the items nested
+    in it move up a level, into the list it was in."""
+    listed: list[tuple[str, int, str]] = []
+    dropped: list[int] = []  # the depths of the empty items the walk is in
+    for item, (level, kind) in zip(block.items, list_nesting(block), strict=True):
+        while dropped and dropped[-1] >= level:
+            dropped.pop()
+        if not item.strip():
+            dropped.append(level)
+            continue
+        level -= len(dropped)
+        listed.append((item, level, kind if level else block.kind))
+    return listed
 
 
 @dataclass(slots=True)
@@ -281,6 +327,28 @@ def _block_text(kind: str, value: Any) -> str:
     return strip_text(text) if text.strip() else ""
 
 
+def _list_fields(kind: str, merged: dict[str, Any]) -> dict[str, Any]:
+    """A block's ``items``, stripped, the empty ones dropped (``listed_items``),
+    with their ``levels`` and ``item_kinds``: none when no item is nested."""
+    block = Block(
+        kind=kind,
+        items=[str(item) for item in list(merged.get("items") or [])],
+        levels=list(merged.get("levels") or []),
+        item_kinds=[str(value) for value in list(merged.get("item_kinds") or [])],
+    )
+    listed = listed_items(block)
+    items = [item.strip() for item, _level, _kind in listed]
+    if not items and kind.endswith("list"):
+        items = [""]
+    if not any(level for _item, level, _kind in listed):
+        return {"items": items, "levels": [], "item_kinds": []}
+    return {
+        "items": items,
+        "levels": [level for _item, level, _kind in listed],
+        "item_kinds": [item_kind for _item, _level, item_kind in listed],
+    }
+
+
 def block_from_dict(data: dict[str, Any] | None) -> Block:
     """Construct a Block from a dict, applying defaults for missing fields."""
     payload = data or {}
@@ -301,8 +369,7 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         suffix=str(merged.get("suffix") or ""),
         target=_str(merged.get("target")),
         label=_str(merged.get("label")),
-        items=_clean_list(list(merged.get("items") or []))
-        or ([""] if kind.endswith("list") else []),
+        **_list_fields(kind, merged),
         headers=headers,
         rows=_table_rows(list(merged.get("rows") or []), len(headers)),
         align=_table_align(list(merged.get("align") or []), len(headers)),
