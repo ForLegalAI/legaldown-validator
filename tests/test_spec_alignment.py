@@ -1233,7 +1233,7 @@ def test_a_paragraph_of_only_whitespace_is_empty():
 @pytest.mark.parametrize("fence", ["  ~~~", "    ~~~", "  ```"])
 def test_a_fence_after_a_blank_line_in_an_item_is_code(fence):
     """#54: it continues the item, where CommonMark reads code (§11.4)."""
-    closer = fence.replace("~~~", "~~~").strip()
+    closer = fence.strip()
     body = f"- a\n\n{fence}\n  {{{{ref: nowhere}}}}\n  {closer}\n\nSee {{{{ref: missing}}}}.\n"
     broken = [d.message for d in _validate(body).diagnostics if d.rule == "ref-broken"]
     assert broken == ["Broken section reference: 'missing'."]
@@ -1259,6 +1259,51 @@ def test_where_a_list_does_not_continue_past_a_blank_line(body, kinds, titles):
     assert [s.title for s in document.sections] == titles
     if "- \n" not in body:  # an empty item is not written back (#46)
         assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize(("body", "items", "after"), [
+    # A lazy line continues an item only while its paragraph or quote's
+    # paragraph is open (cmark-gfm).
+    ("- > # H\nfoo {#q}\n", ["> # H"], ["paragraph"]),
+    ("- >\nfoo\n", [">"], ["paragraph"]),
+    # The blank line closed the item's paragraph: `2.` starts a list.
+    ("- a\n\n  2. b\n", ["a", "b"], []),
+])
+def test_what_an_items_later_content_is(body, items, after):
+    document = parse_document(_FRONTMATTER + body)
+    blocks = document.sections[0].blocks
+    assert blocks[0].items == items and [b.kind for b in blocks[1:]] == after
+
+
+@pytest.mark.parametrize("body", [
+    "100. Clause\n\n    more {{ref: nowhere}}\n",
+    "-    a\n\n    code {{ref: nowhere}}\n",
+])
+def test_a_line_short_of_every_open_items_content_is_code(body):
+    """No item reaches it, so it is indented code (cmark-gfm)."""
+    document = parse_document(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == ["ordered_list" if body[0] == "1" else "unordered_list", "code"]
+    assert "ref-broken" not in _validate(body).rules()
+    assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize("body", [
+    "-   a\n\n  <div>\n",
+    "1.  a\n\n   ~~~\n   x {{ref: y}}\n   ~~~\n",
+    "100. a\n\n    <div class='x'>\n",
+])
+def test_a_block_after_a_wide_list_marker_round_trips(body):
+    """The list is written back with its last item's content past the
+    block's indentation, so the block stays after it."""
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize("text", ["<div class='x'>", "<a >", "</a >"])
+def test_a_tag_is_split_only_where_both_lines_stay_paragraph_text(text):
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": text}]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [b.kind for b in blocks] == ["paragraph"]
 
 
 def test_a_table_cell_opening_like_a_fence_is_text():
@@ -1934,14 +1979,16 @@ def test_a_document_can_open_with_indented_code():
     assert parse_document(serialize_document(document)) == document
 
 
-def test_model_built_indented_code_after_a_list_is_written_fenced():
+def test_indented_code_after_a_list_is_written_as_it_is():
+    """The list's last item is written with its content past the code's
+    indentation, so the code does not continue it (§5.7)."""
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["one"]},
         {"kind": "code", "text": "    x = `y`\n\n      z"},
     ]}]})
     written = serialize_document(document)
-    assert "- one\n\n```\nx = `y`\n\n  z\n```" in written
-    assert [b.kind for b in parse_document(written).sections[0].blocks] == ["unordered_list", "code"]
+    assert "-    one\n\n    x = `y`\n\n      z" in written
+    assert parse_document(written) == document
 
 
 def test_every_indented_paragraph_after_a_list_is_the_items():
@@ -1993,7 +2040,7 @@ def test_an_indented_header_row_after_another_block_is_code(before):
     assert "ref-broken" not in validate_document(document).rules()
 
 
-def test_code_directly_after_a_list_is_written_fenced():
+def test_code_directly_after_a_list_is_written_so_it_stays_code():
     """An indented line directly after a list is now the item's own content
     (§5.7): the paragraph here is unindented enough to end the list first
     (CommonMark), so the code after it is ordinary indented code, not the
@@ -2009,7 +2056,7 @@ def test_code_directly_after_a_list_is_written_fenced():
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "code", "text": "    x"},
     ]}]})
     blocks = parse_document(serialize_document(document)).sections[0].blocks
-    assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("code", "```\nx\n```")]
+    assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("code", "    x")]
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "# foo"}, {"kind": "code", "text": "    x"},
     ]}]})
@@ -2017,7 +2064,7 @@ def test_code_directly_after_a_list_is_written_fenced():
     assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("paragraph", "\\# foo"), ("code", "    x")]
 
 
-def test_the_indented_run_stops_at_text_that_reads_as_another_block():
+def test_text_after_a_list_that_would_open_a_block_is_escaped():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "> q"},
         {"kind": "paragraph", "text": "# foo"},
@@ -2026,7 +2073,7 @@ def test_the_indented_run_stops_at_text_that_reads_as_another_block():
     assert (blocks[-1].kind, blocks[-1].text) == ("paragraph", "\\# foo")
 
 
-# ── Review follow-ups: table rows, kind-7 tags, the indented run ──
+# ── Review follow-ups: table rows, kind-7 tags, paragraphs after a list ──
 
 
 @pytest.mark.parametrize(

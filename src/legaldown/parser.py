@@ -27,6 +27,7 @@ from .markdown import (
     html_block_end,
     indent_width,
     indented_code_end,
+    item_content_column,
     strip_text,
 )
 from .markers import Marker, split_heading
@@ -335,7 +336,7 @@ def _parse_list(
                 break
             items[-1] += "\n" * (following - end)  # the blank lines, one row each
             end = following
-            lazy = False
+            lazy = paragraph = False  # the blank line closed the item's paragraph
             quote = None  # a later paragraph in the item is not the quote's
             continue
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
@@ -358,7 +359,7 @@ def _parse_list(
             if item_starts is not None:
                 item_starts.append(end)
             quote = None
-        elif items and (indented or ((quote is not None or paragraph) and _is_lazy_line(line))):
+        elif items and (indented or ((quote.paragraph if quote is not None else paragraph) and _is_lazy_line(line))):
             content = dedent(line, content_indent) if indented else line.strip()
             if quote is not None and not content.startswith(">"):
                 # A lazy line (unindented) always continues the quote here:
@@ -585,6 +586,22 @@ def _is_paragraph_text(content: str) -> bool:
     )
 
 
+def _open_columns(lines: list[str], item_starts: list[int], items: list[str]) -> list[int]:
+    """The content columns of a list's items still open at its end: the
+    last item and each item every later one is nested in. An empty last item
+    is not open past a blank line (CommonMark)."""
+    starts = item_starts[:-1] if items and not items[-1].strip() else item_starts
+    columns: list[int] = []
+    lowest: int | None = None  # the least indentation of the items after
+    for first in reversed(starts):
+        column = item_content_column(lines[first])
+        if lowest is None or lowest >= column:
+            columns.append(column)
+        indent = indent_width(lines[first])
+        lowest = indent if lowest is None else min(lowest, indent)
+    return columns
+
+
 def _may_interrupt(line: str, marker: re.Match[str]) -> bool:
     """True if the list item *marker* opens on *line* may interrupt a
     paragraph (CommonMark): it is not empty and, if ordered, its number is
@@ -703,6 +720,7 @@ def _parse_body(
     # stay paragraphs rather than code: CommonMark keeps them in the list's
     # last item. The run lasts through such paragraphs.
     list_tail = False
+    tail_columns: list[int] = []  # the content columns of the items open at the list's end
     interrupted = -1  # the line at which a paragraph was interrupted
     index = 0
     while index < len(lines):
@@ -713,7 +731,9 @@ def _parse_body(
             continue
         heading: _Heading | None = None
         start, count, item_starts = index, len(blocks), []
-        in_tail = list_tail and indent_width(line) >= 4
+        # Only a line reaching an item still open at the list's end is in it;
+        # one short of every such item is indented code (CommonMark).
+        in_tail = list_tail and indent_width(line) >= 4 and any(c <= indent_width(line) for c in tail_columns)
         # A table that interrupted a paragraph may have an indented header
         # row: the paragraph ended there (_paragraph_end).
         interrupting_table = index == interrupted and _parse_table(lines, index) is not None
@@ -773,6 +793,8 @@ def _parse_body(
                 lines, index, list_type=_list_type(marker), item_starts=item_starts
             )
             blocks.append(block)
+            columns = _open_columns(lines, item_starts, block.items)
+            tail_columns = sorted({*tail_columns, *columns}) if in_tail else columns
         elif (end := html_block_end(lines, index)) is not None:
             # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
             # no heading or other block starts inside it.

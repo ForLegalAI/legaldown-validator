@@ -16,6 +16,7 @@ from .markdown import (
     close_fences,
     dedent,
     html_block_end,
+    indent_width,
     is_indented_code,
     split_lone_tag,
     strip_text,
@@ -210,19 +211,8 @@ def _render_block(block: Block) -> str:
         target = format_value(block.target, positional=True)
         label_part = f", label={format_value(block.label)}" if block.label else ""
         return _paragraph(strip_text(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}"))
-    if block.kind == "unordered_list":
-        items = [item for item in block.items if item.strip()]
-        # An item whose text begins with dashes, such as "--", would make a
-        # "- " line a thematic break; "+" never forms one.
-        bullet = "+ " if any(RULE_RE.match("- " + item.split("\n")[0]) for item in items) else "- "
-        return "\n".join(_list_item(bullet, item) for item in items)
-    if block.kind == "ordered_list":
-        return "\n".join(
-            _list_item(f"{index}. ", item)
-            for index, item in enumerate(
-                (item for item in block.items if item.strip()), start=1
-            )
-        )
+    if block.kind in _LISTS:
+        return _render_list(block) or ""
     if block.kind == "quote":
         lines = block.text.split("\n")  # the parser joins quoted lines with LF
         return "\n".join(f"> {line}".rstrip() for line in lines)
@@ -252,6 +242,27 @@ def _render_block(block: Block) -> str:
 _LISTS = ("ordered_list", "unordered_list")
 
 
+def _render_list(block: Block, last_column: int = 0) -> str | None:
+    """A list, its last item's content starting at *last_column* or past it
+    — more spacing after its marker (at most four, CommonMark) — so that a
+    block written after it, indented less, is not read as that item's
+    (§5.7). None when no spacing reaches *last_column*."""
+    items = [item for item in block.items if item.strip()]
+    if block.kind == "unordered_list":
+        # An item whose text begins with dashes, such as "--", would make a
+        # "- " line a thematic break; "+" never forms one.
+        bullet = "+ " if any(RULE_RE.match("- " + item.split("\n")[0]) for item in items) else "- "
+        markers = [bullet] * len(items)
+    else:
+        markers = [f"{index}. " for index in range(1, len(items) + 1)]
+    if markers and len(markers[-1]) < last_column:
+        spacing = last_column - len(markers[-1].rstrip())
+        if spacing > 4:
+            return None
+        markers[-1] = markers[-1].rstrip() + " " * spacing
+    return "\n".join(_list_item(marker, item) for marker, item in zip(markers, items, strict=True))
+
+
 def _render_blocks(blocks: list[Block]) -> list[str]:
     """Rendered blocks, each preceded by a blank separator line.
 
@@ -261,11 +272,23 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
     Indented code directly after a list would still be read as the item's
     own paragraph text, so it is written fenced instead (``_code``)."""
     parts: list[str] = []
+    as_written: set[int] = set()  # code or HTML after a list the list is written to end before
     for index, block in enumerate(blocks):
-        after_list = index > 0 and blocks[index - 1].kind in _LISTS
-        rendered = (
-            _code(block.text, after_list=True) if after_list and block.kind == "code" else _render_block(block)
-        )
+        following = blocks[index + 1] if index + 1 < len(blocks) else None
+        if block.kind in _LISTS and following is not None and following.kind in ("code", "html"):
+            # A block indented to the last item's content would continue it:
+            # the item is written with its content further in.
+            rendered = _render_list(block, indent_width(following.text) + 1)
+            if rendered is not None:
+                as_written.add(index + 1)
+            else:
+                rendered = _render_block(block)
+        elif index in as_written:
+            rendered = block.text
+        elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":
+            rendered = _code(block.text, after_list=True)
+        else:
+            rendered = _render_block(block)
         if rendered:
             parts.extend(["", rendered])
     return parts

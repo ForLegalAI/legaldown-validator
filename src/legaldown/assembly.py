@@ -37,7 +37,14 @@ from functools import cache
 from typing import Any
 
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
-from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, LINE_ENDING_RE, fence_end, indent_width
+from .markdown import (
+    FENCE_OPEN_RE,
+    HTML_BLOCK_START_RE,
+    LINE_ENDING_RE,
+    fence_end,
+    indent_width,
+    item_content_column,
+)
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import Block, Document
 from .parser import (
@@ -340,25 +347,6 @@ def _tail_end(lines: list[str], following: list[_BlockSpan], column: int) -> int
     return end
 
 
-# A list item's marker, as the parser's LIST_ITEM_RE reads it.
-_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
-
-
-def _content_column(line: str) -> int:
-    """The column where the content of the list item beginning on *line*
-    starts (CommonMark): after its marker and one to four columns of spacing,
-    or one column when there are more, or when the item is empty."""
-    marker = _ITEM_START_RE.match(line)
-    if marker is None:  # never: the parser read *line* as an item
-        return indent_width(line) + 2
-    after = len(line[:marker.end()].expandtabs(4))
-    rest = line[marker.end():]
-    if not rest.strip():
-        return after + 1
-    spacing = len(line[:len(line) - len(rest.lstrip(" \t"))].expandtabs(4)) - after
-    return after + 1 if spacing > 4 else after + spacing
-
-
 def _section_units(
     layout: _Layout, document: Document, lines: list[str], questions: Any
 ) -> list[_Unit]:
@@ -422,7 +410,7 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
     starts = [first for first, _raw in items] + [span.end]
     listed = []  # the items the model keeps: it drops empty ones
     for k, (first, raw) in enumerate(items):
-        own_end, column = starts[k + 1], _content_column(lines[first])
+        own_end, column = starts[k + 1], item_content_column(lines[first])
         full_end = next(
             (s for s, _raw in items[k + 1:] if indent_width(lines[s]) < column), None
         )
@@ -436,31 +424,44 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
                 end = _tail_end(lines, tails, column)
                 if end is not None:
                     full_end = end
-        text_lines = raw.count("\n") + 1
-        paragraph_end = own_end - (text_lines - 1)
+        paragraph_end = _paragraph_end(first, raw, own_end)
         if raw.strip():
             listed.append((first, _trim(lines, first, full_end), paragraph_end))
-        # The item text's first line is its first paragraph, joined; each
-        # later one is a source line, the last ending where the item does.
-        def source_line(row: int) -> int:
-            return first if row == 0 else paragraph_end + row - 1  # noqa: B023
-
         for note_first, note_last in _note_lines(raw, inside_list=True):
-            source.notes.update(range(source_line(note_first), source_line(note_last) + 1))
-        for row in _fenced(raw):
-            if row == 0:
-                # Row 0 is the item's joined first paragraph: a fence found
-                # there is written across all of its source lines, not just
-                # the first.
-                source.code.update(range(first, paragraph_end))
-            else:
-                source.code.add(source_line(row))
+            source.notes.update(range(
+                _row_line(first, paragraph_end, note_first), _row_line(first, paragraph_end, note_last) + 1
+            ))
+        source.code.update(_item_code_lines(first, raw, own_end))
     for marker in markers:
         if marker.marker.condition and marker.fragment < len(listed):
             first, end, paragraph_end = listed[marker.fragment]
             line = _marker_line(lines, first, paragraph_end, marker.source)
             source.units.append(_Unit(first, end, _test(marker.marker.condition, questions),
                                       line, marker.source))
+
+
+def _paragraph_end(first: int, raw: str, own_end: int) -> int:
+    """The line after an item's first paragraph: its text's first row joins
+    the paragraph's lines, and each later row is one source line, the last
+    ending where the item's own lines do (*own_end*)."""
+    return own_end - raw.count("\n")
+
+
+def _row_line(first: int, paragraph_end: int, row: int) -> int:
+    """The source line an item text's *row* starts on."""
+    return first if row == 0 else paragraph_end + row - 1
+
+
+def _item_code_lines(first: int, raw: str, own_end: int) -> Iterator[int]:
+    """The source lines of the item starting on line *first* that hold
+    fenced code (§11.4) — a fence in its joined first row covers all of the
+    row's lines."""
+    paragraph_end = _paragraph_end(first, raw, own_end)
+    for row in _fenced(raw):
+        if row == 0:
+            yield from range(first, paragraph_end)
+        else:
+            yield _row_line(first, paragraph_end, row)
 
 
 def _fenced(text: str) -> Iterator[int]:
@@ -1517,29 +1518,6 @@ def _preserve_identifiers(t: _Template, head: str, main: list[_Line],
 # ── Step 8: blank lines ──────────────────────────────────────────
 
 
-def _list_code_lines(lines: list[str], span: _BlockSpan) -> Iterator[int]:
-    """The lines of list *span* that hold fenced code inside one of its
-    items (§11.4): a blank line there is the fence's, not a separator, so
-    step 8 leaves it. A list may now hold a later paragraph of an item
-    (§5.7), whose own blank lines are ordinary body blanks and collapse
-    like any other."""
-    starts = [first for first, _raw in span.items] + [span.end]
-    for k, (first, raw) in enumerate(span.items):
-        text_lines = raw.count("\n") + 1
-        paragraph_end = starts[k + 1] - (text_lines - 1)
-
-        def source_line(row: int) -> int:
-            return first if row == 0 else paragraph_end + row - 1  # noqa: B023
-
-        for row in _fenced(raw):
-            if row == 0:
-                # Row 0 is the item's joined first paragraph, written across
-                # all of its source lines (``_read_list``).
-                yield from range(first, paragraph_end)
-            else:
-                yield source_line(row)
-
-
 def _code_lines(lines: list[str]) -> set[int]:
     """Lines whose blankness is content: fenced and indented code, and the
     fenced code inside a list's items. Blank lines in raw HTML are not
@@ -1550,7 +1528,11 @@ def _code_lines(lines: list[str]) -> set[int]:
             if _kind(block) == "code":
                 kept.update(range(block.start, block.end))
             elif _kind(block) == "list":
-                kept.update(_list_code_lines(lines, block))
+                # A list's other blank lines separate an item's paragraphs
+                # (§5.7): they collapse like any others.
+                starts = [first for first, _raw in block.items] + [block.end]
+                for k, (first, raw) in enumerate(block.items):
+                    kept.update(_item_code_lines(first, raw, starts[k + 1]))
     return kept
 
 

@@ -90,7 +90,14 @@ def split_lone_tag(text: str) -> str | None:
     if not _HTML_BLOCK_7_RE.match(text):
         return None
     at = text.find(" ")
-    return f"{text[:at]}\n{text[at + 1:]}" if at >= 0 else None
+    if at < 0:
+        return None
+    first, second = text[:at], text[at + 1:]
+    # Neither line may open a block of its own: a block-level tag name
+    # (``<div``) would, and so would a second line opening like a quote.
+    if HTML_BLOCK_START_RE.match(first) or second.lstrip(" ").startswith(">"):
+        return None
+    return f"{first}\n{second}"
 
 
 # An HTML comment (CommonMark 0.31): ``<!-->``, ``<!--->``, or ``<!--``, text
@@ -123,6 +130,25 @@ def indent_width(line: str) -> int:
         else:
             break
     return column
+
+
+# A list item's marker, as the parser's LIST_ITEM_RE reads it.
+_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
+
+
+def item_content_column(line: str) -> int:
+    """The column where the content of the list item beginning on *line*
+    starts (CommonMark): after its marker and one to four columns of spacing,
+    or one column when there are more, or when the item is empty."""
+    marker = _ITEM_START_RE.match(line)
+    if marker is None:  # never: the parser read *line* as an item
+        return indent_width(line) + 2
+    after = len(line[:marker.end()].expandtabs(4))
+    rest = line[marker.end():]
+    if not rest.strip():
+        return after + 1
+    spacing = len(line[:len(line) - len(rest.lstrip(" \t"))].expandtabs(4)) - after
+    return after + 1 if spacing > 4 else after + spacing
 
 
 def dedent(line: str, columns: int) -> str:
