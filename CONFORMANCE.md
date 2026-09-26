@@ -65,7 +65,8 @@ item, as CommonMark reads it (§5.7,
 [#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)): a later paragraph or a fence
 there is part of the item, so the fence is code, a marker at the end of a later paragraph is
 misplaced, and the item's condition removes it too. Raw HTML in a list item, there or on its first
-line, is read as the item's text, so directives in it are checked. Four limits follow from the
+line, is read as the item's text, so directives in it are checked
+([#59](https://github.com/ForLegalAI/legaldown-validator/issues/59)). Four limits follow from the
 flat list model ([#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)):
 
 - An ATX heading indented after a list stays a section heading, where CommonMark reads it in the
