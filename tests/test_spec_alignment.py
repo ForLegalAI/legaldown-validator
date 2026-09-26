@@ -1195,6 +1195,11 @@ def test_a_list_item_or_quote_that_is_one_fence_line_is_code(body):
     ("- a\n  1. b\n", [("unordered_list", ["a", "b"])]),
     ("- a\n  - b\n", [("unordered_list", ["a", "b"])]),
     ("- a\n  > b\n  2. x\n", [("unordered_list", ["a\n> b", "x"])]),
+    # After a heading, a rule or a nested item the item has no open
+    # paragraph, so any item starts a list (cmark-gfm).
+    ("- # H\n  2. x\n", [("unordered_list", ["# H", "x"])]),
+    ("- ***\n  2. x\n", [("unordered_list", ["***", "x"])]),
+    ("- - a\n  2. b\n", [("unordered_list", ["- a", "b"])]),
 ])
 def test_a_nested_item_interrupts_its_items_paragraph_only_as_commonmark_allows(body, items):
     """Only a bullet with text, or an ordered item numbered 1, may
@@ -1208,6 +1213,21 @@ def test_an_item_numbered_1_however_written_interrupts_a_paragraph(number):
     """#57: the number is compared as a number."""
     document = parse_document(_FRONTMATTER + f"Text\n{number}. item\n")
     assert [b.kind for b in document.sections[0].blocks] == ["paragraph", "ordered_list"]
+
+
+def test_an_anchored_heading_item_before_a_nested_item_keeps_its_anchor():
+    assert _validate("- # Heading item {#h}\n  2. More.\n\nSee {{ref: h}}.\n").rules() == set()
+
+
+@pytest.mark.parametrize("text", [" See {{ref: x}}.", "See {{ref: x}} ", " Use {{term: x}}."])
+def test_a_no_break_space_round_trips_around_a_lifted_directive(text):
+    document = parse_document(_FRONTMATTER + text + "\n")
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_a_paragraph_of_only_whitespace_is_empty():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": " "}]}]})
+    assert document.sections[0].blocks[0].text == ""
 
 
 def test_a_table_cell_opening_like_a_fence_is_text():

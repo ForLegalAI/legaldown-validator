@@ -27,6 +27,7 @@ from .markdown import (
     html_block_end,
     indent_width,
     indented_code_end,
+    strip_text,
 )
 from .markers import Marker, split_heading
 from .models import Block, Document, document_from_dict
@@ -310,6 +311,7 @@ def _parse_list(
     quote: _Quote | None = None  # the block quote the current item ends with
     content_indent = 0  # columns before the current item's text
     lazy = False
+    paragraph = False  # the current item's own last content is paragraph text
     end = index
     while end < len(lines):
         line = lines[end]
@@ -327,8 +329,9 @@ def _parse_list(
             break
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
+        joined = False  # the line is paragraph text though it looks like an item
         if (
-            marker and lazy and quote is None and items
+            marker and paragraph and quote is None and indented
             and indent_width(line) >= content_indent and not _may_interrupt(line, marker)
         ):
             # A nested list would interrupt the item's own open paragraph,
@@ -336,6 +339,7 @@ def _parse_list(
             # text. (A quote's paragraph is not the item's: after it, such
             # a line starts a list.)
             marker = None
+            joined = True
         if marker and (_list_type(marker) == list_type or indented):
             content_indent = len(line[:marker.end()].expandtabs(4))  # in columns
             content = line[marker.end():].strip()
@@ -373,6 +377,7 @@ def _parse_list(
             opening = FENCE_OPEN_RE.match(content)
             fence = opening.group("fence") if opening else None
             lazy = fence is None and bool(content.strip())  # an empty item has no text
+        paragraph = lazy and quote is None and (joined or _is_paragraph_text(content))
         end += 1
     kind = "ordered_list" if list_type in ".)" else "unordered_list"
     return Block(kind=kind, items=items), end, lazy
@@ -448,7 +453,7 @@ def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
 
 
 def _parse_paragraph(paragraph: str) -> Block:
-    stripped = paragraph.strip(" \t\n\r")
+    stripped = strip_text(paragraph)
     # Definition: a paragraph whose leading token is a quoted term followed by a
     # ``{{def: id}}`` anchor. The id may be omitted (derived at validation time).
     # Directives are lifted into block fields only when the serializer writes
@@ -470,7 +475,7 @@ def _parse_paragraph(paragraph: str) -> Block:
             kind="definition",
             definition_id=anchor.directive.positional or "",
             term=anchor.term,
-            text=stripped[anchor.directive.end:].strip(),
+            text=strip_text(stripped[anchor.directive.end:]),
         )
     # A directive inside a defined term's quoted span cannot be split out
     # without separating the {{def:}} from its opening quotation mark.
@@ -559,11 +564,21 @@ def _starts_interrupting_item(line: str) -> bool:
     )
 
 
+def _is_paragraph_text(content: str) -> bool:
+    """True if *content*, a list item's text or one of its lines, is
+    paragraph text rather than a block of its own: a heading, a thematic
+    break, a nested list item, a fence, or an HTML block."""
+    return bool(content.strip()) and not (
+        HEADING_RE.match(content) or RULE_RE.match(content) or LIST_ITEM_RE.match(content)
+        or FENCE_OPEN_RE.match(content) or HTML_BLOCK_START_RE.match(content)
+    )
+
+
 def _may_interrupt(line: str, marker: re.Match[str]) -> bool:
     """True if the list item *marker* opens on *line* may interrupt a
     paragraph (CommonMark): it is not empty and, if ordered, its number is
     1 — ``01.`` included."""
-    return bool(line[marker.end():].strip()) and (
+    return bool(line[marker.end():].strip(" \t")) and (
         marker.group("number") is None or int(marker.group("number")) == 1
     )
 

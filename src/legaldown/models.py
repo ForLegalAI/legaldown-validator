@@ -9,6 +9,8 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .markdown import strip_text
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -274,10 +276,9 @@ def _block_text(kind: str, value: Any) -> str:
         return "\n".join(lines).rstrip()
     if kind == "quote":
         return text.rstrip().lstrip(" \t")
-    # Only spaces, tabs, and line endings are insignificant whitespace here
-    # (CommonMark); other Unicode whitespace, such as a non-breaking space,
-    # is text a list or heading marker cannot open with, so it must survive.
-    return text.strip(" \t\n\r")
+    # Only spaces, tabs and line endings are stripped (CommonMark); text of
+    # nothing but whitespace is none — the parser reads such a line as blank.
+    return strip_text(text) if text.strip() else ""
 
 
 def block_from_dict(data: dict[str, Any] | None) -> Block:

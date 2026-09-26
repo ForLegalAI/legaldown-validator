@@ -88,6 +88,14 @@ LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
 _TAB = 4  # a tab advances to the next multiple of four columns
 
 
+def strip_text(text: str) -> str:
+    """*text* without the spaces, tabs and line endings at its ends — the
+    whitespace CommonMark strips from a paragraph. Other whitespace, such as
+    a no-break space, is text: ``\u00a0- item`` is a paragraph, and stays
+    one when written back."""
+    return text.strip(" \t\r\n")
+
+
 def indent_width(line: str) -> int:
     """Columns of leading whitespace, a tab counting to the next tab stop."""
     column = 0

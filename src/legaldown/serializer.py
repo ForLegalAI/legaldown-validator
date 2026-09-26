@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from .directives import format_value
-from .markdown import FENCE_OPEN_RE, close_fences, dedent, html_block_end, is_indented_code
+from .markdown import FENCE_OPEN_RE, close_fences, dedent, html_block_end, is_indented_code, strip_text
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata, metadata_from_dict
 from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
@@ -181,7 +181,7 @@ def _render_block(block: Block, *, indent: bool = False) -> str:
     """*block* as source; *indent* writes a paragraph-like block indented
     four columns (``_paragraph``)."""
     if block.kind == "paragraph":
-        return _paragraph(block.text.strip(" \t\n\r"), indent=indent)
+        return _paragraph(strip_text(block.text), indent=indent)
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()
@@ -190,15 +190,15 @@ def _render_block(block: Block, *, indent: bool = False) -> str:
             if did
             else f'"{term}" {{{{def:}}}}'
         )
-        body = block.text.strip()
+        body = strip_text(block.text)
         return _paragraph(f"{anchor} {body}" if body else anchor, indent=indent)
     if block.kind == "ref":
         target = format_value(block.target, positional=True)
-        return _paragraph(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}".strip(), indent=indent)
+        return _paragraph(strip_text(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}"), indent=indent)
     if block.kind == "term":
         target = format_value(block.target, positional=True)
         label_part = f", label={format_value(block.label)}" if block.label else ""
-        return _paragraph(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}".strip(), indent=indent)
+        return _paragraph(strip_text(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}"), indent=indent)
     if block.kind == "unordered_list":
         items = [item for item in block.items if item.strip()]
         # An item whose text begins with dashes, such as "--", would make a

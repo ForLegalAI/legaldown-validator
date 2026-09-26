@@ -40,7 +40,16 @@ from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
 from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, LINE_ENDING_RE, fence_end, indent_width
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import Block, Document
-from .parser import FRONTMATTER_RE, _BlockSpan, _Layout, _layout, _opens_paragraph, parse_document
+from .parser import (
+    FRONTMATTER_RE,
+    LIST_ITEM_RE,
+    _BlockSpan,
+    _Layout,
+    _layout,
+    _may_interrupt,
+    _opens_paragraph,
+    parse_document,
+)
 from .validator import validate_document
 from .validator.conditions import Condition
 from .validator.core import is_template
@@ -498,32 +507,26 @@ def _occurrences(
             if _kind(block) in ("code", "rule", "html"):
                 continue
             starts = [first for first, _raw in block.items] or [block.start]
-            for start, end in zip(starts, [*starts[1:], block.end], strict=True):
-                _lex_lines(block, start, end, lines, code, found, malformed, includes)
+            for start, stop in zip(starts, [*starts[1:], block.end], strict=True):
+                text = "\n".join(" " * len(lines[i]) if i in code else lines[i] for i in range(start, stop))
+                offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
+                for directive in lex(text).directives:
+                    row = bisect.bisect_right(offsets, directive.start) - 1
+                    if directive.name == "include" and not directive.malformed:
+                        includes.append(start + row)
+                    if directive.name not in ("placeholder", "choose"):
+                        continue
+                    if directive.malformed:
+                        # The parser joins a paragraph's lines with spaces, so
+                        # one written across lines is well-formed to the
+                        # validator — and could not be filled here.
+                        malformed.append(directive)
+                        continue
+                    column = directive.start - offsets[row]
+                    found.append(_Occurrence(directive, start + row, column,
+                                             column + directive.end - directive.start,
+                                             in_table=_kind(block) == "table"))
     return found, malformed, includes
-
-
-def _lex_lines(block: _BlockSpan, start: int, end: int, lines: list[str], code: set[int],
-               found: list[_Occurrence], malformed: list[Directive], includes: list[int]) -> None:
-    """``_occurrences`` for the source lines ``[start, end)`` of *block*."""
-    text = "\n".join(" " * len(lines[i]) if i in code else lines[i] for i in range(start, end))
-    offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
-    for directive in lex(text).directives:
-        row = bisect.bisect_right(offsets, directive.start) - 1
-        if directive.name == "include" and not directive.malformed:
-            includes.append(start + row)
-        if directive.name not in ("placeholder", "choose"):
-            continue
-        if directive.malformed:
-            # The parser joins a paragraph's lines with spaces, so one
-            # written across lines is well-formed to the validator — and
-            # could not be filled here.
-            malformed.append(directive)
-            continue
-        column = directive.start - offsets[row]
-        found.append(_Occurrence(directive, start + row, column,
-                                 column + directive.end - directive.start,
-                                 in_table=_kind(block) == "table"))
 
 
 # ── Frontmatter ──────────────────────────────────────────────────
@@ -1300,15 +1303,14 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
         return "break"
     if HTML_BLOCK_START_RE.match(content):
         return "html"
-    # A list item interrupts paragraph text only when it has content, and,
-    # when ordered, only when it starts at 1.
-    bullet = _BULLET_RE.match(content)
-    if bullet and (not in_paragraph or (bullet.group("rest") or "").strip()):
+    # A list item interrupts paragraph text only as the parser allows: with
+    # content and, when ordered, numbered 1.
+    item = LIST_ITEM_RE.match(content)
+    interrupts = item is not None and _may_interrupt(content, item)
+    if _BULLET_RE.match(content) and (not in_paragraph or interrupts):
         return "list"
-    if ordered := _ORDERED_RE.match(content):
-        first = int(ordered.group("number")) == 1 and (ordered.group("rest") or "").strip()
-        if not in_paragraph or first:
-            return "ordered"
+    if _ORDERED_RE.match(content) and (not in_paragraph or interrupts):
+        return "ordered"
     return None
 
 
