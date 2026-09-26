@@ -58,16 +58,17 @@ boundaries, and the final option (§15.9, `validate_document(final=True)` or
   standalone document: conditions, placeholders, and terms that refer to its template's
   questions and definitions are reported as undeclared.
 
-Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body.
-Indented code inside a block quote or a list item is not recognized, so directives in it are
-checked. After a blank line, a line indented to the last list item's content continues that
+Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body
+and in a list item's later content. Indented code inside a block quote is not recognized, so
+directives in it are checked. After a blank line, a line indented to the last list item's content continues that
 item, as CommonMark reads it (§5.7,
-[#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)): a later paragraph or a fence
-there is part of the item, so the fence is code, a marker at the end of a later paragraph is
-misplaced, and the item's condition removes it too. Raw HTML in a list item, there or on its first
-line, is read as the item's text, so directives in it are checked
-([#59](https://github.com/ForLegalAI/legaldown-validator/issues/59)). Four limits follow from the
-flat list model ([#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)):
+[#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)): a later paragraph, a fence,
+indented code or an HTML block there is part of the item, so code and raw HTML there hold no
+directive, a marker at the end of a later paragraph is misplaced, and the item's condition
+removes it too. Raw HTML on an item's first line is read as the item's text, so directives in it
+are checked ([#59](https://github.com/ForLegalAI/legaldown-validator/issues/59)). Four limits
+follow from the flat list model
+([#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)):
 
 - An ATX heading indented after a list stays a section heading, where CommonMark reads it in the
   item.
