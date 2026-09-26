@@ -40,7 +40,16 @@ from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
 from .markdown import FENCE_OPEN_RE, HTML_BLOCK_START_RE, LINE_ENDING_RE, fence_end, indent_width
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import Block, Document
-from .parser import FRONTMATTER_RE, _BlockSpan, _Layout, _layout, _opens_paragraph, parse_document
+from .parser import (
+    FRONTMATTER_RE,
+    LIST_ITEM_RE,
+    _BlockSpan,
+    _Layout,
+    _layout,
+    _may_interrupt,
+    _opens_paragraph,
+    parse_document,
+)
 from .validator import validate_document
 from .validator.conditions import Condition
 from .validator.core import is_template
@@ -332,7 +341,7 @@ def _tail_end(lines: list[str], following: list[_BlockSpan], column: int) -> int
 
 
 # A list item's marker, as the parser's LIST_ITEM_RE reads it.
-_ITEM_START_RE = re.compile(r"\s*(?:\d+[.)]|[-*+])")
+_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
 
 
 def _content_column(line: str) -> int:
@@ -438,9 +447,7 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
 
         for note_first, note_last in _note_lines(raw, inside_list=True):
             source.notes.update(range(source_line(note_first), source_line(note_last) + 1))
-        # The model strips an item's text (models._clean_list), and the
-        # validator lexes that: one line there has no fence.
-        for row in _fenced(raw) if "\n" in raw.strip() else ():
+        for row in _fenced(raw):
             if row == 0:
                 # Row 0 is the item's joined first paragraph: a fence found
                 # there is written across all of its source lines, not just
@@ -459,12 +466,8 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
 def _fenced(text: str) -> Iterator[int]:
     """The lines of *text* — a list item's or a quote's, as the parser hands
     it to the validator — inside fenced code, which the lexer blanks there
-    (§11.4). One-line text (a single-row item or quote) has none, mirroring
-    ``_blank_fenced_code``'s own single-line shortcut: assembly must read a
-    fence opener there exactly as the validator does, or it would fill a
-    placeholder the validator does not consider blanked."""
-    if "\n" not in text:
-        return
+    (§11.4), a one-line text's opening line included
+    (``definitions.block_fragments``)."""
     rows = text.split("\n")
     index = 0
     while index < len(rows):
@@ -492,8 +495,10 @@ def _occurrences(
     """Every placeholder and choice in the body, lexed block by block as the
     validator lexes them, so a code span or comment hides the same ones. No
     directive is recognized in code or raw HTML (§11.4), fenced code inside a
-    list item or quote (*code*) included. Also the malformed ones, and the
-    lines each ``{{include:}}`` is written on."""
+    list item or quote (*code*) included. A list's items are lexed one by
+    one, as the validator lexes their text: a code span or comment left
+    open in one item does not run into the next. Also the malformed ones,
+    and the lines each ``{{include:}}`` is written on."""
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
     includes: list[int] = []
@@ -501,26 +506,26 @@ def _occurrences(
         for block in blocks:
             if _kind(block) in ("code", "rule", "html"):
                 continue
-            text = "\n".join(
-                " " * len(lines[i]) if i in code else lines[i] for i in range(block.start, block.end)
-            )
-            offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
-            for directive in lex(text).directives:
-                row = bisect.bisect_right(offsets, directive.start) - 1
-                if directive.name == "include" and not directive.malformed:
-                    includes.append(block.start + row)
-                if directive.name not in ("placeholder", "choose"):
-                    continue
-                if directive.malformed:
-                    # The parser joins a paragraph's lines with spaces, so
-                    # one written across lines is well-formed to the
-                    # validator — and could not be filled here.
-                    malformed.append(directive)
-                    continue
-                column = directive.start - offsets[row]
-                found.append(_Occurrence(directive, block.start + row, column,
-                                         column + directive.end - directive.start,
-                                         in_table=_kind(block) == "table"))
+            starts = [first for first, _raw in block.items] or [block.start]
+            for start, stop in zip(starts, [*starts[1:], block.end], strict=True):
+                text = "\n".join(" " * len(lines[i]) if i in code else lines[i] for i in range(start, stop))
+                offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
+                for directive in lex(text).directives:
+                    row = bisect.bisect_right(offsets, directive.start) - 1
+                    if directive.name == "include" and not directive.malformed:
+                        includes.append(start + row)
+                    if directive.name not in ("placeholder", "choose"):
+                        continue
+                    if directive.malformed:
+                        # The parser joins a paragraph's lines with spaces, so
+                        # one written across lines is well-formed to the
+                        # validator — and could not be filled here.
+                        malformed.append(directive)
+                        continue
+                    column = directive.start - offsets[row]
+                    found.append(_Occurrence(directive, start + row, column,
+                                             column + directive.end - directive.start,
+                                             in_table=_kind(block) == "table"))
     return found, malformed, includes
 
 
@@ -1298,15 +1303,14 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
         return "break"
     if HTML_BLOCK_START_RE.match(content):
         return "html"
-    # A list item interrupts paragraph text only when it has content, and,
-    # when ordered, only when it starts at 1.
-    bullet = _BULLET_RE.match(content)
-    if bullet and (not in_paragraph or (bullet.group("rest") or "").strip()):
+    # A list item interrupts paragraph text only as the parser allows: with
+    # content and, when ordered, numbered 1.
+    item = LIST_ITEM_RE.match(content)
+    interrupts = item is not None and _may_interrupt(content, item)
+    if _BULLET_RE.match(content) and (not in_paragraph or interrupts):
         return "list"
-    if ordered := _ORDERED_RE.match(content):
-        first = int(ordered.group("number")) == 1 and (ordered.group("rest") or "").strip()
-        if not in_paragraph or first:
-            return "ordered"
+    if _ORDERED_RE.match(content) and (not in_paragraph or interrupts):
+        return "ordered"
     return None
 
 

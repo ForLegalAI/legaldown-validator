@@ -767,11 +767,12 @@ class TestFencedCodeInContainers:
         assert _body(assemble(_template(body), {})) == "\n# A\n\nText.\n"
 
     @pytest.mark.parametrize("end", ["", "\n"])
-    def test_a_one_line_item_is_lexed_as_the_validator_lexes_it(self, end):
-        """The validator sees a directive after a one-line item's fence
-        opener (issue #52), and so assembly fills it."""
-        body = f"# A\n\n- ~~~ {{{{placeholder: name}}}}\n{end}"
-        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == "\n# A\n\n- ~~~ Ann\n"
+    def test_a_one_line_item_opening_a_fence_is_code(self, end):
+        """Its info string is code (§11.4), as the validator reads it (#52)."""
+        body = f"# A\n\n- ~~~ {{{{placeholder: name}}}}\n{end}\nHi {{{{placeholder: name}}}}.\n"
+        result = assemble(_template(body, _TEXT), {"name": "Ann"})
+        # A blank line inside the open fence is code: step 8 keeps it.
+        assert _body(result) == f"\n# A\n\n- ~~~ {{{{placeholder: name}}}}\n{end}\nHi Ann.\n"
 
     def test_a_continuation_line_is_not_a_fence(self):
         body = "# A\n\n- b\n      ~~~ text\n  more {{placeholder: name}}\n"
@@ -782,6 +783,22 @@ class TestFencedCodeInContainers:
         fragment = "## B {#b}\n\n- a\n  - b\n    ~~~\n    {{include: other.lgd}}\n    ~~~\n"
         template = _template("# A\n\n{{include: f.lgd}}\n\nB. {when=x}\n", _BOOL)
         assert assemble(template, {"x": True}, load_file={"f.lgd": fragment}.get).ok
+
+
+class TestItemsAreLexedApart:
+    """Each list item is lexed on its own, as the validator lexes its text
+    (#53): a code span or comment left open does not run into the next."""
+
+    @pytest.mark.parametrize(("first", "second"), [
+        ("- Use `x", "- For {{placeholder: name}}, see `y`."),
+        ("- See <!-- n", "- For {{placeholder: name}} -->."),
+        ("- > <!-- x", "- > For {{placeholder: name}}\n   -->"),
+        ("1. Use `x", "   1. For {{placeholder: name}}, see `y`."),
+    ])
+    def test_an_open_code_span_or_comment_stays_in_its_item(self, first, second):
+        body = f"# A\n\n{first}\n{second}\n"
+        filled = second.replace("{{placeholder: name}}", "Ann")
+        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == f"\n# A\n\n{first}\n{filled}\n"
 
 
 class TestMalformed:

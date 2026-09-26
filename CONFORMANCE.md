@@ -62,7 +62,12 @@ Code is literal (§11.4): fenced code anywhere, and indented code at the top lev
 Indented code inside a block quote or a list item is not recognized, so directives in it are
 checked. Indented lines directly after a list, past the blank line that ends the list here,
 stay paragraphs for as long as each is indented, as CommonMark keeps them in the list's last item
-rather than making them code.
+rather than making them code. A fence or an HTML block there is read as paragraph text too, so
+directives in it are checked; CommonMark reads it as code or raw HTML in the item
+([#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)). A fence that opens a list item's or
+a quote's text on its only line (`- ~~~ …`) is code. One behind nested markers (`- > ~~~ …`,
+`> - ~~~ …`), or one running over several lines of a nested quote or item, is not recognized:
+directives in it are checked where CommonMark reads code.
 
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy
@@ -152,11 +157,6 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   blocks apart with text that stays.
 - A drafting note that starts on a list item's marker line (`- > [!DRAFTING]`) is removed with that
   line, the marker included.
-- A list is lexed as one text, so an unclosed code span or comment in one item can hide a
-  placeholder in the next, which is then left unfilled
-  ([#53](https://github.com/ForLegalAI/legaldown-validator/issues/53)).
-- A fence opener that is a list item's or quote's only line is read as text, as the validator
-  reads it ([#52](https://github.com/ForLegalAI/legaldown-validator/issues/52)).
 - A file is written back with one line ending: its first LF or CRLF, or CR in a file without LF.
   A file that mixes them comes out with that one throughout.
 - A frontmatter placeholder in a double-quoted scalar is found in the line as written, so one

@@ -345,7 +345,7 @@ _AFTER_INSERTION = frozenset(".,;:)!?\"'”’»/-")
 # reference, an autolink, or an escape.
 _COMBINING = "&<\\"
 # A line's container markers: block quote markers, then a list item marker.
-_CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+)?")
+_CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?")
 # A link reference definition: its label, destination, and optional title.
 # The parser joins a paragraph's lines, so only this span is the definition.
 _LINK_REFERENCE_RE = re.compile(

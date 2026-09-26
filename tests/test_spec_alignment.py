@@ -1131,6 +1131,30 @@ def _outline(source: str) -> list[tuple[str, int, str]]:
     return [(entry.title, entry.level, entry.identifier) for entry in entries]
 
 
+@pytest.mark.parametrize("line", [
+    "# Title", "#\x0cTitle", "- item", " - item", "\x0c- item", "1234567890. item", "١. item",
+])
+def test_only_spaces_and_tabs_and_nine_digits_make_a_heading_or_an_item(line):
+    """CommonMark: other whitespace and longer or non-ASCII numbers are
+    paragraph text (cmark-gfm)."""
+    document = parse_document(_FRONTMATTER + f"{line}\n")
+    assert [(b.kind, b.text) for b in document.sections[0].blocks] == [
+        ("paragraph", line.strip(" \t\n\r"))
+    ]
+    assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize(("line", "kind"), [
+    ("#\tTitle", None), ("123456789. item", "ordered_list"), ("-\titem", "unordered_list"),
+])
+def test_a_tab_or_nine_digits_still_make_a_heading_or_an_item(line, kind):
+    document = parse_document(_FRONTMATTER + f"{line}\n")
+    if kind is None:
+        assert [s.title for s in document.sections] == ["Terms", "Title"]
+    else:
+        assert [b.kind for b in document.sections[0].blocks] == [kind]
+
+
 def test_setext_headings_are_headings():
     """§4.1: === and --- underlines make level-1 and level-2 headings."""
     source = _BARE + "Intro.\n\nPayment\nTerms {#pay}\n=======\n\nText.\n\nLate Fees\n---\n\nMore.\n"
@@ -1154,6 +1178,60 @@ def test_an_unclosed_fence_at_the_end_holds_no_extra_line():
 def test_nothing_in_an_unclosed_one_line_fence_is_checked():
     """The info string is code (§11.4), however the fence ends."""
     assert not _validate("~~~ {{ref: nowhere}}\n").errors
+
+
+@pytest.mark.parametrize("body", [
+    "- ~~~ {{ref: nowhere}}\n- b\n", "> ~~~ {{ref: nowhere}}\n", "-\t\n   ~~~ {{ref: nowhere}}\n\nText.\n",
+])
+def test_a_list_item_or_quote_that_is_one_fence_line_is_code(body):
+    """CommonMark opens a fenced code block there; the rest of the line is its
+    info string (§11.4)."""
+    assert "ref-broken" not in _validate(body).rules()
+
+
+@pytest.mark.parametrize(("body", "items"), [
+    ("- a\n  2. ~~~ {{ref: x}}\n", [("unordered_list", ["a 2. ~~~ {{ref: x}}"])]),
+    ("1. a\n   2. b\n   3. c\n", [("ordered_list", ["a 2. b 3. c"])]),
+    ("- a\n  1. b\n", [("unordered_list", ["a", "b"])]),
+    ("- a\n  - b\n", [("unordered_list", ["a", "b"])]),
+    ("- a\n  > b\n  2. x\n", [("unordered_list", ["a\n> b", "x"])]),
+    # After a heading, a rule or a nested item the item has no open
+    # paragraph, so any item starts a list (cmark-gfm).
+    ("- # H\n  2. x\n", [("unordered_list", ["# H", "x"])]),
+    ("- ***\n  2. x\n", [("unordered_list", ["***", "x"])]),
+    ("- - a\n  2. b\n", [("unordered_list", ["- a", "b"])]),
+])
+def test_a_nested_item_interrupts_its_items_paragraph_only_as_commonmark_allows(body, items):
+    """Only a bullet with text, or an ordered item numbered 1, may
+    interrupt a paragraph — the item's own too (cmark-gfm)."""
+    document = parse_document(_FRONTMATTER + body)
+    assert [(b.kind, b.items) for b in document.sections[0].blocks] == items
+
+
+@pytest.mark.parametrize("number", ["1", "01", "001"])
+def test_an_item_numbered_1_however_written_interrupts_a_paragraph(number):
+    """#57: the number is compared as a number."""
+    document = parse_document(_FRONTMATTER + f"Text\n{number}. item\n")
+    assert [b.kind for b in document.sections[0].blocks] == ["paragraph", "ordered_list"]
+
+
+def test_an_anchored_heading_item_before_a_nested_item_keeps_its_anchor():
+    assert _validate("- # Heading item {#h}\n  2. More.\n\nSee {{ref: h}}.\n").rules() == set()
+
+
+@pytest.mark.parametrize("text", [" See {{ref: x}}.", "See {{ref: x}} ", " Use {{term: x}}."])
+def test_a_no_break_space_round_trips_around_a_lifted_directive(text):
+    document = parse_document(_FRONTMATTER + text + "\n")
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_a_paragraph_of_only_whitespace_is_empty():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": " "}]}]})
+    assert document.sections[0].blocks[0].text == ""
+
+
+def test_a_table_cell_opening_like_a_fence_is_text():
+    assert "ref-broken" in _validate("| a |\n|---|\n| ~~~ {{ref: nowhere}} |\n").rules()
 
 
 def test_frontmatter_with_cr_line_endings_is_frontmatter():
