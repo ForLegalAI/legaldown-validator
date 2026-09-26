@@ -11,10 +11,18 @@ from typing import Any
 import yaml
 
 from .directives import format_value
-from .markdown import FENCE_OPEN_RE, close_fences, dedent, html_block_end, is_indented_code, strip_text
+from .markdown import (
+    FENCE_OPEN_RE,
+    close_fences,
+    dedent,
+    html_block_end,
+    is_indented_code,
+    split_lone_tag,
+    strip_text,
+)
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata, metadata_from_dict
-from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
+from .parser import HEADING_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -139,15 +147,19 @@ def _opens_block(text: str) -> bool:
     return bool(FENCE_OPEN_RE.match(text) or HEADING_RE.match(text) or html_block_end([text], 0) is not None)
 
 
-def _paragraph(text: str, *, indent: bool = False) -> str:
-    """A paragraph's text. *indent* writes it indented four columns, which
-    after a list the parser reads as paragraph text whatever it begins with.
-    Elsewhere, text that would open another block gets a backslash before
-    it, which renders as nothing (CommonMark): the parser reads such text as
-    a paragraph only after a list, so otherwise only a model built in code
-    holds it."""
-    if indent:
-        return "    " + text
+def _paragraph(text: str) -> str:
+    """A paragraph's text, written at the margin. A paragraph whose text
+    only reads as a complete HTML tag (kind 7) got that way by being
+    joined, at a space, from two source lines that alone opened nothing
+    (``_parse_paragraph``); writing it back over two lines the same way,
+    at that space, is lossless (``split_lone_tag``) and keeps it a
+    paragraph rather than an HTML block. Anything else that would open a
+    block (a fence, a heading, an HTML block kind 1–6) gets a backslash
+    before it instead, which renders as nothing (CommonMark): only a model
+    built in code, not one from ``parse_document``, holds that, since the
+    parser never turns the start of a block into paragraph text."""
+    if split := split_lone_tag(text):
+        return split
     return "\\" + text if _opens_block(text) else text
 
 
@@ -177,11 +189,10 @@ def _table_row(cells: list[str]) -> str:
     return "| " + " | ".join(_table_cell(cell) for cell in cells) + " |"
 
 
-def _render_block(block: Block, *, indent: bool = False) -> str:
-    """*block* as source; *indent* writes a paragraph-like block indented
-    four columns (``_paragraph``)."""
+def _render_block(block: Block) -> str:
+    """*block* as source."""
     if block.kind == "paragraph":
-        return _paragraph(strip_text(block.text), indent=indent)
+        return _paragraph(strip_text(block.text))
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()
@@ -191,14 +202,14 @@ def _render_block(block: Block, *, indent: bool = False) -> str:
             else f'"{term}" {{{{def:}}}}'
         )
         body = strip_text(block.text)
-        return _paragraph(f"{anchor} {body}" if body else anchor, indent=indent)
+        return _paragraph(f"{anchor} {body}" if body else anchor)
     if block.kind == "ref":
         target = format_value(block.target, positional=True)
-        return _paragraph(strip_text(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}"), indent=indent)
+        return _paragraph(strip_text(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}"))
     if block.kind == "term":
         target = format_value(block.target, positional=True)
         label_part = f", label={format_value(block.label)}" if block.label else ""
-        return _paragraph(strip_text(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}"), indent=indent)
+        return _paragraph(strip_text(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}"))
     if block.kind == "unordered_list":
         items = [item for item in block.items if item.strip()]
         # An item whose text begins with dashes, such as "--", would make a
@@ -239,37 +250,22 @@ def _render_block(block: Block, *, indent: bool = False) -> str:
 
 
 _LISTS = ("ordered_list", "unordered_list")
-_PARAGRAPHS = ("paragraph", "definition", "ref", "term")
 
 
 def _render_blocks(blocks: list[Block]) -> list[str]:
     """Rendered blocks, each preceded by a blank separator line.
 
-    After a list the parser reads indented lines as paragraphs, whatever
-    they begin with, for as long as each paragraph is indented
-    (``parser._parse_body``). So the paragraphs directly after a list, up
-    to the last one that would otherwise open another block, are written
-    indented; the run stops at one the parser reads as another block even
-    when indented (a quote, a list item, a rule). A one-line paragraph
-    starting with ``|`` stays a paragraph: a table needs a second row."""
+    An indented line directly after a list, once a blank line has ended it,
+    now continues its last item (§5.7, ``parser._parse_list``); a paragraph
+    there is therefore written at the margin like any other (``_paragraph``).
+    Indented code directly after a list would still be read as the item's
+    own paragraph text, so it is written fenced instead (``_code``)."""
     parts: list[str] = []
-    indented: set[int] = set()
     for index, block in enumerate(blocks):
-        # Indented code here would read as one more paragraph after the list.
-        after_list = index > 0 and (blocks[index - 1].kind in _LISTS or index - 1 in indented)
-        if block.kind in _LISTS:
-            run = index + 1
-            while run < len(blocks) and blocks[run].kind in _PARAGRAPHS:
-                text = _render_block(blocks[run], indent=True)[4:]
-                if text.startswith(">") or RULE_RE.match(text) or LIST_ITEM_RE.match(text):
-                    break
-                if _opens_block(text):
-                    indented.update(range(index + 1, run + 1))
-                run += 1
-        if after_list and block.kind == "code":
-            rendered = _code(block.text, after_list=True)
-        else:
-            rendered = _render_block(block, indent=index in indented)
+        after_list = index > 0 and blocks[index - 1].kind in _LISTS
+        rendered = (
+            _code(block.text, after_list=True) if after_list and block.kind == "code" else _render_block(block)
+        )
         if rendered:
             parts.extend(["", rendered])
     return parts

@@ -328,13 +328,15 @@ def _parse_list(
         if not line.strip():
             following = next((k for k in range(end, len(lines)) if lines[k].strip()), None)
             if (
-                following is None or not items or quote is not None
+                following is None or not items or not items[-1]
                 or indent_width(lines[following]) < max(content_indent, 2)
+                or HEADING_RE.match(lines[following])
             ):
                 break
             items[-1] += "\n" * (following - end)  # the blank lines, one row each
             end = following
             lazy = False
+            quote = None  # a later paragraph in the item is not the quote's
             continue
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         indented = indent_width(line) >= 2
@@ -356,7 +358,7 @@ def _parse_list(
             if item_starts is not None:
                 item_starts.append(end)
             quote = None
-        elif items and (indented or (lazy and _is_lazy_line(line))):
+        elif items and (indented or ((quote is not None or paragraph) and _is_lazy_line(line))):
             content = dedent(line, content_indent) if indented else line.strip()
             if quote is not None and not content.startswith(">"):
                 # A lazy line (unindented) always continues the quote here:

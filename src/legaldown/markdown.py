@@ -77,6 +77,22 @@ def html_block_end(lines: list[str], index: int) -> int | None:
     return None
 
 
+def split_lone_tag(text: str) -> str | None:
+    """*text*, with a line break in place of its first plain space, if
+    *text* (no line break of its own) is by itself a complete HTML tag
+    (kind 7): joined into one line, it would misread as an HTML block
+    rather than the paragraph text it is, and it cannot interrupt a
+    paragraph, so a preceding blank line is enough to start it. None when
+    *text* is not one, or holds no plain space to split at (a tab-only
+    attribute separator, or a bare tag): the caller falls back to escaping
+    it, since only a paragraph joined from two lines — always at a plain
+    space — can hold one (``strip_text`` leaves tabs elsewhere as text)."""
+    if not _HTML_BLOCK_7_RE.match(text):
+        return None
+    at = text.find(" ")
+    return f"{text[:at]}\n{text[at + 1:]}" if at >= 0 else None
+
+
 # An HTML comment (CommonMark 0.31): ``<!-->``, ``<!--->``, or ``<!--``, text
 # not containing ``-->``, and ``-->``. The empty forms end at their own ``>``.
 HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)

@@ -1517,16 +1517,40 @@ def _preserve_identifiers(t: _Template, head: str, main: list[_Line],
 # ── Step 8: blank lines ──────────────────────────────────────────
 
 
+def _list_code_lines(lines: list[str], span: _BlockSpan) -> Iterator[int]:
+    """The lines of list *span* that hold fenced code inside one of its
+    items (§11.4): a blank line there is the fence's, not a separator, so
+    step 8 leaves it. A list may now hold a later paragraph of an item
+    (§5.7), whose own blank lines are ordinary body blanks and collapse
+    like any other."""
+    starts = [first for first, _raw in span.items] + [span.end]
+    for k, (first, raw) in enumerate(span.items):
+        text_lines = raw.count("\n") + 1
+        paragraph_end = starts[k + 1] - (text_lines - 1)
+
+        def source_line(row: int) -> int:
+            return first if row == 0 else paragraph_end + row - 1  # noqa: B023
+
+        for row in _fenced(raw):
+            if row == 0:
+                # Row 0 is the item's joined first paragraph, written across
+                # all of its source lines (``_read_list``).
+                yield from range(first, paragraph_end)
+            else:
+                yield source_line(row)
+
+
 def _code_lines(lines: list[str]) -> set[int]:
-    """Lines whose blankness is content: fenced and indented code — and a
-    list's own lines, since a list's blank lines are those of the fenced code
-    inside its items (the parser ends a list at any other blank line). Blank
-    lines in raw HTML are not exempt: step 8 names code blocks only."""
+    """Lines whose blankness is content: fenced and indented code, and the
+    fenced code inside a list's items. Blank lines in raw HTML are not
+    exempt: step 8 names code blocks only."""
     kept: set[int] = set()
     for blocks in _layout(lines).containers():
         for block in blocks:
-            if _kind(block) in ("code", "list"):
+            if _kind(block) == "code":
                 kept.update(range(block.start, block.end))
+            elif _kind(block) == "list":
+                kept.update(_list_code_lines(lines, block))
     return kept
 
 
