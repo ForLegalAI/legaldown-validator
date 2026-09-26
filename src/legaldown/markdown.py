@@ -9,6 +9,7 @@ starts or ends.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 
 # A fenced code block opens with three or more backticks or tildes, indented
 # at most three columns; a backtick fence's info string cannot contain a
@@ -168,15 +169,75 @@ def open_items(lines: list[str], starts: list[int], texts: list[str]) -> list[in
     return found[::-1]
 
 
-def dedent(line: str, columns: int) -> str:
+# A list item's marker opening an item's own text: an item nested on its line.
+_NESTED_ITEM_RE = re.compile(r"(?:[0-9]{1,9}[.)]|[-*+])[ \t]+(?=\S)")
+
+
+def nested_offset(first: str) -> int:
+    """How much further in than a list item's content its innermost content
+    starts, when its text opens with items nested on its line (``1. y`` in
+    ``- 1. y``): its later content is measured from there (CommonMark)."""
+    offset = 0
+    while marker := _NESTED_ITEM_RE.match(first):
+        offset += item_content_column(first)
+        first = first[marker.end():]
+    return offset
+
+
+def indented_code_rows(text: str) -> Iterator[int]:
+    """The rows of a list item's text (its rows dedented to its content)
+    in indented code — four columns past its innermost content, after a
+    blank row — with the blank rows between them (CommonMark)."""
+    floor = 4 + nested_offset(text.split("\n", 1)[0])
+    blanks: list[int] = []
+    code = after_blank = False
+    for row, line in enumerate(text.split("\n")):
+        if not line.strip():
+            if code:
+                blanks.append(row)
+            after_blank = True
+            continue
+        code = row > 0 and indent_width(line) >= floor and (after_blank or code)
+        if code:
+            yield from blanks
+            yield row
+        blanks, after_blank = [], False
+
+
+def html_block_rows(text: str) -> Iterator[int]:
+    """The rows of a list item's text in an HTML block opening after a
+    blank row (CommonMark 4.6): raw HTML, where no directive is recognized
+    (§11.4)."""
+    rows = text.split("\n")
+    row = 1
+    while row < len(rows):
+        end = html_block_end(rows, row) if not rows[row - 1].strip() and rows[row].strip() else None
+        if end is None:
+            row += 1
+            continue
+        yield from range(row, end)
+        row = end
+
+
+def dedent(line: str, columns: int, *, expand: bool = False) -> str:
     """*line* with up to *columns* columns of leading whitespace removed; a
     tab straddling the cut leaves its remaining columns as spaces. Only
-    leading whitespace changes."""
+    leading whitespace changes. *expand*: the rest of the leading
+    whitespace is written as spaces too, each tab as wide as it is where it
+    stands — a list item's later lines, whose tabs would otherwise measure
+    differently once the item's marker is written another width."""
     column = index = 0
     while index < len(line) and line[index] in " \t" and column < columns:
         column += 1 if line[index] == " " else _TAB - column % _TAB
         index += 1
-    return " " * max(column - columns, 0) + line[index:]
+    rest = line[index:]
+    lead = len(rest) - len(rest.lstrip(" \t"))
+    if expand and "\t" in rest[:lead]:
+        end = column
+        for char in rest[:lead]:
+            end += 1 if char == " " else _TAB - end % _TAB
+        return " " * (end - columns) + rest[lead:]
+    return " " * max(column - columns, 0) + rest
 
 
 def indented_code_end(lines: list[str], index: int) -> int:

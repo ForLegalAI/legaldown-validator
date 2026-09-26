@@ -798,6 +798,11 @@ class TestAnItemsLaterContent:
         body = "# A\n\n- Kept.\n- Dropped. {when=x}\n\n  More.\n\n  ~~~\n  code\n  ~~~\n\nAfter.\n"
         assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n- Kept.\n\nAfter.\n"
 
+    def test_nothing_in_html_or_indented_code_there_is_filled(self):
+        body = "# A\n\n- a\n\n  <div>\n  {{placeholder: name}}\n  </div>\n\nHi {{placeholder: name}}.\n"
+        result = _body(assemble(_template(body, _TEXT), {"name": "Ann"}))
+        assert "  {{placeholder: name}}\n" in result and "Hi Ann." in result
+
     def test_blank_lines_in_indented_code_there_are_kept(self):
         body = "# A\n\n- a\n\n      x\n\n\n      y\n"
         assert _body(assemble(_template(body), {})) == "\n" + body

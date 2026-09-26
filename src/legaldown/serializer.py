@@ -134,11 +134,12 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
     return payload
 
 
-def _list_item(marker: str, item: str) -> str:
-    """A list item: its later lines (a fenced code block in the item, closed
-    if left open) are indented to the item's content; blank lines stay
-    blank."""
-    first, *rest = (marker + close_fences(item)).split("\n")
+def _list_item(marker: str, item: str, *, close: bool = False) -> str:
+    """A list item: its later lines are indented to the item's content;
+    blank lines stay blank. A fence left open in it ends with the item, as
+    CommonMark reads it; *close* closes it, where the parser would read an
+    indented block after the list into it."""
+    first, *rest = (marker + (close_fences(item) if close else item)).split("\n")
     return "\n".join([first, *(" " * len(marker) + line if line else line for line in rest)])
 
 
@@ -243,11 +244,13 @@ def _render_block(block: Block) -> str:
 _LISTS = ("ordered_list", "unordered_list")
 
 
-def _render_list(block: Block, last_column: int = 0) -> str | None:
+def _render_list(block: Block, last_column: int = 0, *, close_last: bool = False) -> str | None:
     """A list, its last item's content starting at *last_column* or past it
     — more spacing after its marker (at most four, CommonMark) — so that a
     block written after it, indented less, is not read as that item's
-    (§5.7). None when no spacing reaches *last_column*."""
+    (§5.7). None when no spacing reaches *last_column*. *close_last*: a
+    fence left open in the last item is closed, since another list follows
+    that it would otherwise run into."""
     items = [item for item in block.items if item.strip()]
     if block.kind == "unordered_list":
         # An item whose text begins with dashes, such as "--", would make a
@@ -256,12 +259,24 @@ def _render_list(block: Block, last_column: int = 0) -> str | None:
         markers = [bullet] * len(items)
     else:
         markers = [f"{index}. " for index in range(1, len(items) + 1)]
+    # A later line of an item that reads as an ATX heading at the margin is
+    # written at least four columns in, where the parser keeps it the item's
+    # text (``parser._parse_list``): its item's content starts further in.
+    for k, item in enumerate(items):
+        rows = [row for row in item.split("\n")[1:] if HEADING_RE.match(row)]
+        if rows:
+            needed = 4 - min(indent_width(row) for row in rows)
+            if len(markers[k]) < needed:
+                markers[k] = markers[k].rstrip() + " " * (needed - len(markers[k].rstrip()))
     if markers and len(markers[-1]) < last_column:
         spacing = last_column - len(markers[-1].rstrip())
         if spacing > 4:
             return None
         markers[-1] = markers[-1].rstrip() + " " * spacing
-    return "\n".join(_list_item(marker, item) for marker, item in zip(markers, items, strict=True))
+    return "\n".join(
+        _list_item(marker, item, close=(close_last or bool(last_column)) and k == len(items) - 1)
+        for k, (marker, item) in enumerate(zip(markers, items, strict=True))
+    )
 
 
 def _render_blocks(blocks: list[Block]) -> list[str]:
@@ -292,6 +307,8 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
                 as_written.add(index + 1)
             else:
                 rendered = _render_block(block)
+        elif block.kind in _LISTS and following is not None and following.kind in _LISTS:
+            rendered = _render_list(block, close_last=True) or ""
         elif index in as_written:
             rendered = close_fences(block.text) if block.kind == "code" else block.text
         elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":

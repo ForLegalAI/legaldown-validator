@@ -19,6 +19,7 @@ from legaldown import (
     iter_directives,
     serialize_document,
 )
+from legaldown.definitions import text_fragments
 from legaldown.directives import format_value, lex
 from legaldown.markers import Marker, split_heading
 from legaldown.parser import collect_source_directives, parse_document
@@ -1327,7 +1328,8 @@ def test_what_follows_a_list_item_that_holds_no_open_paragraph(body, kinds, titl
 def test_wide_marker_spacing_sets_the_items_column_as_commonmark_does():
     """Five spaces after the marker: the content column is one past it."""
     document = parse_document(_FRONTMATTER + "-      foo\n\n      bar\n")
-    assert [b.items for b in document.sections[0].blocks] == [["foo\n\nbar"]]
+    # `bar` is four columns past the content: indented code (cmark-gfm).
+    assert [b.items for b in document.sections[0].blocks] == [["foo\n\n    bar"]]
 
 
 def test_an_unclosed_fence_after_a_list_is_closed_when_written():
@@ -1342,6 +1344,43 @@ def test_an_empty_list_does_not_stand_between_a_list_and_its_code():
     document = parse_document(_FRONTMATTER + "- a\n\n* \n\n    code\n")
     reparsed = parse_document(serialize_document(document))
     assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [("unordered_list", ""), ("code", "    code")]
+
+
+def _placeholders(body: str) -> int:
+    document = parse_document(_FRONTMATTER + body)
+    return sum(
+        1 for _s, _i, block in document.iter_blocks() for fragment in text_fragments(block)
+        for directive in lex(fragment).directives if directive.name == "placeholder" and not directive.malformed
+    )
+
+
+@pytest.mark.parametrize(("body", "count"), [
+    # A nested item on the first line keeps its paragraph open: the next
+    # line is its lazy continuation, not a setext heading (cmark-gfm).
+    ("- 1. item\ntext {{placeholder: p}}\n---\n", 1),
+    # HTML and indented code in an item's later content hold no directive.
+    ("- a\n\n  <div>\n  {{placeholder: p}}\n  </div>\n", 0),
+    ("- a\n\n  b\n\n      {{placeholder: p}}\n", 0),
+    # A tab after the cut is as wide as it is where it stands.
+    ("- | x | c |\n\n  \t{{placeholder: p}} tail\n", 1),
+    # Content of an item nested on the first line is measured from it.
+    ("+ 1. y\n\n\t\ta {{placeholder: p}}\n", 1),
+    ("- 2. z\n\n\t\ta {{placeholder: p}}\n", 1),
+])
+def test_an_items_later_content_is_read_as_commonmark_reads_it(body, count):
+    assert _placeholders(body) == count
+
+
+@pytest.mark.parametrize("body", [
+    "-  a\n\n    # h\n",
+    "1. a {{placeholder: p}}\n\n     ~~~\n",
+    "1) > q\n\n\t\t~~~\n",
+])
+def test_an_items_later_content_round_trips(body):
+    """A `#` line in it is written in far enough not to read as a heading;
+    a fence left open in it ends with the item and is not closed."""
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
 
 
 def test_a_table_cell_opening_like_a_fence_is_text():
