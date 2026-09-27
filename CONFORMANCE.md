@@ -56,9 +56,8 @@ boundaries, and the final option (§15.9, `validate_document(final=True)` or
   standalone document: conditions, placeholders, and terms that refer to its template's
   questions and definitions are reported as undeclared.
 
-Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body
-and in list items. Indented code inside a block quote is not recognized, so directives in it
-are checked.
+Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body,
+in list items and in block quotes.
 
 A list item holds blocks, read as CommonMark reads an item's content (§5.7,
 [#64](https://github.com/ForLegalAI/legaldown-validator/issues/64)): its first paragraph, then
@@ -81,13 +80,23 @@ its text. What the model does not keep, or reads more simply than CommonMark:
 - Lists nested more than 64 deep are read that far: deeper, an item's content is one paragraph
   of its text.
 
-A fence that opens a quote's text on its only line (`> ~~~ …`) is code. One behind markers inside
-a quote (`> - ~~~ …`), or one running over several lines of a nested quote, is not recognized:
-directives in it are checked where CommonMark reads code.
+A block quote's content is read as blocks too, as an item's is
+([#41](https://github.com/ForLegalAI/legaldown-validator/issues/41),
+[#56](https://github.com/ForLegalAI/legaldown-validator/issues/56)): paragraphs, lists, code,
+nested quotes, tables and raw HTML. Code and raw HTML in a quote hold no directive, and a code
+span or comment left open in one of its blocks does not run into the next. Drafting notes are
+found in any quote, nested in lists and other quotes too. The model keeps a quote as its text,
+one line per source line without its `>`: a tab in a line's leading markers is written as the
+spaces it stands for, and a lazy continuation line indented four or more columns is kept
+indented where, read again, it still continues the paragraph. What the reading does not follow:
 
-Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
-are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy
-continuation line of a nested quote. Either needs a full CommonMark container parser.
+- Where a quote ends is found line by line, and three things are read more simply than
+  CommonMark reads them: in a list inside the quote, an item's content column is not tracked; a
+  line starting with `|` is taken to start a table, so it ends the quote rather than lazily
+  continuing it; and an empty item is taken to interrupt a paragraph. Such a quote can end a
+  line early or late.
+- A quote in 16 or more list items and quotes is read as one text: its directives are checked
+  as a paragraph's.
 
 One id appears on both sides of that line. `attachment-file-missing` is defined as *the attachment
 `file` path exists*, which needs the filesystem and is therefore unimplemented — but the validator
@@ -166,7 +175,7 @@ asks, all of them or those an answers set still leaves open.
 Assembly edits the template's source and so inherits a few limits of the parser's reading of it:
 
 - An item marker inside a block quote (`> 2. x`) is judged from the line before for the
-  line-start check (§15.7.3); the parser does not read lists inside quotes.
+  line-start check (§15.7.3), not from the list the quote's content holds.
 - Removing a drafting note or unit can join what it separated: indented code after a removed note
   that followed a list becomes a paragraph of the list's last item, and two code blocks separated
   only by a removed note merge. §15.7.2 step 2 removes the lines; the template author keeps such

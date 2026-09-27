@@ -249,6 +249,10 @@ paragraph's text, and `render_item(item)` its content as written after its marke
 item in `document_from_dict` (as models before 0.3 held them) is read as such content. A
 nested item's condition applies within those of the items it is nested in (§15.3).
 
+A quote block keeps its `text`: its content, one line per source line without the `>` marker.
+The validator and assembly read that content as blocks, as they read an item's, so code and raw
+HTML in a quote hold no directive.
+
 Tables follow GFM: a table needs a delimiter row with one cell per header, rows take the
 header's width, and a `|` inside a cell — a code span's included — is written `\|`. A
 table block's `headers` and `rows` hold the cell text with those escapes removed, and

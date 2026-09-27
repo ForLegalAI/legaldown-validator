@@ -302,7 +302,9 @@ def _block_text(kind: str, value: Any) -> str:
             lines.pop(0)
         return "\n".join(lines).rstrip()
     if kind == "quote":
-        return text.rstrip().lstrip(" \t")
+        # A line's indentation is content: four columns make it code. Its
+        # trailing whitespace is not written back (``serializer``).
+        return "\n".join(line.rstrip() for line in text.split("\n")).rstrip()
     # Only spaces, tabs and line endings are stripped (CommonMark); text of
     # nothing but whitespace is none — the parser reads such a line as blank.
     return strip_text(text) if text.strip() else ""

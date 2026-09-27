@@ -57,6 +57,19 @@ HTML_BLOCK_START_RE = re.compile(
 _HTML_BLOCK_6_RE = re.compile(_HTML_BLOCK_6, re.IGNORECASE)
 
 
+def html_block_opening(line: str, *, in_paragraph: bool = False) -> tuple[re.Pattern[str] | None] | None:
+    """How the HTML block that *line* starts ends: ``(marker,)``, the
+    pattern whose match on a line, this one included, ends it, or None for
+    a kind that ends before a blank line. None when *line* starts none —
+    after paragraph text (*in_paragraph*), kind 7 does not."""
+    for start, end_marker in _HTML_BLOCKS_TO_MARKER:
+        if start.match(line):
+            return (end_marker,)
+    if _HTML_BLOCK_6_RE.match(line) or (not in_paragraph and _HTML_BLOCK_7_RE.match(line)):
+        return (None,)
+    return None
+
+
 def html_block_end(lines: list[str], index: int) -> int | None:
     """The index just past the HTML block (CommonMark kinds 1–7) starting
     at ``lines[index]``, or None when none starts there. The caller rules
