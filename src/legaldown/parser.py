@@ -316,7 +316,9 @@ def _parse_list(
     items; an item of another type (``_list_type``) not nested in one of its
     items, or a thematic break, ends it. An item is nested in the items
     whose content its marker reaches (CommonMark): the block's ``levels``
-    and ``item_kinds`` record how deep, and in a list of which kind (§15.3).
+    and ``item_kinds`` record how deep, and in a list of which kind (§15.3);
+    ``item_markers`` a nested item's bullet or delimiter, which, changed,
+    starts another nested list.
     A marker four or more columns into that content starts no item. Past a blank line it goes on when the next line is
     indented to the last item's content (not an ATX heading, not after an
     empty item): the item's later content (§5.7), one row per line, blank
@@ -333,6 +335,7 @@ def _parse_list(
     items: list[str] = []
     levels: list[int] = []  # each item's nesting depth
     kinds: list[str] = []  # the kind of the list each item is in
+    markers: list[str] = []  # the bullet or delimiter of each nested item
     chain: list[int] = []  # the content columns of the current item and those it is nested in
     # Where the list's own items are measured from: the margin, or for a list
     # in the content of an item before it (``_parse_body``'s tail), where it
@@ -424,6 +427,7 @@ def _parse_list(
             items.append(content)
             levels.append(depth)
             kinds.append("ordered_list" if marker.group("delimiter") else "unordered_list")
+            markers.append((marker.group("delimiter") or marker.group("bullet")) if depth else "")
             chain[depth:] = [content_indent]
             if item_starts is not None:
                 item_starts.append(end)
@@ -483,7 +487,10 @@ def _parse_list(
         end += 1
     kind = "ordered_list" if list_type in ".)" else "unordered_list"
     nested = any(levels)
-    block = Block(kind=kind, items=items, levels=levels if nested else [], item_kinds=kinds if nested else [])
+    block = Block(
+        kind=kind, items=items, levels=levels if nested else [], item_kinds=kinds if nested else [],
+        item_markers=markers if nested else [],
+    )
     # A following line is lazy only while a paragraph is open.
     return block, end, quote.paragraph if quote is not None else open_paragraph
 

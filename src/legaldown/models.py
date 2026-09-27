@@ -135,6 +135,11 @@ class Block:
     #: ``unordered_list``), parallel to ``items``: a nested list's own. Empty
     #: when no item is nested.
     item_kinds: list[str] = field(default_factory=list)
+    #: The bullet (``-``, ``*``, ``+``) or delimiter (``.``, ``)``) of each
+    #: nested item's list, parallel to ``items``, ``""`` for the block's own
+    #: items: a nested list that changes it is another list (CommonMark).
+    #: Empty when no item is nested. Read through ``list_markers``.
+    item_markers: list[str] = field(default_factory=list)
     headers: list[str] = field(default_factory=list)
     rows: list[list[str]] = field(default_factory=list)
     #: A table's column alignments, one per column: ``"left"``, ``"right"``,
@@ -161,6 +166,21 @@ def list_nesting(block: Block) -> list[tuple[int, str]]:
         nesting.append((level, kind if level and kind in LIST_KINDS else block.kind))
         previous = level
     return nesting
+
+
+_MARKERS = {"unordered_list": ("-", "*", "+"), "ordered_list": (".", ")")}
+
+
+def list_markers(block: Block) -> list[str]:
+    """Each of a list's items' bullet or delimiter (``item_markers``), read
+    leniently: ``""`` for an item of the block's own list, and for a nested
+    item without one its kind allows, the kind's first (``-``, ``.``)."""
+    markers: list[str] = []
+    for k, (level, kind) in enumerate(list_nesting(block)):
+        marker = block.item_markers[k] if k < len(block.item_markers) else ""
+        allowed = _MARKERS.get(kind, ("-",))
+        markers.append("" if not level else marker if marker in allowed else allowed[0])
+    return markers
 
 
 def listed_items(block: Block) -> list[tuple[str, int, str]]:
@@ -319,23 +339,26 @@ def _block_text(kind: str, value: Any) -> str:
 def _list_fields(kind: str, merged: dict[str, Any]) -> dict[str, Any]:
     """A block's ``items``, stripped, empty ones kept in their places (an
     empty item is a list item too, CommonMark), with their ``levels`` and
-    ``item_kinds`` (``list_nesting``): none when no item is nested."""
+    ``item_kinds`` (``list_nesting``) and ``item_markers`` (``list_markers``):
+    none when no item is nested."""
     block = Block(
         kind=kind,
         items=[str(item) for item in list(merged.get("items") or [])],
         levels=list(merged.get("levels") or []),
         item_kinds=[str(value) for value in list(merged.get("item_kinds") or [])],
+        item_markers=[str(value) for value in list(merged.get("item_markers") or [])],
     )
     listed = listed_items(block)
     items = [item.strip() for item, _level, _kind in listed]
     if not items and kind.endswith("list"):
         items = [""]
     if not any(level for _item, level, _kind in listed):
-        return {"items": items, "levels": [], "item_kinds": []}
+        return {"items": items, "levels": [], "item_kinds": [], "item_markers": []}
     return {
         "items": items,
         "levels": [level for _item, level, _kind in listed],
         "item_kinds": [item_kind for _item, _level, item_kind in listed],
+        "item_markers": list_markers(block),
     }
 
 

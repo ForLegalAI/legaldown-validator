@@ -2308,6 +2308,8 @@ def test_list_runs_number_each_nested_list_on_its_own():
 
     assert list_runs([(0, _O), (1, _O), (2, _U), (1, _O), (0, _O), (1, _O)]) == [0, 1, 2, 1, 0, 3]
     assert list_runs([(0, _U), (1, _O), (1, _U), (1, _U)]) == [0, 1, 2, 2]
+    # Another bullet or delimiter starts another list.
+    assert list_runs([(0, _U, ""), (1, _U, "-"), (1, _U, "*"), (1, _U, "*"), (0, _U, "")]) == [0, 1, 2, 2, 0]
 
 
 def test_a_list_indented_into_an_earlier_items_content_is_read():
@@ -2528,3 +2530,61 @@ def test_a_fence_left_open_before_a_heading_is_closed():
     written = serialize_document(document)
     assert "```\nx\n```\n\n# B" in written
     assert [section.title for section in parse_document(written).sections] == ["A", "B"]
+
+
+# ── A nested list's own marker (#65) ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("body", "markers"),
+    [
+        ("- one\n  - a\n  * b\n- two\n", ["", "-", "*", ""]),
+        ("- one\n  1. a\n  1) b\n- two\n", ["", ".", ")", ""]),
+        ("1. x\n   * a\n     - deep\n   + b\n", ["", "*", "-", "+"]),
+        ("- one\n  + a\n  + b\n", ["", "+", "+"]),
+    ],
+)
+def test_a_nested_list_that_changes_its_marker_is_another_list(body, markers):
+    from legaldown.models import list_markers
+
+    document = parse_document(_FRONTMATTER + body)
+    [block] = document.sections[0].blocks
+    assert block.item_markers == list_markers(block) == markers
+    assert serialize_document(document).endswith("{#terms}\n\n" + body)
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_the_second_nested_list_is_numbered_from_one():
+    document = parse_document(_FRONTMATTER + "- one\n  1. a\n  2. b\n  1) c\n  2) d\n")
+    assert serialize_document(document).endswith("- one\n  1. a\n  2. b\n  1) c\n  2) d\n")
+
+
+def test_a_model_built_nested_marker_is_read_leniently():
+    from legaldown.models import list_markers
+
+    # Missing, or not one the item's kind allows: the kind's first. The
+    # block's own items have none.
+    block = Block(kind=_U, items=["a", "b", "c", "d"], levels=[0, 1, 1, 1],
+                  item_kinds=[_U, _U, _O, _U], item_markers=["*", "", ")", "."])
+    assert list_markers(block) == ["", "-", ")", "-"]
+    flat = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": _U, "items": ["a", "b"], "item_markers": ["*", "+"]},
+    ]}]}).sections[0].blocks[0]
+    assert flat.item_markers == []
+
+
+def test_a_nested_item_that_would_make_a_thematic_break_starts_on_the_next_line():
+    # "- ---" is a thematic break: the item's text follows its bare marker,
+    # which keeps its list's bullet, as its source had it.
+    body = "- a\n\n  -\n    ---\n  - b\n"
+    document = parse_document(_FRONTMATTER + body)
+    [block] = document.sections[0].blocks
+    assert (block.items, block.item_markers) == (["a", "---", "b"], ["", "-", "-"])
+    assert serialize_document(document).endswith("{#terms}\n\n" + body)
+    assert parse_document(serialize_document(document)) == document
+    # One built in code, too: "--" is its paragraph (CommonMark).
+    built = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": _U, "items": ["a", "--"], "levels": [0, 1], "item_kinds": [_U, _U], "item_markers": ["", "-"]},
+    ]}]})
+    assert serialize_document(built).endswith("# A\n\n- a\n\n  -\n    --\n")
+    assert parse_document(serialize_document(built)) == built
