@@ -1665,14 +1665,16 @@ def test_tabs_inside_list_item_code_are_kept():
     assert document.sections[0].blocks[0].items == ["item\n```\na\tb\n```"]
 
 
-def test_serializer_closes_an_unclosed_fence_in_a_list_item():
+def test_a_fence_left_open_in_a_list_item_ends_with_its_list():
+    # The next list takes another bullet: its marker ends the fence and the
+    # list, so the fence is written as it is.
     document = parse_document(_FRONTMATTER + "Text.\n")
     document.sections[0].blocks += [
         Block(kind="unordered_list", items=["x\n```\ncode"]),
         Block(kind="unordered_list", items=["y"]),
     ]
     blocks = parse_document(serialize_document(document)).sections[0].blocks
-    assert [b.items for b in blocks[1:]] == [["x\n```\ncode\n```"], ["y"]]
+    assert [b.items for b in blocks[1:]] == [["x\n```\ncode"], ["y"]]
 
 
 def test_indentation_after_the_quote_marker_is_content():
@@ -2443,3 +2445,53 @@ def test_a_model_built_paragraph_that_reads_as_a_list_item_is_escaped(text, writ
     output = serialize_document(document)
     assert output.endswith("# A\n\n" + written + "\n")
     assert [block.kind for block in parse_document(output).sections[0].blocks] == ["paragraph"]
+
+
+# ── Blocks written as what they are (#45) ─────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "written"),
+    [("> q", "\\> q"), ("***", "\\***"), ("---", "\\---"), ("___", "\\___"), ("- - -", "\\- - -")],
+)
+def test_a_model_built_paragraph_that_reads_as_another_block_is_escaped(text, written):
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": text}]}]})
+    output = serialize_document(document)
+    assert output.endswith("# A\n\n" + written + "\n")
+    assert [block.kind for block in parse_document(output).sections[0].blocks] == ["paragraph"]
+
+
+def _lists(*blocks: tuple[str, list[str]]) -> str:
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": kind, "items": items} for kind, items in blocks
+    ]}]})
+    output = serialize_document(document)
+    assert parse_document(output) == document
+    return output.split("# A\n\n", 1)[1]
+
+
+def test_adjacent_lists_of_a_kind_take_different_markers():
+    # CommonMark would merge two lists with the same marker into one.
+    assert _lists((_U, ["a"]), (_U, ["b"]), (_U, ["c"])) == "- a\n\n+ b\n\n- c\n"
+    assert _lists((_O, ["a"]), (_O, ["b"]), (_O, ["c"])) == "1. a\n\n1) b\n\n1. c\n"
+    assert _lists((_U, ["a"]), (_O, ["b"]), (_U, ["c"])) == "- a\n\n1. b\n\n- c\n"
+
+
+def test_adjacent_lists_avoid_bullets_that_make_a_thematic_break():
+    # "- --" and "* **" are thematic breaks: the first list must take "+",
+    # which leaves the second "-"... unless its items rule that out too.
+    assert _lists((_U, ["--"]), (_U, ["a"])) == "+ --\n\n- a\n"
+    # The second list can take only "+": the first takes another bullet.
+    assert _lists((_U, ["a"]), (_U, ["--", "**"])) == "- a\n\n+ --\n+ **\n"
+    assert _lists((_U, ["**"]), (_U, ["--", "**"])) == "- **\n\n+ --\n+ **\n"
+
+
+
+def test_a_fence_is_closed_where_adjacent_lists_must_share_a_bullet():
+    # Each list's items rule out "-" and "*": both take "+", and the fence
+    # left open in the first would carry it into the second.
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": _U, "items": ["--", "**\n```\ncode"]}, {"kind": _U, "items": ["--", "**"]},
+    ]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [block.items for block in blocks] == [["--", "**\n```\ncode\n```"], ["--", "**"]]
