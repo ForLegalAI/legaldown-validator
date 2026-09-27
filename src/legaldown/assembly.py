@@ -36,24 +36,22 @@ from datetime import date
 from functools import cache
 from typing import Any
 
+from .definitions import list_fragments
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
     fence_end,
-    html_block_rows,
     indent_width,
-    indented_code_rows,
-    item_content_column,
-    open_items,
 )
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
-from .models import Block, Document
+from .models import LIST_KINDS, Block, Document
 from .parser import (
     FRONTMATTER_RE,
     LIST_ITEM_RE,
     _BlockSpan,
+    _ItemSpan,
     _Layout,
     _layout,
     _may_interrupt,
@@ -154,16 +152,32 @@ def _kind(span: _BlockSpan) -> str:
     return _KINDS.get(span.kind, span.kind)
 
 
+def _matches(spans: list[_BlockSpan], blocks: list[Block]) -> bool:
+    """True if *spans* lie where *blocks* are, block for block, into list
+    items too."""
+    return len(spans) == len(blocks) and all(
+        span.kind == block.kind and len(span.items) == len(block.items)
+        and all(_matches(item_span.blocks, item.blocks) for item_span, item in zip(span.items, block.items, strict=True))
+        for span, block in zip(spans, blocks, strict=True)
+    )
+
+
+def _within(spans: list[_BlockSpan], blocks: list[Block]) -> Iterator[tuple[_BlockSpan, Block]]:
+    """Every block of *blocks* and of their list items, in document order,
+    each with where it lies."""
+    for span, block in zip(spans, blocks, strict=True):
+        yield span, block
+        for item_span, item in zip(span.items, block.items, strict=True):
+            yield from _within(item_span.blocks, item.blocks)
+
+
 def _pairs(layout: _Layout, document: Document) -> Iterator[tuple[int | None, int, _BlockSpan, Block]]:
     """Each source block with its model block: ``(section, index, source, model)``."""
     model = [document.preamble, *(section.blocks for section in document.sections)]
     spans = layout.containers()
     # The layout is recorded by the walk that builds the model, block for
     # block; anything else is a bug, and would edit the wrong lines.
-    if len(spans) != len(model) or any(
-        len(a) != len(b) or any(span.kind != block.kind for span, block in zip(a, b, strict=True))
-        for a, b in zip(spans, model, strict=True)
-    ):
+    if len(spans) != len(model) or not all(_matches(a, b) for a, b in zip(spans, model, strict=True)):
         raise AssemblyError("The template's source does not match its parsed structure.")
     for container, (container_spans, blocks) in enumerate(zip(spans, model, strict=True)):
         for index, (span, block) in enumerate(zip(container_spans, blocks, strict=True)):
@@ -268,86 +282,23 @@ def _read_body(
         if marker.placed(template) and marker.marker is not None:
             found.setdefault((marker.section, marker.block), []).append(marker)
     source = _Source(path, lines, _section_units(layout, document, lines, questions), set(), [], [])
-    tails = _tails(layout)
+    items: set[int] = set()
     for section, index, span, block in _pairs(layout, document):
         markers = found.get((section, index), [])
         if _kind(span) == "list":
-            _read_list(source, span, block, markers, questions, tails.get(id(span), []))
+            _read_list(source, span, block, markers, questions)
         elif _kind(span) == "paragraph":
             _read_paragraph(source, span, block, markers, questions)
-        elif _kind(span) == "quote":
-            # The parser's quote text holds one line per source line.
-            for first, last in _note_lines(block.text):
-                source.notes.update(range(span.start + first, span.start + last + 1))
-            source.code.update(span.start + k for k in _fenced(block.text))
+        for inner, inner_block in _within([span], [block]):
+            items.update(item.start for item in inner.items)
+            if _kind(inner) == "quote":
+                # The parser's quote text holds one line per source line.
+                for first, last in _note_lines(inner_block.text):
+                    source.notes.update(range(inner.start + first, inner.start + last + 1))
+                source.code.update(inner.start + k for k in _fenced(inner_block.text))
     source.occurrences, source.malformed, source.include_lines = _occurrences(layout, lines, source.code)
-    source.item_lines = frozenset(
-        first for blocks in layout.containers() for block in blocks for first, _raw in block.items
-    )
+    source.item_lines = frozenset(items)
     return source
-
-
-def _tails(layout: _Layout) -> dict[int, list[_BlockSpan]]:
-    """The blocks after each list (by ``id``): candidates for what CommonMark
-    reads as part of one of its items' later content — a later paragraph, a
-    nested list, a quote, code or a table of that item's own (§5.7). Which
-    prefix of them a given item actually takes, if any, is ``_tail_end``'s,
-    since each item of the list's own chain has its own content column."""
-    tails: dict[int, list[_BlockSpan]] = {}
-    for spans in layout.containers():
-        for k, span in enumerate(spans):
-            if _kind(span) == "list" and span.items:
-                tails[id(span)] = spans[k + 1:]
-    return tails
-
-
-# The kinds whose later lines are always continuation or lazy: a later line,
-# however indented, never closes the item that contains them (§5.7).
-_TAIL_OPEN_KINDS = frozenset({"paragraph", "definition", "ref", "term"})
-
-
-def _tail_cut(lines: list[str], span: _BlockSpan, column: int) -> int | None:
-    """The first line inside *span*, admitted to a tail indented to *column*,
-    where CommonMark actually closes the item: for a nested list, an
-    item-start line indented less than *column* (its own later lines answer
-    to its own, deeper, column); for a quote, a non-blank line indented less
-    than *column* that itself opens a quote — a line without ``>`` there is a
-    lazy continuation of the quote's own paragraph, never a cut; for anything
-    else (code, html, table, rule), any non-blank line indented less than
-    *column*. ``None`` when *span* is taken whole."""
-    kind = _kind(span)
-    if kind in _TAIL_OPEN_KINDS:
-        return None
-    if kind == "list":
-        return next(
-            (first for first, _raw in span.items[1:] if indent_width(lines[first]) < column),
-            None,
-        )
-    for i in range(span.start + 1, span.end):
-        line = lines[i]
-        if not line.strip() or indent_width(line) >= column:
-            continue
-        if kind != "quote" or _BLOCK_QUOTE_RE.match(line):
-            return i
-    return None
-
-
-def _tail_end(lines: list[str], following: list[_BlockSpan], column: int) -> int | None:
-    """Where a tail indented to *column*, taken from *following* (the spans
-    after a list, in order), ends: ``None`` when the very first of them is
-    not indented enough (CommonMark closes the item before it). Otherwise the
-    walk admits each span in turn — stopping at the first cut inside one
-    (``_tail_cut``), which ends the tail there and stops it for good, since a
-    closed item does not reopen further down the source."""
-    end = None
-    for span in following:
-        if indent_width(lines[span.start]) < column:
-            break
-        cut = _tail_cut(lines, span, column)
-        if cut is not None:
-            return cut
-        end = span.end
-    return end
 
 
 def _section_units(
@@ -403,75 +354,36 @@ def _read_paragraph(
         source.includes.append(_Include(span.start, span.end, path))
 
 
-def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any,
-               tails: list[_BlockSpan]) -> None:
-    """Each item runs through its nested items; its marker ends its first
-    paragraph (§5.7), which the parser joins onto the item text's first line.
-    An item the list ends in also runs through the *tails* indented to its
-    content, which CommonMark reads as its later paragraphs."""
-    lines, items = source.lines, span.items
-    starts = [first for first, _raw in items] + [span.end]
-    still_open = set(open_items(lines, starts[:-1], [raw for _first, raw in items]))
-    listed = []  # the items the model keeps: it drops empty ones
-    for k, (first, raw) in enumerate(items):
-        own_end, column = starts[k + 1], item_content_column(lines[first])
-        full_end = next(
-            (s for s, _raw in items[k + 1:] if indent_width(lines[s]) < column), span.end
-        )
-        if k in still_open:
-            # Open at the list's end: it may run into the tail.
-            end = _tail_end(lines, tails, column)
-            if end is not None:
-                full_end = end
-        paragraph_end = _first_paragraph_end(raw, own_end)
-        if raw.strip():
-            listed.append((first, _trim(lines, first, full_end), paragraph_end))
-        for note_first, note_last in _note_lines(raw, inside_list=True):
-            source.notes.update(range(
-                _row_line(first, paragraph_end, note_first), _row_line(first, paragraph_end, note_last) + 1
-            ))
-        source.code.update(_item_code_lines(first, raw, own_end))
+def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:
+    """A conditional list item: it runs through its lines, the items nested
+    in it and its later content included (§15.3); its marker ends its first
+    paragraph (§5.7)."""
+    lines = source.lines
+    items: list[_ItemSpan] = []  # every item, nested ones too, numbered as list_fragments numbers them
+
+    def walk(spans: list[_ItemSpan], model: list) -> None:
+        for item_span, item in zip(spans, model, strict=True):
+            items.append(item_span)
+            for inner, inner_block in zip(item_span.blocks, item.blocks, strict=True):
+                if inner_block.kind in LIST_KINDS:
+                    walk(inner.items, inner_block.items)
+
+    walk(span.items, block.items)
+    paths = [path for _text, _position, path in list_fragments(block)]
     for marker in markers:
-        if marker.marker.condition and marker.fragment < len(listed):
-            first, end, paragraph_end = listed[marker.fragment]
-            line = _marker_line(lines, first, paragraph_end, marker.source)
-            source.units.append(_Unit(first, end, _test(marker.marker.condition, questions),
-                                      line, marker.source))
-
-
-def _first_paragraph_end(raw: str, own_end: int) -> int:
-    """The line after an item's first paragraph: its text's first row joins
-    the paragraph's lines, and each later row is one source line, the last
-    ending where the item's own lines do (*own_end*)."""
-    return own_end - raw.count("\n")
-
-
-def _row_line(first: int, paragraph_end: int, row: int) -> int:
-    """The source line an item text's *row* starts on."""
-    return first if row == 0 else paragraph_end + row - 1
-
-
-def _item_code_lines(first: int, raw: str, own_end: int) -> Iterator[int]:
-    """The source lines of the item starting on line *first* that hold
-    fenced code (§11.4) — a fence in its joined first row covers all of the
-    row's lines."""
-    paragraph_end = _first_paragraph_end(raw, own_end)
-    # Indented code and HTML blocks in its later content hold no directive
-    # either (``definitions.block_fragments``).
-    for row in {*indented_code_rows(raw), *html_block_rows(raw)}:
-        yield _row_line(first, paragraph_end, row)
-    for row in _fenced(raw):
-        if row == 0:
-            yield from range(first, paragraph_end)
-        else:
-            yield _row_line(first, paragraph_end, row)
+        if not marker.marker.condition or marker.fragment >= len(paths) or not paths[marker.fragment]:
+            continue
+        item = items[paths[marker.fragment][-1]]
+        first_end = item.blocks[0].end if item.blocks else item.start + 1  # its first paragraph
+        line = _marker_line(lines, item.start, first_end, marker.source)
+        source.units.append(_Unit(item.start, _trim(lines, item.start, item.end),
+                                  _test(marker.marker.condition, questions), line, marker.source))
 
 
 def _fenced(text: str) -> Iterator[int]:
-    """The lines of *text* — a list item's or a quote's, as the parser hands
-    it to the validator — inside fenced code, which the lexer blanks there
-    (§11.4), a one-line text's opening line included
-    (``definitions.block_fragments``)."""
+    """The lines of *text* — a quote's, as the parser hands it to the
+    validator — inside fenced code, which the lexer blanks there (§11.4), a
+    one-line text's opening line included (``definitions.block_fragments``)."""
     rows = text.split("\n")
     index = 0
     while index < len(rows):
@@ -484,11 +396,10 @@ def _fenced(text: str) -> Iterator[int]:
         index = end
 
 
-def _note_lines(text: str, *, inside_list: bool = False) -> Iterator[tuple[int, int]]:
+def _note_lines(text: str) -> Iterator[tuple[int, int]]:
     """The first and last line, within *text*, of each drafting note in a
-    quote block's text or a list item's (§15.6), as the validator finds them."""
-    block = Block(kind="unordered_list", items=[text]) if inside_list else Block(kind="quote", text=text)
-    for quote in block_quotes(block):
+    quote block's text (§15.6), as the validator finds them."""
+    for quote in block_quotes(Block(kind="quote", text=text)):
         if quote.is_drafting_note:
             yield text.count("\n", 0, quote.start), text.count("\n", 0, quote.end)
 
@@ -499,19 +410,25 @@ def _occurrences(
     """Every placeholder and choice in the body, lexed block by block as the
     validator lexes them, so a code span or comment hides the same ones. No
     directive is recognized in code or raw HTML (§11.4), fenced code inside a
-    list item or quote (*code*) included. A list's items are lexed one by
-    one, as the validator lexes their text: a code span or comment left
-    open in one item does not run into the next. Also the malformed ones,
-    and the lines each ``{{include:}}`` is written on."""
+    quote (*code*) included. A list's items' blocks are lexed one by one, as
+    the validator lexes them: a code span or comment left open in one does
+    not run into the next. Also the malformed ones, and the lines each
+    ``{{include:}}`` is written on."""
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
     includes: list[int] = []
+
+    def leaves(spans: list[_BlockSpan]) -> Iterator[_BlockSpan]:
+        for span in spans:
+            if span.items:
+                for item in span.items:
+                    yield from leaves(item.blocks)
+            elif _kind(span) not in ("code", "rule", "html", "list"):
+                yield span
+
     for blocks in layout.containers():
-        for block in blocks:
-            if _kind(block) in ("code", "rule", "html"):
-                continue
-            starts = [first for first, _raw in block.items] or [block.start]
-            for start, stop in zip(starts, [*starts[1:], block.end], strict=True):
+        for block in leaves(blocks):
+            for start, stop in [(block.start, block.end)]:
                 text = "\n".join(" " * len(lines[i]) if i in code else lines[i] for i in range(start, stop))
                 offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
                 for directive in lex(text).directives:
@@ -1522,22 +1439,21 @@ def _preserve_identifiers(t: _Template, head: str, main: list[_Line],
 
 
 def _code_lines(lines: list[str]) -> set[int]:
-    """Lines whose blankness is content: fenced and indented code, and the
-    fenced code inside a list's items. Blank lines in raw HTML are not
-    exempt: step 8 names code blocks only."""
+    """Lines whose blankness is content: fenced and indented code, list
+    items' included. Blank lines in raw HTML are not exempt: step 8 names
+    code blocks only. A list's other blank lines separate an item's blocks
+    (§5.7): they collapse like any others."""
     kept: set[int] = set()
+
+    def walk(spans: list[_BlockSpan]) -> None:
+        for span in spans:
+            if _kind(span) == "code":
+                kept.update(range(span.start, span.end))
+            for item in span.items:
+                walk(item.blocks)
+
     for blocks in _layout(lines).containers():
-        for block in blocks:
-            if _kind(block) == "code":
-                kept.update(range(block.start, block.end))
-            elif _kind(block) == "list":
-                # A list's other blank lines separate an item's paragraphs
-                # (§5.7): they collapse like any others.
-                starts = [first for first, _raw in block.items] + [block.end]
-                for k, (first, raw) in enumerate(block.items):
-                    kept.update(_item_code_lines(first, raw, starts[k + 1]))
-                    paragraph_end = _first_paragraph_end(raw, starts[k + 1])
-                    kept.update(_row_line(first, paragraph_end, row) for row in indented_code_rows(raw))
+        walk(blocks)
     return kept
 
 

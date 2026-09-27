@@ -941,3 +941,23 @@ class TestFilesItCannotRead:
         result = assemble(template, {})
         assert _rules(result) == [("translation-file-missing", "error")]
         assert result.output == ""
+
+
+# ── List items holding blocks (#64) ──────────────────────────────
+
+
+class TestItemsHoldBlocks:
+    def test_a_removed_item_takes_its_content_after_its_nested_items(self):
+        body = "# A\n\n- one {when=x}\n  - a\n\n  more of one\n- two\n"
+        assert _body(assemble(_template(body, _BOOL), {"x": False})) == "\n# A\n\n- two\n"
+        kept = _body(assemble(_template(body, _BOOL), {"x": True}))
+        assert kept == "\n# A\n\n- one\n  - a\n\n  more of one\n- two\n"
+
+    def test_a_blank_in_an_items_later_paragraph_is_filled(self):
+        body = "# A\n\n- one\n  - a\n\n  Hi {{placeholder: name}}.\n"
+        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == "\n# A\n\n- one\n  - a\n\n  Hi Ann.\n"
+
+    def test_html_and_code_in_an_item_hold_no_blank(self):
+        body = "# A\n\n- <div>\n  {{placeholder: name}}\n  </div>\n\n      {{placeholder: name}}\n"
+        result = assemble(_template(body, _TEXT), {"name": "Ann"})
+        assert "Ann" not in _body(result)

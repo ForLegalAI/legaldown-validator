@@ -15,7 +15,7 @@ from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
 from ..markdown import FENCE_OPEN_RE, closes_fence
-from ..models import Block, Document
+from ..models import Block, Document, list_items
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
 from .patterns import (
     DURATION_UNITS,
@@ -327,12 +327,10 @@ def _quotes_in(text: str, outer: int) -> list[Quote]:
 
 def block_quotes(block: Block) -> list[Quote]:
     """The block quotes in *block*, nested ones included: a quote block and
-    the quotes in it, or runs of ``>`` lines in a list item, where the parser
-    keeps a quote's lines — lazy continuation lines included — each with its
-    ``>``."""
+    the quotes in it, or those in a list's items."""
     if block.kind == "quote":
         return _quotes_in(block.text, 1)
-    return [quote for item in block.items for quote in _quotes_in(item, 0)]
+    return [quote for item in list_items(block) for child in item.blocks for quote in block_quotes(child)]
 
 
 # ── Insertion boundaries (§15.7.3) ────────────────────────────────

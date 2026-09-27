@@ -30,11 +30,10 @@ from .markdown import (
     indented_code_end,
     item_content_column,
     nested_offset,
-    open_items,
     strip_text,
 )
 from .markers import Marker, split_heading
-from .models import Block, Document, document_from_dict
+from .models import Block, Document, ListItem, document_from_dict
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -302,40 +301,34 @@ def _starts_item(line: str, chain: list[int], margin: int) -> re.Match[str] | No
     return marker if indent_width(line) - (chain[depth - 1] if depth else margin) < 4 else None
 
 
-def _parse_list(
-    lines: list[str], index: int, *, list_type: str, item_starts: list[int] | None = None
-) -> tuple[Block, int, bool]:
-    """Parse the list starting at ``lines[index]``.
+def _scan_list(
+    lines: list[str], index: int, *, list_type: str, headings: bool
+) -> tuple[list[tuple[int, int]], int, bool, dict[int, int]]:
+    """Where the list starting at ``lines[index]`` ends, and where its own
+    items start: ``(items, end, lazy, text)``, each item as its first line
+    and its content column. *lazy* is True when the list ends in paragraph
+    text, which a following unindented line would lazily continue. *text*:
+    the lines that look like an item's start but, four or more columns into
+    the content they are in, lazily continue a paragraph, each with the
+    column four past that paragraph's content.
 
-    Returns ``(block, end, lazy)``: *end* is the index just past the list,
-    and *lazy* is True when it ends in paragraph text, which a following
-    unindented line would lazily continue (it cannot continue code).
-
-    The list runs through its items, their continuation lines (indented two
-    or more columns, or lazy continuation lines after item text), and nested
-    items; an item of another type (``_list_type``) not nested in one of its
-    items, or a thematic break, ends it. An item is nested in the items
-    whose content its marker reaches (CommonMark): the block's ``levels``
-    and ``item_kinds`` record how deep, and in a list of which kind (§15.3);
-    ``item_markers`` a nested item's bullet or delimiter, which, changed,
-    starts another nested list.
-    A marker four or more columns into that content starts no item. Past a blank line it goes on when the next line is
-    indented to the last item's content (not an ATX heading, not after an
-    empty item): the item's later content (§5.7), one row per line, blank
-    lines included. A fenced code block
-    in an item stays in that item, one line per line, indented relative to
-    the item, blank lines included, until it closes or an unindented line
-    ends the item (and the fence with it), as does an item starting short of
-    its content. A block quote in an item (a
-    drafting note, §15.6) keeps its lines too, each with its ``>``: a lazy
-    continuation line of the quote is kept as the quoted line it means.
-
-    *item_starts*, when given, receives the line each item starts on.
+    The walk follows every item, nested ones too, to tell which lines are
+    the list's: continuation lines (indented two or more columns, or lazy
+    continuation lines of an open paragraph), and past a blank line the
+    lines indented into one of its items (§5.7) or starting another item of
+    its own (a loose list). An item of another type not nested in one of
+    its items, or a thematic break, ends it; so does, where *headings* are
+    sections, an ATX heading after a blank line. An item is nested in the
+    items whose content its marker reaches, and a marker four or more
+    columns into that content starts no item (CommonMark). A fenced code
+    block in an item runs until it closes, until an unindented line, or
+    until an item starts short of its content; a block quote in an item
+    takes its lazy continuation lines. What each item holds is read from its
+    lines afterwards (``_parse_list``).
     """
-    items: list[str] = []
-    levels: list[int] = []  # each item's nesting depth
-    kinds: list[str] = []  # the kind of the list each item is in
-    markers: list[str] = []  # the bullet or delimiter of each nested item
+    items: list[str] = []  # each item's text as far as the walk needs it
+    own: list[tuple[int, int]] = []  # the list's own items: first line, content column
+    text: dict[int, int] = {}  # lazy lines that look like an item's start
     chain: list[int] = []  # the content columns of the current item and those it is nested in
     # Where the list's own items are measured from: the margin, or for a list
     # in the content of an item before it (``_parse_body``'s tail), where it
@@ -363,7 +356,7 @@ def _parse_list(
                 fence_inside and indent_width(line) < content_indent
                 and _starts_item(line, chain, margin) is not None
             )
-            if not starts and (not line.strip() or indent_width(line) >= 2):
+            if not starts and (not line.strip() or indent_width(line) >= (chain[0] if chain else 2)):
                 code = dedent(line, content_indent, expand=True)
                 items[-1] += "\n" + code
                 end += 1
@@ -374,12 +367,25 @@ def _parse_list(
             fence = None
         if not line.strip():
             following = next((k for k in range(end, len(lines)) if lines[k].strip()), None)
-            if (
-                following is None or not items or not items[-1]
-                or indent_width(lines[following]) < content_indent
-                or HEADING_RE.match(lines[following])  # it stays a section heading
+            if following is None or (headings and HEADING_RE.match(lines[following])):
+                break  # a heading stays a section heading
+            if not items[-1]:
+                # An item begins with at most one blank line: an empty item
+                # ends here, its parent's content going on.
+                chain.pop()
+            width = indent_width(lines[following])
+            if chain and width >= chain[0]:
+                # Indented into an item still open: its content goes on, after
+                # the items nested in it too.
+                del chain[bisect.bisect_right(chain, width):]
+                content_indent = chain[-1]
+            elif (
+                (sibling := _starts_item(lines[following], [], margin)) is None
+                or _list_type(sibling) != list_type
             ):
                 break
+            else:
+                chain.clear()  # another item of the list's own: it is loose
             items[-1] += "\n" * (following - end)  # the blank lines, one row each
             end = following
             lazy = paragraph = open_paragraph = table = False  # the blank line closed the item's paragraph
@@ -405,6 +411,7 @@ def _parse_list(
                 marker = None
                 lazy_line = True
                 joined = quote is None
+                text[end] = content_indent + offset + 4
             elif not depth:
                 break  # indented code after the list
             # Otherwise indented code in an earlier item's content, which the
@@ -425,15 +432,18 @@ def _parse_list(
             content_indent = item_content_column(line)
             content = line[marker.end():].strip()
             items.append(content)
-            levels.append(depth)
-            kinds.append("ordered_list" if marker.group("delimiter") else "unordered_list")
-            markers.append((marker.group("delimiter") or marker.group("bullet")) if depth else "")
+            if not depth:
+                own.append((end, content_indent))
             chain[depth:] = [content_indent]
-            if item_starts is not None:
-                item_starts.append(end)
             quote, table, previous = None, False, None
             offset = nested_offset(content)  # an item nested on its line: its content is further in
-        elif items and (indented or ((quote.paragraph if quote is not None else open_paragraph) and _is_lazy_line(line))):
+        elif items and (
+            # Into the content of an item still open: the list's (the item a
+            # line is in is read from its lines, ``_parse_list``). Short of
+            # it, only a lazy continuation line of an open paragraph.
+            (chain and indent_width(line) >= chain[0])
+            or ((quote.paragraph if quote is not None else open_paragraph) and (lazy_line or _is_lazy_line(line)))
+        ):
             content = dedent(line, content_indent, expand=True) if indented else line.strip()
             if lazy_line and quote is None:
                 # Kept four columns in, as if in the item's content: there too
@@ -464,7 +474,9 @@ def _parse_list(
             quote.read(content[1:].removeprefix(" "))
             lazy = quote.paragraph
         else:
-            opening = FENCE_OPEN_RE.match(content)
+            # An item's first line may open items nested on it (``- - ``````):
+            # the fence is theirs.
+            opening = FENCE_OPEN_RE.match(content[nested_offset(content):] if marker else content)
             fence = opening.group("fence") if opening else None
             # Opened in the item's content, not by a line short of it that
             # only this parser reads into the item (``indented``).
@@ -485,14 +497,76 @@ def _parse_list(
         open_paragraph = prose and (joined or _is_paragraph_text(content, nested=True))
         previous, previous_code = content, code
         end += 1
-    kind = "ordered_list" if list_type in ".)" else "unordered_list"
-    nested = any(levels)
-    block = Block(
-        kind=kind, items=items, levels=levels if nested else [], item_kinds=kinds if nested else [],
-        item_markers=markers if nested else [],
-    )
     # A following line is lazy only while a paragraph is open.
-    return block, end, quote.paragraph if quote is not None else open_paragraph
+    return own, end, quote.paragraph if quote is not None else open_paragraph, text
+
+
+# The markers and indentation that open a line inside list items and block
+# quotes, whose tabs stand for the columns they reach.
+_CONTAINER_PREFIX_RE = re.compile(r"(?:[ \t]*(?:(?:[-*+]|[0-9]{1,9}[.)])(?=[ \t]|$)|>))*[ \t]*")
+
+
+def _expand_prefix(line: str) -> str:
+    """*line* with the tabs in its leading markers and indentation written
+    as the spaces they stand for, from the line's start (CommonMark tab
+    stops of four): so a line taken out of an item measures its columns as
+    it did in place."""
+    prefix = _CONTAINER_PREFIX_RE.match(line).group(0)
+    return prefix.expandtabs(4) + line[len(prefix):] if "\t" in prefix else line
+
+
+def _item_lines(lines: list[str], column: int, text: dict[int, int]) -> list[str]:
+    """An item's content, one line per source line: *lines* are the item's,
+    the first with its marker; *column* is the item's content column. Past
+    the marker and each later line's indentation to *column*, a line is the
+    item's as it stands; a line indented less, such as a lazy continuation
+    line, loses its indentation — except one in *text* (indices into
+    *lines*), which looks like an item's start but continues a paragraph: it
+    is put at the column *text* gives, four past that paragraph's content,
+    where it starts no item either."""
+    content = []
+    for k, line in enumerate(lines):
+        expanded = _expand_prefix(line)
+        if k == 0 or indent_width(expanded) >= column:
+            content.append(expanded[column:] if len(expanded) > column else "")
+        else:
+            content.append(" " * max(text.get(k, 0) - column, 0) + expanded.lstrip(" \t"))
+    return content
+
+
+# How deep lists are read into items: past it, an item's content is one
+# paragraph of text, so that no document recurses without bound.
+MAX_LIST_DEPTH = 64
+
+
+def _parse_list(
+    lines: list[str], index: int, *, list_type: str, headings: bool = True, offset: int = 0, depth: int = 0,
+) -> tuple[Block, int, bool, list[_ItemSpan]]:
+    """Parse the list starting at ``lines[index]``: ``(block, end, lazy,
+    items)`` — *end* and *lazy* as ``_scan_list`` gives them, *items* where
+    each item lies. Each item's content is parsed as blocks of its own
+    (``_parse_body``), nested lists included: no heading, and no lifting of
+    a directive into block fields. *offset*: the source line ``lines[0]``
+    is (for the item spans); *depth*: how many items the list is in, past
+    ``MAX_LIST_DEPTH`` of which an item's content is one paragraph."""
+    own, end, lazy, text = _scan_list(lines, index, list_type=list_type, headings=headings)
+    items: list[ListItem] = []
+    spans: list[_ItemSpan] = []
+    starts = [first for first, _column in own] + [end]
+    for (first, column), stop in zip(own, starts[1:], strict=True):
+        layout = _Layout()
+        content = _item_lines(lines[first:stop], column, {k - first: at for k, at in text.items() if first <= k < stop})
+        if depth >= MAX_LIST_DEPTH:
+            joined = " ".join(part.strip() for part in content if part.strip())
+            blocks = [Block(kind="paragraph", text=joined)] if joined else []
+            if blocks:
+                layout.preamble.append(_BlockSpan("paragraph", offset + first, offset + stop))
+        else:
+            blocks, _sections = _parse_body(content, layout, headings=False, offset=offset + first, depth=depth + 1)
+        items.append(ListItem(blocks=blocks))
+        spans.append(_ItemSpan(offset + first, offset + stop, layout.preamble))
+    kind = "ordered_list" if list_type in ".)" else "unordered_list"
+    return Block(kind=kind, items=items), end, lazy, spans
 
 
 def _is_row(line: str) -> bool:
@@ -689,13 +763,6 @@ def _is_paragraph_text(content: str, *, nested: bool = False) -> bool:
     )
 
 
-def _open_columns(lines: list[str], item_starts: list[int], items: list[str]) -> list[int]:
-    """The content columns of a list's items still open at its end: the
-    last item and each item every later one is nested in. An empty last item
-    is not open past a blank line (CommonMark)."""
-    return [item_content_column(lines[item_starts[k]]) for k in open_items(lines, item_starts, items)]
-
-
 def _may_interrupt(line: str, marker: re.Match[str]) -> bool:
     """True if the list item *marker* opens on *line* may interrupt a
     paragraph (CommonMark): it is not empty and, if ordered, its number is
@@ -705,7 +772,7 @@ def _may_interrupt(line: str, marker: re.Match[str]) -> bool:
     )
 
 
-def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
+def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool = True) -> tuple[int, int]:
     """Return ``(end, setext_level)`` for the paragraph starting at
     ``lines[index]``. *setext_level* is 1 or 2 when the paragraph is the text
     of a setext heading, whose underline is ``lines[end - 1]``, else 0.
@@ -716,11 +783,15 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool) -> tuple[int, int]:
     other than a setext underline, or a list item (an ordered one only when
     numbered 1), none of them indented four or more columns. A *lazy* paragraph continues a
     list, block quote, or table (no blank line between), so it cannot be
-    setext text: ``---`` under it is a rule.
+    setext text: ``---`` under it is a rule. Without *headings* (a list
+    item's content), a setext underline is more of the paragraph.
     """
     end = index + 1
     while end < len(lines) and lines[end].strip():
         line = lines[end]
+        if not headings and SETEXT_UNDERLINE_RE.match(line):
+            end += 1
+            continue
         if (
             FENCE_OPEN_RE.match(line)
             or HEADING_RE.match(line)
@@ -759,13 +830,22 @@ class _HeadingSpan:
 @dataclass(slots=True)
 class _BlockSpan:
     """Where a block lies in the body: lines ``[start, end)``. *kind* is the
-    parsed block's. *items*: a list's items, each with the line it starts on
-    and its text as parsed, empty items included (the model drops them)."""
+    parsed block's. *items*: a list's items (``_ItemSpan``)."""
 
     kind: str
     start: int
     end: int
-    items: list[tuple[int, str]] = field(default_factory=list)
+    items: list[_ItemSpan] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _ItemSpan:
+    """Where a list item lies: lines ``[start, end)``, its marker's line
+    first, and where each block of its content lies."""
+
+    start: int
+    end: int
+    blocks: list[_BlockSpan] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -791,32 +871,30 @@ def _layout(lines: list[str]) -> _Layout:
     layout = _Layout()
     _parse_body(lines, layout)
     return layout
-_LIST_KINDS = ("ordered_list", "unordered_list")
-_PARAGRAPH_KINDS = ("paragraph", "definition", "ref", "term")
 
 
 def _parse_body(
-    lines: list[str], layout: _Layout | None = None
+    lines: list[str], layout: _Layout | None = None, *, headings: bool = True, offset: int = 0, depth: int = 0
 ) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
     """Parse body lines into the preamble's blocks (§4.4) and the sections'.
 
     Headings (ATX and setext, §4.1) and blocks are recognized in one pass, so
     a fenced code block (§11.4) or an HTML block (§8.6) is literal
     everywhere: no line inside one is a heading or starts another block.
-    *layout*, when given, receives where each heading and block lies.
+    *layout*, when given, receives where each heading and block lies, as
+    source lines counted from *offset*. *depth*: how many list items the
+    lines are in (``_parse_list``).
+
+    Without *headings*, the lines are a list item's content
+    (``_parse_list``): an ATX heading's line is a paragraph of its own, a
+    setext underline more of its paragraph, and a paragraph's directives
+    stay in its text.
     """
     spans = layout.preamble if layout is not None else None
     preamble: list[Block] = []
     sections: list[tuple[_Heading, list[Block]]] = []
     blocks = preamble
     lazy = False  # the last block was a list, quote, or table, with no blank line since
-    # After a list, lines indented four or more columns that reach an item
-    # still open at its end but not the last item's content (the model holds
-    # no place for an item's content after the items nested in it) stay
-    # paragraphs rather than code:
-    # CommonMark keeps them in that item. The run lasts through them.
-    list_tail = False
-    tail_columns: list[int] = []  # the content columns of the items open at the list's end
     interrupted = -1  # the line at which a paragraph was interrupted
     index = 0
     while index < len(lines):
@@ -826,25 +904,22 @@ def _parse_body(
             lazy = False
             continue
         heading: _Heading | None = None
-        start, count, item_starts = index, len(blocks), []
-        # Only a line reaching an item still open at the list's end is in it;
-        # one short of every such item is indented code (CommonMark).
-        in_tail = list_tail and indent_width(line) >= 4 and any(c <= indent_width(line) for c in tail_columns)
+        start, count, item_spans = index, len(blocks), []
         # A table that interrupted a paragraph may have an indented header
         # row: the paragraph ended there (_paragraph_end).
         interrupting_table = index == interrupted and _parse_table(lines, index) is not None
-        if indent_width(line) >= 4 and not in_tail and not interrupting_table:
+        if indent_width(line) >= 4 and not interrupting_table:
             # Indented code (§11.4). A paragraph's own lines, and a list's
             # or quote's lazy lines, never get here.
             end = indented_code_end(lines, index)
             blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
             index = end
-            lazy = list_tail = False
+            lazy = False
             if spans is not None:
-                spans.append(_BlockSpan("code", start, index))
+                spans.append(_BlockSpan("code", offset + start, offset + index))
             continue
         opening = FENCE_OPEN_RE.match(line)
-        atx = HEADING_RE.match(line)
+        atx = HEADING_RE.match(line) if headings else None
         marker = LIST_ITEM_RE.match(line)
         if opening:
             end = fence_end(lines, index, opening.group("fence"))
@@ -855,6 +930,12 @@ def _parse_body(
             hashes, text = atx.groups()
             heading = (*split_heading(text), len(hashes))
             index += 1
+        elif not headings and HEADING_RE.match(line):
+            # In an item, a heading is no section: its line is a paragraph
+            # of its own, which nothing continues (CommonMark).
+            blocks.append(Block(kind="paragraph", text=line.strip()))
+            index += 1
+            lazy = False
         elif RULE_RE.match(line):
             blocks.append(Block(kind="rule"))
             index += 1
@@ -885,12 +966,10 @@ def _parse_body(
             blocks.append(block)
             lazy = True
         elif marker:
-            block, index, lazy = _parse_list(
-                lines, index, list_type=_list_type(marker), item_starts=item_starts
+            block, index, lazy, item_spans = _parse_list(
+                lines, index, list_type=_list_type(marker), headings=headings, offset=offset, depth=depth
             )
             blocks.append(block)
-            columns = _open_columns(lines, item_starts, block.items)
-            tail_columns = sorted({*tail_columns, *columns}) if in_tail else columns
         elif (end := html_block_end(lines, index)) is not None:
             # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
             # no heading or other block starts inside it.
@@ -898,12 +977,17 @@ def _parse_body(
             index = end
             lazy = False
         else:
-            end, setext_level = _paragraph_end(lines, index, lazy)
+            end, setext_level = _paragraph_end(lines, index, lazy, headings=headings)
             if setext_level:
                 text = " ".join(part.strip() for part in lines[index:end - 1])
                 heading = (*split_heading(text), setext_level)
             else:
-                blocks.append(_parse_paragraph(" ".join(lines[index:end])))
+                if headings:
+                    blocks.append(_parse_paragraph(" ".join(lines[index:end])))
+                else:
+                    # An item's lines are joined as its text always was: each
+                    # stripped.
+                    blocks.append(Block(kind="paragraph", text=" ".join(part.strip() for part in lines[index:end])))
                 interrupted = end
             index = end
             lazy = False
@@ -913,20 +997,23 @@ def _parse_body(
                 spans = []
                 layout.sections.append((_HeadingSpan(start, index, heading[2], marker_line), spans))
             elif len(blocks) > count:
-                block = blocks[-1]
-                raw = list(zip(item_starts, block.items, strict=True)) if item_starts else []
-                spans.append(_BlockSpan(block.kind, start, index, raw))
+                spans.append(_BlockSpan(blocks[-1].kind, offset + start, offset + index, item_spans))
         if heading is not None:
             blocks = []
             sections.append((heading, blocks))
             lazy = False
-        list_tail = bool(blocks) and (
-            blocks[-1].kind in _LIST_KINDS or (in_tail and blocks[-1].kind in _PARAGRAPH_KINDS)
-        )
     return preamble, sections
 
 
 # ── Public API ────────────────────────────────────────────────────
+
+def parse_item_content(text: str) -> list[Block]:
+    """The blocks a list item holds whose content is *text*, as written in
+    the item without its marker and indentation (``_parse_list``)."""
+    lines = LINE_ENDING_RE.sub("\n", text).split("\n")
+    blocks, _sections = _parse_body(lines, headings=False)
+    return blocks
+
 
 def parse_document(source: str, *, filename: str = "") -> Document:
     """Parse a LegalDown source string into a Document object.

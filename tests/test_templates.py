@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from legaldown import Amends, document_from_dict, document_to_dict, serialize_document
+from legaldown import Amends, document_from_dict, document_to_dict, item_text, serialize_document
 from legaldown.parser import parse_document
 from legaldown.validator import validate_document
 from legaldown.validator.templates import answer_problem
@@ -766,7 +766,7 @@ def test_a_final_document_passes_the_final_check():
 
 def test_a_lazy_line_continues_its_list_item():
     document = parse_document("---\ntitle: T\n---\n\n# A\n\n- item\ncontinued {#item}\n")
-    assert [b.items for b in document.sections[0].blocks] == [["item continued {#item}"]]
+    assert [[item_text(item) for item in b.items] for b in document.sections[0].blocks] == [["item continued {#item}"]]
     result = validate_document(document)
     assert "anchor-misplaced" not in result.rules()
     assert "item" in result.section_lookup
@@ -936,7 +936,7 @@ def test_an_empty_questions_key_is_a_template_construct():
 def test_an_items_text_after_a_closed_quote_is_not_quoted(first):
     document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n- {first}\n  text after quote\n")
     item = document.sections[0].blocks[0].items[0]
-    assert item.split("\n")[-1] == "text after quote"
+    assert (item.blocks[-1].kind, item.blocks[-1].text) == ("paragraph", "text after quote")
     assert parse_document(serialize_document(document)).sections == document.sections
 
 

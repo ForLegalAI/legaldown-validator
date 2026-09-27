@@ -17,11 +17,13 @@ from legaldown import (
     document_from_dict,
     document_to_dict,
     iter_directives,
+    render_item,
     serialize_document,
 )
 from legaldown.definitions import text_fragments
 from legaldown.directives import format_value, lex
 from legaldown.markers import Marker, split_heading
+from legaldown.models import list_items
 from legaldown.parser import collect_source_directives, parse_document
 from legaldown.validator import validate_document
 from legaldown.validator.helpers import generate_identifier
@@ -45,6 +47,20 @@ sides:
 # Terms {#terms}
 
 """
+
+
+def _texts(block: Block) -> list[str]:
+    """Each of a list's items as written after its marker."""
+    return [render_item(item) for item in list_items(block)]
+
+
+def _shape(block: Block):
+    """A block as plain data: a paragraph as its text, a list as its kind
+    and its items, each item as its blocks' shapes, any other block as its
+    kind and text."""
+    if block.kind.endswith("list"):
+        return (block.kind, [[_shape(child) for child in item.blocks] for item in block.items])
+    return block.text if block.kind == "paragraph" else (block.kind, block.text)
 
 
 def _validate(body: str):
@@ -1193,20 +1209,21 @@ def test_a_list_item_or_quote_that_is_one_fence_line_is_code(body):
 @pytest.mark.parametrize(("body", "items"), [
     ("- a\n  2. ~~~ {{ref: x}}\n", [("unordered_list", ["a 2. ~~~ {{ref: x}}"])]),
     ("1. a\n   2. b\n   3. c\n", [("ordered_list", ["a 2. b 3. c"])]),
-    ("- a\n  1. b\n", [("unordered_list", ["a", "b"])]),
-    ("- a\n  - b\n", [("unordered_list", ["a", "b"])]),
-    ("- a\n  > b\n  2. x\n", [("unordered_list", ["a\n> b", "x"])]),
+    # A nested list, written numbered from 1.
+    ("- a\n  1. b\n", [("unordered_list", ["a\n1. b"])]),
+    ("- a\n  - b\n", [("unordered_list", ["a\n- b"])]),
+    ("- a\n  > b\n  2. x\n", [("unordered_list", ["a\n> b\n\n1. x"])]),
     # After a heading, a rule or a nested item the item has no open
     # paragraph, so any item starts a list (cmark-gfm).
-    ("- # H\n  2. x\n", [("unordered_list", ["# H", "x"])]),
-    ("- ***\n  2. x\n", [("unordered_list", ["***", "x"])]),
-    ("- - a\n  2. b\n", [("unordered_list", ["- a", "b"])]),
+    ("- # H\n  2. x\n", [("unordered_list", ["# H\n1. x"])]),
+    ("- ***\n  2. x\n", [("unordered_list", ["---\n\n1. x"])]),
+    ("- - a\n  2. b\n", [("unordered_list", ["- a\n1. b"])]),
 ])
 def test_a_nested_item_interrupts_its_items_paragraph_only_as_commonmark_allows(body, items):
     """Only a bullet with text, or an ordered item numbered 1, may
     interrupt a paragraph — the item's own too (cmark-gfm)."""
     document = parse_document(_FRONTMATTER + body)
-    assert [(b.kind, b.items) for b in document.sections[0].blocks] == items
+    assert [(b.kind, _texts(b)) for b in document.sections[0].blocks] == items
 
 
 @pytest.mark.parametrize("number", ["1", "01", "001"])
@@ -1268,12 +1285,12 @@ def test_where_a_list_does_not_continue_past_a_blank_line(body, kinds, titles):
     ("- > # H\nfoo {#q}\n", ["> # H"], ["paragraph"]),
     ("- >\nfoo\n", [">"], ["paragraph"]),
     # The blank line closed the item's paragraph: `2.` starts a list.
-    ("- a\n\n  2. b\n", ["a", "b"], []),
+    ("- a\n\n  2. b\n", ["a\n1. b"], []),
 ])
 def test_what_an_items_later_content_is(body, items, after):
     document = parse_document(_FRONTMATTER + body)
     blocks = document.sections[0].blocks
-    assert blocks[0].items == items and [b.kind for b in blocks[1:]] == after
+    assert _texts(blocks[0]) == items and [b.kind for b in blocks[1:]] == after
 
 
 @pytest.mark.parametrize("body", [
@@ -1328,8 +1345,10 @@ def test_what_follows_a_list_item_that_holds_no_open_paragraph(body, kinds, titl
 def test_wide_marker_spacing_sets_the_items_column_as_commonmark_does():
     """Five spaces after the marker: the content column is one past it."""
     document = parse_document(_FRONTMATTER + "-      foo\n\n      bar\n")
-    # `bar` is four columns past the content: indented code (cmark-gfm).
-    assert [b.items for b in document.sections[0].blocks] == [["foo\n\n    bar"]]
+    # The rest of the line is indented code, and so is `bar`: " foo" and
+    # "bar" (cmark-gfm).
+    [block] = document.sections[0].blocks
+    assert _shape(block) == ("unordered_list", [[("code", "     foo\n\n    bar")]])
 
 
 def test_an_unclosed_fence_after_a_list_is_closed_when_written():
@@ -1343,7 +1362,7 @@ def test_an_unclosed_fence_after_a_list_is_closed_when_written():
 def test_an_empty_list_does_not_take_the_code_after_it():
     document = parse_document(_FRONTMATTER + "- a\n\n* \n\n    code\n")
     reparsed = parse_document(serialize_document(document))
-    assert [(b.kind, b.items, b.text) for b in reparsed.sections[0].blocks] == [
+    assert [(b.kind, _texts(b), b.text) for b in reparsed.sections[0].blocks] == [
         ("unordered_list", ["a"], ""), ("unordered_list", [""], ""), ("code", [], "    code")
     ]
     assert reparsed == document
@@ -1535,7 +1554,7 @@ def test_fence_opening_on_a_list_marker_line_stays_in_the_item():
     body = "- ```\n  a\n\n  b\n  ```\n\n# Next {#next}\n\nSee {{ref: nope}}.\n"
     document = parse_document(_FRONTMATTER + body)
     assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms"), ("Next", 1, "next")]
-    assert document.sections[0].blocks[0].items == ["```\na\n\nb\n```"]
+    assert _texts(document.sections[0].blocks[0]) == ["```\na\n\nb\n```"]
     assert "ref-broken" in validate_document(document).rules("error")
 
 
@@ -1592,21 +1611,21 @@ def test_list_or_quote_interrupts_a_paragraph(body, kinds):
 
 def test_item_text_after_its_closed_fence_is_checked():
     document = parse_document(_FRONTMATTER + "- ```\n  code\n  ```\n  more {{ref: nowhere}}\n")
-    assert document.sections[0].blocks[0].items == ["```\ncode\n```\nmore {{ref: nowhere}}"]
+    assert _texts(document.sections[0].blocks[0]) == ["```\ncode\n```\nmore {{ref: nowhere}}"]
     assert "ref-broken" in validate_document(document).rules("error")
     assert parse_document(serialize_document(document)).sections == document.sections
 
 
 def test_unclosed_fence_in_an_item_ends_at_the_next_item():
     document = parse_document(_FRONTMATTER + "1. ```\n   x\n2. b\n3. c\n")
-    assert [(b.kind, b.items) for b in document.sections[0].blocks] == [
+    assert [(b.kind, _texts(b)) for b in document.sections[0].blocks] == [
         ("ordered_list", ["```\nx", "b", "c"])
     ]
 
 
 def test_tab_after_a_list_marker_counts_as_columns():
     document = parse_document(_FRONTMATTER + "-\t```\n\tx\n\t```\n")
-    assert document.sections[0].blocks[0].items == ["```\nx\n```"]
+    assert _texts(document.sections[0].blocks[0]) == ["```\nx\n```"]
 
 
 def test_text_after_a_list_ending_in_a_fence_is_not_lazy():
@@ -1637,7 +1656,7 @@ def test_serializer_closes_an_unclosed_fence():
 def test_code_in_a_list_item_keeps_trailing_spaces():
     source = _FRONTMATTER + "- ```\n  keep  \n  ```\n"
     item = parse_document(source).sections[0].blocks[0].items[0]
-    assert item == "```\nkeep  \n```"
+    assert [(block.kind, block.text) for block in item.blocks] == [("code", "```\nkeep  \n```")]
     assert parse_document(serialize_document(parse_document(source))).sections[0].blocks[0].items[0] == item
 
 
@@ -1662,7 +1681,7 @@ def test_paragraph_that_would_open_a_block_stays_indented(paragraph):
 
 def test_tabs_inside_list_item_code_are_kept():
     document = parse_document(_FRONTMATTER + "- item\n  ```\n  a\tb\n  ```\n")
-    assert document.sections[0].blocks[0].items == ["item\n```\na\tb\n```"]
+    assert _texts(document.sections[0].blocks[0]) == ["item\n```\na\tb\n```"]
 
 
 def test_a_fence_left_open_in_a_list_item_ends_with_its_list():
@@ -1674,7 +1693,7 @@ def test_a_fence_left_open_in_a_list_item_ends_with_its_list():
         Block(kind="unordered_list", items=["y"]),
     ]
     blocks = parse_document(serialize_document(document)).sections[0].blocks
-    assert [b.items for b in blocks[1:]] == [["x\n```\ncode"], ["y"]]
+    assert [_texts(b) for b in blocks[1:]] == [["x\n```\ncode"], ["y"]]
 
 
 def test_indentation_after_the_quote_marker_is_content():
@@ -1704,7 +1723,7 @@ def test_only_some_list_items_interrupt_a_paragraph(second_line, kinds, headings
 def _blocks(body: str) -> list[tuple[str, str | list[str]]]:
     document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)).sections == document.sections
-    return [(b.kind, b.items if b.kind.endswith("list") else b.text) for b in document.sections[0].blocks]
+    return [(b.kind, _texts(b) if b.kind.endswith("list") else b.text) for b in document.sections[0].blocks]
 
 
 @pytest.mark.parametrize(
@@ -1733,9 +1752,10 @@ def test_an_item_beginning_with_dashes_is_not_written_as_a_rule(body):
 
 
 def test_a_nested_item_of_another_type_stays_in_the_list():
-    assert _blocks("- parent\n  * child\n  1) child\n- next\n") == [
-        ("unordered_list", ["parent", "child", "child", "next"])
-    ]
+    [block] = parse_document(_FRONTMATTER + "- parent\n  * child\n  1) child\n- next\n").sections[0].blocks
+    assert _shape(block) == ("unordered_list", [
+        ["parent", ("unordered_list", [["child"]]), ("ordered_list", [["child"]])], ["next"]
+    ])
 
 
 @pytest.mark.parametrize("rule", ["***", "* * *", "___", "_ _ _", "- - -", "---", "*\t*\t*"])
@@ -2085,17 +2105,18 @@ def test_every_indented_paragraph_after_a_list_is_the_items():
 
 @pytest.mark.parametrize("opener", ["# foo", "<div>", "```", "~~~", "<!-- c -->"])
 def test_an_indented_line_after_a_list_round_trips_whatever_it_begins_with(opener):
-    """CommonMark keeps it in the item (§5.7); only a fence needs closing
-    for the item's own text to round-trip (``close_fences``)."""
-    # A continuation line dedents by the item's own content column (2); any
-    # further indentation, as this one carries, is the line's own text.
-    fence = f"\n  {opener}" if opener in ("```", "~~~") else ""
+    """CommonMark keeps it in the item (§5.7), two columns into its
+    content: a block of the item's own."""
     closer = f"\n    {opener}" if opener in ("```", "~~~") else ""
     body = f"- a\n\n    b\n\n    {opener}{closer}\n\nd\n\n    code\n"
     document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)) == document
-    assert [(b.kind, b.text or b.items) for b in document.sections[0].blocks] == [
-        ("unordered_list", [f"a\n\n  b\n\n  {opener}{fence}"]), ("paragraph", "d"), ("code", "    code")
+    last = {
+        "# foo": "# foo", "<div>": ("html", "  <div>"), "```": ("code", "  ```\n  ```"),
+        "~~~": ("code", "  ~~~\n  ~~~"), "<!-- c -->": ("html", "  <!-- c -->"),
+    }[opener]
+    assert [_shape(b) for b in document.sections[0].blocks] == [
+        ("unordered_list", [["a", "b", last]]), "d", ("code", "    code")
     ]
 
 
@@ -2188,8 +2209,7 @@ def test_a_pipe_paragraph_does_not_end_the_list_item(first):
     body = f"- a\n\n    {first}\n\n    # foo\n"
     document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)) == document
-    assert [b.kind for b in document.sections[0].blocks] == ["unordered_list"]
-    assert document.sections[0].blocks[0].items == [f"a\n\n  {first}\n\n  # foo"]
+    assert [_shape(b) for b in document.sections[0].blocks] == [("unordered_list", [["a", first, "# foo"]])]
     assert "ref-broken" not in validate_document(document).rules()
 
 
@@ -2198,7 +2218,7 @@ def test_an_empty_named_value_is_written_unquoted():
     assert format_value("“x”") == '"“x”"'
 
 
-# ── Nested lists (#16, §15.3) ─────────────────────────────────────
+# ── Nested lists (#16, #64, §15.3) ────────────────────────────────
 
 
 def _list(body: str) -> Block:
@@ -2210,22 +2230,27 @@ _U, _O = "unordered_list", "ordered_list"
 
 
 @pytest.mark.parametrize(
-    ("body", "items", "levels", "kinds"),
+    ("body", "shape"),
     [
-        ("- a\n- b\n", ["a", "b"], [], []),  # nothing nested: as before
-        ("- a\n  - b\n    - c\n- d\n", ["a", "b", "c", "d"], [0, 1, 2, 0], [_U, _U, _U, _U]),
-        ("1. a\n   - b\n   - c\n2. d\n", ["a", "b", "c", "d"], [0, 1, 1, 0], [_O, _U, _U, _O]),
-        ("- a\n  1. b\n  - c\n", ["a", "b", "c"], [0, 1, 1], [_U, _O, _U]),  # two lists nested in a
-        ("- a\n  - b\n - c\n", ["a", "b", "c"], [0, 1, 0], [_U, _U, _U]),  # short of b's parent: its sibling
-        ("- a\n  - b\n   - c\n", ["a", "b", "c"], [0, 1, 1], [_U, _U, _U]),  # short of b's content
-        ("- a\n\n  - b\n", ["a", "b"], [0, 1], [_U, _U]),  # after a blank line
-        ("- \n  - b\n- c\n", ["", "b", "c"], [0, 1, 0], [_U, _U, _U]),  # nested in an empty item
-        ("- x\n-\n  - b\n", ["x", "", "b"], [0, 0, 1], [_U, _U, _U]),
+        ("- a\n- b\n", [["a"], ["b"]]),
+        ("- a\n  - b\n    - c\n- d\n", [["a", (_U, [["b", (_U, [["c"]])]])], ["d"]]),
+        ("1. a\n   - b\n   - c\n2. d\n", [["a", (_U, [["b"], ["c"]])], ["d"]]),
+        ("- a\n  1. b\n  - c\n", [["a", (_O, [["b"]]), (_U, [["c"]])]]),  # two lists nested in a
+        ("- a\n  - b\n - c\n", [["a", (_U, [["b"]])], ["c"]]),  # short of b's parent: its sibling
+        ("- a\n  - b\n   - c\n", [["a", (_U, [["b"], ["c"]])]]),  # short of b's content
+        ("- a\n\n  - b\n", [["a", (_U, [["b"]])]]),  # after a blank line
+        # Content after the items nested in an item is the item's (#64).
+        ("- one\n  - a\n\n  para\n\n  - b\n- two\n", [["one", (_U, [["a"]]), "para", (_U, [["b"]])], ["two"]]),
+        ("- one\n  - a\n\n  > quote\n- two\n", [["one", (_U, [["a"]]), ("quote", "quote")], ["two"]]),
+        # A blank line between items keeps the list one (a loose list).
+        ("1. a\n\n2. b\n", [["a"], ["b"]]),
+        ("- a\n  -    b\n\n    - x\n    - y\n", [["a", (_U, [["b"], ["x"], ["y"]])]]),
     ],
 )
-def test_a_nested_item_keeps_its_depth_and_its_lists_kind(body, items, levels, kinds):
-    block = _list(body)
-    assert (block.items, block.levels, block.item_kinds) == (items, levels, kinds)
+def test_a_nested_item_is_in_the_item_it_is_nested_in(body, shape):
+    assert _shape(_list(body))[1] == shape
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
 
 
 @pytest.mark.parametrize(
@@ -2238,6 +2263,7 @@ def test_a_nested_item_keeps_its_depth_and_its_lists_kind(body, items, levels, k
         "- a\n  - b\n\n    More of b.\n- c\n",
         "- a\n  - b\n    ```\n    x\n    ```\n  - c\n",
         "- a\n  + --\n  + b\n",  # "- --" would be a thematic break
+        "- one\n  - a\n\n  para\n  - b\n- two\n",
     ],
 )
 def test_a_nested_list_is_written_as_it_was(body):
@@ -2251,28 +2277,28 @@ def test_an_item_of_another_type_short_of_the_items_content_starts_another_list(
     # "  - b" does not reach "1. a"'s content (column 3): a new list, as
     # CommonMark reads it, not an item of the ordered one.
     blocks = parse_document(_FRONTMATTER + "1. a\n  - b\n").sections[0].blocks
-    assert [(block.kind, block.items) for block in blocks] == [(_O, ["a"]), (_U, ["b"])]
+    assert [(block.kind, _texts(block)) for block in blocks] == [(_O, ["a"]), (_U, ["b"])]
 
 
 def test_a_marker_four_columns_into_an_item_starts_no_item():
     # Four or more columns into the item's content: paragraph text, or
     # indented code after a blank line (CommonMark).
-    assert _list("- a\n      - b\n").items == ["a - b"]
-    assert _list("- a\n\n      - b\n").items == ["a\n\n    - b"]
-    assert _list("- a\n  - b\n        - c\n").items == ["a", "b - c"]
+    assert _shape(_list("- a\n      - b\n"))[1] == [["a - b"]]
+    assert _shape(_list("- a\n\n      - b\n"))[1] == [["a", ("code", "    - b")]]
+    assert _shape(_list("- a\n  - b\n        - c\n"))[1] == [["a", (_U, [["b - c"]])]]
 
 
 def test_a_fence_in_a_nested_item_ends_at_its_siblings_marker():
     # The sibling closes the nested item and the fence in it (CommonMark);
     # it is not the fence's code.
     block = _list("- a\n  - b\n    ```\n    x\n  - c\n")
-    assert (block.items, block.levels) == (["a", "b\n```\nx", "c"], [0, 1, 1])
-    assert text_fragments(block)[2] == "c"
+    assert _shape(block)[1] == [["a", (_U, [["b", ("code", "```\nx")], ["c"]])]]
+    assert text_fragments(block)[-1] == "c"  # the fence's text is lexed, as it is anywhere
 
 
 def test_code_after_a_nested_list_stays_code():
-    # The list's last item of its own is written with its content past the
-    # code's indentation, which puts the items nested in it past it too.
+    # The list's last item is written with its content past the code's
+    # indentation, which puts the items nested in it past it too.
     document = parse_document(_FRONTMATTER + "- a\n  - b\n\n<!-- -->\n\n    code\n")
     del document.sections[0].blocks[1]  # the comment: the code now follows the list
     written = serialize_document(document)
@@ -2280,62 +2306,53 @@ def test_code_after_a_nested_list_stays_code():
     assert parse_document(written) == document
 
 
-def test_a_model_built_nesting_is_read_leniently():
-    from legaldown.models import list_nesting, listed_items
-
-    block = Block(kind=_U, items=["a", "b", "c", "d"], levels=[1, 3, True], item_kinds=["", _O, "x"])
-    # The first item is the list's own; a depth rises one at a time; a
-    # missing or unusable depth is 0; an unknown kind is the list's.
-    assert list_nesting(block) == [(0, _U), (1, _O), (0, _U), (0, _U)]
-    block = Block(kind=_O, items=["a", " ", "b", "c"], levels=[0, 1, 2, 1], item_kinds=[_O, _U, _U, _U])
-    assert listed_items(block) == [("a", 0, _O), (" ", 1, _U), ("b", 2, _U), ("c", 1, _U)]
-    assert serialize_document(document_from_dict({"sections": [{"title": "A", "blocks": [
-        {"kind": _U, "items": ["a", "b", "c"], "levels": [0, 1, 0]}
-    ]}]})).endswith("# A\n\n- a\n  - b\n- c\n")
+def test_an_item_written_as_a_string_is_read_as_its_content():
+    # As models before 0.3 held items, and as an editor may write them.
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": _U, "items": ["a\n- b\n\nmore", "", "c"]}
+    ]}]})
+    [block] = document.sections[0].blocks
+    assert _shape(block)[1] == [["a", (_U, [["b"]]), "more"], [], ["c"]]
+    assert serialize_document(document).endswith("# A\n\n- a\n  - b\n\n  more\n-\n- c\n")
+    # A block built in code may hold them too.
+    assert _texts(Block(kind=_U, items=["x", "y"])) == ["x", "y"]
 
 
 def test_nesting_round_trips_through_a_dict():
-    document = parse_document(_FRONTMATTER + "1. a\n   - b\n2. c\n")
+    document = parse_document(_FRONTMATTER + "1. a\n   - b\n\n   more\n2. c\n")
     assert document_from_dict(document_to_dict(document)) == document
-    flat = document_from_dict({"sections": [{"title": "A", "blocks": [
-        {"kind": _U, "items": ["a", " ", "b"], "levels": [0, 0, 0], "item_kinds": [_U, _U, _U]}
-    ]}]}).sections[0].blocks[0]
-    assert (flat.items, flat.levels, flat.item_kinds) == (["a", "", "b"], [], [])
+    assert document_to_dict(document)["sections"][0]["blocks"][0]["items"][1] == {
+        "blocks": [{**document_to_dict(document)["sections"][0]["blocks"][0]["items"][1]["blocks"][0]}]
+    }
 
 
-def test_list_runs_number_each_nested_list_on_its_own():
-    from legaldown.serializer import list_runs
+def test_the_item_text_helper_gives_its_first_paragraph():
+    from legaldown import item_text
 
-    assert list_runs([(0, _O), (1, _O), (2, _U), (1, _O), (0, _O), (1, _O)]) == [0, 1, 2, 1, 0, 3]
-    assert list_runs([(0, _U), (1, _O), (1, _U), (1, _U)]) == [0, 1, 2, 2]
-    # Another bullet or delimiter starts another list.
-    assert list_runs([(0, _U, ""), (1, _U, "-"), (1, _U, "*"), (1, _U, "*"), (0, _U, "")]) == [0, 1, 2, 2, 0]
+    block = _list("- a {#x}\n  - b\n- ```\n  c\n  ```\n-\n")
+    assert [item_text(item) for item in block.items] == ["a {#x}", "", ""]
 
 
-def test_a_list_indented_into_an_earlier_items_content_is_read():
-    # After b (content column 7), "    - x" reaches a's content only: a
-    # list of its own after the first, its items measured from where it
-    # starts.
-    blocks = parse_document(_FRONTMATTER + "- a\n  -    b\n\n    - x\n    - y\n").sections[0].blocks
-    assert [(block.items, block.levels) for block in blocks] == [(["a", "b"], [0, 1]), (["x", "y"], [])]
+def test_a_list_indented_into_an_earlier_items_content_is_the_items():
+    # After b (content column 7), "    - x" reaches a's content: a sibling
+    # of b, in the list b is in (a loose list, CommonMark).
+    assert _shape(_list("- a\n  -    b\n\n    - x\n    - y\n"))[1] == [["a", (_U, [["b"], ["x"], ["y"]])]]
 
 
 @pytest.mark.parametrize(
-    ("body", "items"),
+    ("body", "shape"),
     [
         # Four columns in, short of the item's content (5): no item, but a
         # lazy continuation of the paragraph open there (CommonMark).
-        ("10.  a\n    - {{placeholder: p}}\n", ["a - {{placeholder: p}}"]),
-        ("10.  1. y\n    - b\n", ["1. y - b"]),
-        ("10.  > q\n    - b\n", ["> q\n> - b"]),
-        # After a later paragraph the row is kept four columns into the item,
-        # where it is text too.
-        ("10.  a\n\n     b\n    - c\n", ["a\n\nb\n    - c"]),
+        ("10.  a\n    - {{placeholder: p}}\n", [["a - {{placeholder: p}}"]]),
+        ("10.  1. y\n    - b\n", [[(_O, [["y - b"]])]]),
+        ("10.  > q\n    - b\n", [[("quote", "q\n- b")]]),
+        ("10.  a\n\n     b\n    - c\n", [["a", "b - c"]]),
     ],
 )
-def test_a_marker_short_of_the_items_content_but_four_columns_in_is_lazy_text(body, items):
+def test_a_marker_short_of_the_items_content_but_four_columns_in_is_lazy_text(body, shape):
     block = _list(body)
-    assert block.items == items
+    assert _shape(block)[1] == shape
     written = serialize_document(parse_document(_FRONTMATTER + body))
     assert parse_document(written).sections[0].blocks == [block]
 
@@ -2346,13 +2363,16 @@ def test_a_marker_four_columns_in_with_no_paragraph_open_ends_the_list():
     assert [block.kind for block in blocks] == [_O, "code"]
 
 
-def test_only_a_fence_opened_in_the_items_content_ends_at_a_shorter_marker():
-    # "  ~~~" is short of the item's content (4): CommonMark opens the fence
-    # after the list, so "   - a" is code. This parser reads the fence into
-    # the item, and keeps the line in it.
-    block = _list("1.\t</div>\n  ~~~\n   - a {{placeholder: p}}\n")
-    assert block.items == ["</div>\n~~~\n- a {{placeholder: p}}"]
-    assert not [d for fragment in text_fragments(block) for d in lex(fragment).directives]
+def test_a_line_short_of_an_items_content_ends_it_after_anything_but_a_paragraph():
+    # "  ~~~" is short of the item's content (4), and no paragraph is open:
+    # the item ends, and the fence opens after the list, so "   - a" is
+    # code (CommonMark).
+    blocks = parse_document(_FRONTMATTER + "1.\t</div>\n  ~~~\n   - a {{placeholder: p}}\n").sections[0].blocks
+    assert [_shape(block) for block in blocks] == [
+        (_O, [[("html", "</div>")]]), ("code", "  ~~~\n   - a {{placeholder: p}}")
+    ]
+    # After a paragraph it is a lazy continuation line.
+    assert _shape(_list("10.  a\n  b\n"))[1] == [["a b"]]
 
 
 # ── include_signatures (#48) ──────────────────────────────────────
@@ -2382,27 +2402,30 @@ def test_the_default_include_signatures_is_not_written():
 
 
 @pytest.mark.parametrize(
-    ("body", "items", "levels"),
+    ("body", "shape"),
     [
-        ("- \n- b\n", ["", "b"], []),
-        ("1. \n2. b\n", ["", "b"], []),  # b stays item 2
-        ("-\n- b\n", ["", "b"], []),  # a bare marker starts an item
-        ("1.\n2. b\n", ["", "b"], []),
-        ("- a\n-\n- b\n", ["a", "", "b"], []),
-        ("-\n", [""], []),
-        ("-\n  foo\n", ["foo"], []),  # an item may begin with a blank line
-        ("-\n  - b\n", ["", "b"], [0, 1]),
-        ("1.\n   - b\n", ["", "b"], [0, 1]),
-        ("- a\n\n  -\n", ["a", ""], [0, 1]),
-        ("- a\n  - b\n  -\n", ["a", "b", ""], [0, 1, 1]),
-        ("- a\n  -\n    - b\n  - c\n", ["a -", "b", "c"], [0, 1, 1]),  # "-" may not interrupt a
-        ("-\n  -\n    - b\n", ["", "", "b"], [0, 1, 2]),
+        ("- \n- b\n", [[], ["b"]]),
+        ("1. \n2. b\n", [[], ["b"]]),  # b stays item 2
+        ("-\n- b\n", [[], ["b"]]),  # a bare marker starts an item
+        ("1.\n2. b\n", [[], ["b"]]),
+        ("- a\n-\n- b\n", [["a"], [], ["b"]]),
+        ("-\n", [[]]),
+        ("-\n  foo\n", [["foo"]]),  # an item may begin with a blank line
+        ("-\n  - b\n", [[(_U, [["b"]])]]),
+        ("1.\n   - b\n", [[(_U, [["b"]])]]),
+        ("- a\n\n  -\n", [["a", (_U, [[]])]]),
+        ("- a\n  - b\n  -\n", [["a", (_U, [["b"], []])]]),
+        ("- a\n  -\n    - b\n  - c\n", [["a -", (_U, [["b"], ["c"]])]]),  # "-" may not interrupt a
+        ("-\n  -\n    - b\n", [[(_U, [[(_U, [["b"]])]])]]),
+        # An empty item ends at a blank line; its parent's content goes on.
+        ("- a\n  -\n\n  b\n", [["a -", "b"]]),
+        ("- a\n\n  -\n\n  b\n", [["a", (_U, [[]]), "b"]]),
     ],
 )
-def test_an_empty_item_keeps_its_place(body, items, levels):
+def test_an_empty_item_keeps_its_place(body, shape):
     document = parse_document(_FRONTMATTER + body)
     [block] = document.sections[0].blocks
-    assert (block.items, block.levels) == (items, levels)
+    assert _shape(block)[1] == shape
     assert parse_document(serialize_document(document)) == document
 
 
@@ -2433,12 +2456,14 @@ def test_an_empty_item_with_items_nested_after_it_does_not_take_code():
     assert reparsed.sections[0].blocks[0] == document.sections[0].blocks[0]
 
 
-def test_conditions_skip_an_empty_item_between_an_item_and_its_nested_items():
-    from legaldown.definitions import item_ancestors
+def test_conditions_pass_an_empty_item_by():
+    from legaldown.definitions import list_fragments
 
-    block = Block(kind=_U, items=["a", "", "c", "f"], levels=[0, 1, 2, 2])
-    # c and f are nested in a (through the empty item), not in each other.
-    assert item_ancestors(block) == {0: [], 1: [0], 2: [0]}
+    # c and f are nested in a, through the empty item: not in each other.
+    block = _list("- a\n\n  -\n    - c\n    - f\n")
+    assert [(text, path) for text, _position, path in list_fragments(block)] == [
+        ("a", (0,)), ("c", (0, 1, 2)), ("f", (0, 1, 3))
+    ]
 
 
 @pytest.mark.parametrize(("text", "written"), [("-", "\\-"), ("1.", "1\\."), ("2) x", "2\\) x"), ("+ y", "\\+ y")])
@@ -2489,14 +2514,14 @@ def test_adjacent_lists_avoid_bullets_that_make_a_thematic_break():
 
 
 
-def test_a_fence_is_closed_where_adjacent_lists_must_share_a_bullet():
-    # Each list's items rule out "-" and "*": both take "+", and the fence
-    # left open in the first would carry it into the second.
+def test_adjacent_lists_whose_items_rule_out_two_bullets_still_differ():
+    # Each list's items rule out "-" and "*": the second takes one anyway,
+    # its item starting on the next line, and the fence left open in the
+    # first ends at its marker.
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": _U, "items": ["--", "**\n```\ncode"]}, {"kind": _U, "items": ["--", "**"]},
     ]}]})
-    blocks = parse_document(serialize_document(document)).sections[0].blocks
-    assert [block.items for block in blocks] == [["--", "**\n```\ncode\n```"], ["--", "**"]]
+    assert parse_document(serialize_document(document)) == document
 
 
 # ── A fence left open at the end (#67) ────────────────────────────
@@ -2536,21 +2561,18 @@ def test_a_fence_left_open_before_a_heading_is_closed():
 
 
 @pytest.mark.parametrize(
-    ("body", "markers"),
+    ("body", "shape"),
     [
-        ("- one\n  - a\n  * b\n- two\n", ["", "-", "*", ""]),
-        ("- one\n  1. a\n  1) b\n- two\n", ["", ".", ")", ""]),
-        ("1. x\n   * a\n     - deep\n   + b\n", ["", "*", "-", "+"]),
-        ("- one\n  + a\n  + b\n", ["", "+", "+"]),
+        ("- one\n  - a\n  * b\n- two\n", [["one", (_U, [["a"]]), (_U, [["b"]])], ["two"]]),
+        ("- one\n  1. a\n  1) b\n- two\n", [["one", (_O, [["a"]]), (_O, [["b"]])], ["two"]]),
+        ("1. x\n   * a\n     - deep\n   + b\n", [["x", (_U, [["a", (_U, [["deep"]])]]), (_U, [["b"]])]]),
+        ("- one\n  + a\n  + b\n", [["one", (_U, [["a"], ["b"]])]]),
     ],
 )
-def test_a_nested_list_that_changes_its_marker_is_another_list(body, markers):
-    from legaldown.models import list_markers
-
+def test_a_nested_list_that_changes_its_marker_is_another_list(body, shape):
     document = parse_document(_FRONTMATTER + body)
     [block] = document.sections[0].blocks
-    assert block.item_markers == list_markers(block) == markers
-    assert serialize_document(document).endswith("{#terms}\n\n" + body)
+    assert _shape(block)[1] == shape
     assert parse_document(serialize_document(document)) == document
 
 
@@ -2559,32 +2581,70 @@ def test_the_second_nested_list_is_numbered_from_one():
     assert serialize_document(document).endswith("- one\n  1. a\n  2. b\n  1) c\n  2) d\n")
 
 
-def test_a_model_built_nested_marker_is_read_leniently():
-    from legaldown.models import list_markers
-
-    # Missing, or not one the item's kind allows: the kind's first. The
-    # block's own items have none.
-    block = Block(kind=_U, items=["a", "b", "c", "d"], levels=[0, 1, 1, 1],
-                  item_kinds=[_U, _U, _O, _U], item_markers=["*", "", ")", "."])
-    assert list_markers(block) == ["", "-", ")", "-"]
-    flat = document_from_dict({"sections": [{"title": "A", "blocks": [
-        {"kind": _U, "items": ["a", "b"], "item_markers": ["*", "+"]},
-    ]}]}).sections[0].blocks[0]
-    assert flat.item_markers == []
-
-
-def test_a_nested_item_that_would_make_a_thematic_break_starts_on_the_next_line():
-    # "- ---" is a thematic break: the item's text follows its bare marker,
-    # which keeps its list's bullet, as its source had it.
-    body = "- a\n\n  -\n    ---\n  - b\n"
-    document = parse_document(_FRONTMATTER + body)
-    [block] = document.sections[0].blocks
-    assert (block.items, block.item_markers) == (["a", "---", "b"], ["", "-", "-"])
-    assert serialize_document(document).endswith("{#terms}\n\n" + body)
-    assert parse_document(serialize_document(document)) == document
-    # One built in code, too: "--" is its paragraph (CommonMark).
-    built = document_from_dict({"sections": [{"title": "A", "blocks": [
-        {"kind": _U, "items": ["a", "--"], "levels": [0, 1], "item_kinds": [_U, _U], "item_markers": ["", "-"]},
+def test_an_item_that_would_make_a_thematic_break_starts_on_the_next_line():
+    # "- --" is a thematic break: the item's text follows its bare marker.
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": _U, "items": ["a"]}, {"kind": _U, "items": ["--", "**"]}, {"kind": _U, "items": ["--", "**"]},
     ]}]})
-    assert serialize_document(built).endswith("# A\n\n- a\n\n  -\n    --\n")
-    assert parse_document(serialize_document(built)) == built
+    written = serialize_document(document)
+    assert parse_document(written) == document
+    assert "\n-\n  --\n" in written  # the third list's: the second took "+"
+
+
+# ── An item's blocks (#64, #66, #59) ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("body", "shape"),
+    [
+        # Code, quotes, tables and raw HTML in an item are blocks of it (#66).
+        ("- a\n  ```\n  x\n  ```\n", [["a", ("code", "```\nx\n```")]]),
+        ("- a\n  > q\n", [["a", ("quote", "q")]]),
+        ("- a\n\n  | x | y |\n  |---|---|\n  | 1 | 2 |\n", [["a", ("table", "")]]),
+        ("- a\n\n      code\n", [["a", ("code", "    code")]]),
+        # Raw HTML on an item's first line is an HTML block (#59).
+        ("- <div>\n  {{placeholder: p}}\n  </div>\n", [[("html", "<div>\n{{placeholder: p}}\n</div>")]]),
+    ],
+)
+def test_an_items_content_is_blocks(body, shape):
+    document = parse_document(_FRONTMATTER + body)
+    assert _shape(document.sections[0].blocks[0])[1] == shape
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_directives_in_an_items_raw_html_are_not_read():
+    result = _validate("- <div>\n  {{ref: nowhere}}\n  </div>\n")
+    assert "ref-broken" not in result.rules()
+
+
+def test_a_marker_ends_an_items_first_paragraph_only():
+    # After the nested list, a later paragraph of the item: a marker there
+    # is misplaced (§5.7).
+    assert "anchor-misplaced" not in _validate("- one {#one}\n  - a\n\n  more\n\nSee {{ref: one}}.\n").rules()
+    assert "anchor-misplaced" in _validate("- one\n  - a\n\n  more {#more}\n").rules()
+
+
+def test_a_nested_item_after_a_later_paragraph_is_in_its_item():
+    # Its presence includes the item's condition (§15.3).
+    body = "- one {when=vat}\n  - a\n\n  more\n\n  - b {when=!vat}\n"
+    frontmatter = _FRONTMATTER.replace("---\n\n# Terms", "questions:\n  vat:\n    type: boolean\n---\n\n# Terms")
+    assert "condition-never-true" in validate_document(parse_document(frontmatter + body)).rules()
+
+
+def test_a_chain_of_items_each_opening_with_the_next_is_written_quickly():
+    # Each nested list's first lines are read once, not once per level above.
+    document = parse_document(_FRONTMATTER + "- " * 40 + "a\n")
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_lists_nested_past_the_limit_are_read_as_text():
+    from legaldown.parser import MAX_LIST_DEPTH
+
+    body = "\n".join("  " * depth + f"- level {depth}" for depth in range(MAX_LIST_DEPTH + 10)) + "\n"
+    block = _list(body)
+    for _depth in range(MAX_LIST_DEPTH):
+        [item] = block.items
+        block = item.blocks[-1]
+    [item] = block.items
+    assert [child.kind for child in item.blocks] == ["paragraph"]
+    assert item.blocks[0].text.startswith(f"level {MAX_LIST_DEPTH} - level")

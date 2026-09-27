@@ -204,7 +204,7 @@ class Units:
             self._section_presence.append(presence)
             stack.append((level, presence))
         self._own_conditions: dict[tuple[int | None, int, int | None], Presence] = {}
-        self._ancestors: dict[tuple[int | None, int], dict[int, list[int]]] = {}
+        self._items: dict[tuple[int | None, int], list[tuple[int, ...]]] = {}
         for found in markers:
             if not found.placed(template):
                 continue
@@ -218,14 +218,27 @@ class Units:
         self, section: int | None, block: int, fragment: int | None
     ) -> tuple[int | None, int, int | None] | None:
         """The key of the unit holding *fragment* of a block: a list item
-        (section, block, fragment), a paragraph (section, block, None), or
-        None for a block that carries no condition."""
+        (section, block, the item's number), a paragraph (section, block,
+        None), or None for a block that carries no condition."""
         kind = self._blocks[0 if section is None else section + 1][block].kind
         if kind in _LISTS:
-            return section, block, fragment
+            items = self._fragment_items(section, block, fragment)
+            return (section, block, items[-1]) if items else None
         if kind in _PARAGRAPHS:
             return section, block, None
         return None
+
+    def _fragment_items(self, section: int | None, block: int, fragment: int | None) -> tuple[int, ...]:
+        """The items of a list block that *fragment* of it is in, outermost
+        first (``definitions.list_fragments``)."""
+        key = (section, block)
+        if key not in self._items:
+            from ..definitions import list_fragments  # a cycle at import time (find_markers)
+
+            the_block = self._blocks[0 if section is None else section + 1][block]
+            self._items[key] = [items for _text, _position, items in list_fragments(the_block)]
+        paths = self._items[key]
+        return paths[fragment] if fragment is not None and 0 <= fragment < len(paths) else ()
 
     def enclosing(self, section: int) -> Presence:
         """The presence of the sections enclosing a section."""
@@ -233,18 +246,13 @@ class Units:
 
     def enclosing_unit(self, section: int | None, block: int, fragment: int | None) -> Presence:
         """The presence of the units enclosing the text at *fragment* of a
-        block: its sections, and the list items it is nested in (§15.3)."""
+        block: its sections, and the list items its item is nested in
+        (§15.3)."""
         presence = ALWAYS if section is None else self._section_presence[section]
-        the_block = self._blocks[0 if section is None else section + 1][block]
-        if fragment is None or the_block.kind not in _LISTS:
+        if self._blocks[0 if section is None else section + 1][block].kind not in _LISTS:
             return presence
-        key = (section, block)
-        if key not in self._ancestors:
-            from ..definitions import item_ancestors  # a cycle at import time (find_markers)
-
-            self._ancestors[key] = item_ancestors(the_block)
-        for ancestor in self._ancestors[key].get(fragment, []):
-            presence |= self._own_conditions.get((section, block, ancestor), ALWAYS)
+        for item in self._fragment_items(section, block, fragment)[:-1]:
+            presence |= self._own_conditions.get((section, block, item), ALWAYS)
         return presence
 
     def own(self, section: int | None, block: int, fragment: int | None) -> Presence:

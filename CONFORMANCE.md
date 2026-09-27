@@ -57,41 +57,33 @@ boundaries, and the final option (§15.9, `validate_document(final=True)` or
   questions and definitions are reported as undeclared.
 
 Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body
-and in a list item's later content. Indented code inside a block quote is not recognized, so
-directives in it are checked. After a blank line, a line indented to the last list item's content continues that
-item, as CommonMark reads it (§5.7,
-[#54](https://github.com/ForLegalAI/legaldown-validator/issues/54)): a later paragraph, a fence,
-indented code or an HTML block there is part of the item, so code and raw HTML there hold no
-directive, a marker at the end of a later paragraph is misplaced, and the item's condition
-removes it too. Raw HTML on an item's first line is read as the item's text, so directives in it
-are checked ([#59](https://github.com/ForLegalAI/legaldown-validator/issues/59)).
+and in list items. Indented code inside a block quote is not recognized, so directives in it
+are checked.
 
-A nested list item keeps its depth and its list's kind, and its presence includes the conditions
-of the items it is nested in (§15.3,
-[#16](https://github.com/ForLegalAI/legaldown-validator/issues/16)). The model holds an item's
-text before the items nested in it, not after them, and reads a few list shapes more simply
-than CommonMark:
+A list item holds blocks, read as CommonMark reads an item's content (§5.7,
+[#64](https://github.com/ForLegalAI/legaldown-validator/issues/64)): its first paragraph, then
+later paragraphs, nested lists, code, quotes, tables and raw HTML, in any order — content after
+the items nested in it included. A line belongs to an item when it is indented to the item's
+content, or lazily continues a paragraph open in it; after a blank line, a line indented into
+an item still open goes on in that item, and another item of the list keeps the list one (a
+loose list). Code and raw HTML in an item hold no directive, a marker ends only an item's first
+paragraph, and a nested item's presence includes the conditions of the items it is nested in
+(§15.3). Blocks in an item are never sections, and a directive in an item's paragraph stays in
+its text. What the model does not keep, or reads more simply than CommonMark:
 
-- Content indented into an item after the items nested in it (`- a` / `  - b` / blank line /
-  `  more`) is not the item's: see the third point below.
-- An item that opens with a nested marker on its first line (`- - a`) is one item, so an item
-  indented under the inner one is nested one level, not two.
-- An ordered item's number is not kept: a nested list is written numbered from 1.
-- A nested item that starts a list of another type while its sibling's paragraph is open starts
-  that list even where it may not interrupt the paragraph.
+- An ATX heading indented after a list, after a blank line, stays a section heading, where
+  CommonMark reads it in the item. In an item, a heading's line is a paragraph of its own, and a
+  setext underline more of its paragraph.
+- An ordered item's number is not kept: a list is written numbered from 1. Whether a list is
+  loose or tight is not kept either: items are written without blank lines between them.
+- A fence left open in an item, under an item nested on its first line and short of that
+  item's content, can run on where CommonMark ends it.
+- Lists nested more than 64 deep are read that far: deeper, an item's content is one paragraph
+  of its text.
 
-Four limits follow from the list model:
-
-- An ATX heading indented after a list stays a section heading, where CommonMark reads it in the
-  item.
-- A setext heading in an item's later content is read as more of its text.
-- A line indented less than the last item's content but into an ancestor item stays a paragraph
-  after the list; written back, one that would open a block gets a backslash.
-- A blank line between two items still makes two lists.
-
-A fence that opens a list item's or a quote's text on its only line (`- ~~~ …`) is code. One
-behind nested markers (`- > ~~~ …`, `> - ~~~ …`), or one running over several lines of a nested
-quote or item, is not recognized: directives in it are checked where CommonMark reads code.
+A fence that opens a quote's text on its only line (`> ~~~ …`) is code. One behind markers inside
+a quote (`> - ~~~ …`), or one running over several lines of a nested quote, is not recognized:
+directives in it are checked where CommonMark reads code.
 
 Drafting notes are found in quote blocks, in list items, and nested in other quotes. Two nestings
 are not followed: a quote inside a list inside a quote (`> - > [!DRAFTING]`), and a lazy
