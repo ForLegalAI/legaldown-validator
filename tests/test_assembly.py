@@ -1014,3 +1014,15 @@ class TestFrontmatterThatCannotBeRead:
         assert not result.ok
         assert [d.rule for d in result.diagnostics] == ["frontmatter-invalid-yaml"]
         assert "'f.lgd'" in result.diagnostics[0].message
+
+
+class TestTables:
+    def test_a_cell_past_the_headers_width_holds_no_blank(self):
+        # GFM drops it, and the validator never sees it (#44).
+        template = _template("# A\n\n| a |\n|---|\n| 1 | {{placeholder: name}} |\n\nFor {{placeholder: who}}.\n")
+        assert [question.id for question in template_questions(template)] == ["who"]
+
+    def test_a_blank_in_a_row_without_pipes_is_filled(self):
+        body = "# A\n\na | b\n--- | ---\n{{placeholder: name}} | x\n"
+        result = assemble(_template(body, _TEXT), {"name": "A | B"})
+        assert _body(result) == "\n# A\n\na | b\n--- | ---\nA \\| B | x\n"

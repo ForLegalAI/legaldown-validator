@@ -58,6 +58,7 @@ from .parser import (
     _layout,
     _may_interrupt,
     _opens_paragraph,
+    _row_width_end,
     parse_document,
     quote_content,
 )
@@ -417,12 +418,17 @@ def _occurrences(
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
     includes: list[int] = []
-    for _section, _index, span, model in _pairs(layout, document):
-        for block, _model, base, leaf in _content([span], [model]):
+    for _section, _index, span, top in _pairs(layout, document):
+        for block, model, base, leaf in _content([span], [top]):
             if not leaf:
                 continue
             start = base + block.start
-            text = "\n".join(lines[start:base + block.end])
+            rows = lines[start:base + block.end]
+            if _kind(block) == "table":
+                # Cells past the header's width are dropped (GFM): no blank.
+                width = len(model.headers)
+                rows = rows[:2] + [row[:_row_width_end(row, width)] for row in rows[2:]]
+            text = "\n".join(rows)
             offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
             for directive in lex(text).directives:
                 row = bisect.bisect_right(offsets, directive.start) - 1

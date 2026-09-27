@@ -59,6 +59,19 @@ boundaries, and the final option (§15.9, `validate_document(final=True)` or
 Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body,
 in list items and in block quotes.
 
+Tables follow GFM as cmark-gfm reads them
+([#44](https://github.com/ForLegalAI/legaldown-validator/issues/44)): a paragraph line with a
+delimiter row under it — a row of `:?-+:?` cells, as many as the header's, with at least one pipe,
+indented at most three columns and no list item — is a table's header; a row's outer pipes are
+optional; the body runs to a blank line or a line that starts another block (a quote, heading,
+fence, raw HTML, thematic break, list item or indented code), and a line without a pipe is a row
+of one cell; cells past the header's width are dropped. A table interrupts a paragraph, but a
+setext underline, or a line that is itself a delimiter row, is no header there. A `|` line lazily
+continues a list item's or quote's paragraph; it may be the header of a table whose delimiter row
+is in the container, but a lazy delimiter row makes none. Where cmark-gfm keeps a lazy line's
+indentation, an indented lazy header that starts with a pipe (` | a |`) is read as a header here
+and not by cmark-gfm.
+
 Only spaces and tabs are whitespace to the block structure, as in CommonMark
 ([#47](https://github.com/ForLegalAI/legaldown-validator/issues/47)): a line holding a no-break
 space (common in text pasted from a word processor) is not blank, a no-break space before `>`,
@@ -92,14 +105,14 @@ nested quotes, tables and raw HTML. Code and raw HTML in a quote hold no directi
 span or comment left open in one of its blocks does not run into the next. Drafting notes are
 found in any quote, nested in lists and other quotes too. The model keeps a quote as its text,
 one line per source line without its `>`: a tab in a line's leading markers is written as the
-spaces it stands for, and a lazy continuation line indented four or more columns is kept
-indented where, read again, it still continues the paragraph. What the reading does not follow:
+spaces it stands for, and a lazy continuation line indented four or more columns, or one that
+looks like a table's delimiter row, is kept indented where, read again, it still continues the
+paragraph. What the reading does not follow:
 
-- Where a quote ends is found line by line, and three things are read more simply than
-  CommonMark reads them: in a list inside the quote, an item's content column is not tracked; a
-  line starting with `|` is taken to start a table, so it ends the quote rather than lazily
-  continuing it; and an empty item is taken to interrupt a paragraph. Such a quote can end a
-  line early or late.
+- Where a quote ends is found line by line, and two things are read more simply than
+  CommonMark reads them: in a list inside the quote, an item's content column is not tracked;
+  and an empty item is taken to interrupt a paragraph. Such a quote can end a line early or
+  late.
 - A quote in 16 or more list items and quotes is read as one text: its directives are checked
   as a paragraph's.
 

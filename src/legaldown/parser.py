@@ -235,9 +235,10 @@ def _not_line_editable(root: yaml.Node) -> list[str]:
 def _is_lazy_line(line: str) -> bool:
     """True if *line* would continue an open paragraph rather than start a
     block of its own: a *lazy continuation line* (CommonMark), which joins
-    the list item or block quote whose paragraph it continues. Any list item
-    marker is taken to start a list, and a ``|`` line a table, as this
-    parser has always read them; a lone HTML tag, which cannot interrupt a
+    the list item or block quote whose paragraph it continues — a table's
+    row included, whose delimiter row must be in the container (GFM). Any
+    list item marker is taken to start a list, as this parser has always
+    read them; a lone HTML tag, which cannot interrupt a
     paragraph, starts an HTML block where the line leaves its container
     (cmark-gfm). A line indented four or more columns starts none: indented
     code cannot interrupt a paragraph."""
@@ -250,7 +251,7 @@ def _is_lazy_line(line: str) -> bool:
         and not RULE_RE.match(line)
         and not LIST_ITEM_RE.match(line)
         and html_block_opening(line) is None
-        and not line.lstrip(" \t").startswith((">", "|"))
+        and not line.lstrip(" \t").startswith(">")
     )
 
 
@@ -260,15 +261,20 @@ _QUOTE_MARKERS_RE = re.compile(r"[ \t]*(?:>[ \t]*)*")
 
 def _opens_paragraph(content: str) -> bool:
     """True if a quoted line's *content* leaves paragraph text open — its
-    own, or that of a list item or nested quote it starts — which a lazy
-    line may continue. A heading, a thematic break, an HTML block, or an
-    empty list item or quote leaves none."""
-    inner = content[_QUOTE_MARKERS_RE.match(content).end():]
-    marker = None if RULE_RE.match(inner) else LIST_ITEM_RE.match(inner)
-    if marker:
+    own, or that of a list item or nested quote it starts, behind markers of
+    any nesting — which a lazy line may continue. A heading, a thematic
+    break, a fence, an HTML block, or an empty list item or quote leaves
+    none."""
+    inner = content
+    while True:
+        inner = inner[_QUOTE_MARKERS_RE.match(inner).end():]
+        marker = None if RULE_RE.match(inner) else LIST_ITEM_RE.match(inner)
+        if not marker:
+            break
         inner = inner[marker.end():]
     return (
         bool(inner.strip(" \t"))
+        and not (FENCE_OPEN_RE.match(inner) and indent_width(content) < 4)
         and not HEADING_RE.match(inner)
         and not RULE_RE.match(inner)
         and not HTML_BLOCK_START_RE.match(inner)
@@ -283,8 +289,8 @@ _QUOTE_DEPTH = 8
 class _Quote:
     """A block quote read line by line (CommonMark), for what a line without
     ``>`` needs to know: whether a paragraph is open that it lazily
-    continues. Quoted code, fenced or indented, and raw HTML are not a
-    paragraph; a nested quote's paragraph is, until a line that neither
+    continues. Quoted code, fenced or indented, raw HTML and a table are not
+    a paragraph; a nested quote's paragraph is, until a line that neither
     carries its ``>`` nor lazily continues it."""
 
     def __init__(self, depth: int = 0) -> None:
@@ -294,6 +300,9 @@ class _Quote:
         self._inner: _Quote | None = None  # a quote open in this one
         self._column = 0  # the content column of the item holding open code or HTML
         self._depth = depth  # the quotes it is in; past _QUOTE_DEPTH, nested ones are text
+        self._table = False  # a table is open: its rows are no paragraph
+        self._last: str | None = None  # the paragraph's last line, a table's header if one follows
+        self._item = False  # the open paragraph is a list item's, whose content this does not follow
 
     def read(self, content: str) -> None:
         """Take one quoted line: its *content* after ``>`` and the one
@@ -314,8 +323,10 @@ class _Quote:
         # A line short of the content of the item holding open code or HTML
         # ends that item, and them.
         self._fence = self._html = None
+        last, self._last = self._last, None
         if indent_width(content) < 4 and content.lstrip(" \t").startswith(">") and self._depth < _QUOTE_DEPTH:
             self._inner = self._inner or _Quote(self._depth + 1)
+            self._table = False
             self._inner.read(content.lstrip(" \t")[1:].removeprefix(" "))
             self.paragraph = self._inner.paragraph
             return
@@ -324,6 +335,16 @@ class _Quote:
             if inner.continues(content):
                 self._inner = inner  # a lazy line of the nested quote's paragraph
                 return
+        if self._table and _continues_table(content):
+            return  # a row of the open table
+        self._table = False
+        if (
+            self.paragraph and last is not None and not self._item
+            and _parse_table([last, content], 0) is not None
+        ):
+            # A delimiter row under the paragraph's line: a table (GFM).
+            self._table, self.paragraph = True, False
+            return
         # Code or HTML may open the line, or the item or items it starts.
         body, self._column = content, 0
         while indent_width(body) < 4 and not RULE_RE.match(body) and (item := LIST_ITEM_RE.match(body)):
@@ -340,12 +361,26 @@ class _Quote:
                 self._html = html
             self.paragraph = False
         elif self.paragraph or indent_width(content) < 4:  # else indented code
+            was = self.paragraph
             self.paragraph = _opens_paragraph(content)
+            self._last = content if self.paragraph else None
+            # A paragraph opened by an item, or an item started under one, is
+            # the item's: a delimiter-like line may be its lazy text.
+            starts_item = not RULE_RE.match(content) and LIST_ITEM_RE.match(content) is not None
+            self._item = self.paragraph and (starts_item or (was and self._item))
 
     def continues(self, line: str) -> bool:
         """True if *line*, which has no ``>``, is a lazy continuation line of
         the quote."""
         return self.paragraph and _is_lazy_line(line)
+
+    def lazy(self, line: str) -> None:
+        """Take a lazy continuation line (``continues``): the paragraph's last
+        line now, a table's header if a delimiter row follows in the quote —
+        itself never a delimiter row (GFM)."""
+        if self._inner is not None:
+            self._inner.lazy(line)
+        self._last = line
 
 
 def _read_quote(lines: list[str], index: int) -> tuple[int, list[str], bool]:
@@ -373,8 +408,9 @@ def _read_quote(lines: list[str], index: int) -> tuple[int, list[str], bool]:
             text = _expand_prefix(line).lstrip(" \t")[1:].removeprefix(" ")
             quote.read(text)
         elif quote.continues(line):
+            quote.lazy(line)
             text = line.strip(" \t")
-            if indent_width(line) >= 4:
+            if indent_width(line) >= 4 or _delimiter_row(line) is not None:
                 for earlier in content[measured:]:
                     widest = max(widest, len(_CONTAINER_PREFIX_RE.match(earlier).group(0))) if earlier.strip(" \t") else 0
                 measured = len(content)
@@ -443,6 +479,7 @@ def _scan_list(
     fence: str | None = None  # the open fence inside the current item
     html: tuple[re.Pattern[str] | None] | None = None  # how an HTML block open in an item ends
     html_column = 0  # the content column of the item holding it
+    first_code = False  # the current item's first line is indented code
     quote: _Quote | None = None  # the block quote the current item ends with
     content_indent = 0  # the current item's content column (CommonMark)
     lazy = False
@@ -514,6 +551,7 @@ def _scan_list(
             quote = previous = None  # a later paragraph in the item is not the quote's
             continue
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
+        quote_lazy = False  # the line lazily continues the item's quote
         indented = indent_width(line) >= 2
         joined = False  # the line is paragraph text though it looks like an item
         lazy_line = False  # the line lazily continues an open paragraph
@@ -553,6 +591,9 @@ def _scan_list(
         if marker:
             content_indent = item_content_column(line)
             content = line[marker.end():].strip(" \t")
+            # Content four or more columns past the item's content column is
+            # indented code (CommonMark): no paragraph, no fence.
+            first_code = indent_width(_expand_prefix(line)[content_indent:]) >= 4
             items.append(content)
             if not depth:
                 own.append((end, content_indent))
@@ -571,11 +612,22 @@ def _scan_list(
                 # Kept four columns in, as if in the item's content: there too
                 # it continues the paragraph, and starts no item.
                 content = " " * 4 + content.strip(" \t")
+            elif (
+                quote is None and not (chain and indent_width(line) >= chain[0])
+                and (indent_width(line) >= 4 or _delimiter_row(line) is not None)
+            ):
+                # A lazy line four or more columns in, or a lazy delimiter
+                # row, which makes no table (GFM), is text of the paragraph:
+                # the item's content has it four columns into it, where it
+                # starts no block. (A quote's lazy lines are its own.)
+                text[end] = content_indent + offset + 4
+                content = " " * 4 + content.strip(" \t")
             if quote is not None and not content.startswith(">"):
                 # A lazy line (unindented) always continues the quote here:
                 # the list is lazy only while the quote's paragraph is open.
                 if lazy_line or quote.continues(content):
                     content = "> " + content
+                    quote_lazy = True
                 else:
                     quote = None
             # An item holding code or a block quote keeps its lines; other
@@ -591,31 +643,40 @@ def _scan_list(
                 items[-1] += " " + content.strip(" \t")
         else:
             break
-        if content.startswith(">"):
+        if content.startswith(">") and not (marker and first_code):
             quote = quote or _Quote()
-            quote.read(content[1:].removeprefix(" "))
+            if quote_lazy:
+                quote.lazy(content[2:])
+            else:
+                quote.read(content[1:].removeprefix(" "))
             lazy = quote.paragraph
         else:
             # An item's first line may open items nested on it (``- - ``````):
             # the fence is theirs.
             body = content[nested_offset(content):] if marker else content
-            opening = FENCE_OPEN_RE.match(body)
+            opening = None if marker and first_code else FENCE_OPEN_RE.match(body)
             fence = opening.group("fence") if opening else None
             # Opened in the item's content, not by a line short of it that
             # only this parser reads into the item (``indented``).
             fence_inside = marker is not None or indent_width(line) >= content_indent
             # So may raw HTML, which runs to its end or its item's (a lone
             # tag cannot interrupt the item's paragraph, CommonMark).
-            opened = None if fence else html_block_opening(body, in_paragraph=paragraph and not marker)
+            opened = None if fence or (marker and first_code) else html_block_opening(
+                body, in_paragraph=paragraph and not marker
+            )
             if opened is not None and (opened[0] is None or not opened[0].search(body)):
                 html, html_column = opened, content_indent + (offset if marker else 0)
-            lazy = fence is None and opened is None and bool(content.strip(" \t"))  # an empty item has no text
+            # An empty item has no text, nor one opening with code.
+            lazy = fence is None and opened is None and bool(content.strip(" \t")) and not (marker and first_code)
         # Content indented four more columns where no paragraph is open is
         # indented code, and a table's rows are no paragraph: a lazy line
         # continues neither (CommonMark).
         code = indent_width(content) >= 4 + offset and not paragraph
-        table = table or (
+        table = (table and _continues_table(content)) or (
             previous is not None and not code and not previous_code
+            # Short of an item nested on the first line, the line is lazy: a
+            # lazy delimiter row makes no table (GFM).
+            and indent_width(content) >= offset
             and _parse_table([previous, content], 0) is not None
         )
         prose = lazy and quote is None and not code and not table
@@ -703,12 +764,6 @@ def _parse_list(
     return Block(kind=kind, items=items), end, lazy, spans
 
 
-def _is_row(line: str) -> bool:
-    """True if *line* can continue a table: it starts with ``|``, indented
-    at most three columns."""
-    return line.lstrip(" \t").startswith("|") and indent_width(line) <= 3
-
-
 def _split_row(line: str) -> list[str]:
     """The cells of the table row *line* (GFM): it is split at each ``|``
     not directly after a backslash, and a leading and a trailing ``|``
@@ -740,33 +795,74 @@ def _split_row(line: str) -> list[str]:
 _ALIGNMENTS = {(True, False): "left", (False, True): "right", (True, True): "center", (False, False): ""}
 
 
+def _row_width_end(line: str, width: int) -> int:
+    """Where the first *width* cells of table row *line* end (``_split_row``):
+    at the pipe after them, or the line's end. GFM drops the cells past the
+    header's width."""
+    pos = len(line) - len(line.lstrip(" \t"))
+    pos += line.startswith("|", pos)
+    count = 0
+    for at in range(pos, len(line)):
+        if line[at] == "|" and line[at - 1:at] != "\\":
+            count += 1
+            if count == width:
+                return at
+    return len(line)
+
+
+def _delimiter_row(line: str) -> list[str] | None:
+    """The cells of *line* when it is a table's delimiter row (GFM): indented
+    at most three columns, holding a pipe (``---`` alone is a setext
+    underline or a rule), no list item (``- | -`` is one), and every cell
+    ``:?-+:?``."""
+    if indent_width(line) > 3 or "|" not in line or LIST_ITEM_RE.match(line):
+        return None
+    cells = _split_row(line)
+    return cells if cells and all(_DELIMITER_CELL_RE.fullmatch(cell) for cell in cells) else None
+
+
+def _continues_table(line: str) -> bool:
+    """True if *line* is a body row of the table above it (GFM): not blank,
+    indented at most three columns, starting no other block — a quote, a
+    heading, a fence, raw HTML, a thematic break, a list item — and not a
+    lone ``|``. Its pipes are optional: a line without one is a row of one
+    cell."""
+    return (
+        not is_blank(line)
+        and indent_width(line) <= 3
+        and not FENCE_OPEN_RE.match(line)
+        and not HEADING_RE.match(line)
+        and not line.lstrip(" \t").startswith(">")
+        and html_block_opening(line) is None
+        and not RULE_RE.match(line)
+        and not LIST_ITEM_RE.match(line)
+        and bool(_split_row(line))
+    )
+
+
 def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
     """Parse the table starting at ``lines[index]``; return it with the index
     just past it, or None when the lines there are not a table.
 
-    A table is a header row, then a delimiter row with as many cells, each
-    ``:?-+:?`` (GFM), then its body rows; every row starts with ``|``. A body
-    row is padded with empty cells or cut to the header's width, as GFM
-    renders it. Each column's alignment comes from its delimiter cell. The
-    delimiter and body rows are indented at most three columns (a line
-    indented further is code), and a row that is only ``|`` has no cells:
-    it is not a header and it ends the body.
+    A table is a header row, then a delimiter row with as many cells
+    (``_delimiter_row``), then its body rows, up to a blank line or another
+    block's start (``_continues_table``); a row's outer pipes are optional
+    (GFM). The caller makes sure the header is a paragraph line, no other
+    block's start — as paragraph text, it may be indented any amount. A body row is padded with
+    empty cells or cut to the header's width, as GFM renders it. Each
+    column's alignment comes from its delimiter cell.
     """
-    if not (lines[index].lstrip(" \t").startswith("|") and lines[index + 1:index + 2]):
+    if index + 1 >= len(lines) or is_blank(lines[index]):
         return None
-    if not _is_row(lines[index + 1]):
-        return None
+    delimiters = _delimiter_row(lines[index + 1])
     headers = _split_row(lines[index])
-    delimiters = _split_row(lines[index + 1])
-    if not headers or len(delimiters) != len(headers) or not all(
-        _DELIMITER_CELL_RE.fullmatch(cell) for cell in delimiters
-    ):
+    if delimiters is None or not headers or len(delimiters) != len(headers):
         return None
     align = [_ALIGNMENTS[cell.startswith(":"), cell.endswith(":")] for cell in delimiters]
     rows: list[list[str]] = []
     end = index + 2
-    while end < len(lines) and _is_row(lines[end]) and (cells := _split_row(lines[end])):
-        cells = cells[: len(headers)]
+    while end < len(lines) and _continues_table(lines[end]):
+        cells = _split_row(lines[end])[: len(headers)]
         rows.append(cells + [""] * (len(headers) - len(cells)))
         end += 1
     return Block(kind="table", headers=headers, rows=rows, align=align), end
@@ -932,8 +1028,13 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool =
             or (line.lstrip(" \t").startswith(">") and indent_width(line) <= 3)
             or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
-            # The delimiter row decides: the header row is paragraph text.
-            or (end + 1 < len(lines) and indent_width(lines[end + 1]) <= 3 and _parse_table(lines, end) is not None)
+            # The delimiter row decides: the header row is paragraph text —
+            # but for a setext underline, which ends the paragraph as a
+            # heading, and a line that is a delimiter row itself (cmark-gfm).
+            or (
+                not SETEXT_UNDERLINE_RE.match(line) and _delimiter_row(line) is None
+                and _parse_table(lines, end) is not None
+            )
             or (RULE_RE.match(line) and not SETEXT_UNDERLINE_RE.match(line) and indent_width(line) <= 3)
         ):
             break
@@ -1081,10 +1182,6 @@ def _parse_body(
             # The quote took every line it could continue; a paragraph after
             # it is lazy only if the quote's is still open.
             lazy = open_paragraph
-        elif table := _parse_table(lines, index):
-            block, index = table
-            blocks.append(block)
-            lazy = True
         elif marker:
             block, index, lazy, item_spans = _parse_list(
                 lines, index, list_type=_list_type(marker), headings=headings, offset=offset, depth=depth
@@ -1096,6 +1193,11 @@ def _parse_body(
             blocks.append(Block(kind="html", text="\n".join(lines[index:end])))
             index = end
             lazy = False
+        elif table := _parse_table(lines, index):
+            # A paragraph line with a delimiter row under it (GFM).
+            block, index = table
+            blocks.append(block)
+            lazy = True
         else:
             end, setext_level = _paragraph_end(lines, index, lazy, headings=headings)
             if setext_level:
