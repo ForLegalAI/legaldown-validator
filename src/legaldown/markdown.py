@@ -121,14 +121,12 @@ def strip_text(text: str) -> str:
 
 def indent_width(line: str) -> int:
     """Columns of leading whitespace, a tab counting to the next tab stop."""
+    lead = line[: len(line) - len(line.lstrip(" \t"))]
+    if "\t" not in lead:
+        return len(lead)
     column = 0
-    for char in line:
-        if char == " ":
-            column += 1
-        elif char == "\t":
-            column += _TAB - column % _TAB
-        else:
-            break
+    for char in lead:
+        column += 1 if char == " " else _TAB - column % _TAB
     return column
 
 

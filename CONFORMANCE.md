@@ -78,6 +78,8 @@ its text. What the model does not keep, or reads more simply than CommonMark:
   loose or tight is not kept either: items are written without blank lines between them.
 - A fence left open in an item, under an item nested on its first line and short of that
   item's content, can run on where CommonMark ends it.
+- Lists nested more than 64 deep are read that far: deeper, an item's content is one paragraph
+  of its text.
 
 A fence that opens a quote's text on its only line (`> ~~~ …`) is code. One behind markers inside
 a quote (`> - ~~~ …`), or one running over several lines of a nested quote, is not recognized:

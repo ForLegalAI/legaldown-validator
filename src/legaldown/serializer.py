@@ -262,18 +262,22 @@ def _first_line(item: ListItem) -> str:
         return ""
     first = item.blocks[0]
     if first.kind in _LISTS:
-        own = "." if first.kind == "ordered_list" else (_bullets(first) or ["+"])[0]
+        rows = [_first_line(inner) for inner in list_items(first)]  # each once: a chain of them nests
+        own = "." if first.kind == "ordered_list" else (_safe(rows) or ["+"])[0]
         head = f"1{own}" if first.kind == "ordered_list" else own
-        rest = _first_line(list_items(first)[0]) if first.items else ""
-        return f"{head} {rest}" if rest else head
+        return f"{head} {rows[0]}" if rows and rows[0] else head
     return _render_block(first, in_item=True).split("\n")[0]
 
 
-def _bullets(block: Block) -> list[str]:
-    """The bullets a list's own items can be written with: those that make
-    no item's first line a thematic break (``- --``); ``+`` never does."""
-    rows = [_first_line(item) for item in list_items(block)]
+def _safe(rows: list[str]) -> list[str]:
+    """The bullets that make none of *rows*, items' first lines, a thematic
+    break (``- --``); ``+`` never does."""
     return [bullet for bullet in _BULLETS if not any(RULE_RE.match(f"{bullet} {row}") for row in rows)]
+
+
+def _bullets(block: Block) -> list[str]:
+    """The bullets a list's own items can be written with (``_safe``)."""
+    return _safe([_first_line(item) for item in list_items(block)])
 
 
 def _list_markers(blocks: list[Block]) -> dict[int, str]:

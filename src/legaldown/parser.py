@@ -534,25 +534,35 @@ def _item_lines(lines: list[str], column: int, text: dict[int, int]) -> list[str
     return content
 
 
+# How deep lists are read into items: past it, an item's content is one
+# paragraph of text, so that no document recurses without bound.
+MAX_LIST_DEPTH = 64
+
+
 def _parse_list(
-    lines: list[str], index: int, *, list_type: str, headings: bool = True, offset: int = 0,
+    lines: list[str], index: int, *, list_type: str, headings: bool = True, offset: int = 0, depth: int = 0,
 ) -> tuple[Block, int, bool, list[_ItemSpan]]:
     """Parse the list starting at ``lines[index]``: ``(block, end, lazy,
     items)`` — *end* and *lazy* as ``_scan_list`` gives them, *items* where
     each item lies. Each item's content is parsed as blocks of its own
     (``_parse_body``), nested lists included: no heading, and no lifting of
     a directive into block fields. *offset*: the source line ``lines[0]``
-    is (for the item spans)."""
+    is (for the item spans); *depth*: how many items the list is in, past
+    ``MAX_LIST_DEPTH`` of which an item's content is one paragraph."""
     own, end, lazy, text = _scan_list(lines, index, list_type=list_type, headings=headings)
     items: list[ListItem] = []
     spans: list[_ItemSpan] = []
     starts = [first for first, _column in own] + [end]
     for (first, column), stop in zip(own, starts[1:], strict=True):
         layout = _Layout()
-        blocks, _sections = _parse_body(
-            _item_lines(lines[first:stop], column, {k - first: at for k, at in text.items() if first <= k < stop}),
-            layout, headings=False, offset=offset + first,
-        )
+        content = _item_lines(lines[first:stop], column, {k - first: at for k, at in text.items() if first <= k < stop})
+        if depth >= MAX_LIST_DEPTH:
+            joined = " ".join(part.strip() for part in content if part.strip())
+            blocks = [Block(kind="paragraph", text=joined)] if joined else []
+            if blocks:
+                layout.preamble.append(_BlockSpan("paragraph", offset + first, offset + stop))
+        else:
+            blocks, _sections = _parse_body(content, layout, headings=False, offset=offset + first, depth=depth + 1)
         items.append(ListItem(blocks=blocks))
         spans.append(_ItemSpan(offset + first, offset + stop, layout.preamble))
     kind = "ordered_list" if list_type in ".)" else "unordered_list"
@@ -864,7 +874,7 @@ def _layout(lines: list[str]) -> _Layout:
 
 
 def _parse_body(
-    lines: list[str], layout: _Layout | None = None, *, headings: bool = True, offset: int = 0
+    lines: list[str], layout: _Layout | None = None, *, headings: bool = True, offset: int = 0, depth: int = 0
 ) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
     """Parse body lines into the preamble's blocks (§4.4) and the sections'.
 
@@ -872,7 +882,8 @@ def _parse_body(
     a fenced code block (§11.4) or an HTML block (§8.6) is literal
     everywhere: no line inside one is a heading or starts another block.
     *layout*, when given, receives where each heading and block lies, as
-    source lines counted from *offset*.
+    source lines counted from *offset*. *depth*: how many list items the
+    lines are in (``_parse_list``).
 
     Without *headings*, the lines are a list item's content
     (``_parse_list``): an ATX heading's line is a paragraph of its own, a
@@ -956,7 +967,7 @@ def _parse_body(
             lazy = True
         elif marker:
             block, index, lazy, item_spans = _parse_list(
-                lines, index, list_type=_list_type(marker), headings=headings, offset=offset
+                lines, index, list_type=_list_type(marker), headings=headings, offset=offset, depth=depth
             )
             blocks.append(block)
         elif (end := html_block_end(lines, index)) is not None:

@@ -2629,3 +2629,22 @@ def test_a_nested_item_after_a_later_paragraph_is_in_its_item():
     body = "- one {when=vat}\n  - a\n\n  more\n\n  - b {when=!vat}\n"
     frontmatter = _FRONTMATTER.replace("---\n\n# Terms", "questions:\n  vat:\n    type: boolean\n---\n\n# Terms")
     assert "condition-never-true" in validate_document(parse_document(frontmatter + body)).rules()
+
+
+def test_a_chain_of_items_each_opening_with_the_next_is_written_quickly():
+    # Each nested list's first lines are read once, not once per level above.
+    document = parse_document(_FRONTMATTER + "- " * 40 + "a\n")
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_lists_nested_past_the_limit_are_read_as_text():
+    from legaldown.parser import MAX_LIST_DEPTH
+
+    body = "\n".join("  " * depth + f"- level {depth}" for depth in range(MAX_LIST_DEPTH + 10)) + "\n"
+    block = _list(body)
+    for _depth in range(MAX_LIST_DEPTH):
+        [item] = block.items
+        block = item.blocks[-1]
+    [item] = block.items
+    assert [child.kind for child in item.blocks] == ["paragraph"]
+    assert item.blocks[0].text.startswith(f"level {MAX_LIST_DEPTH} - level")
