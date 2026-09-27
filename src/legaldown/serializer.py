@@ -178,13 +178,15 @@ def _paragraph(text: str) -> str:
     return text
 
 
-def _code(text: str, *, after_list: bool) -> str:
+def _code(text: str, *, after_list: bool, keep_open: bool = False) -> str:
     """A code block, fenced or indented, as it is; other text as it is, to
     be read as what it is. Indented code directly after a list that the
     list could not be written to end before (``_render_list``) is written
-    fenced: indented, it would continue the list's last item."""
+    fenced: indented, it would continue the list's last item. A fence left
+    open is closed, so that nothing after it is read into it, unless
+    *keep_open*: nothing follows it."""
     if FENCE_OPEN_RE.match(text):
-        return close_fences(text)
+        return text if keep_open else close_fences(text)
     if not (after_list and is_indented_code(text)):
         return text
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
@@ -402,7 +404,13 @@ def _render_list(
     return "\n".join(rendered)
 
 
-def _render_blocks(blocks: list[Block]) -> list[str]:
+def _written(blocks: list[Block]) -> list[Block]:
+    """The blocks that write anything: one that writes nothing does not
+    stand between a list and what follows it."""
+    return [block for block in blocks if (bool(block.items) if block.kind in _LISTS else _render_block(block))]
+
+
+def _render_blocks(blocks: list[Block], *, last: bool = False) -> list[str]:
     """Rendered blocks, each preceded by a blank separator line.
 
     A line indented to a list's last item's content continues the item,
@@ -411,18 +419,17 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
     list followed by indented code or HTML is written with its last item's
     content past that indentation (``_render_list``), so the block is
     written as it is; where no spacing reaches it, code is fenced
-    (``_code``)."""
+    (``_code``). *last*: the blocks end the document, so a fence left open
+    in the last of them stays open, as the parser read it: it ran to the
+    end of the source."""
     parts: list[str] = []
     as_written: set[int] = set()  # code or HTML after a list the list is written to end before
-    # A block that writes nothing does not stand between a list and what
-    # follows it.
-    blocks = [
-        block for block in blocks
-        if (bool(block.items) if block.kind in _LISTS else _render_block(block))
-    ]
+    blocks = _written(blocks)
+    final = len(blocks) - 1
     markers = _list_markers(blocks)
     for index, block in enumerate(blocks):
         following = blocks[index + 1] if index + 1 < len(blocks) else None
+        keep_open = last and index == final
         if block.kind in _LISTS and following is not None and following.kind in ("code", "html"):
             # A block indented to the last item's content would continue it:
             # the item is written with its content further in.
@@ -437,9 +444,11 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
             same = following is not None and following.kind == block.kind and markers[index + 1] == markers[index]
             rendered = _render_list(block, own=markers[index], close_last=same) or ""
         elif index in as_written:
-            rendered = close_fences(block.text) if block.kind == "code" else block.text
+            rendered = (block.text if keep_open else close_fences(block.text)) if block.kind == "code" else block.text
         elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":
-            rendered = _code(block.text, after_list=True)
+            rendered = _code(block.text, after_list=True, keep_open=keep_open)
+        elif block.kind == "code":
+            rendered = _code(block.text, after_list=False, keep_open=keep_open)
         else:
             rendered = _render_block(block)
         if rendered:
@@ -470,19 +479,24 @@ def serialize_document(document: Document) -> str:
     if not bare:
         frontmatter = yaml.dump(payload, Dumper=_BlockDumper, sort_keys=False, allow_unicode=True).strip()
         parts = ["---", frontmatter, "---"]
-    preamble = _render_blocks(document.preamble)
+    preamble = _render_blocks(document.preamble, last=not document.sections)
     if bare and preamble[1:2] == ["---"]:
         preamble[1] = "***"
     parts.extend(preamble)
-    for section in document.sections:
+    for number, section in enumerate(document.sections, 1):
         heading = f"{'#' * section.level} {section.title.strip()}"
         marker = format_marker(Marker(section.identifier.strip(), section.condition.strip()))
         if marker:
             heading += " " + marker
         parts.extend(["", heading])
-        parts.extend(_render_blocks(section.blocks))
-    # Only line breaks are trimmed: a document may open with indented code.
-    return "\n".join(parts).strip("\n") + "\n"
+        parts.extend(_render_blocks(section.blocks, last=number == len(document.sections)))
+    # Only line breaks are trimmed: a document may open with indented code,
+    # and a fence left open at its end holds its blank lines as code.
+    text = "\n".join(parts).lstrip("\n")
+    ending = _written(document.sections[-1].blocks if document.sections else document.preamble)[-1:]
+    if ending and ending[0].kind == "code" and close_fences(ending[0].text) != ending[0].text:
+        return text + "\n"
+    return text.rstrip("\n") + "\n"
 
 
 

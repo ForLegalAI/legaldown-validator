@@ -2495,3 +2495,36 @@ def test_a_fence_is_closed_where_adjacent_lists_must_share_a_bullet():
     ]}]})
     blocks = parse_document(serialize_document(document)).sections[0].blocks
     assert [block.items for block in blocks] == [["--", "**\n```\ncode\n```"], ["--", "**"]]
+
+
+# ── A fence left open at the end (#67) ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["```\ncode\n", "```\n", "~~~\ncode\n", " ```\n", "```\ncode\n\n\n"],  # its blank lines are code
+)
+@pytest.mark.parametrize("before", ["# A\n\n", ""])  # in a section, or in the preamble
+def test_a_fence_left_open_at_the_end_is_written_as_it_is(body, before):
+    document = parse_document("---\ntitle: T\nlanguage: en\n---\n\n" + before + body)
+    written = serialize_document(document)
+    assert written.endswith("\n\n" + body)
+    assert parse_document(written) == document
+
+
+def test_a_fence_left_open_after_a_list_at_the_end_stays_open():
+    # The item's fence ends with the item; the last one runs to the end.
+    document = parse_document(_FRONTMATTER + "- a\n\n  ```\n code\n ```\n")
+    written = serialize_document(document)
+    assert written.endswith("\n ```\n")
+    assert parse_document(written) == document
+
+
+def test_a_fence_left_open_before_a_heading_is_closed():
+    # Only a model holds one: the heading after it would be read into it.
+    document = document_from_dict({"sections": [
+        {"title": "A", "blocks": [{"kind": "code", "text": "```\nx"}]}, {"title": "B"},
+    ]})
+    written = serialize_document(document)
+    assert "```\nx\n```\n\n# B" in written
+    assert [section.title for section in parse_document(written).sections] == ["A", "B"]
