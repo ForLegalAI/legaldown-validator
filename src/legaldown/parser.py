@@ -439,6 +439,8 @@ def _scan_list(
     margin = indent_width(lines[index]) if indent_width(lines[index]) >= 4 else 0
     fence_inside = False  # the open fence was opened in the current item's content
     fence: str | None = None  # the open fence inside the current item
+    html: tuple[re.Pattern[str] | None] | None = None  # how an HTML block open in an item ends
+    html_column = 0  # the content column of the item holding it
     quote: _Quote | None = None  # the block quote the current item ends with
     content_indent = 0  # the current item's content column (CommonMark)
     lazy = False
@@ -468,7 +470,22 @@ def _scan_list(
                 lazy = False
                 continue
             fence = None
+        if html is not None and not is_blank(line):
+            if indent_width(line) >= html_column:
+                # The HTML block's, whatever it looks like — an item's
+                # marker, a quote — and no paragraph a lazy line continues.
+                (close,) = html
+                if close is not None and close.search(line):
+                    html = None
+                items[-1] += "\n" + dedent(line, content_indent, expand=True)
+                lazy = paragraph = open_paragraph = table = False
+                quote = previous = None
+                end += 1
+                continue
+            html = None  # short of the item holding it, which that ends
         if is_blank(line):
+            if html is not None and html[0] is None:
+                html = None  # a block-level or lone tag's HTML ends at a blank line
             following = next((k for k in range(end, len(lines)) if not is_blank(lines[k])), None)
             if following is None or (headings and HEADING_RE.match(lines[following])):
                 break  # a heading stays a section heading
@@ -579,12 +596,18 @@ def _scan_list(
         else:
             # An item's first line may open items nested on it (``- - ``````):
             # the fence is theirs.
-            opening = FENCE_OPEN_RE.match(content[nested_offset(content):] if marker else content)
+            body = content[nested_offset(content):] if marker else content
+            opening = FENCE_OPEN_RE.match(body)
             fence = opening.group("fence") if opening else None
             # Opened in the item's content, not by a line short of it that
             # only this parser reads into the item (``indented``).
             fence_inside = marker is not None or indent_width(line) >= content_indent
-            lazy = fence is None and bool(content.strip(" \t"))  # an empty item has no text
+            # So may raw HTML, which runs to its end or its item's (a lone
+            # tag cannot interrupt the item's paragraph, CommonMark).
+            opened = None if fence else html_block_opening(body, in_paragraph=paragraph and not marker)
+            if opened is not None and (opened[0] is None or not opened[0].search(body)):
+                html, html_column = opened, content_indent + (offset if marker else 0)
+            lazy = fence is None and opened is None and bool(content.strip(" \t"))  # an empty item has no text
         # Content indented four more columns where no paragraph is open is
         # indented code, and a table's rows are no paragraph: a lazy line
         # continues neither (CommonMark).
