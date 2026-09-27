@@ -2589,3 +2589,43 @@ def test_an_item_that_would_make_a_thematic_break_starts_on_the_next_line():
     written = serialize_document(document)
     assert parse_document(written) == document
     assert "\n-\n  --\n" in written  # the third list's: the second took "+"
+
+
+# ── An item's blocks (#64, #66, #59) ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("body", "shape"),
+    [
+        # Code, quotes, tables and raw HTML in an item are blocks of it (#66).
+        ("- a\n  ```\n  x\n  ```\n", [["a", ("code", "```\nx\n```")]]),
+        ("- a\n  > q\n", [["a", ("quote", "q")]]),
+        ("- a\n\n  | x | y |\n  |---|---|\n  | 1 | 2 |\n", [["a", ("table", "")]]),
+        ("- a\n\n      code\n", [["a", ("code", "    code")]]),
+        # Raw HTML on an item's first line is an HTML block (#59).
+        ("- <div>\n  {{placeholder: p}}\n  </div>\n", [[("html", "<div>\n{{placeholder: p}}\n</div>")]]),
+    ],
+)
+def test_an_items_content_is_blocks(body, shape):
+    document = parse_document(_FRONTMATTER + body)
+    assert _shape(document.sections[0].blocks[0])[1] == shape
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_directives_in_an_items_raw_html_are_not_read():
+    result = _validate("- <div>\n  {{ref: nowhere}}\n  </div>\n")
+    assert "ref-broken" not in result.rules()
+
+
+def test_a_marker_ends_an_items_first_paragraph_only():
+    # After the nested list, a later paragraph of the item: a marker there
+    # is misplaced (§5.7).
+    assert "anchor-misplaced" not in _validate("- one {#one}\n  - a\n\n  more\n\nSee {{ref: one}}.\n").rules()
+    assert "anchor-misplaced" in _validate("- one\n  - a\n\n  more {#more}\n").rules()
+
+
+def test_a_nested_item_after_a_later_paragraph_is_in_its_item():
+    # Its presence includes the item's condition (§15.3).
+    body = "- one {when=vat}\n  - a\n\n  more\n\n  - b {when=!vat}\n"
+    frontmatter = _FRONTMATTER.replace("---\n\n# Terms", "questions:\n  vat:\n    type: boolean\n---\n\n# Terms")
+    assert "condition-never-true" in validate_document(parse_document(frontmatter + body)).rules()
