@@ -502,6 +502,7 @@ def validate_document(
         block_fragments,
         collect_definitions,
         find_definition_anchors,
+        id_term,
         text_fragments,
     )
 
@@ -957,7 +958,7 @@ def validate_document(
                 )
             continue
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
-        result.definition_lookup.setdefault(def_id, ref.term or def_id.replace("-", " ").title())
+        result.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for _section, _index, block in document.iter_blocks():

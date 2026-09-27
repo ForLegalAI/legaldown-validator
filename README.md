@@ -235,6 +235,11 @@ structures, except the two fields that describe the parsed source rather than th
 `iter_directives()` lexes the directives in a piece of text by the §11.2
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
+`definition_lookup(collect_definitions(document))` gives a document's definitions, id to term,
+without validating it: the same map as `ValidationResult.definition_lookup`, but for definitions
+imported from an amended original or an attachment file. A term written empty (`"" {{def: x}}`)
+reads as its id (`id_term`), and an id that is not a valid identifier is left out.
+
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it
 valid, so what you authored is exactly what the validator judges. The serializer, by contrast,
 normalizes: frontmatter is re-emitted as canonical YAML, paragraphs are written as single

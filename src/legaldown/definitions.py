@@ -20,6 +20,7 @@ from .directives import Directive, Lexed, lex, mask_directives
 from .markdown import FENCE_OPEN_RE, is_indented_code
 from .models import LIST_KINDS, Block, Document, list_items
 from .validator.helpers import generate_identifier
+from .validator.patterns import IDENTIFIER_RE
 
 # ---------------------------------------------------------------------------
 # Accepted quotation-mark delimiters (spec 7.2)
@@ -309,7 +310,7 @@ def collect_definitions(
             refs.append(
                 DefinitionRef(
                     id=did,
-                    term=term or did.replace("-", " ").title(),
+                    term=term or id_term(did),
                     section_index=section_index,
                     block_index=block_index,
                     fragment_index=None,
@@ -344,9 +345,20 @@ def collect_definitions(
     return refs
 
 
+def id_term(def_id: str) -> str:
+    """The term a definition written with an empty one reads as: its id,
+    hyphens as spaces, each word capitalized (``"" {{def: late-fee}}`` is
+    "Late Fee")."""
+    return def_id.replace("-", " ").title()
+
+
 def definition_lookup(refs: list[DefinitionRef]) -> dict[str, str]:
-    """Build an ``{id: term}`` lookup from definition refs (first wins)."""
+    """Build an ``{id: term}`` lookup from definition refs (first wins), as
+    ``validate_document`` builds its ``definition_lookup``: an empty term
+    reads as its id (``id_term``), and an id that is not a valid identifier
+    (anchor-format) is not registered."""
     lookup: dict[str, str] = {}
     for ref in refs:
-        lookup.setdefault(ref.id, ref.term)
+        if IDENTIFIER_RE.fullmatch(ref.id):
+            lookup.setdefault(ref.id, ref.term or id_term(ref.id))
     return lookup

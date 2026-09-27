@@ -2775,3 +2775,31 @@ def test_quotes_nested_past_the_limit_are_read_as_text():
     document = parse_document(_FRONTMATTER + ">" * 10000 + " a\n")
     assert parse_document(serialize_document(document)) == document
     _validate(">" * 10000 + " a\n")
+
+
+# ── definition_lookup as the validator builds it (#37) ────────────
+
+
+@pytest.mark.parametrize("body", [
+    '"" {{def: x}} means y. See {{term: x}}.',
+    '"  " {{def: late-fee}} applies.',
+    '"" {{def:}} means y.',
+    "“” {{def: x}} means y.",
+    '"Foo" {{def: Bad_ID}} means y.',  # anchor-format: not registered
+    '"Fee" {{def: fee}} and "" {{def: fee}}.',
+    '"" {{def: fee}} and "Fee" {{def: fee}}.',
+    '"Services" {{def:}} means the work.\n\n"Price" {{def: price}} is set.',
+    '"" {{def:}} and "Section" {{def:}}.',
+])
+def test_definition_lookup_matches_the_validators(body):
+    from legaldown import collect_definitions, definition_lookup
+
+    document = parse_document(_FRONTMATTER + body + "\n")
+    assert definition_lookup(collect_definitions(document)) == validate_document(document).definition_lookup
+
+
+def test_an_empty_term_reads_as_its_id():
+    from legaldown import collect_definitions, definition_lookup, id_term
+
+    document = parse_document(_FRONTMATTER + '"" {{def: late-fee}} means y. See {{term: late-fee}}.\n')
+    assert definition_lookup(collect_definitions(document)) == {"late-fee": "Late Fee"} == {"late-fee": id_term("late-fee")}
