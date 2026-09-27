@@ -36,6 +36,7 @@ from .definitions import (
     collect_definitions,
     definition_lookup,
     find_definition_anchors,
+    id_term,
 )
 from .directives import (
     DIRECTIVE_PARAMS,
@@ -120,6 +121,7 @@ __all__ = [
     # Definitions (§7)
     "collect_definitions",
     "definition_lookup",
+    "id_term",
     "DefinitionRef",
     "DELIMITER_PAIRS",
     "find_definition_anchors",
