@@ -2732,6 +2732,12 @@ def test_a_quote_built_with_a_tab_is_written_as_its_content_reads():
     ("> <div>\na {{placeholder: p}}\n", True),
     ("> > <div>\n> > x\na {{placeholder: p}}\n", True),
     ("> <!-- c\n> x\na {{placeholder: p}}\n", True),
+    # So is code or raw HTML opening an item in the quote, until the item ends.
+    ("> - <div>\n>   more\na {{placeholder: p}}\n", True),
+    ("> 1. - <div>\n>      x\na {{placeholder: p}}\n", True),
+    ("> - ```\n>   x\na {{placeholder: p}}\n", True),
+    ("> - <div>\n> b\na {{placeholder: p}}\n", False),
+    ("> - ```\n> b\na {{placeholder: p}}\n", False),
     # A nested quote's paragraph is: the line continues it.
     ("> > x\na {{placeholder: p}}\n", False),
 ])

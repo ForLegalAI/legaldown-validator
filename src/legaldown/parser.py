@@ -274,22 +274,28 @@ class _Quote:
         self._fence: str | None = None
         self._html: tuple[re.Pattern[str] | None] | None = None  # how an open HTML block ends
         self._inner: _Quote | None = None  # a quote open in this one
+        self._column = 0  # the content column of the item holding open code or HTML
         self._depth = depth  # the quotes it is in; past _QUOTE_DEPTH, nested ones are text
 
     def read(self, content: str) -> None:
         """Take one quoted line: its *content* after ``>`` and the one
         optional space."""
-        if self._fence is not None:
-            if closes_fence(content, self._fence):
-                self._fence = None
+        if (self._fence is not None or self._html is not None) and (
+            not content.strip() or indent_width(content) >= self._column
+        ):
+            own = content[self._column:]  # as the item holding it has it
+            if self._fence is not None:
+                if closes_fence(own, self._fence):
+                    self._fence = None
+            else:
+                (marker,) = self._html
+                if marker.search(own) if marker is not None else not own.strip():
+                    self._html = None
             self.paragraph = False
             return
-        if self._html is not None:
-            (marker,) = self._html
-            if marker.search(content) if marker is not None else not content.strip():
-                self._html = None
-            self.paragraph = False
-            return
+        # A line short of the content of the item holding open code or HTML
+        # ends that item, and them.
+        self._fence = self._html = None
         if indent_width(content) < 4 and content.lstrip().startswith(">") and self._depth < _QUOTE_DEPTH:
             self._inner = self._inner or _Quote(self._depth + 1)
             self._inner.read(content.lstrip()[1:].removeprefix(" "))
@@ -300,12 +306,19 @@ class _Quote:
             if inner.continues(content):
                 self._inner = inner  # a lazy line of the nested quote's paragraph
                 return
-        if opening := FENCE_OPEN_RE.match(content):
+        # Code or HTML may open the line, or the item or items it starts.
+        body, self._column = content, 0
+        while indent_width(body) < 4 and not RULE_RE.match(body) and (item := LIST_ITEM_RE.match(body)):
+            if not body[item.end():].strip():
+                break
+            column = item_content_column(body)
+            body, self._column = body[column:], self._column + column
+        if opening := FENCE_OPEN_RE.match(body):
             self._fence = opening.group("fence")
             self.paragraph = False
-        elif (html := html_block_opening(content, in_paragraph=self.paragraph)) is not None:
+        elif (html := html_block_opening(body, in_paragraph=self.paragraph and not self._column)) is not None:
             (marker,) = html
-            if marker is None or not marker.search(content):
+            if marker is None or not marker.search(body):
                 self._html = html
             self.paragraph = False
         elif self.paragraph or indent_width(content) < 4:  # else indented code
