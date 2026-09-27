@@ -193,7 +193,7 @@ _DELIMITERS = {"left": ":---", "right": "---:", "center": ":---:"}
 def _table_cell(text: str) -> str:
     """A table cell's text with a backslash before each pipe, so that it
     does not split the row (GFM): the parser removes exactly that one."""
-    return " ".join(text.split("\n")).strip().replace("|", "\\|")
+    return strip_text(" ".join(text.split("\n"))).replace("|", "\\|")
 
 
 def _table_row(cells: list[str]) -> str:
@@ -228,7 +228,7 @@ def _render_block(block: Block, *, in_item: bool = False) -> str:
         # markers and indentation is written as the columns the quote's
         # content gives it, which a tab after "> " would not keep.
         lines = block.text.split("\n")
-        return "\n".join(f"> {_expand_prefix(line)}".rstrip() for line in lines)
+        return "\n".join(f"> {_expand_prefix(line)}".rstrip(" \t") for line in lines)
     if block.kind == "table":
         # GFM needs a header row; a table built without one gets empty
         # header cells, as wide as its widest row.

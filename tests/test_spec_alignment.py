@@ -1254,9 +1254,17 @@ def test_a_no_break_space_round_trips_around_a_lifted_directive(text):
     assert parse_document(serialize_document(document)) == document
 
 
-def test_a_paragraph_of_only_whitespace_is_empty():
-    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": " "}]}]})
+def test_a_paragraph_of_only_spaces_is_empty():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": " \t "}]}]})
     assert document.sections[0].blocks[0].text == ""
+
+
+def test_a_paragraph_of_a_no_break_space_is_text():
+    # Not blank in CommonMark (#47): written back, it reads the same.
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": "\u00a0"}]}]})
+    assert document.sections[0].blocks[0].text == "\u00a0"
+    written = parse_document(serialize_document(document))
+    assert [(b.kind, b.text) for b in written.sections[0].blocks] == [("paragraph", "\u00a0")]
 
 
 @pytest.mark.parametrize("fence", ["  ~~~", "    ~~~", "  ```"])
@@ -2803,3 +2811,47 @@ def test_an_empty_term_reads_as_its_id():
 
     document = parse_document(_FRONTMATTER + '"" {{def: late-fee}} means y. See {{term: late-fee}}.\n')
     assert definition_lookup(collect_definitions(document)) == {"late-fee": "Late Fee"} == {"late-fee": id_term("late-fee")}
+
+
+# ── Only spaces and tabs are blank, or indentation (#47) ─────────
+
+_NBSP = " "
+
+
+@pytest.mark.parametrize(("body", "shape"), [
+    # A line of a no-break space (text pasted from Word) is not blank: it
+    # continues what a blank line would end.
+    (f"<div>\n{_NBSP}\n# H\n", [("html", f"<div>\n{_NBSP}\n# H")]),
+    (f"para\n{_NBSP}\nmore\n", [f"para {_NBSP} more"]),
+    (f"- a\n{_NBSP}\n- b\n", [(_U, [[f"a {_NBSP}"], ["b"]])]),
+    (f"> a\n> {_NBSP}\n> b\n", [("quote", f"a\n{_NBSP}\nb")]),
+    (f"    code\n{_NBSP}\n    more\n", [("code", "    code"), f"{_NBSP}     more"]),
+    # Nor is it indentation: the line is paragraph text.
+    (f"{_NBSP}> x\n", [f"{_NBSP}> x"]),
+    (f"{_NBSP}# h\n", [f"{_NBSP}# h"]),
+    (f"{_NBSP}- x\n", [f"{_NBSP}- x"]),
+    (f"{_NBSP}| a | b |\n{_NBSP}|---|---|\n", [f"{_NBSP}| a | b | {_NBSP}|---|---|"]),
+])
+def test_a_no_break_space_is_text(body, shape):
+    document = parse_document(_FRONTMATTER + body)
+    assert [_shape(block) for block in document.sections[0].blocks] == shape
+    assert [section.title for section in document.sections] == ["Terms"]
+    _round_trips(body)
+
+
+def test_a_no_break_space_in_a_table_row_is_a_cell():
+    # After the last pipe it is a cell of its own (GFM): three header cells
+    # against two delimiters, no table.
+    [block] = parse_document(_FRONTMATTER + f"|a|b|{_NBSP}\n|-|-|\n|1|2|\n").sections[0].blocks
+    assert block.kind == "paragraph"
+    # A row of one such cell is a row, not the end of the table.
+    [table] = parse_document(_FRONTMATTER + f"|a|b|\n|-|-|\n|{_NBSP}\n|1|2|\n").sections[0].blocks
+    assert table.rows == [[_NBSP, ""], ["1", "2"]]
+    _round_trips(f"| a | b |\n|---|---|\n| {_NBSP}x{_NBSP} | c |\n")
+    [table] = parse_document(_FRONTMATTER + f"| a | b |\n|---|---|\n| {_NBSP}x{_NBSP} | c |\n").sections[0].blocks
+    assert table.rows == [[f"{_NBSP}x{_NBSP}", "c"]]
+
+
+def test_a_no_break_space_after_a_fence_does_not_close_it():
+    [code] = parse_document(_FRONTMATTER + f"```\n{_NBSP}\n```{_NBSP}\nx\n```\n").sections[0].blocks
+    assert code.text == f"```\n{_NBSP}\n```{_NBSP}\nx\n```"

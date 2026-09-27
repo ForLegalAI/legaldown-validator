@@ -59,6 +59,11 @@ boundaries, and the final option (§15.9, `validate_document(final=True)` or
 Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body,
 in list items and in block quotes.
 
+Only spaces and tabs are whitespace to the block structure, as in CommonMark
+([#47](https://github.com/ForLegalAI/legaldown-validator/issues/47)): a line holding a no-break
+space (common in text pasted from a word processor) is not blank, a no-break space before `>`,
+`#`, `-` or `|` is not indentation, and one at a paragraph line's end or in a table cell is text.
+
 A list item holds blocks, read as CommonMark reads an item's content (§5.7,
 [#64](https://github.com/ForLegalAI/legaldown-validator/issues/64)): its first paragraph, then
 later paragraphs, nested lists, code, quotes, tables and raw HTML, in any order — content after
