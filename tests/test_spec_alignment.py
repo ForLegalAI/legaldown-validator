@@ -2916,3 +2916,92 @@ def test_a_lone_tag_is_no_lazy_line(body, kinds, checked):
     assert [block.kind for block in blocks] == kinds
     assert ("ref-broken" in _validate(body).rules()) == checked
     _round_trips(body)
+
+
+# ── GFM tables: optional pipes, rows up to a blank line or a block (#44) ──
+
+
+def _tables(body: str):
+    def shape(block):
+        if block.kind == "table":
+            return ("table", block.headers, block.rows)
+        return _shape(block)
+    return [shape(block) for block in parse_document(_FRONTMATTER + body).sections[0].blocks]
+
+
+@pytest.mark.parametrize(("body", "shape"), [
+    # Outer pipes are optional (cmark-gfm), on every row.
+    ("a | b\n--- | ---\n1 | 2\n", [("table", ["a", "b"], [["1", "2"]])]),
+    ("| a | b |\n|---|---|\n1 | 2\n", [("table", ["a", "b"], [["1", "2"]])]),
+    ("a |\n--- |\n1\n", [("table", ["a"], [["1"]])]),
+    ("a\n|---\n", [("table", ["a"], [])]),
+    (" a | b\n --- | ---\n   1 | 2\n", [("table", ["a", "b"], [["1", "2"]])]),
+    # A body row needs no pipe; it runs to a blank line...
+    ("| a |\n|---|\nbar\n\nbaz\n", [("table", ["a"], [["bar"]]), "baz"]),
+    ("a | b\n---|---\n===\n  x\n\\> y\n", [("table", ["a", "b"], [["===", ""], ["x", ""], ["\\> y", ""]])]),
+    ("a | b\n---|---\n1 | 2 | 3\n4\n", [("table", ["a", "b"], [["1", "2"], ["4", ""]])]),
+    # ...or to another block's start.
+    ("| a |\n|---|\n> q\n", [("table", ["a"], []), ("quote", "q")]),
+    ("| a |\n|---|\n2. x\n", [("table", ["a"], []), (_O, [["x"]])]),
+    ("| a |\n|---|\n    code\n", [("table", ["a"], []), ("code", "    code")]),
+    ("| a |\n|---|\n<span>\n", [("table", ["a"], []), ("html", "<span>")]),
+    ("| a |\n|---|\n---\n", [("table", ["a"], []), ("rule", "")]),
+    ("| a |\n|---|\n|\n| b |\n", [("table", ["a"], []), "| | b |"]),
+    # A delimiter row needs a pipe, and is no list item.
+    ("a | b\n- | -\n", ["a | b", (_U, [["| -"]])]),
+    ("a | b\n    --- | ---\n", ["a | b     --- | ---"]),
+    # A table interrupts a paragraph; a header indented any amount is its line.
+    ("p\na | b\n--- | ---\n", ["p", ("table", ["a", "b"], [])]),
+    ("Text.\n    | a |\n|---|\n", ["Text.", ("table", ["a"], [])]),
+    # A setext underline, or a delimiter-like line, is no header there.
+    ("p\n|---|---|\n--- | ---\n", ["p |---|---| --- | ---"]),
+    # In items and quotes.
+    ("- | a |\n  |---|\nb\n", [(_U, [[("table", "")]]), "b"]),  # (a nested table's shape)
+    ("- a\n| b |\n  |---|\n", [(_U, [["a", ("table", "")]])]),
+    # A `|` line lazily continues a paragraph; a lazy delimiter row makes no table.
+    ("- a\n| b |\n", [(_U, [["a | b |"]])]),
+    ("- a\n| b |\n|---|\n", [(_U, [["a | b | |---|"]])]),
+])
+def test_gfm_tables(body, shape):
+    assert _tables(body) == shape
+    _round_trips(body)
+
+
+@pytest.mark.parametrize(("body", "text", "paragraphs"), [
+    ("> a\n| b |\n", "a\n| b |", ["a | b |"]),
+    ("> a\n| b |\n|---|\n", "a\n| b |\n    |---|", ["a | b | |---|"]),  # kept where it makes no table
+    ("> a\n| b |\n> |---|\n", "a\n| b |\n|---|", ["a", "b"]),  # a lazy header, the delimiter in the quote
+    ("> | a |\n> |---|\n> b\n", "| a |\n|---|\nb", ["a", "b"]),
+])
+def test_tables_in_a_quote(body, text, paragraphs):
+    [quote] = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert quote.text == text
+    assert text_fragments(quote) == paragraphs
+    _round_trips(body)
+
+
+def test_a_table_ends_a_quotes_paragraph():
+    blocks = parse_document(_FRONTMATTER + "> | a |\n> |---|\nb {{ref: nowhere}}\n").sections[0].blocks
+    assert [block.kind for block in blocks] == ["quote", "ref"]
+
+
+def test_an_item_opening_with_code_has_no_paragraph():
+    # Its code is no paragraph a lazy line continues (CommonMark).
+    for body in ("-     a\nb {{ref: nowhere}}\n", "-\t\tcode\nb {{ref: nowhere}}\n", "-     > q\nb {{ref: nowhere}}\n"):
+        blocks = parse_document(_FRONTMATTER + body).sections[0].blocks
+        assert [block.kind for block in blocks] == [_U, "ref"]
+        _round_trips(body)
+
+
+def test_a_lazy_line_four_columns_in_is_the_items_text():
+    [block] = parse_document(_FRONTMATTER + "-    ===\n\t````\n x\n").sections[0].blocks
+    assert _shape(block) == (_U, [["=== ```` x"]])
+
+
+def test_a_directive_split_by_a_table_row_is_reported():
+    # A delimiter row under the line makes it a header (GFM), whose cells
+    # split the directive at its quoted pipe: malformed, as rendered.
+    body = '{{choose: x, true="Fee | Info", false=""}}\n--- | ---\n'
+    [table] = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert table.kind == "table" and len(table.headers) == 2
+    assert "directive-malformed" in _validate(body).rules()
