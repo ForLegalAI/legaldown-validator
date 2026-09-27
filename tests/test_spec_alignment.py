@@ -2861,3 +2861,58 @@ def test_a_no_break_space_ending_a_setext_headings_line_is_kept():
     document = parse_document(f"---\ntitle: T\n---\n\nTitle{_NBSP}\nMore\n===\n")
     assert document.sections[0].title == f"Title{_NBSP} More"
     assert parse_document(serialize_document(document)) == document
+
+
+# ── Raw HTML in a list item ends where CommonMark ends it ─────────
+
+
+@pytest.mark.parametrize("body", [
+    # An HTML block in an item is no paragraph: an unindented line after it
+    # does not continue the item, and is checked (cmark-gfm agrees).
+    "1. <div>\n   x\ny {{ref: nowhere}}\n",
+    "- a\n  <div>\n  x\ny {{ref: nowhere}}\n",
+    "- <span>\n  x\ny {{ref: nowhere}}\n",  # a lone tag opening the item
+    "- - <div>\n    x\ny {{ref: nowhere}}\n",  # in an item nested on the line
+    "- <div>\n  > q\ny {{ref: nowhere}}\n",  # a quote-like line is the HTML's
+    "- <div>\n  - x\n  y\ny {{ref: nowhere}}\n",  # so is an item-like one
+    "- <!-- c\n\n  x -->\ny {{ref: nowhere}}\n",  # a comment runs over a blank line
+    "- <pre>\n  x\n\n  y\n  </pre>\ny {{ref: nowhere}}\n",
+])
+def test_raw_html_in_an_item_takes_no_lazy_line(body):
+    blocks = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert blocks[0].kind == _U or blocks[0].kind == "ordered_list"
+    assert len(blocks) == 2  # the list, then the last line's paragraph
+    assert "ref-broken" in _validate(body).rules()
+    _round_trips(body)
+
+
+@pytest.mark.parametrize(("body", "items"), [
+    # Lines reaching the item's content are the HTML's, whatever they look like.
+    ("- <div>\n  - x\n  1. y\n  ---\n", [[("html", "<div>\n- x\n1. y\n---")]]),
+    # A lone tag cannot interrupt the item's paragraph: a lazy line continues it.
+    ("- a\n  <span>\ny\n", [["a <span> y"]]),
+    # A blank line ends a block-level tag's HTML; a later item is a sibling.
+    ("- <div>\n\n  x\n- b\n", [[("html", "<div>"), "x"], ["b"]]),
+    ("1. a\n2. <table>\n   <tr>\n3. b\nz\n", [["a"], [("html", "<table>\n<tr>")], ["b z"]]),
+])
+def test_raw_html_in_an_item(body, items):
+    [block] = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert _shape(block)[1] == items
+    _round_trips(body)
+
+
+@pytest.mark.parametrize(("body", "kinds", "checked"), [
+    # A lone tag short of a list item's or quote's content starts an HTML
+    # block there (cmark-gfm), rather than lazily continuing the paragraph;
+    # the line after it is the HTML's.
+    ("- a\n<span>\ny {{ref: nowhere}}\n", [_U, "html"], False),
+    ("> a\n<span>\nb {{ref: nowhere}}\n", ["quote", "html"], False),
+    ("- > a\n</div>\nb {{ref: nowhere}}\n", [_U, "html"], False),
+    # Where no container is left, it cannot interrupt the paragraph.
+    ("a\n<span>\nb {{ref: nowhere}}\n", ["ref"], True),
+])
+def test_a_lone_tag_is_no_lazy_line(body, kinds, checked):
+    blocks = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert [block.kind for block in blocks] == kinds
+    assert ("ref-broken" in _validate(body).rules()) == checked
+    _round_trips(body)
