@@ -22,7 +22,7 @@ from .markdown import (
     strip_text,
 )
 from .markers import Marker, format_marker
-from .models import Amends, Block, Document, Metadata, listed_items, metadata_from_dict
+from .models import Amends, Block, Document, Metadata, list_markers, listed_items, metadata_from_dict
 from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -259,21 +259,22 @@ def _render_block(block: Block) -> str:
 _LISTS = ("ordered_list", "unordered_list")
 
 
-def list_runs(nesting: list[tuple[int, str]]) -> list[int]:
+def list_runs(nesting: list[tuple[int, str]] | list[tuple[int, str, str]]) -> list[int]:
     """Which list each item is in, as an index into the lists in order of
     their first item: an item continues the list of the last item before it
-    at its depth, under the same parent and of the same kind, and otherwise
-    starts one. *nesting* holds each item's depth and kind, depths starting
-    at 0 and rising by at most one (``list_nesting``)."""
+    at its depth, under the same parent, of the same kind and with the same
+    marker, and otherwise starts one. *nesting* holds each item's depth and
+    kind (``list_nesting``), and optionally its marker (``list_markers``),
+    depths starting at 0 and rising by at most one."""
     runs: list[int] = []
-    open_runs: list[tuple[int, str]] = []  # (list, kind) of the last item at each depth
-    for level, kind in nesting:
+    open_runs: list[tuple[int, tuple[str, ...]]] = []  # (list, kind and marker) of the last item at each depth
+    for level, *key in nesting:
         del open_runs[level + 1:]
-        if level < len(open_runs) and open_runs[level][1] == kind:
+        if level < len(open_runs) and open_runs[level][1] == tuple(key):
             run = open_runs[level][0]
         else:
             run = max(runs, default=-1) + 1
-        open_runs[level:] = [(run, kind)]
+        open_runs[level:] = [(run, tuple(key))]
         runs.append(run)
     return runs
 
@@ -322,6 +323,16 @@ def _list_markers(blocks: list[Block]) -> dict[int, str]:
     return markers
 
 
+def _nested_markers(listed: list[tuple[str, int, str]], recorded: list[str], runs: list[int], own: str) -> dict[int, str]:
+    """The bullet or delimiter each list among a list block's items is
+    written with, by run (``list_runs``): *own* for the block's own items,
+    a nested list's *recorded* one (``list_markers``) for its."""
+    chars: dict[int, str] = {}
+    for (_item, level, _kind), marker, run in zip(listed, recorded, runs, strict=True):
+        chars.setdefault(run, marker if level else own)
+    return chars
+
+
 def _render_list(
     block: Block, last_column: int = 0, *, own: str = "", close_last: bool = False
 ) -> str | None:
@@ -336,24 +347,20 @@ def _render_list(
     left open in the last item is closed, as a list with the same marker
     follows, which the fence would run into and continue this list with."""
     listed = listed_items(block)
-    nesting = [(level, kind) for _item, level, kind in listed]
-    runs = list_runs(nesting)
+    runs = list_runs([
+        (level, kind, marker) for (_item, level, kind), marker in zip(listed, list_markers(block), strict=True)
+    ])
     if not own:
         own = "." if block.kind == "ordered_list" else (_bullets(block) or ["+"])[0]
-    # In a nested list, an item whose text begins with dashes, such as "--",
-    # would make a "- " line a thematic break; "+" never forms one.
-    plus = {
-        run for run, (item, _level, kind) in zip(runs, listed, strict=True)
-        if kind == "unordered_list" and RULE_RE.match("- " + item.split("\n")[0])
-    }
+    chars = _nested_markers(listed, list_markers(block), runs, own)
     numbers: dict[int, int] = {}
     markers: list[str] = []
-    for run, (_item, level, kind) in zip(runs, listed, strict=True):
+    for run, (_item, _level, kind) in zip(runs, listed, strict=True):
         if kind == "unordered_list":
-            markers.append(f"{own} " if not level else "+ " if run in plus else "- ")
+            markers.append(f"{chars[run]} ")
         else:
             numbers[run] = numbers.get(run, 0) + 1
-            markers.append(f"{numbers[run]}{own if not level else '.'} ")
+            markers.append(f"{numbers[run]}{chars[run]} ")
     last = max((k for k, (_item, level, _kind) in enumerate(listed) if not level), default=None)
     columns: list[int] = []  # the content column of the last item at each depth
     prefixes: list[str] = []
@@ -392,15 +399,19 @@ def _render_list(
         # content after it: an item nested in it, or a block after the list.
         following = k + 1 < len(listed) and listed[k + 1][1] > level
         close = following or ((close_last or bool(last_column)) and k == len(listed) - 1)
-        if (
-            k > 0 and not item.strip()
-            and level == listed[k - 1][1] + 1 and listed[k - 1][0].strip()
-        ):
-            # An empty item cannot interrupt its parent's text (CommonMark):
+        # A nested item whose first line would make its marker line a
+        # thematic break (``- --``) starts on the next line, after its bare
+        # marker, as the parser reads it back.
+        bare = not item.strip() or bool(level and RULE_RE.match(prefix.lstrip() + item.split("\n")[0]))
+        if bare and k > 0 and level == listed[k - 1][1] + 1 and listed[k - 1][0].strip():
+            # A bare marker cannot interrupt its parent's text (CommonMark):
             # a blank line comes between. Not after an empty parent, which a
             # blank line would end.
             rendered.append("")
-        rendered.append(_list_item(prefix, item, close=close))
+        if item.strip() and bare:
+            rendered.append(prefix.rstrip() + "\n" + _list_item(" " * len(prefix), item, close=close))
+        else:
+            rendered.append(_list_item(prefix, item, close=close))
     return "\n".join(rendered)
 
 

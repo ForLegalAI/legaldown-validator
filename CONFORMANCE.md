@@ -76,8 +76,7 @@ than CommonMark:
   `  more`) is not the item's: see the third point below.
 - An item that opens with a nested marker on its first line (`- - a`) is one item, so an item
   indented under the inner one is nested one level, not two.
-- A nested list that changes its bullet (`-` to `+`) or delimiter (`.` to `)`) stays one list,
-  and an ordered item's number is not kept: a nested list is written numbered from 1.
+- An ordered item's number is not kept: a nested list is written numbered from 1.
 - A nested item that starts a list of another type while its sibling's paragraph is open starts
   that list even where it may not interrupt the paragraph.
 
