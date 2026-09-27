@@ -236,7 +236,7 @@ structures, except the two fields that describe the parsed source rather than th
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
 `definition_lookup(collect_definitions(document))` gives a document's definitions, id to term,
-without validating it: the same map as `ValidationResult.definition_lookup`, but for definitions
+without validating it: the same map as `ValidationResult.definition_lookup`, except for definitions
 imported from an amended original or an attachment file. A term written empty (`"" {{def: x}}`)
 reads as its id (`id_term`), and an id that is not a valid identifier is left out.
 
