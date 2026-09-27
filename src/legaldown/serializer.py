@@ -320,7 +320,9 @@ def _list_markers(blocks: list[Block]) -> dict[int, str]:
     return markers
 
 
-def _render_list(block: Block, last_column: int = 0, *, own: str = "") -> str | None:
+def _render_list(
+    block: Block, last_column: int = 0, *, own: str = "", close_last: bool = False
+) -> str | None:
     """A list, its items nested as the model holds them (``listed_items``),
     each at its parent's content column. The last item of the list itself
     has its content start at *last_column* or past it — more spacing after
@@ -328,7 +330,9 @@ def _render_list(block: Block, last_column: int = 0, *, own: str = "") -> str | 
     the list, indented less, is not read as that item's or as that of an
     item nested in it (§5.7). None when no spacing reaches *last_column*.
     *own*: the bullet or delimiter of the list's own items
-    (``_list_markers``), by default its first choice."""
+    (``_list_markers``), by default its first choice. *close_last*: a fence
+    left open in the last item is closed, as a list with the same marker
+    follows, which the fence would run into and continue this list with."""
     listed = listed_items(block)
     nesting = [(level, kind) for _item, level, kind in listed]
     runs = list_runs(nesting)
@@ -385,7 +389,7 @@ def _render_list(block: Block, last_column: int = 0, *, own: str = "") -> str | 
         # A fence left open in an item runs on into what is indented to its
         # content after it: an item nested in it, or a block after the list.
         following = k + 1 < len(listed) and listed[k + 1][1] > level
-        close = following or (bool(last_column) and k == len(listed) - 1)
+        close = following or ((close_last or bool(last_column)) and k == len(listed) - 1)
         if (
             k > 0 and not item.strip()
             and level == listed[k - 1][1] + 1 and listed[k - 1][0].strip()
@@ -428,7 +432,10 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
             else:
                 rendered = _render_list(block, own=markers[index]) or ""
         elif block.kind in _LISTS:
-            rendered = _render_list(block, own=markers[index]) or ""
+            # Only where the items leave no other bullet does a list follow
+            # one with its marker.
+            same = following is not None and following.kind == block.kind and markers[index + 1] == markers[index]
+            rendered = _render_list(block, own=markers[index], close_last=same) or ""
         elif index in as_written:
             rendered = close_fences(block.text) if block.kind == "code" else block.text
         elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":

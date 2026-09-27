@@ -2485,3 +2485,13 @@ def test_adjacent_lists_avoid_bullets_that_make_a_thematic_break():
     assert _lists((_U, ["a"]), (_U, ["--", "**"])) == "- a\n\n+ --\n+ **\n"
     assert _lists((_U, ["**"]), (_U, ["--", "**"])) == "- **\n\n+ --\n+ **\n"
 
+
+
+def test_a_fence_is_closed_where_adjacent_lists_must_share_a_bullet():
+    # Each list's items rule out "-" and "*": both take "+", and the fence
+    # left open in the first would carry it into the second.
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": _U, "items": ["--", "**\n```\ncode"]}, {"kind": _U, "items": ["--", "**"]},
+    ]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [block.items for block in blocks] == [["--", "**\n```\ncode\n```"], ["--", "**"]]
