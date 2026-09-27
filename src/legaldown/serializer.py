@@ -23,7 +23,7 @@ from .markdown import (
 )
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, Metadata, listed_items, metadata_from_dict
-from .parser import HEADING_RE, RULE_RE
+from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -161,13 +161,20 @@ def _paragraph(text: str) -> str:
     (``_parse_paragraph``); writing it back over two lines the same way,
     at that space, is lossless (``split_lone_tag``) and keeps it a
     paragraph rather than an HTML block. Anything else that would open a
-    block (a fence, a heading, an HTML block kind 1–6) gets a backslash
-    before it instead, which renders as nothing (CommonMark): only a model
+    block (a fence, a heading, an HTML block kind 1–6, a list item) gets a
+    backslash before it instead, which renders as nothing (CommonMark): only a model
     built in code, not one from ``parse_document``, holds that, since the
     parser never turns the start of a block into paragraph text."""
     if split := split_lone_tag(text):
         return split
-    return "\\" + text if _opens_block(text) else text
+    if _opens_block(text):
+        return "\\" + text
+    if marker := LIST_ITEM_RE.match(text):
+        # A list item's marker, bare ones included: the backslash goes before
+        # its bullet or its delimiter (``1\\.``), the characters it escapes.
+        at = marker.start("delimiter") if marker.group("delimiter") else marker.start("bullet")
+        return text[:at] + "\\" + text[at:]
+    return text
 
 
 def _code(text: str, *, after_list: bool) -> str:
@@ -299,27 +306,47 @@ def _render_list(block: Block, last_column: int = 0, *, close_last: bool = False
     prefixes: list[str] = []
     for k, ((item, level, _kind), marker) in enumerate(zip(listed, markers, strict=True)):
         indent = columns[level - 1] if level else 0
-        # A later line of an item that reads as an ATX heading at the
-        # margin is written at least four columns in, where the parser
-        # keeps it the item's text (``parser._parse_list``): its item's
-        # content starts further in.
-        rows = [row for row in item.split("\n")[1:] if HEADING_RE.match(row)]
-        needed = 4 - min((indent_width(row) for row in rows), default=4) - indent
-        if k == last:
-            needed = max(needed, last_column)  # an item of the list itself: at the margin
-        if len(marker) < needed:
-            spacing = needed - len(marker.rstrip())
-            if spacing > 4:
-                return None  # past last_column only: a heading row needs less
-            marker = marker.rstrip() + " " * spacing
+        if item.strip():
+            # A later line of an item that reads as an ATX heading at the
+            # margin is written at least four columns in, where the parser
+            # keeps it the item's text (``parser._parse_list``): its item's
+            # content starts further in.
+            rows = [row for row in item.split("\n")[1:] if HEADING_RE.match(row)]
+            needed = 4 - min((indent_width(row) for row in rows), default=4) - indent
+            if k == last:
+                needed = max(needed, last_column)  # an item of the list itself: at the margin
+            if len(marker) < needed:
+                spacing = needed - len(marker.rstrip())
+                if spacing > 4:
+                    return None  # past last_column only: a heading row needs less
+                marker = marker.rstrip() + " " * spacing
+            width = len(marker)
+        else:
+            # An empty item is its bare marker: its content column is one
+            # past it whatever follows (``item_content_column``), so spacing
+            # cannot move it. One the list ends in is not open
+            # (``open_items``); one with items nested after it is, and cannot
+            # keep a block indented to *last_column* out.
+            if k == last and last_column and k != len(listed) - 1:
+                return None
+            marker = marker.rstrip()
+            width = len(marker) + 1
         prefixes.append(" " * indent + marker)
-        columns[level:] = [indent + len(marker)]
+        columns[level:] = [indent + width]
     rendered = []
     for k, ((item, level, _kind), prefix) in enumerate(zip(listed, prefixes, strict=True)):
         # A fence left open in an item runs on into what is indented to its
         # content after it: an item nested in it, or a block after the list.
         following = k + 1 < len(listed) and listed[k + 1][1] > level
         close = following or ((close_last or bool(last_column)) and k == len(listed) - 1)
+        if (
+            k > 0 and not item.strip()
+            and level == listed[k - 1][1] + 1 and listed[k - 1][0].strip()
+        ):
+            # An empty item cannot interrupt its parent's text (CommonMark):
+            # a blank line comes between. Not after an empty parent, which a
+            # blank line would end.
+            rendered.append("")
         rendered.append(_list_item(prefix, item, close=close))
     return "\n".join(rendered)
 
@@ -340,7 +367,7 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
     # follows it.
     blocks = [
         block for block in blocks
-        if (any(item.strip() for item in block.items) if block.kind in _LISTS else _render_block(block))
+        if (bool(block.items) if block.kind in _LISTS else _render_block(block))
     ]
     for index, block in enumerate(blocks):
         following = blocks[index + 1] if index + 1 < len(blocks) else None
