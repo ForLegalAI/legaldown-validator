@@ -13,6 +13,7 @@ import yaml
 
 from legaldown import (
     Block,
+    render_item,
     collect_definitions,
     document_from_dict,
     document_to_dict,
@@ -45,6 +46,11 @@ sides:
 # Terms {#terms}
 
 """
+
+
+def _texts(block: Block) -> list[str]:
+    """Each of a list's items as written after its marker."""
+    return [render_item(item) for item in block.items]
 
 
 def _validate(body: str):
@@ -1206,7 +1212,7 @@ def test_a_nested_item_interrupts_its_items_paragraph_only_as_commonmark_allows(
     """Only a bullet with text, or an ordered item numbered 1, may
     interrupt a paragraph — the item's own too (cmark-gfm)."""
     document = parse_document(_FRONTMATTER + body)
-    assert [(b.kind, b.items) for b in document.sections[0].blocks] == items
+    assert [(b.kind, _texts(b)) for b in document.sections[0].blocks] == items
 
 
 @pytest.mark.parametrize("number", ["1", "01", "001"])
@@ -1273,7 +1279,7 @@ def test_where_a_list_does_not_continue_past_a_blank_line(body, kinds, titles):
 def test_what_an_items_later_content_is(body, items, after):
     document = parse_document(_FRONTMATTER + body)
     blocks = document.sections[0].blocks
-    assert blocks[0].items == items and [b.kind for b in blocks[1:]] == after
+    assert _texts(blocks[0]) == items and [b.kind for b in blocks[1:]] == after
 
 
 @pytest.mark.parametrize("body", [
@@ -1329,7 +1335,7 @@ def test_wide_marker_spacing_sets_the_items_column_as_commonmark_does():
     """Five spaces after the marker: the content column is one past it."""
     document = parse_document(_FRONTMATTER + "-      foo\n\n      bar\n")
     # `bar` is four columns past the content: indented code (cmark-gfm).
-    assert [b.items for b in document.sections[0].blocks] == [["foo\n\n    bar"]]
+    assert [_texts(b) for b in document.sections[0].blocks] == [["foo\n\n    bar"]]
 
 
 def test_an_unclosed_fence_after_a_list_is_closed_when_written():
@@ -1343,7 +1349,7 @@ def test_an_unclosed_fence_after_a_list_is_closed_when_written():
 def test_an_empty_list_does_not_take_the_code_after_it():
     document = parse_document(_FRONTMATTER + "- a\n\n* \n\n    code\n")
     reparsed = parse_document(serialize_document(document))
-    assert [(b.kind, b.items, b.text) for b in reparsed.sections[0].blocks] == [
+    assert [(b.kind, _texts(b), b.text) for b in reparsed.sections[0].blocks] == [
         ("unordered_list", ["a"], ""), ("unordered_list", [""], ""), ("code", [], "    code")
     ]
     assert reparsed == document
@@ -1535,7 +1541,7 @@ def test_fence_opening_on_a_list_marker_line_stays_in_the_item():
     body = "- ```\n  a\n\n  b\n  ```\n\n# Next {#next}\n\nSee {{ref: nope}}.\n"
     document = parse_document(_FRONTMATTER + body)
     assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms"), ("Next", 1, "next")]
-    assert document.sections[0].blocks[0].items == ["```\na\n\nb\n```"]
+    assert _texts(document.sections[0].blocks[0]) == ["```\na\n\nb\n```"]
     assert "ref-broken" in validate_document(document).rules("error")
 
 
@@ -1592,21 +1598,21 @@ def test_list_or_quote_interrupts_a_paragraph(body, kinds):
 
 def test_item_text_after_its_closed_fence_is_checked():
     document = parse_document(_FRONTMATTER + "- ```\n  code\n  ```\n  more {{ref: nowhere}}\n")
-    assert document.sections[0].blocks[0].items == ["```\ncode\n```\nmore {{ref: nowhere}}"]
+    assert _texts(document.sections[0].blocks[0]) == ["```\ncode\n```\nmore {{ref: nowhere}}"]
     assert "ref-broken" in validate_document(document).rules("error")
     assert parse_document(serialize_document(document)).sections == document.sections
 
 
 def test_unclosed_fence_in_an_item_ends_at_the_next_item():
     document = parse_document(_FRONTMATTER + "1. ```\n   x\n2. b\n3. c\n")
-    assert [(b.kind, b.items) for b in document.sections[0].blocks] == [
+    assert [(b.kind, _texts(b)) for b in document.sections[0].blocks] == [
         ("ordered_list", ["```\nx", "b", "c"])
     ]
 
 
 def test_tab_after_a_list_marker_counts_as_columns():
     document = parse_document(_FRONTMATTER + "-\t```\n\tx\n\t```\n")
-    assert document.sections[0].blocks[0].items == ["```\nx\n```"]
+    assert _texts(document.sections[0].blocks[0]) == ["```\nx\n```"]
 
 
 def test_text_after_a_list_ending_in_a_fence_is_not_lazy():
@@ -1662,7 +1668,7 @@ def test_paragraph_that_would_open_a_block_stays_indented(paragraph):
 
 def test_tabs_inside_list_item_code_are_kept():
     document = parse_document(_FRONTMATTER + "- item\n  ```\n  a\tb\n  ```\n")
-    assert document.sections[0].blocks[0].items == ["item\n```\na\tb\n```"]
+    assert _texts(document.sections[0].blocks[0]) == ["item\n```\na\tb\n```"]
 
 
 def test_a_fence_left_open_in_a_list_item_ends_with_its_list():
@@ -1674,7 +1680,7 @@ def test_a_fence_left_open_in_a_list_item_ends_with_its_list():
         Block(kind="unordered_list", items=["y"]),
     ]
     blocks = parse_document(serialize_document(document)).sections[0].blocks
-    assert [b.items for b in blocks[1:]] == [["x\n```\ncode"], ["y"]]
+    assert [_texts(b) for b in blocks[1:]] == [["x\n```\ncode"], ["y"]]
 
 
 def test_indentation_after_the_quote_marker_is_content():
@@ -1704,7 +1710,7 @@ def test_only_some_list_items_interrupt_a_paragraph(second_line, kinds, headings
 def _blocks(body: str) -> list[tuple[str, str | list[str]]]:
     document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)).sections == document.sections
-    return [(b.kind, b.items if b.kind.endswith("list") else b.text) for b in document.sections[0].blocks]
+    return [(b.kind, _texts(b) if b.kind.endswith("list") else b.text) for b in document.sections[0].blocks]
 
 
 @pytest.mark.parametrize(
@@ -2094,7 +2100,7 @@ def test_an_indented_line_after_a_list_round_trips_whatever_it_begins_with(opene
     body = f"- a\n\n    b\n\n    {opener}{closer}\n\nd\n\n    code\n"
     document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)) == document
-    assert [(b.kind, b.text or b.items) for b in document.sections[0].blocks] == [
+    assert [(b.kind, b.text or _texts(b)) for b in document.sections[0].blocks] == [
         ("unordered_list", [f"a\n\n  b\n\n  {opener}{fence}"]), ("paragraph", "d"), ("code", "    code")
     ]
 
@@ -2189,7 +2195,7 @@ def test_a_pipe_paragraph_does_not_end_the_list_item(first):
     document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)) == document
     assert [b.kind for b in document.sections[0].blocks] == ["unordered_list"]
-    assert document.sections[0].blocks[0].items == [f"a\n\n  {first}\n\n  # foo"]
+    assert _texts(document.sections[0].blocks[0]) == [f"a\n\n  {first}\n\n  # foo"]
     assert "ref-broken" not in validate_document(document).rules()
 
 
@@ -2225,7 +2231,7 @@ _U, _O = "unordered_list", "ordered_list"
 )
 def test_a_nested_item_keeps_its_depth_and_its_lists_kind(body, items, levels, kinds):
     block = _list(body)
-    assert (block.items, block.levels, block.item_kinds) == (items, levels, kinds)
+    assert (_texts(block), block.levels, block.item_kinds) == (items, levels, kinds)
 
 
 @pytest.mark.parametrize(
@@ -2251,22 +2257,22 @@ def test_an_item_of_another_type_short_of_the_items_content_starts_another_list(
     # "  - b" does not reach "1. a"'s content (column 3): a new list, as
     # CommonMark reads it, not an item of the ordered one.
     blocks = parse_document(_FRONTMATTER + "1. a\n  - b\n").sections[0].blocks
-    assert [(block.kind, block.items) for block in blocks] == [(_O, ["a"]), (_U, ["b"])]
+    assert [(block.kind, _texts(block)) for block in blocks] == [(_O, ["a"]), (_U, ["b"])]
 
 
 def test_a_marker_four_columns_into_an_item_starts_no_item():
     # Four or more columns into the item's content: paragraph text, or
     # indented code after a blank line (CommonMark).
-    assert _list("- a\n      - b\n").items == ["a - b"]
-    assert _list("- a\n\n      - b\n").items == ["a\n\n    - b"]
-    assert _list("- a\n  - b\n        - c\n").items == ["a", "b - c"]
+    assert _texts(_list("- a\n      - b\n")) == ["a - b"]
+    assert _texts(_list("- a\n\n      - b\n")) == ["a\n\n    - b"]
+    assert _texts(_list("- a\n  - b\n        - c\n")) == ["a", "b - c"]
 
 
 def test_a_fence_in_a_nested_item_ends_at_its_siblings_marker():
     # The sibling closes the nested item and the fence in it (CommonMark);
     # it is not the fence's code.
     block = _list("- a\n  - b\n    ```\n    x\n  - c\n")
-    assert (block.items, block.levels) == (["a", "b\n```\nx", "c"], [0, 1, 1])
+    assert (_texts(block), block.levels) == (["a", "b\n```\nx", "c"], [0, 1, 1])
     assert text_fragments(block)[2] == "c"
 
 
@@ -2300,7 +2306,7 @@ def test_nesting_round_trips_through_a_dict():
     flat = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": _U, "items": ["a", " ", "b"], "levels": [0, 0, 0], "item_kinds": [_U, _U, _U]}
     ]}]}).sections[0].blocks[0]
-    assert (flat.items, flat.levels, flat.item_kinds) == (["a", "", "b"], [], [])
+    assert (_texts(flat), flat.levels, flat.item_kinds) == (["a", "", "b"], [], [])
 
 
 def test_list_runs_number_each_nested_list_on_its_own():
@@ -2317,7 +2323,7 @@ def test_a_list_indented_into_an_earlier_items_content_is_read():
     # list of its own after the first, its items measured from where it
     # starts.
     blocks = parse_document(_FRONTMATTER + "- a\n  -    b\n\n    - x\n    - y\n").sections[0].blocks
-    assert [(block.items, block.levels) for block in blocks] == [(["a", "b"], [0, 1]), (["x", "y"], [])]
+    assert [(_texts(block), block.levels) for block in blocks] == [(["a", "b"], [0, 1]), (["x", "y"], [])]
 
 
 @pytest.mark.parametrize(
@@ -2335,7 +2341,7 @@ def test_a_list_indented_into_an_earlier_items_content_is_read():
 )
 def test_a_marker_short_of_the_items_content_but_four_columns_in_is_lazy_text(body, items):
     block = _list(body)
-    assert block.items == items
+    assert _texts(block) == items
     written = serialize_document(parse_document(_FRONTMATTER + body))
     assert parse_document(written).sections[0].blocks == [block]
 
@@ -2351,7 +2357,7 @@ def test_only_a_fence_opened_in_the_items_content_ends_at_a_shorter_marker():
     # after the list, so "   - a" is code. This parser reads the fence into
     # the item, and keeps the line in it.
     block = _list("1.\t</div>\n  ~~~\n   - a {{placeholder: p}}\n")
-    assert block.items == ["</div>\n~~~\n- a {{placeholder: p}}"]
+    assert _texts(block) == ["</div>\n~~~\n- a {{placeholder: p}}"]
     assert not [d for fragment in text_fragments(block) for d in lex(fragment).directives]
 
 
@@ -2402,7 +2408,7 @@ def test_the_default_include_signatures_is_not_written():
 def test_an_empty_item_keeps_its_place(body, items, levels):
     document = parse_document(_FRONTMATTER + body)
     [block] = document.sections[0].blocks
-    assert (block.items, block.levels) == (items, levels)
+    assert (_texts(block), block.levels) == (items, levels)
     assert parse_document(serialize_document(document)) == document
 
 
@@ -2496,7 +2502,7 @@ def test_a_fence_is_closed_where_adjacent_lists_must_share_a_bullet():
         {"kind": _U, "items": ["--", "**\n```\ncode"]}, {"kind": _U, "items": ["--", "**"]},
     ]}]})
     blocks = parse_document(serialize_document(document)).sections[0].blocks
-    assert [block.items for block in blocks] == [["--", "**\n```\ncode\n```"], ["--", "**"]]
+    assert [_texts(block) for block in blocks] == [["--", "**\n```\ncode\n```"], ["--", "**"]]
 
 
 # ── A fence left open at the end (#67) ────────────────────────────
@@ -2579,7 +2585,7 @@ def test_a_nested_item_that_would_make_a_thematic_break_starts_on_the_next_line(
     body = "- a\n\n  -\n    ---\n  - b\n"
     document = parse_document(_FRONTMATTER + body)
     [block] = document.sections[0].blocks
-    assert (block.items, block.item_markers) == (["a", "---", "b"], ["", "-", "-"])
+    assert (_texts(block), block.item_markers) == (["a", "---", "b"], ["", "-", "-"])
     assert serialize_document(document).endswith("{#terms}\n\n" + body)
     assert parse_document(serialize_document(document)) == document
     # One built in code, too: "--" is its paragraph (CommonMark).

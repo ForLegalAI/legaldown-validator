@@ -50,6 +50,7 @@ from .models import (
     Block,
     CustomField,
     Document,
+    ListItem,
     Metadata,
     Party,
     Representative,
@@ -59,6 +60,7 @@ from .models import (
     document_from_dict,
     document_to_dict,
     empty_document,
+    item_text,
     metadata_from_dict,
     party_from_dict,
     section_from_dict,
@@ -67,7 +69,7 @@ from .models import (
 
 # Parser & serializer
 from .parser import collect_source_directives, parse_document
-from .serializer import render_block, serialize_document
+from .serializer import render_block, render_item, serialize_document
 
 # The LegalDown specification version this implementation targets.
 from .specification import SPEC_VERSION
@@ -127,6 +129,7 @@ __all__ = [
     "DIRECTIVE_PARAMS",
     "KNOWN_DIRECTIVES",
     "render_block",
+    "render_item",
     "AttachmentDefinitionsImporter",
     # Result types
     "ValidationResult",
@@ -137,6 +140,8 @@ __all__ = [
     "Metadata",
     "Section",
     "Block",
+    "ListItem",
+    "item_text",
     "Side",
     "Party",
     "Representative",

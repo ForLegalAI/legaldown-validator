@@ -116,6 +116,16 @@ class Metadata:
 
 
 @dataclass(slots=True)
+class ListItem:
+    """A list item: the blocks it holds (§5.7), in order — its first
+    paragraph, then later paragraphs, nested lists, code, quotes, tables.
+    An empty item holds none. Blocks in an item are never headings, and
+    its paragraphs are always of kind ``paragraph``: a directive in one is
+    inline text (§8)."""
+    blocks: list[Block] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class Block:
     """A content block within a section (paragraph, definition, list, etc.)."""
     kind: str = "paragraph"
@@ -126,20 +136,8 @@ class Block:
     suffix: str = ""
     target: str = ""
     label: str = ""
-    items: list[str] = field(default_factory=list)
-    #: A list's items' nesting depths, parallel to ``items``: 0 for an item
-    #: of the block's own list, one more for each item it is nested in
-    #: (§15.3). Empty when no item is nested. Read through ``list_nesting``.
-    levels: list[int] = field(default_factory=list)
-    #: The kind of the list each item is in (``ordered_list`` or
-    #: ``unordered_list``), parallel to ``items``: a nested list's own. Empty
-    #: when no item is nested.
-    item_kinds: list[str] = field(default_factory=list)
-    #: The bullet (``-``, ``*``, ``+``) or delimiter (``.``, ``)``) of each
-    #: nested item's list, parallel to ``items``, ``""`` for the block's own
-    #: items: a nested list that changes it is another list (CommonMark).
-    #: Empty when no item is nested. Read through ``list_markers``.
-    item_markers: list[str] = field(default_factory=list)
+    #: A list's items (``ordered_list``, ``unordered_list``).
+    items: list[ListItem] = field(default_factory=list)
     headers: list[str] = field(default_factory=list)
     rows: list[list[str]] = field(default_factory=list)
     #: A table's column alignments, one per column: ``"left"``, ``"right"``,
@@ -150,43 +148,11 @@ class Block:
 LIST_KINDS = ("ordered_list", "unordered_list")
 
 
-def list_nesting(block: Block) -> list[tuple[int, str]]:
-    """Each of a list's items' nesting depth and the kind of the list it is
-    in, read leniently, as a model built or edited in code may hold them: a
-    missing depth is 0 and one more than one below the item before is one
-    below it; an item of depth 0 is in the block's own list, and a nested
-    item with no known kind in a list of the block's kind."""
-    nesting: list[tuple[int, str]] = []
-    previous = -1
-    for k in range(len(block.items)):
-        level = block.levels[k] if k < len(block.levels) else 0
-        level = level if isinstance(level, int) and not isinstance(level, bool) else 0
-        level = max(0, min(level, previous + 1))
-        kind = block.item_kinds[k] if k < len(block.item_kinds) else ""
-        nesting.append((level, kind if level and kind in LIST_KINDS else block.kind))
-        previous = level
-    return nesting
-
-
-_MARKERS = {"unordered_list": ("-", "*", "+"), "ordered_list": (".", ")")}
-
-
-def list_markers(block: Block) -> list[str]:
-    """Each of a list's items' bullet or delimiter (``item_markers``), read
-    leniently: ``""`` for an item of the block's own list, and for a nested
-    item without one its kind allows, the kind's first (``-``, ``.``)."""
-    markers: list[str] = []
-    for k, (level, kind) in enumerate(list_nesting(block)):
-        marker = block.item_markers[k] if k < len(block.item_markers) else ""
-        allowed = _MARKERS.get(kind, ("-",))
-        markers.append("" if not level else marker if marker in allowed else allowed[0])
-    return markers
-
-
-def listed_items(block: Block) -> list[tuple[str, int, str]]:
-    """A list's items, empty ones included, each with its depth and its
-    list's kind (``list_nesting``)."""
-    return [(item, level, kind) for item, (level, kind) in zip(block.items, list_nesting(block), strict=True)]
+def item_text(item: ListItem) -> str:
+    """An item's text as one line: its first paragraph's, or ``""`` when it
+    opens with something else or is empty."""
+    first = item.blocks[0] if item.blocks else None
+    return first.text if first is not None and first.kind == "paragraph" else ""
 
 
 @dataclass(slots=True)
@@ -336,30 +302,17 @@ def _block_text(kind: str, value: Any) -> str:
     return strip_text(text) if text.strip() else ""
 
 
-def _list_fields(kind: str, merged: dict[str, Any]) -> dict[str, Any]:
-    """A block's ``items``, stripped, empty ones kept in their places (an
-    empty item is a list item too, CommonMark), with their ``levels`` and
-    ``item_kinds`` (``list_nesting``) and ``item_markers`` (``list_markers``):
-    none when no item is nested."""
-    block = Block(
-        kind=kind,
-        items=[str(item) for item in list(merged.get("items") or [])],
-        levels=list(merged.get("levels") or []),
-        item_kinds=[str(value) for value in list(merged.get("item_kinds") or [])],
-        item_markers=[str(value) for value in list(merged.get("item_markers") or [])],
-    )
-    listed = listed_items(block)
-    items = [item.strip() for item, _level, _kind in listed]
-    if not items and kind.endswith("list"):
-        items = [""]
-    if not any(level for _item, level, _kind in listed):
-        return {"items": items, "levels": [], "item_kinds": [], "item_markers": []}
-    return {
-        "items": items,
-        "levels": [level for _item, level, _kind in listed],
-        "item_kinds": [item_kind for _item, _level, item_kind in listed],
-        "item_markers": list_markers(block),
-    }
+def _list_item(value: Any) -> ListItem:
+    """A list item from a dict (``{"blocks": [...]}``), or from its text as
+    written in the item (a string, the item form of models before 0.3), read
+    as the parser reads an item's content."""
+    if isinstance(value, ListItem):
+        return ListItem(blocks=[block_from_dict(asdict(block)) for block in value.blocks])
+    if isinstance(value, dict):
+        return ListItem(blocks=[block_from_dict(block) for block in list(value.get("blocks") or [])])
+    from .parser import parse_item_content  # the parser builds on this module
+
+    return ListItem(blocks=parse_item_content(str(value if value is not None else "")))
 
 
 def block_from_dict(data: dict[str, Any] | None) -> Block:
@@ -382,7 +335,10 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         suffix=str(merged.get("suffix") or ""),
         target=_str(merged.get("target")),
         label=_str(merged.get("label")),
-        **_list_fields(kind, merged),
+        items=(
+            [_list_item(item) for item in list(merged.get("items") or [])] or [ListItem()]
+            if kind in LIST_KINDS else []
+        ),
         headers=headers,
         rows=_table_rows(list(merged.get("rows") or []), len(headers)),
         align=_table_align(list(merged.get("align") or []), len(headers)),
