@@ -3005,3 +3005,15 @@ def test_a_directive_split_by_a_table_row_is_reported():
     [table] = parse_document(_FRONTMATTER + body).sections[0].blocks
     assert table.kind == "table" and len(table.headers) == 2
     assert "directive-malformed" in _validate(body).rules()
+
+
+@pytest.mark.parametrize(("body", "kinds"), [
+    # The item's paragraph, lazy lines and all: a delimiter-like line in the
+    # quote is its text, not a table (cmark-gfm).
+    ("> - x\ny\n> |-\nz {{ref: nowhere}}\n", ["quote"]),
+    # The quote's own paragraph: the line under it is a table's header.
+    ("> x\ny\n> |-\nz {{ref: nowhere}}\n", ["quote", "ref"]),
+])
+def test_a_table_under_a_quotes_paragraph_not_an_items(body, kinds):
+    assert [block.kind for block in parse_document(_FRONTMATTER + body).sections[0].blocks] == kinds
+    _round_trips(body)

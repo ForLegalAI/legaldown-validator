@@ -302,6 +302,7 @@ class _Quote:
         self._depth = depth  # the quotes it is in; past _QUOTE_DEPTH, nested ones are text
         self._table = False  # a table is open: its rows are no paragraph
         self._last: str | None = None  # the paragraph's last line, a table's header if one follows
+        self._item = False  # the open paragraph is a list item's, whose content this does not follow
 
     def read(self, content: str) -> None:
         """Take one quoted line: its *content* after ``>`` and the one
@@ -338,7 +339,7 @@ class _Quote:
             return  # a row of the open table
         self._table = False
         if (
-            self.paragraph and last is not None and not LIST_ITEM_RE.match(last)
+            self.paragraph and last is not None and not self._item
             and _parse_table([last, content], 0) is not None
         ):
             # A delimiter row under the paragraph's line: a table (GFM).
@@ -360,8 +361,13 @@ class _Quote:
                 self._html = html
             self.paragraph = False
         elif self.paragraph or indent_width(content) < 4:  # else indented code
+            was = self.paragraph
             self.paragraph = _opens_paragraph(content)
             self._last = content if self.paragraph else None
+            # A paragraph opened by an item, or an item started under one, is
+            # the item's: a delimiter-like line may be its lazy text.
+            starts_item = not RULE_RE.match(content) and LIST_ITEM_RE.match(content) is not None
+            self._item = self.paragraph and (starts_item or (was and self._item))
 
     def continues(self, line: str) -> bool:
         """True if *line*, which has no ``>``, is a lazy continuation line of
