@@ -68,7 +68,7 @@ from .models import (
 )
 
 # Parser & serializer
-from .parser import collect_source_directives, parse_document
+from .parser import FrontmatterError, collect_source_directives, parse_document
 from .serializer import render_block, render_item, serialize_document
 
 # The LegalDown specification version this implementation targets.
@@ -106,6 +106,7 @@ __all__ = [
     "CAPABILITIES",
     # Core workflow
     "parse_document",
+    "FrontmatterError",
     "serialize_document",
     "validate_document",
     # Assembly (§15.7, §17.6)

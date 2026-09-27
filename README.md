@@ -186,6 +186,10 @@ if result.is_valid:                      # no Error-level diagnostics
     print(serialize_document(document))
 ```
 
+`parse_document` raises `FrontmatterError` (a `yaml.YAMLError` and a `ValueError`) when the
+frontmatter cannot be read — the `frontmatter-invalid-yaml` rule, which `validate_document`,
+given a parsed document, cannot report.
+
 ### Working with the result
 
 Validating a document builds the indices the checks need — section numbers, resolved definitions,

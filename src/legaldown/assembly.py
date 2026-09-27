@@ -50,6 +50,7 @@ from .parser import (
     FRONTMATTER_RE,
     LIST_ITEM_RE,
     MAX_QUOTE_DEPTH,
+    FrontmatterError,
     _BlockSpan,
     _ItemSpan,
     _Layout,
@@ -703,7 +704,14 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
             problems.append(Diagnostic(f"{kind}-file-missing", "error", message))
             continue
         text, newline = _unix(text)
-        sub_document = parse_document(text)
+        try:
+            sub_document = parse_document(text)
+        except FrontmatterError as exc:
+            problems.append(Diagnostic(
+                "frontmatter-invalid-yaml", "error",
+                f"The frontmatter of '{path}' cannot be read, so the template is not assembled: {exc}",
+            ))
+            continue
         sub_front, body = _split(text, sub_document)
         subs[path] = _read_body(path, body, sub_document, declared, template=template)
         subs[path].newline = newline
@@ -1483,7 +1491,13 @@ def assemble(
     collapsed. *load_file* reads the include fragments and LegalDown
     attachment files; the assembled ones are returned in ``files``.
     """
-    t = _read(template, load_file)
+    try:
+        t = _read(template, load_file)
+    except FrontmatterError as exc:
+        return AssemblyResult(diagnostics=[Diagnostic(
+            "frontmatter-invalid-yaml", "error",
+            f"The template's frontmatter cannot be read, so it is not assembled: {exc}",
+        )])
     if t.problems:
         return AssemblyResult(diagnostics=t.problems)
     resolved = _Answers(answers, t.declared)
@@ -1518,7 +1532,9 @@ def template_questions(
     template: str, *, load_file: LoadFile | None = None
 ) -> list[Question]:
     """Every question of *template* (§15.2): the declared ones in declaration
-    order, then each undeclared placeholder, in the order first written."""
+    order, then each undeclared placeholder, in the order first written.
+    Raises ``FrontmatterError`` when the template's frontmatter cannot be
+    read."""
     return _questions(_read(template, load_file))
 
 
@@ -1533,7 +1549,8 @@ def needed_questions(
     using it lies in a present unit outside drafting notes (§15.7.2 step 1),
     a value question when one of its placeholders does. A unit under a
     condition whose question is still unanswered is not reached yet, so the
-    form grows as decisions are made."""
+    form grows as decisions are made. Raises ``FrontmatterError`` when the
+    template's frontmatter cannot be read."""
     t = _read(template, load_file)
     decision = _decide(t, _Answers(answers, t.declared))
     by_id = {question.id: question for question in _questions(t)}

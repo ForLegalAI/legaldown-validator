@@ -25,7 +25,7 @@ import yaml
 
 from . import SPEC_VERSION, __version__
 from .assembly import assemble
-from .parser import parse_document
+from .parser import FrontmatterError, parse_document
 from .validator import validate_document
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
@@ -45,7 +45,7 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
 
     try:
         document = parse_document(source, filename=path.name)
-    except Exception as exc:  # malformed YAML frontmatter, etc.
+    except FrontmatterError as exc:
         return [
             {
                 "file": str(path),
@@ -54,6 +54,13 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
                 "message": str(exc),
             }
         ], None
+    except Exception as exc:
+        # Not the document's fault: a bug in this validator. Reported as a
+        # failure, never as a diagnostic the author would try to fix.
+        return [], (
+            f"internal error while parsing {path}: {type(exc).__name__}: {exc} "
+            f"(please report this)"
+        )
 
     result = validate_document(document, final=final)
     return [
