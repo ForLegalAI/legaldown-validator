@@ -129,6 +129,10 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
         ]
     if metadata.questions is not None:
         payload["questions"] = metadata.questions
+    if not metadata.include_signatures:
+        # Only the non-default value: a document that leaves signature
+        # blocks out keeps doing so (§2.2 leaves them to the implementation).
+        payload["include_signatures"] = False
     if metadata.tags:
         payload["tags"] = metadata.tags
     return payload
