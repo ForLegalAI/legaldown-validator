@@ -179,10 +179,11 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, boo
         metadata = loader.construct_document(node)
     except FrontmatterError:
         raise
-    except (yaml.YAMLError, ValueError, RecursionError) as exc:
+    except (yaml.YAMLError, ValueError, KeyError, RecursionError) as exc:
         # What the YAML says, not a fault of this parser: malformed YAML, a
-        # value its tag cannot hold (an integer too long to convert), or
-        # nesting deeper than the YAML reader goes.
+        # value its tag cannot hold (an integer too long to convert; a
+        # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
+        # than the YAML reader goes.
         raise FrontmatterError(str(exc) or type(exc).__name__) from exc
     finally:
         loader.dispose()

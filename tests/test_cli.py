@@ -108,6 +108,7 @@ def test_malformed_frontmatter_is_reported_not_raised(write, capsys):
     "title: !!binary xx",
     "a: " + "[" * 3000,  # nested past what the YAML reader goes
     "title: T\nquestions:\n  q:\n    default: " + "9" * 5000,  # an integer too long to convert
+    "title: T\nquestions:\n  q:\n    default: !!bool maybe",  # no boolean
 ])
 def test_frontmatter_that_cannot_be_read_is_a_diagnostic(write, capsys, frontmatter):
     path = write("bad.lgd", f"---\n{frontmatter}\n---\n\n# Scope {{#scope}}\n")

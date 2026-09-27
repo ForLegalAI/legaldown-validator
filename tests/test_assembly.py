@@ -1001,8 +1001,9 @@ class TestFrontmatterThatCannotBeRead:
     """Malformed frontmatter is the author's to fix: a diagnostic, not an
     exception (#42)."""
 
-    def test_in_the_template(self):
-        result = assemble("---\ntitle: [unclosed\n---\n\n# A\n", {})
+    @pytest.mark.parametrize("frontmatter", ["title: [unclosed", "questions:\n  q:\n    default: !!bool maybe"])
+    def test_in_the_template(self, frontmatter):
+        result = assemble(f"---\n{frontmatter}\n---\n\n# A\n", {})
         assert not result.ok and [d.rule for d in result.diagnostics] == ["frontmatter-invalid-yaml"]
 
     @pytest.mark.parametrize("body", ["# A\n\n{{include: f.lgd}}\n", None])
