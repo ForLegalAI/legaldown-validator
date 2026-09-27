@@ -1074,7 +1074,7 @@ def _parse_body(
         else:
             end, setext_level = _paragraph_end(lines, index, lazy, headings=headings)
             if setext_level:
-                text = " ".join(part.strip() for part in lines[index:end - 1])
+                text = " ".join(part.strip(" \t") for part in lines[index:end - 1])
                 heading = (*split_heading(text), setext_level)
             else:
                 if headings:

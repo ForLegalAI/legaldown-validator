@@ -2855,3 +2855,9 @@ def test_a_no_break_space_in_a_table_row_is_a_cell():
 def test_a_no_break_space_after_a_fence_does_not_close_it():
     [code] = parse_document(_FRONTMATTER + f"```\n{_NBSP}\n```{_NBSP}\nx\n```\n").sections[0].blocks
     assert code.text == f"```\n{_NBSP}\n```{_NBSP}\nx\n```"
+
+
+def test_a_no_break_space_ending_a_setext_headings_line_is_kept():
+    document = parse_document(f"---\ntitle: T\n---\n\nTitle{_NBSP}\nMore\n===\n")
+    assert document.sections[0].title == f"Title{_NBSP} More"
+    assert parse_document(serialize_document(document)) == document
