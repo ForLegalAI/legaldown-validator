@@ -141,6 +141,13 @@ _DELIMITER_CELL_RE = re.compile(r":?-+:?")
 
 # ── Internal helpers ──────────────────────────────────────────────
 
+class FrontmatterError(yaml.YAMLError, ValueError):
+    """The frontmatter cannot be read (§3.1, frontmatter-invalid-yaml): its
+    YAML is malformed, nested too deep, or a mapping of another kind (a
+    ``!!set``). A ``yaml.YAMLError`` and a ``ValueError``, as what
+    ``parse_document`` raised for it before."""
+
+
 def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, bool]:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
     body, absent)``; the first is read from how the YAML is written, which
@@ -163,13 +170,21 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, boo
             # A mapping tagged as something else (!!set, a flow !!omap) is
             # meant as frontmatter, but holds no fields. (A block !!omap is
             # a sequence: not frontmatter.)
-            raise ValueError("Frontmatter must be a YAML mapping of fields.")
+            raise FrontmatterError("Frontmatter must be a YAML mapping of fields.")
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
         loader.flatten_mapping(node)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
+    except FrontmatterError:
+        raise
+    except (yaml.YAMLError, ValueError, KeyError, RecursionError) as exc:
+        # What the YAML says, not a fault of this parser: malformed YAML, a
+        # value its tag cannot hold (an integer too long to convert; a
+        # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
+        # than the YAML reader goes.
+        raise FrontmatterError(str(exc) or type(exc).__name__) from exc
     finally:
         loader.dispose()
     if "questions" in metadata and metadata["questions"] is None:

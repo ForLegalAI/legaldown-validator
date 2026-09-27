@@ -1090,6 +1090,17 @@ def test_a_mapping_of_another_type_is_not_frontmatter_fields():
         parse_document("---\n!!set {title: T}\n---\n# A\n")
 
 
+@pytest.mark.parametrize("frontmatter", ["!!set {title: T}", "title: [x", "a: " + "{" * 3000])
+def test_frontmatter_that_cannot_be_read_raises_frontmatter_error(frontmatter):
+    # One type for frontmatter-invalid-yaml (#42), still a YAMLError and a
+    # ValueError, as what was raised before.
+    from legaldown import FrontmatterError
+
+    with pytest.raises(FrontmatterError) as raised:
+        parse_document(f"---\n{frontmatter}\n---\n# A\n")
+    assert isinstance(raised.value, yaml.YAMLError) and isinstance(raised.value, ValueError)
+
+
 @pytest.mark.parametrize(
     "source",
     [

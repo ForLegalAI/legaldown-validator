@@ -995,3 +995,22 @@ class TestQuotesHoldBlocks:
     def test_a_note_nested_in_a_quotes_item_is_removed(self):
         body = "# A\n\n> - a\n>\n>   > [!DRAFTING]\n>   > Guidance.\n\nText.\n"
         assert _body(assemble(_template(body), {})) == "\n# A\n\n> - a\n>\n\nText.\n"
+
+
+class TestFrontmatterThatCannotBeRead:
+    """Malformed frontmatter is the author's to fix: a diagnostic, not an
+    exception (#42)."""
+
+    @pytest.mark.parametrize("frontmatter", ["title: [unclosed", "questions:\n  q:\n    default: !!bool maybe"])
+    def test_in_the_template(self, frontmatter):
+        result = assemble(f"---\n{frontmatter}\n---\n\n# A\n", {})
+        assert not result.ok and [d.rule for d in result.diagnostics] == ["frontmatter-invalid-yaml"]
+
+    @pytest.mark.parametrize("body", ["# A\n\n{{include: f.lgd}}\n", None])
+    def test_in_a_file_it_reads(self, body):
+        front = "" if body else "attachments:\n  - title: Annex\n    file: f.lgd\n"
+        template = _template(body or "# A\n\nText.\n", front=front)
+        result = assemble(template, {}, load_file=lambda path: "---\ntitle: [x\n---\n\nText.\n")
+        assert not result.ok
+        assert [d.rule for d in result.diagnostics] == ["frontmatter-invalid-yaml"]
+        assert "'f.lgd'" in result.diagnostics[0].message

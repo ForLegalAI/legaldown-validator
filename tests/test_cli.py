@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from legaldown import parse_document
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_ERROR, EXIT_OK, main
 
 _VALID = """---
@@ -98,6 +99,48 @@ def test_malformed_frontmatter_is_reported_not_raised(write, capsys):
     assert main(["validate", "--format", "json", str(path)]) == EXIT_DIAGNOSTICS
     payload = json.loads(capsys.readouterr().out)
     assert payload["diagnostics"][0]["rule"] == "frontmatter-invalid-yaml"
+
+
+@pytest.mark.parametrize("frontmatter", [
+    "title: [unclosed",
+    "*Important* notice",  # prose between two --- lines
+    "!!set {a, b}",
+    "title: !!binary xx",
+    "a: " + "[" * 3000,  # nested past what the YAML reader goes
+    "title: T\nquestions:\n  q:\n    default: " + "9" * 5000,  # an integer too long to convert
+    "title: T\nquestions:\n  q:\n    default: !!bool maybe",  # no boolean
+])
+def test_frontmatter_that_cannot_be_read_is_a_diagnostic(write, capsys, frontmatter):
+    path = write("bad.lgd", f"---\n{frontmatter}\n---\n\n# Scope {{#scope}}\n")
+    assert main(["validate", "--format", "json", str(path)]) == EXIT_DIAGNOSTICS
+    payload = json.loads(capsys.readouterr().out)
+    assert [d["rule"] for d in payload["diagnostics"]] == ["frontmatter-invalid-yaml"]
+
+
+def test_a_parser_fault_is_an_internal_error_not_a_diagnostic(write, capsys, monkeypatch):
+    # A bug in the parser is not the author's YAML (#42): it is reported as a
+    # failure to report, and the other files are still validated.
+    import legaldown.cli
+
+    def broken(source, *, filename=""):
+        if filename == "a.lgd":
+            raise AttributeError("'set' object has no attribute 'get'")
+        return parse_document(source, filename=filename)
+
+    monkeypatch.setattr(legaldown.cli, "parse_document", broken)
+    first, second = write("a.lgd", _VALID), write("b.lgd", _BROKEN)
+    assert main(["validate", "--format", "json", str(first), str(second)]) == EXIT_ERROR
+    captured = capsys.readouterr()
+    rules = [d["rule"] for d in json.loads(captured.out)["diagnostics"]]
+    assert "frontmatter-invalid-yaml" not in rules
+    assert "ref-broken" in rules  # b.lgd
+    assert "internal error while parsing" in captured.err and "AttributeError" in captured.err
+
+
+def test_assembling_a_template_with_frontmatter_that_cannot_be_read(write, capsys):
+    path = write("t.lgd", "---\ntitle: [unclosed\n---\n\n# A\n")
+    assert main(["assemble", str(path)]) == EXIT_DIAGNOSTICS
+    assert "[frontmatter-invalid-yaml]" in capsys.readouterr().err
 
 
 def test_a_document_without_frontmatter_is_a_warning(write, capsys):

@@ -37,7 +37,7 @@ files other than the document itself.
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Rendering (§17.3) | `ref-not-enumerated` |
 | Lexer-level grammar (§11.2–11.4) | `raw-html` |
-| Other | `frontmatter-invalid-yaml` (reported by the CLI, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
+| Other | `frontmatter-invalid-yaml` (reported by the CLI and assembly, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means validating a set of files is out of scope: the validator does not resolve
 or cross-check includes, attachment file contents, or bilingual document sets. Single-document
@@ -108,9 +108,13 @@ failed to resolve. From assembly, which reads the file, it means the file could 
 `frontmatter-absent` is reported for a document that does not open with a closed `---` block,
 and for one whose `---` block holds YAML that is a scalar or a list rather than a mapping of
 fields: that block is not frontmatter, its `---` lines are thematic breaks, and the whole document
-is validated as body. A block that is not valid YAML at all is `frontmatter-invalid-yaml`, which
-the CLI reports; `parse_document` raises for it. As §16.6 requires, a document without
-frontmatter draws that Warning alone: not `title-missing`, and not `sides-absent`.
+is validated as body. A block that cannot be read at all — YAML that is malformed, nested too
+deep, or a mapping of another kind (`!!set`) — is `frontmatter-invalid-yaml`: `parse_document`
+raises `FrontmatterError` for it, which the CLI reports and assembly returns as a diagnostic, for
+the template or for a fragment or attachment file it reads. Any other exception while parsing is
+a fault of this implementation: the CLI reports it as an internal error (exit status 2), never as
+a diagnostic. As §16.6 requires, a document without frontmatter draws that Warning alone: not
+`title-missing`, and not `sides-absent`.
 
 `heading-skip` covers the first heading too: in a document with frontmatter, a main document,
 the first heading is at level 1 (§4.1). A document without frontmatter may be an include
