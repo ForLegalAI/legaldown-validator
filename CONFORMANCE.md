@@ -78,8 +78,6 @@ than CommonMark:
   indented under the inner one is nested one level, not two.
 - A nested list that changes its bullet (`-` to `+`) or delimiter (`.` to `)`) stays one list,
   and an ordered item's number is not kept: a nested list is written numbered from 1.
-- An empty item is not kept; the items nested in it move up into its list. A list of nothing but
-  an empty item (an item of another type right after a list, `- a` / `1. `) is not written back.
 - A nested item that starts a list of another type while its sibling's paragraph is open starts
   that list even where it may not interrupt the paragraph.
 

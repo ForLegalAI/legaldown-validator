@@ -214,15 +214,19 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
 def item_ancestors(block: Block) -> dict[int, list[int]]:
     """For a list, the index in ``block_fragments(block)`` of each item's
     text, mapped to those of the items it is nested in, innermost first
-    (§15.3). An empty item has no text, and nothing is nested in it
-    (``listed_items``)."""
+    (§15.3). An empty item has no text, so no fragment and no condition:
+    the items nested in it have its ancestors' only."""
     base = sum(1 for text in (block.text, block.prefix, block.suffix) if text)
     ancestors: dict[int, list[int]] = {}
-    chain: list[int] = []  # the fragment of the last item at each depth
-    for k, (_item, level, _kind) in enumerate(listed_items(block)):
-        del chain[level:]
-        ancestors[base + k] = chain[::-1]
-        chain.append(base + k)
+    chain: list[int | None] = []  # the fragment of the last item at each depth, None if empty
+    fragment = base  # the index of the next item's text
+    for item, level, _kind in listed_items(block):
+        if not item.strip():
+            chain[level:] = [None]
+            continue
+        ancestors[fragment] = [f for f in reversed(chain[:level]) if f is not None]
+        chain[level:] = [fragment]
+        fragment += 1
     return ancestors
 
 

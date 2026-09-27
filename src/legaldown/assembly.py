@@ -1279,7 +1279,7 @@ def _quoted_end(source: str, at: int) -> int:
 # ── Line starts (§15.7.3) ────────────────────────────────────────
 
 _QUOTE_MARKERS_RE = re.compile(r"(?:[ \t]*>[ \t]?)*")
-_ITEM_MARKER_RE = re.compile(r"[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
+_ITEM_MARKER_RE = re.compile(r"[ \t]*(?:[-*+]|[0-9]{1,9}[.)])(?:[ \t]+|$)")  # a bare marker too, as the parser reads it
 _ATX_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 _BLOCK_QUOTE_RE = re.compile(r" {0,3}>")
 _BREAK_RE = re.compile(r" {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")

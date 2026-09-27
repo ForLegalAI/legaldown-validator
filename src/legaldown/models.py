@@ -164,20 +164,9 @@ def list_nesting(block: Block) -> list[tuple[int, str]]:
 
 
 def listed_items(block: Block) -> list[tuple[str, int, str]]:
-    """A list's items that hold text, each with its depth and its list's
-    kind (``list_nesting``). An empty item is not listed: the items nested
-    in it move up a level, into the list it was in."""
-    listed: list[tuple[str, int, str]] = []
-    dropped: list[int] = []  # the depths of the empty items the walk is in
-    for item, (level, kind) in zip(block.items, list_nesting(block), strict=True):
-        while dropped and dropped[-1] >= level:
-            dropped.pop()
-        if not item.strip():
-            dropped.append(level)
-            continue
-        level -= len(dropped)
-        listed.append((item, level, kind if level else block.kind))
-    return listed
+    """A list's items, empty ones included, each with its depth and its
+    list's kind (``list_nesting``)."""
+    return [(item, level, kind) for item, (level, kind) in zip(block.items, list_nesting(block), strict=True)]
 
 
 @dataclass(slots=True)
@@ -328,8 +317,9 @@ def _block_text(kind: str, value: Any) -> str:
 
 
 def _list_fields(kind: str, merged: dict[str, Any]) -> dict[str, Any]:
-    """A block's ``items``, stripped, the empty ones dropped (``listed_items``),
-    with their ``levels`` and ``item_kinds``: none when no item is nested."""
+    """A block's ``items``, stripped, empty ones kept in their places (an
+    empty item is a list item too, CommonMark), with their ``levels`` and
+    ``item_kinds`` (``list_nesting``): none when no item is nested."""
     block = Block(
         kind=kind,
         items=[str(item) for item in list(merged.get("items") or [])],

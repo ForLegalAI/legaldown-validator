@@ -1340,10 +1340,13 @@ def test_an_unclosed_fence_after_a_list_is_closed_when_written():
     assert [s.title for s in parse_document(serialize_document(document)).sections] == ["A", "B"]
 
 
-def test_an_empty_list_does_not_stand_between_a_list_and_its_code():
+def test_an_empty_list_does_not_take_the_code_after_it():
     document = parse_document(_FRONTMATTER + "- a\n\n* \n\n    code\n")
     reparsed = parse_document(serialize_document(document))
-    assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [("unordered_list", ""), ("code", "    code")]
+    assert [(b.kind, b.items, b.text) for b in reparsed.sections[0].blocks] == [
+        ("unordered_list", ["a"], ""), ("unordered_list", [""], ""), ("code", [], "    code")
+    ]
+    assert reparsed == document
 
 
 def _placeholders(body: str) -> int:
@@ -2214,8 +2217,8 @@ _U, _O = "unordered_list", "ordered_list"
         ("- a\n  - b\n - c\n", ["a", "b", "c"], [0, 1, 0], [_U, _U, _U]),  # short of b's parent: its sibling
         ("- a\n  - b\n   - c\n", ["a", "b", "c"], [0, 1, 1], [_U, _U, _U]),  # short of b's content
         ("- a\n\n  - b\n", ["a", "b"], [0, 1], [_U, _U]),  # after a blank line
-        ("- \n  - b\n- c\n", ["b", "c"], [], []),  # nested in an empty item, which is dropped
-        ("- x\n- \n  - b\n", ["x", "b"], [], []),  # not x's: it moves up to the empty item's list
+        ("- \n  - b\n- c\n", ["", "b", "c"], [0, 1, 0], [_U, _U, _U]),  # nested in an empty item
+        ("- x\n-\n  - b\n", ["x", "", "b"], [0, 0, 1], [_U, _U, _U]),
     ],
 )
 def test_a_nested_item_keeps_its_depth_and_its_lists_kind(body, items, levels, kinds):
@@ -2283,8 +2286,7 @@ def test_a_model_built_nesting_is_read_leniently():
     # missing or unusable depth is 0; an unknown kind is the list's.
     assert list_nesting(block) == [(0, _U), (1, _O), (0, _U), (0, _U)]
     block = Block(kind=_O, items=["a", " ", "b", "c"], levels=[0, 1, 2, 1], item_kinds=[_O, _U, _U, _U])
-    # The empty item is not listed; b, nested in it, moves up into its list.
-    assert listed_items(block) == [("a", 0, _O), ("b", 1, _U), ("c", 1, _U)]
+    assert listed_items(block) == [("a", 0, _O), (" ", 1, _U), ("b", 2, _U), ("c", 1, _U)]
     assert serialize_document(document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": _U, "items": ["a", "b", "c"], "levels": [0, 1, 0]}
     ]}]})).endswith("# A\n\n- a\n  - b\n- c\n")
@@ -2294,9 +2296,9 @@ def test_nesting_round_trips_through_a_dict():
     document = parse_document(_FRONTMATTER + "1. a\n   - b\n2. c\n")
     assert document_from_dict(document_to_dict(document)) == document
     flat = document_from_dict({"sections": [{"title": "A", "blocks": [
-        {"kind": _U, "items": ["a", "", "b"], "levels": [0, 0, 0], "item_kinds": [_U, _U, _U]}
+        {"kind": _U, "items": ["a", " ", "b"], "levels": [0, 0, 0], "item_kinds": [_U, _U, _U]}
     ]}]}).sections[0].blocks[0]
-    assert (flat.items, flat.levels, flat.item_kinds) == (["a", "b"], [], [])
+    assert (flat.items, flat.levels, flat.item_kinds) == (["a", "", "b"], [], [])
 
 
 def test_list_runs_number_each_nested_list_on_its_own():
@@ -2370,3 +2372,74 @@ def test_the_default_include_signatures_is_not_written():
     assert serialize_document(bare) == "# A\n\nx\n"
     bare.metadata.include_signatures = False
     assert parse_document(serialize_document(bare)).metadata.include_signatures is False
+
+
+# ── Empty list items (#46) ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("body", "items", "levels"),
+    [
+        ("- \n- b\n", ["", "b"], []),
+        ("1. \n2. b\n", ["", "b"], []),  # b stays item 2
+        ("-\n- b\n", ["", "b"], []),  # a bare marker starts an item
+        ("1.\n2. b\n", ["", "b"], []),
+        ("- a\n-\n- b\n", ["a", "", "b"], []),
+        ("-\n", [""], []),
+        ("-\n  foo\n", ["foo"], []),  # an item may begin with a blank line
+        ("-\n  - b\n", ["", "b"], [0, 1]),
+        ("1.\n   - b\n", ["", "b"], [0, 1]),
+        ("- a\n\n  -\n", ["a", ""], [0, 1]),
+        ("- a\n  - b\n  -\n", ["a", "b", ""], [0, 1, 1]),
+        ("- a\n  -\n    - b\n  - c\n", ["a -", "b", "c"], [0, 1, 1]),  # "-" may not interrupt a
+        ("-\n  -\n    - b\n", ["", "", "b"], [0, 1, 2]),
+    ],
+)
+def test_an_empty_item_keeps_its_place(body, items, levels):
+    document = parse_document(_FRONTMATTER + body)
+    [block] = document.sections[0].blocks
+    assert (block.items, block.levels) == (items, levels)
+    assert parse_document(serialize_document(document)) == document
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        ("Foo\n-\n", []),  # a setext underline: the heading "Foo"
+        ("> a\n-\n", ["quote", _U]),  # not a lazy line
+        ("| a | b |\n|---|---|\n-\n", ["table", _U]),
+        ("x\n\n-\n", ["paragraph", _U]),
+        ("-\n\n  foo\n", [_U, "paragraph"]),  # an item begins with at most one blank line
+        ("---\n", ["rule"]),
+    ],
+)
+def test_where_a_bare_marker_starts_a_list(body, kinds):
+    document = parse_document(_FRONTMATTER + body)
+    assert [block.kind for section in document.sections for block in section.blocks] == kinds
+    assert parse_document(serialize_document(document)) == document
+
+
+def test_an_empty_item_with_items_nested_after_it_does_not_take_code():
+    # The last item of the list itself is empty and open: no spacing keeps
+    # the code out of it, so the code is written fenced.
+    document = parse_document(_FRONTMATTER + "1.\n   -\n\n<!-- -->\n\n    code\n")
+    del document.sections[0].blocks[1]
+    reparsed = parse_document(serialize_document(document))
+    assert [block.kind for block in reparsed.sections[0].blocks] == [_O, "code"]
+    assert reparsed.sections[0].blocks[0] == document.sections[0].blocks[0]
+
+
+def test_conditions_skip_an_empty_item_between_an_item_and_its_nested_items():
+    from legaldown.definitions import item_ancestors
+
+    block = Block(kind=_U, items=["a", "", "c", "f"], levels=[0, 1, 2, 2])
+    # c and f are nested in a (through the empty item), not in each other.
+    assert item_ancestors(block) == {0: [], 1: [0], 2: [0]}
+
+
+@pytest.mark.parametrize(("text", "written"), [("-", "\\-"), ("1.", "1\\."), ("2) x", "2\\) x"), ("+ y", "\\+ y")])
+def test_a_model_built_paragraph_that_reads_as_a_list_item_is_escaped(text, written):
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": text}]}]})
+    output = serialize_document(document)
+    assert output.endswith("# A\n\n" + written + "\n")
+    assert [block.kind for block in parse_document(output).sections[0].blocks] == ["paragraph"]
