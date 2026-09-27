@@ -161,13 +161,14 @@ def _paragraph(text: str) -> str:
     (``_parse_paragraph``); writing it back over two lines the same way,
     at that space, is lossless (``split_lone_tag``) and keeps it a
     paragraph rather than an HTML block. Anything else that would open a
-    block (a fence, a heading, an HTML block kind 1–6, a list item) gets a
+    block (a fence, a heading, an HTML block kind 1–6, a block quote, a
+    thematic break, a list item) gets a
     backslash before it instead, which renders as nothing (CommonMark): only a model
     built in code, not one from ``parse_document``, holds that, since the
     parser never turns the start of a block into paragraph text."""
     if split := split_lone_tag(text):
         return split
-    if _opens_block(text):
+    if _opens_block(text) or text.startswith(">") or RULE_RE.match(text):
         return "\\" + text
     if marker := LIST_ITEM_RE.match(text):
         # A list item's marker, bare ones included: the backslash goes before
@@ -275,32 +276,78 @@ def list_runs(nesting: list[tuple[int, str]]) -> list[int]:
     return runs
 
 
-def _render_list(block: Block, last_column: int = 0, *, close_last: bool = False) -> str | None:
+_BULLETS = ("-", "+", "*")  # in the order a list takes them
+
+
+def _bullets(block: Block) -> list[str]:
+    """The bullets a list's own items can be written with: those that make
+    no item's first line a thematic break (``- --``); ``+`` never does."""
+    rows = [item.split("\n")[0] for item, level, _kind in listed_items(block) if not level]
+    return [bullet for bullet in _BULLETS if not any(RULE_RE.match(f"{bullet} {row}") for row in rows)]
+
+
+def _list_markers(blocks: list[Block]) -> dict[int, str]:
+    """The bullet or delimiter each list among *blocks* writes its own items
+    with, by index. A list right after one of its kind takes another, so
+    that CommonMark, which would merge the two into one list, keeps them
+    apart, as this parser does (``parser._list_type``): bullets are chosen
+    along each run of such lists so that every one has a bullet left that
+    differs from the one before, where its items allow it."""
+    markers: dict[int, str] = {}
+    start = 0
+    while start < len(blocks):
+        kind = blocks[start].kind
+        end = start + 1
+        while kind in _LISTS and end < len(blocks) and blocks[end].kind == kind:
+            end += 1
+        if kind == "ordered_list":
+            markers.update((k, ".)"[(k - start) % 2]) for k in range(start, end))
+        elif kind == "unordered_list":
+            options = [_bullets(blocks[k]) for k in range(start, end)]
+            # The bullets each list can take and still leave the next one a
+            # different bullet, and so on to the end of the run.
+            usable = [[] for _ in options]
+            for j in reversed(range(len(options))):
+                usable[j] = [
+                    bullet for bullet in options[j]
+                    if j == len(options) - 1 or any(other != bullet for other in usable[j + 1])
+                ]
+            previous = ""
+            for j, k in enumerate(range(start, end)):
+                choices = [bullet for bullet in usable[j] or options[j] if bullet != previous]
+                markers[k] = previous = (choices or options[j])[0]
+        start = end
+    return markers
+
+
+def _render_list(block: Block, last_column: int = 0, *, own: str = "") -> str | None:
     """A list, its items nested as the model holds them (``listed_items``),
     each at its parent's content column. The last item of the list itself
     has its content start at *last_column* or past it — more spacing after
     its marker (at most four, CommonMark) — so that a block written after
     the list, indented less, is not read as that item's or as that of an
     item nested in it (§5.7). None when no spacing reaches *last_column*.
-    *close_last*: a fence left open in the last item is closed, since
-    another list follows that it would otherwise run into."""
+    *own*: the bullet or delimiter of the list's own items
+    (``_list_markers``), by default its first choice."""
     listed = listed_items(block)
     nesting = [(level, kind) for _item, level, kind in listed]
     runs = list_runs(nesting)
-    # An item whose text begins with dashes, such as "--", would make a
-    # "- " line a thematic break; "+" never forms one.
+    if not own:
+        own = "." if block.kind == "ordered_list" else (_bullets(block) or ["+"])[0]
+    # In a nested list, an item whose text begins with dashes, such as "--",
+    # would make a "- " line a thematic break; "+" never forms one.
     plus = {
         run for run, (item, _level, kind) in zip(runs, listed, strict=True)
         if kind == "unordered_list" and RULE_RE.match("- " + item.split("\n")[0])
     }
     numbers: dict[int, int] = {}
     markers: list[str] = []
-    for run, (_item, _level, kind) in zip(runs, listed, strict=True):
+    for run, (_item, level, kind) in zip(runs, listed, strict=True):
         if kind == "unordered_list":
-            markers.append("+ " if run in plus else "- ")
+            markers.append(f"{own} " if not level else "+ " if run in plus else "- ")
         else:
             numbers[run] = numbers.get(run, 0) + 1
-            markers.append(f"{numbers[run]}. ")
+            markers.append(f"{numbers[run]}{own if not level else '.'} ")
     last = max((k for k, (_item, level, _kind) in enumerate(listed) if not level), default=None)
     columns: list[int] = []  # the content column of the last item at each depth
     prefixes: list[str] = []
@@ -338,7 +385,7 @@ def _render_list(block: Block, last_column: int = 0, *, close_last: bool = False
         # A fence left open in an item runs on into what is indented to its
         # content after it: an item nested in it, or a block after the list.
         following = k + 1 < len(listed) and listed[k + 1][1] > level
-        close = following or ((close_last or bool(last_column)) and k == len(listed) - 1)
+        close = following or (bool(last_column) and k == len(listed) - 1)
         if (
             k > 0 and not item.strip()
             and level == listed[k - 1][1] + 1 and listed[k - 1][0].strip()
@@ -369,20 +416,19 @@ def _render_blocks(blocks: list[Block]) -> list[str]:
         block for block in blocks
         if (bool(block.items) if block.kind in _LISTS else _render_block(block))
     ]
+    markers = _list_markers(blocks)
     for index, block in enumerate(blocks):
         following = blocks[index + 1] if index + 1 < len(blocks) else None
         if block.kind in _LISTS and following is not None and following.kind in ("code", "html"):
             # A block indented to the last item's content would continue it:
             # the item is written with its content further in.
-            rendered = _render_list(block, indent_width(following.text) + 1)
+            rendered = _render_list(block, indent_width(following.text) + 1, own=markers[index])
             if rendered is not None:
                 as_written.add(index + 1)
             else:
-                rendered = _render_block(block)
-        elif block.kind in _LISTS and following is not None and following.kind == block.kind:
-            # A fence left open in the last item would run on through the
-            # blank line into the next list, which then continues this one.
-            rendered = _render_list(block, close_last=True) or ""
+                rendered = _render_list(block, own=markers[index]) or ""
+        elif block.kind in _LISTS:
+            rendered = _render_list(block, own=markers[index]) or ""
         elif index in as_written:
             rendered = close_fences(block.text) if block.kind == "code" else block.text
         elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":
