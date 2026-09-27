@@ -2899,3 +2899,20 @@ def test_raw_html_in_an_item(body, items):
     [block] = parse_document(_FRONTMATTER + body).sections[0].blocks
     assert _shape(block)[1] == items
     _round_trips(body)
+
+
+@pytest.mark.parametrize(("body", "kinds", "checked"), [
+    # A lone tag short of a list item's or quote's content starts an HTML
+    # block there (cmark-gfm), rather than lazily continuing the paragraph;
+    # the line after it is the HTML's.
+    ("- a\n<span>\ny {{ref: nowhere}}\n", [_U, "html"], False),
+    ("> a\n<span>\nb {{ref: nowhere}}\n", ["quote", "html"], False),
+    ("- > a\n</div>\nb {{ref: nowhere}}\n", [_U, "html"], False),
+    # Where no container is left, it cannot interrupt the paragraph.
+    ("a\n<span>\nb {{ref: nowhere}}\n", ["ref"], True),
+])
+def test_a_lone_tag_is_no_lazy_line(body, kinds, checked):
+    blocks = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert [block.kind for block in blocks] == kinds
+    assert ("ref-broken" in _validate(body).rules()) == checked
+    _round_trips(body)

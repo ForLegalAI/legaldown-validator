@@ -237,8 +237,10 @@ def _is_lazy_line(line: str) -> bool:
     block of its own: a *lazy continuation line* (CommonMark), which joins
     the list item or block quote whose paragraph it continues. Any list item
     marker is taken to start a list, and a ``|`` line a table, as this
-    parser has always read them. A line indented four or more columns
-    starts none: indented code cannot interrupt a paragraph."""
+    parser has always read them; a lone HTML tag, which cannot interrupt a
+    paragraph, starts an HTML block where the line leaves its container
+    (cmark-gfm). A line indented four or more columns starts none: indented
+    code cannot interrupt a paragraph."""
     if indent_width(line) >= 4:
         return bool(line.strip(" \t"))
     return (
@@ -247,7 +249,7 @@ def _is_lazy_line(line: str) -> bool:
         and not HEADING_RE.match(line)
         and not RULE_RE.match(line)
         and not LIST_ITEM_RE.match(line)
-        and not HTML_BLOCK_START_RE.match(line)
+        and html_block_opening(line) is None
         and not line.lstrip(" \t").startswith((">", "|"))
     )
 
