@@ -2347,3 +2347,26 @@ def test_only_a_fence_opened_in_the_items_content_ends_at_a_shorter_marker():
     block = _list("1.\t</div>\n  ~~~\n   - a {{placeholder: p}}\n")
     assert block.items == ["</div>\n~~~\n- a {{placeholder: p}}"]
     assert not [d for fragment in text_fragments(block) for d in lex(fragment).directives]
+
+
+# ── include_signatures (#48) ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("value", ["false", "no", '"false"'])
+def test_leaving_signatures_out_survives_a_round_trip(value):
+    document = parse_document(f"---\ntitle: T\ninclude_signatures: {value}\n---\n\n# A\n\nx\n")
+    assert document.metadata.include_signatures is False
+    written = serialize_document(document)
+    assert "include_signatures: false" in written
+    assert parse_document(written).metadata.include_signatures is False
+    assert document_from_dict(document_to_dict(document)).metadata.include_signatures is False
+
+
+def test_the_default_include_signatures_is_not_written():
+    document = parse_document("---\ntitle: T\ninclude_signatures: true\n---\n\n# A\n\nx\n")
+    assert "include_signatures" not in serialize_document(document)
+    # A document without frontmatter stays without it.
+    bare = parse_document("# A\n\nx\n")
+    assert serialize_document(bare) == "# A\n\nx\n"
+    bare.metadata.include_signatures = False
+    assert parse_document(serialize_document(bare)).metadata.include_signatures is False
