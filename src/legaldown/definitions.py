@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex, mask_directives
 from .markdown import FENCE_OPEN_RE, is_indented_code
-from .models import LIST_KINDS, Block, Document
+from .models import LIST_KINDS, Block, Document, list_items
 from .validator.helpers import generate_identifier
 
 # ---------------------------------------------------------------------------
@@ -229,12 +229,12 @@ def list_fragments(block: Block) -> list[tuple[str, bool, tuple[int, ...]]]:
             count += 1
             for k, child in enumerate(item.blocks):
                 if child.kind in LIST_KINDS:
-                    walk(child.items, path)
+                    walk(list_items(child), path)
                     continue
                 first = k == 0 and child.kind == "paragraph"
                 fragments.extend((text, position and first, path) for text, position in block_fragments(child))
 
-    walk(block.items, ())
+    walk(list_items(block), ())
     return fragments
 
 

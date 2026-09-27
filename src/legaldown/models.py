@@ -148,6 +148,12 @@ class Block:
 LIST_KINDS = ("ordered_list", "unordered_list")
 
 
+def list_items(block: Block) -> list[ListItem]:
+    """A list's items, each a ``ListItem`` — one written as a string, as a
+    model built in code may hold it, read as its content (``block_from_dict``)."""
+    return [item if isinstance(item, ListItem) else _list_item(item) for item in block.items]
+
+
 def item_text(item: ListItem) -> str:
     """An item's text as one line: its first paragraph's, or ``""`` when it
     opens with something else or is empty."""

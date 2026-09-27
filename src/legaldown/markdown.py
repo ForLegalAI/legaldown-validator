@@ -9,7 +9,6 @@ starts or ends.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
 
 # A fenced code block opens with three or more backticks or tildes, indented
 # at most three columns; a backtick fence's info string cannot contain a
@@ -152,23 +151,6 @@ def item_content_column(line: str) -> int:
     return after + 1 if spacing > 4 else after + spacing
 
 
-def open_items(lines: list[str], starts: list[int], texts: list[str]) -> list[int]:
-    """The indices of a list's items still open at its end (CommonMark): an
-    item every later one is nested in, indented at least to its content
-    column. An empty last item is not open, and closes the items it is not
-    nested in: an item can begin with at most one blank line."""
-    found: list[int] = []
-    lowest: int | None = None  # the least indentation of the items after
-    for k in range(len(starts) - 1, -1, -1):
-        column = item_content_column(lines[starts[k]])
-        empty_last = k == len(starts) - 1 and not texts[k].strip()
-        if not empty_last and (lowest is None or lowest >= column):
-            found.append(k)
-        indent = indent_width(lines[starts[k]])
-        lowest = indent if lowest is None else min(lowest, indent)
-    return found[::-1]
-
-
 # A list item's marker opening an item's own text: an item nested on its line.
 _NESTED_ITEM_RE = re.compile(r"(?:[0-9]{1,9}[.)]|[-*+])[ \t]+(?=\S)")
 
@@ -182,41 +164,6 @@ def nested_offset(first: str) -> int:
         offset += item_content_column(first)
         first = first[marker.end():]
     return offset
-
-
-def indented_code_rows(text: str) -> Iterator[int]:
-    """The rows of a list item's text (its rows dedented to its content)
-    in indented code — four columns past its innermost content, after a
-    blank row — with the blank rows between them (CommonMark)."""
-    floor = 4 + nested_offset(text.split("\n", 1)[0])
-    blanks: list[int] = []
-    code = after_blank = False
-    for row, line in enumerate(text.split("\n")):
-        if not line.strip():
-            if code:
-                blanks.append(row)
-            after_blank = True
-            continue
-        code = row > 0 and indent_width(line) >= floor and (after_blank or code)
-        if code:
-            yield from blanks
-            yield row
-        blanks, after_blank = [], False
-
-
-def html_block_rows(text: str) -> Iterator[int]:
-    """The rows of a list item's text in an HTML block opening after a
-    blank row (CommonMark 4.6): raw HTML, where no directive is recognized
-    (§11.4)."""
-    rows = text.split("\n")
-    row = 1
-    while row < len(rows):
-        end = html_block_end(rows, row) if not rows[row - 1].strip() and rows[row].strip() else None
-        if end is None:
-            row += 1
-            continue
-        yield from range(row, end)
-        row = end
 
 
 def dedent(line: str, columns: int, *, expand: bool = False) -> str:

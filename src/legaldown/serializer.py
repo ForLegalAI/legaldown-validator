@@ -22,7 +22,7 @@ from .markdown import (
     strip_text,
 )
 from .markers import Marker, format_marker
-from .models import Amends, Block, Document, ListItem, Metadata, metadata_from_dict
+from .models import Amends, Block, Document, ListItem, Metadata, list_items, metadata_from_dict
 from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -264,7 +264,7 @@ def _first_line(item: ListItem) -> str:
     if first.kind in _LISTS:
         own = "." if first.kind == "ordered_list" else (_bullets(first) or ["+"])[0]
         head = f"1{own}" if first.kind == "ordered_list" else own
-        rest = _first_line(first.items[0]) if first.items else ""
+        rest = _first_line(list_items(first)[0]) if first.items else ""
         return f"{head} {rest}" if rest else head
     return _render_block(first, in_item=True).split("\n")[0]
 
@@ -272,7 +272,7 @@ def _first_line(item: ListItem) -> str:
 def _bullets(block: Block) -> list[str]:
     """The bullets a list's own items can be written with: those that make
     no item's first line a thematic break (``- --``); ``+`` never does."""
-    rows = [_first_line(item) for item in block.items]
+    rows = [_first_line(item) for item in list_items(block)]
     return [bullet for bullet in _BULLETS if not any(RULE_RE.match(f"{bullet} {row}") for row in rows)]
 
 
@@ -342,14 +342,18 @@ def _render_list(
         own = "." if ordered else (_bullets(block) or ["+"])[0]
     last = len(block.items) - 1
     written = []
-    for k, item in enumerate(block.items):
+    for k, item in enumerate(list_items(block)):
         marker = f"{k + 1}{own} " if ordered else f"{own} "
-        stays_open = k < last or not (close_last or last_column)
+        # A fence left open in the last item ends at what follows the list,
+        # short of the item's content (``parser._scan_list``).
+        stays_open = k < last or not close_last
         content = _item_content(item, open_end=stays_open)
         rows = content.split("\n") if content else []
-        if rows and RULE_RE.match(marker + rows[0]):
-            # The marker line would be a thematic break (``- --``): the
-            # content starts on the next line, after the bare marker.
+        if rows and (RULE_RE.match(marker + rows[0]) or rows[0][:1] == " "):
+            # The marker line would be a thematic break (``- --``), or the
+            # content's first line is indented further, which spacing after
+            # the marker cannot tell: the content starts on the next line,
+            # after the bare marker.
             rows = ["", *rows]
         needed = 0
         if not in_item:
@@ -366,6 +370,8 @@ def _render_list(
                 return None  # past last_column only: a heading line needs less
             marker = marker.rstrip() + " " * spacing
         if not rows or not rows[0]:
+            if rows and k == last and last_column > len(marker.rstrip()) + 1:
+                return None  # a bare marker's content column is one past it: no spacing moves it
             head = marker.rstrip()  # an empty item, or one whose content starts on the next line
             marker = marker.rstrip() + " "
         else:
@@ -438,14 +444,24 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # In an item, what may interrupt a paragraph follows it directly,
             # and so does a list another list (CommonMark), keeping the list
             # tight as it is written.
-            before = blocks[index - 1].kind if index > 0 else ""
-            tight = in_item and (
-                (block.kind in _LISTS and before in ("paragraph", *_LISTS) and not _bare(rendered))
-                or (before == "paragraph" and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered)))
+            before = blocks[index - 1] if index > 0 else None
+            closed = before is not None and before.kind == "code" and FENCE_OPEN_RE.match(before.text.split("\n")[0])
+            heading = block.kind == "paragraph" and HEADING_RE.match(rendered)
+            tight = in_item and before is not None and (
+                # A heading's line, which a blank line before it would make a
+                # section's (``parser._scan_list``), follows any block that
+                # ends at it.
+                (heading and before.kind != "html")
+                or
+                (block.kind in _LISTS and before.kind in ("paragraph", *_LISTS) and not _bare(rendered))
+                or (before.kind == "paragraph" and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered.split("\n")[0])))
+                # After a closed fence a block starts on the next line.
+                or (closed and close_fences(before.text) == before.text and not _bare(rendered))
             )
-            # A fence left open in the block before holds the blank lines it
-            # ends in: they separate it already.
-            separated = parts and parts[-1].endswith("\n")
+            # A fence left open at the end of the block before would take a
+            # blank line into its code: what follows, starting short of its
+            # content, ends it directly (and blank lines it ends in are its).
+            separated = index > 0 and blocks[index - 1].kind in _LISTS and _ends_open(blocks[index - 1:index])
             parts.extend([rendered] if (tight or separated) and parts else ["", rendered])
     return parts
 
@@ -458,7 +474,7 @@ def _ends_open(blocks: list[Block]) -> bool:
         return False
     last = written[-1]
     if last.kind in _LISTS:
-        return bool(last.items) and _ends_open(last.items[-1].blocks)
+        return bool(last.items) and _ends_open(list_items(last)[-1].blocks)
     return last.kind == "code" and close_fences(last.text) != last.text
 
 
@@ -489,13 +505,18 @@ def serialize_document(document: Document) -> str:
     if bare and preamble[1:2] == ["---"]:
         preamble[1] = "***"
     parts.extend(preamble)
+    blocks = document.preamble
     for number, section in enumerate(document.sections, 1):
         heading = f"{'#' * section.level} {section.title.strip()}"
         marker = format_marker(Marker(section.identifier.strip(), section.condition.strip()))
         if marker:
             heading += " " + marker
-        parts.extend(["", heading])
+        # A fence left open in a list item before it ends at the heading.
+        written = _written(blocks)
+        after_open = bool(written) and written[-1].kind in _LISTS and _ends_open(written)
+        parts.extend([heading] if after_open else ["", heading])
         parts.extend(_render_blocks(section.blocks, last=number == len(document.sections)))
+        blocks = section.blocks
     # Only line breaks are trimmed: a document may open with indented code,
     # and a fence left open at its end holds its blank lines as code.
     text = "\n".join(parts).lstrip("\n")

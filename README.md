@@ -236,17 +236,18 @@ valid, so what you authored is exactly what the validator judges. The serializer
 normalizes: frontmatter is re-emitted as canonical YAML, paragraphs are written as single
 lines, setext (underlined) headings are written as `#` headings, list items are written with
 `-` (`+` where `-` would read as a thematic break) or `1.`, `2.`, … whichever marker they
-had, each nested list at its parent item's content and numbered on its own, and table rows are written
+had, each nested list at its parent item's content and numbered on its own, without blank
+lines between items, and table rows are written
 with a pipe at each end and every `|` in a cell escaped as `\|`, so expect a
 formatting-normalized file rather than a byte-for-byte copy.
 
-A list block's `items` hold each item's text in document order, nested items included. When
-an item is nested, `levels` gives each item's depth (0 for the block's own list) and
-`item_kinds` the kind of the list it is in (`"ordered_list"` or `"unordered_list"`), and
-`item_markers` a nested item's bullet or delimiter (`""` for the block's own items): a nested
-list that changes it is another list, numbered on its own. All three are empty when nothing is
-nested. A nested item's condition applies within those of the items it
-is nested in (§15.3).
+A list block's `items` are `ListItem`s, each holding the blocks of its content in order: its
+first paragraph, then later paragraphs, nested lists (a list block of their own kind), code,
+quotes, tables and raw HTML. An empty item holds none. A paragraph in an item is always of kind
+`paragraph`: a directive in it stays in its text. `item_text(item)` gives an item's first
+paragraph's text, and `render_item(item)` its content as written after its marker; a string
+item in `document_from_dict` (as models before 0.3 held them) is read as such content. A
+nested item's condition applies within those of the items it is nested in (§15.3).
 
 Tables follow GFM: a table needs a delimiter row with one cell per header, rows take the
 header's width, and a `|` inside a cell — a code span's included — is written `\|`. A

@@ -356,7 +356,7 @@ def _scan_list(
                 fence_inside and indent_width(line) < content_indent
                 and _starts_item(line, chain, margin) is not None
             )
-            if not starts and (not line.strip() or indent_width(line) >= 2):
+            if not starts and (not line.strip() or indent_width(line) >= (chain[0] if chain else 2)):
                 code = dedent(line, content_indent, expand=True)
                 items[-1] += "\n" + code
                 end += 1
@@ -437,7 +437,13 @@ def _scan_list(
             chain[depth:] = [content_indent]
             quote, table, previous = None, False, None
             offset = nested_offset(content)  # an item nested on its line: its content is further in
-        elif items and (indented or ((quote.paragraph if quote is not None else open_paragraph) and _is_lazy_line(line))):
+        elif items and (
+            # Into the content of an item still open: the list's (the item a
+            # line is in is read from its lines, ``_parse_list``). Short of
+            # it, only a lazy continuation line of an open paragraph.
+            (chain and indent_width(line) >= chain[0])
+            or ((quote.paragraph if quote is not None else open_paragraph) and (lazy_line or _is_lazy_line(line)))
+        ):
             content = dedent(line, content_indent, expand=True) if indented else line.strip()
             if lazy_line and quote is None:
                 # Kept four columns in, as if in the item's content: there too
@@ -468,7 +474,9 @@ def _scan_list(
             quote.read(content[1:].removeprefix(" "))
             lazy = quote.paragraph
         else:
-            opening = FENCE_OPEN_RE.match(content)
+            # An item's first line may open items nested on it (``- - ``````):
+            # the fence is theirs.
+            opening = FENCE_OPEN_RE.match(content[nested_offset(content):] if marker else content)
             fence = opening.group("fence") if opening else None
             # Opened in the item's content, not by a line short of it that
             # only this parser reads into the item (``indented``).
@@ -766,8 +774,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool =
     numbered 1), none of them indented four or more columns. A *lazy* paragraph continues a
     list, block quote, or table (no blank line between), so it cannot be
     setext text: ``---`` under it is a rule. Without *headings* (a list
-    item's content), a heading's line is more of the paragraph, and so is a
-    setext underline.
+    item's content), a setext underline is more of the paragraph.
     """
     end = index + 1
     while end < len(lines) and lines[end].strip():
@@ -777,7 +784,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool =
             continue
         if (
             FENCE_OPEN_RE.match(line)
-            or (headings and HEADING_RE.match(line))
+            or HEADING_RE.match(line)
             or (line.lstrip().startswith(">") and indent_width(line) <= 3)
             or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
@@ -868,8 +875,9 @@ def _parse_body(
     source lines counted from *offset*.
 
     Without *headings*, the lines are a list item's content
-    (``_parse_list``): a heading's line is paragraph text, as in the item's
-    text it always was, and a paragraph's directives stay in its text.
+    (``_parse_list``): an ATX heading's line is a paragraph of its own, a
+    setext underline more of its paragraph, and a paragraph's directives
+    stay in its text.
     """
     spans = layout.preamble if layout is not None else None
     preamble: list[Block] = []
@@ -911,6 +919,12 @@ def _parse_body(
             hashes, text = atx.groups()
             heading = (*split_heading(text), len(hashes))
             index += 1
+        elif not headings and HEADING_RE.match(line):
+            # In an item, a heading is no section: its line is a paragraph
+            # of its own, which nothing continues (CommonMark).
+            blocks.append(Block(kind="paragraph", text=line.strip()))
+            index += 1
+            lazy = False
         elif RULE_RE.match(line):
             blocks.append(Block(kind="rule"))
             index += 1
