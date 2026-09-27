@@ -236,9 +236,15 @@ valid, so what you authored is exactly what the validator judges. The serializer
 normalizes: frontmatter is re-emitted as canonical YAML, paragraphs are written as single
 lines, setext (underlined) headings are written as `#` headings, list items are written with
 `-` (`+` where `-` would read as a thematic break) or `1.`, `2.`, … whichever marker they
-had, and table rows are written
+had, each nested list at its parent item's content and numbered on its own, and table rows are written
 with a pipe at each end and every `|` in a cell escaped as `\|`, so expect a
 formatting-normalized file rather than a byte-for-byte copy.
+
+A list block's `items` hold each item's text in document order, nested items included. When
+an item is nested, `levels` gives each item's depth (0 for the block's own list) and
+`item_kinds` the kind of the list it is in (`"ordered_list"` or `"unordered_list"`); both are
+empty when nothing is nested. A nested item's condition applies within those of the items it
+is nested in (§15.3).
 
 Tables follow GFM: a table needs a delimiter row with one cell per header, rows take the
 header's width, and a `|` inside a cell — a code span's included — is written `\|`. A

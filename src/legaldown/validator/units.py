@@ -5,7 +5,7 @@ Sections, list items, top-level and preamble paragraphs, and include
 paragraphs are the units a condition may attach to. This module finds every
 marker in the body, decides whether it is in a marker position, and gives
 each unit its *presence*: its own condition together with those of the
-sections enclosing it.
+sections and list items enclosing it.
 """
 from __future__ import annotations
 
@@ -204,6 +204,7 @@ class Units:
             self._section_presence.append(presence)
             stack.append((level, presence))
         self._own_conditions: dict[tuple[int | None, int, int | None], Presence] = {}
+        self._ancestors: dict[tuple[int | None, int], dict[int, list[int]]] = {}
         for found in markers:
             if not found.placed(template):
                 continue
@@ -230,6 +231,22 @@ class Units:
         """The presence of the sections enclosing a section."""
         return self._section_enclosing[section]
 
+    def enclosing_unit(self, section: int | None, block: int, fragment: int | None) -> Presence:
+        """The presence of the units enclosing the text at *fragment* of a
+        block: its sections, and the list items it is nested in (§15.3)."""
+        presence = ALWAYS if section is None else self._section_presence[section]
+        the_block = self._blocks[0 if section is None else section + 1][block]
+        if fragment is None or the_block.kind not in _LISTS:
+            return presence
+        key = (section, block)
+        if key not in self._ancestors:
+            from ..definitions import item_ancestors  # a cycle at import time (find_markers)
+
+            self._ancestors[key] = item_ancestors(the_block)
+        for ancestor in self._ancestors[key].get(fragment, []):
+            presence |= self._own_conditions.get((section, block, ancestor), ALWAYS)
+        return presence
+
     def own(self, section: int | None, block: int, fragment: int | None) -> Presence:
         """The condition a body unit carries itself (for condition-never-true)."""
         key = self._unit(section, block, fragment)
@@ -237,9 +254,8 @@ class Units:
 
     def presence(self, section: int | None, block: int | None = None, fragment: int | None = None) -> Presence:
         """The presence of a section (*block* None), or of the text at
-        *fragment* of a block: its sections' conditions, and its list item's
-        or paragraph's own."""
-        enclosing = ALWAYS if section is None else self._section_presence[section]
+        *fragment* of a block: its sections' conditions, those of the list
+        items it is nested in, and its list item's or paragraph's own."""
         if block is None:
-            return enclosing
-        return enclosing | self.own(section, block, fragment)
+            return ALWAYS if section is None else self._section_presence[section]
+        return self.enclosing_unit(section, block, fragment) | self.own(section, block, fragment)

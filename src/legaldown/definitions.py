@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex, mask_directives
 from .markdown import FENCE_OPEN_RE, html_block_rows, indented_code_rows, is_indented_code
-from .models import Block, Document
+from .models import Block, Document, listed_items
 from .validator.helpers import generate_identifier
 
 # ---------------------------------------------------------------------------
@@ -205,10 +205,25 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
         fragments.append((block.prefix, False))
     if block.suffix:
         fragments.append((block.suffix, lifted))
-    fragments.extend((_literal_blocks_blanked(_code_if_fence(item)), listed) for item in block.items if item)
+    fragments.extend((_literal_blocks_blanked(_code_if_fence(item)), listed) for item in block.items if item.strip())
     fragments.extend((cell, False) for cell in block.headers if cell)
     fragments.extend((cell, False) for row in block.rows for cell in row if cell)
     return fragments
+
+
+def item_ancestors(block: Block) -> dict[int, list[int]]:
+    """For a list, the index in ``block_fragments(block)`` of each item's
+    text, mapped to those of the items it is nested in, innermost first
+    (§15.3). An empty item has no text, and nothing is nested in it
+    (``listed_items``)."""
+    base = sum(1 for text in (block.text, block.prefix, block.suffix) if text)
+    ancestors: dict[int, list[int]] = {}
+    chain: list[int] = []  # the fragment of the last item at each depth
+    for k, (_item, level, _kind) in enumerate(listed_items(block)):
+        del chain[level:]
+        ancestors[base + k] = chain[::-1]
+        chain.append(base + k)
+    return ancestors
 
 
 def _code_if_fence(text: str) -> str:
