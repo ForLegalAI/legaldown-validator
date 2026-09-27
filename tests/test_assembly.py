@@ -961,3 +961,37 @@ class TestItemsHoldBlocks:
         body = "# A\n\n- <div>\n  {{placeholder: name}}\n  </div>\n\n      {{placeholder: name}}\n"
         result = assemble(_template(body, _TEXT), {"name": "Ann"})
         assert "Ann" not in _body(result)
+
+
+class TestQuotesHoldBlocks:
+    """A quote's content is lexed block by block, as the validator lexes it
+    (#41, #56): code and raw HTML in it hold no blank, and a code span or
+    comment left open does not run into the next block."""
+
+    @pytest.mark.parametrize("body", [
+        "# A\n\n>     {{placeholder: name}}\n",
+        "# A\n\n> <div>{{placeholder: name}}</div>\n",
+        "# A\n\n> a\n>\n> > ```\n> > {{placeholder: name}}\n",
+    ])
+    def test_code_and_html_in_a_quote_hold_no_blank(self, body):
+        result = assemble(_template(body, _TEXT), {"name": "Ann"})
+        assert "Ann" not in _body(result)
+
+    @pytest.mark.parametrize(("first", "second"), [
+        ("> Use `x", ">\n> For {{placeholder: name}}, see `y`."),
+        ("> Use `x", "> > For {{placeholder: name}}, see `y`."),
+        ("> See <!-- n", "> - For {{placeholder: name}} -->."),
+    ])
+    def test_an_open_code_span_or_comment_stays_in_its_block(self, first, second):
+        body = f"# A\n\n{first}\n{second}\n"
+        filled = second.replace("{{placeholder: name}}", "Ann")
+        assert _body(assemble(_template(body, _TEXT), {"name": "Ann"})) == f"\n# A\n\n{first}\n{filled}\n"
+
+    def test_a_blank_in_a_quoted_table_is_a_cells(self):
+        body = "# A\n\n> | a | b |\n> |---|---|\n> | {{placeholder: name}} | c |\n"
+        result = assemble(_template(body, _TEXT), {"name": "x | y"})
+        assert "> | x \\| y | c |" in _body(result)
+
+    def test_a_note_nested_in_a_quotes_item_is_removed(self):
+        body = "# A\n\n> - a\n>\n>   > [!DRAFTING]\n>   > Guidance.\n\nText.\n"
+        assert _body(assemble(_template(body), {})) == "\n# A\n\n> - a\n>\n\nText.\n"

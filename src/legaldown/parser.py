@@ -12,6 +12,7 @@ import bisect
 import re
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from typing import Any
 
 import yaml
@@ -26,6 +27,7 @@ from .markdown import (
     dedent,
     fence_end,
     html_block_end,
+    html_block_opening,
     indent_width,
     indented_code_end,
     item_content_column,
@@ -234,14 +236,16 @@ def _is_lazy_line(line: str) -> bool:
     )
 
 
+# Leading block quote markers and the whitespace around them.
+_QUOTE_MARKERS_RE = re.compile(r"[ \t]*(?:>[ \t]*)*")
+
+
 def _opens_paragraph(content: str) -> bool:
     """True if a quoted line's *content* leaves paragraph text open — its
     own, or that of a list item or nested quote it starts — which a lazy
     line may continue. A heading, a thematic break, an HTML block, or an
     empty list item or quote leaves none."""
-    inner = content.lstrip()
-    while inner.startswith(">"):
-        inner = inner[1:].lstrip()
+    inner = content[_QUOTE_MARKERS_RE.match(content).end():]
     marker = None if RULE_RE.match(inner) else LIST_ITEM_RE.match(inner)
     if marker:
         inner = inner[marker.end():]
@@ -253,14 +257,24 @@ def _opens_paragraph(content: str) -> bool:
     )
 
 
+# How deep ``_Quote`` follows nested quotes; in deeper ones, a line's
+# markers are skipped (``_opens_paragraph``).
+_QUOTE_DEPTH = 8
+
+
 class _Quote:
     """A block quote read line by line (CommonMark), for what a line without
     ``>`` needs to know: whether a paragraph is open that it lazily
-    continues. Quoted code, fenced or indented, is not a paragraph."""
+    continues. Quoted code, fenced or indented, and raw HTML are not a
+    paragraph; a nested quote's paragraph is, until a line that neither
+    carries its ``>`` nor lazily continues it."""
 
-    def __init__(self) -> None:
+    def __init__(self, depth: int = 0) -> None:
         self.paragraph = False
         self._fence: str | None = None
+        self._html: tuple[re.Pattern[str] | None] | None = None  # how an open HTML block ends
+        self._inner: _Quote | None = None  # a quote open in this one
+        self._depth = depth  # the quotes it is in; past _QUOTE_DEPTH, nested ones are text
 
     def read(self, content: str) -> None:
         """Take one quoted line: its *content* after ``>`` and the one
@@ -269,8 +283,30 @@ class _Quote:
             if closes_fence(content, self._fence):
                 self._fence = None
             self.paragraph = False
-        elif opening := FENCE_OPEN_RE.match(content):
+            return
+        if self._html is not None:
+            (marker,) = self._html
+            if marker.search(content) if marker is not None else not content.strip():
+                self._html = None
+            self.paragraph = False
+            return
+        if indent_width(content) < 4 and content.lstrip().startswith(">") and self._depth < _QUOTE_DEPTH:
+            self._inner = self._inner or _Quote(self._depth + 1)
+            self._inner.read(content.lstrip()[1:].removeprefix(" "))
+            self.paragraph = self._inner.paragraph
+            return
+        if self._inner is not None:
+            inner, self._inner = self._inner, None
+            if inner.continues(content):
+                self._inner = inner  # a lazy line of the nested quote's paragraph
+                return
+        if opening := FENCE_OPEN_RE.match(content):
             self._fence = opening.group("fence")
+            self.paragraph = False
+        elif (html := html_block_opening(content, in_paragraph=self.paragraph)) is not None:
+            (marker,) = html
+            if marker is None or not marker.search(content):
+                self._html = html
             self.paragraph = False
         elif self.paragraph or indent_width(content) < 4:  # else indented code
             self.paragraph = _opens_paragraph(content)
@@ -279,6 +315,44 @@ class _Quote:
         """True if *line*, which has no ``>``, is a lazy continuation line of
         the quote."""
         return self.paragraph and _is_lazy_line(line)
+
+
+def _read_quote(lines: list[str], index: int) -> tuple[int, list[str], bool]:
+    """The block quote starting at ``lines[index]``: ``(end, content,
+    paragraph)`` — where it ends, its content one line per source line, and
+    whether that ends in open paragraph text.
+
+    After ``>``, one optional space is syntax; any further indentation is
+    the content's, the tabs in a line's leading markers and indentation
+    counted at the columns they reach (CommonMark: a tab after ``>`` is
+    partly that space). A lazy continuation line is content without its
+    indentation — but for one indented four or more columns, which can
+    look like a block's start (a heading, a fence, an item) that it is not:
+    it is put four columns past the widest leading markers since the last
+    blank line, past the content of any item it could be in, where it
+    continues the paragraph again. Read as blocks (``quote_content``), the
+    content is what the quote holds."""
+    quote = _Quote()
+    content: list[str] = []
+    widest, measured = 0, 0  # the widest leading markers since a blank line, in content[:measured]
+    end = index
+    while end < len(lines):
+        line = lines[end]
+        if line.lstrip().startswith(">"):
+            text = _expand_prefix(line).lstrip()[1:].removeprefix(" ")
+            quote.read(text)
+        elif quote.continues(line):
+            text = line.strip()
+            if indent_width(line) >= 4:
+                for earlier in content[measured:]:
+                    widest = max(widest, len(_CONTAINER_PREFIX_RE.match(earlier).group(0))) if earlier.strip() else 0
+                measured = len(content)
+                text = " " * (widest + 4) + text
+        else:
+            break
+        content.append(text)
+        end += 1
+    return end, content, quote.paragraph
 
 
 def _list_type(marker: re.Match[str]) -> str:
@@ -511,6 +585,8 @@ def _expand_prefix(line: str) -> str:
     as the spaces they stand for, from the line's start (CommonMark tab
     stops of four): so a line taken out of an item measures its columns as
     it did in place."""
+    if "\t" not in line:
+        return line
     prefix = _CONTAINER_PREFIX_RE.match(line).group(0)
     return prefix.expandtabs(4) + line[len(prefix):] if "\t" in prefix else line
 
@@ -537,6 +613,10 @@ def _item_lines(lines: list[str], column: int, text: dict[int, int]) -> list[str
 # How deep lists are read into items: past it, an item's content is one
 # paragraph of text, so that no document recurses without bound.
 MAX_LIST_DEPTH = 64
+# How deep a block quote's content is read as blocks (``quote_content``):
+# a quote in this many list items and quotes is read as one text. Each
+# level reads the text of the quotes in it again.
+MAX_QUOTE_DEPTH = 16
 
 
 def _parse_list(
@@ -941,26 +1021,12 @@ def _parse_body(
             index += 1
             lazy = False
         elif line.lstrip().startswith(">"):
-            end = index
-            quote = _Quote()
-            while end < len(lines):
-                if lines[end].lstrip().startswith(">"):
-                    quote.read(lines[end].lstrip()[1:].removeprefix(" "))
-                elif not quote.continues(lines[end]):
-                    break
-                end += 1
-            # After ">", one optional space is syntax; any further
-            # indentation belongs to the quoted content (CommonMark). A lazy
-            # continuation line is quoted content as it stands.
-            quoted = (
-                source.lstrip()[1:].removeprefix(" ") if source.lstrip().startswith(">") else source.strip()
-                for source in lines[index:end]
-            )
+            end, quoted, open_paragraph = _read_quote(lines, index)
             blocks.append(Block(kind="quote", text="\n".join(quoted)))
             index = end
             # The quote took every line it could continue; a paragraph after
             # it is lazy only if the quote's is still open.
-            lazy = quote.paragraph
+            lazy = open_paragraph
         elif table := _parse_table(lines, index):
             block, index = table
             blocks.append(block)
@@ -1006,6 +1072,20 @@ def _parse_body(
 
 
 # ── Public API ────────────────────────────────────────────────────
+
+@lru_cache(maxsize=512)
+def quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], tuple[_BlockSpan, ...]]:
+    """The blocks a block quote holds whose content is *text* — a quote
+    block's text, one line per source line (``_read_quote``) — each with
+    where it lies: lines counted from the quote's first. As in a list item,
+    no heading, and no lifting of a directive into block fields. *depth*:
+    how many list items and quotes the content is in (``_parse_list``).
+    Cached, as the validator reads a quote's blocks more than once: the
+    blocks are shared, not to be changed."""
+    layout = _Layout()
+    blocks, _sections = _parse_body(text.split("\n"), layout, headings=False, depth=depth)
+    return tuple(blocks), tuple(layout.preamble)
+
 
 def parse_item_content(text: str) -> list[Block]:
     """The blocks a list item holds whose content is *text*, as written in

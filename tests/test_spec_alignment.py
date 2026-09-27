@@ -2346,7 +2346,9 @@ def test_a_list_indented_into_an_earlier_items_content_is_the_items():
         # lazy continuation of the paragraph open there (CommonMark).
         ("10.  a\n    - {{placeholder: p}}\n", [["a - {{placeholder: p}}"]]),
         ("10.  1. y\n    - b\n", [[(_O, [["y - b"]])]]),
-        ("10.  > q\n    - b\n", [[("quote", "q\n- b")]]),
+        # The quote keeps the lazy line four columns in, where its content,
+        # read as blocks, still continues the paragraph.
+        ("10.  > q\n    - b\n", [[("quote", "q\n    - b")]]),
         ("10.  a\n\n     b\n    - c\n", [["a", "b - c"]]),
     ],
 )
@@ -2648,3 +2650,111 @@ def test_lists_nested_past_the_limit_are_read_as_text():
     [item] = block.items
     assert [child.kind for child in item.blocks] == ["paragraph"]
     assert item.blocks[0].text.startswith(f"level {MAX_LIST_DEPTH} - level")
+
+
+# ── A quote's blocks (#41, #56) ───────────────────────────────────
+
+
+@pytest.mark.parametrize("body", [
+    # Indented code in a quote: its directives are literal (§11.4).
+    ">     {{ref: nowhere}}\n",
+    "> a\n>\n>     {{ref: nowhere}}\n",
+    ">\t\t{{ref: nowhere}}\n",  # the tab after ">" is one column of it: six
+    "- item\n\n  > x\n  >\n  >     {{ref: nowhere}}\n",
+    "> > a\n> >\n> >     {{ref: nowhere}}\n",
+    # So is raw HTML, and a fence of one line.
+    "> <div>{{ref: nowhere}}</div>\n",
+    "> ```{{ref: nowhere}}\n",
+])
+def test_code_and_html_in_a_quote_hold_no_directive(body):
+    assert "ref-broken" not in _validate(body).rules()
+
+
+@pytest.mark.parametrize("body", [
+    # Not code: the tab after ">" is partly its optional space (CommonMark).
+    ">\t{{ref: nowhere}}\n",
+    "> a\n>     {{ref: nowhere}}\n",  # continues the paragraph
+    # A code span or comment left open in one of a quote's blocks does not
+    # run into the next (CommonMark: inlines never cross a block).
+    "> a `x\n>\n> b {{ref: nowhere}} `\n",
+    "> a `x\n> > b {{ref: nowhere}} `\n",
+    "> a `x\n> ```\n> y\n> ```\n> b {{ref: nowhere}} `\n",
+    "> a <!-- x\n>\n> b {{ref: nowhere}} -->\n",
+    "> - a `x\n> - b {{ref: nowhere}} `\n",
+])
+def test_a_quotes_blocks_are_lexed_apart(body):
+    assert "ref-broken" in _validate(body).rules()
+
+
+def test_a_quotes_blocks_are_its_fragments():
+    [quote] = parse_document(_FRONTMATTER + "> a {{ref: x}}\n>\n>     code\n>\n> - b\n> > c\n").sections[0].blocks
+    assert text_fragments(quote) == ["a {{ref: x}}", "b", "c"]
+
+
+@pytest.mark.parametrize(("body", "text", "paragraphs"), [
+    # A lazy line four columns in can look like a heading, a fence or an
+    # item: the quote keeps it where, read again, it continues the paragraph.
+    ("> a\n    # b\n", "a\n    # b", ["a # b"]),
+    ("> a\n    ```\n", "a\n    ```", ["a ```"]),
+    ("> - a\n    - b\n", "- a\n      - b", ["a - b"]),
+    ("> a\n\n", "a", ["a"]),
+    # A tab in the leading markers is the columns it reaches.
+    (">\tb\n", "  b", ["b"]),
+    ("> -\tb\n", "- b", ["b"]),
+])
+def test_a_quotes_text_reads_as_its_content(body, text, paragraphs):
+    [quote] = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert quote.text == text
+    assert text_fragments(quote) == paragraphs
+    _round_trips(body)
+
+
+@pytest.mark.parametrize("body", [
+    ">  \n> >\n",  # blank quoted lines, spaces and all
+    ">     x\n",
+    "> a\n    # b\n",
+    ">\t\tcode\n",
+])
+def test_a_quote_round_trips(body):
+    _round_trips(body)
+
+
+def test_a_quote_built_with_a_tab_is_written_as_its_content_reads():
+    document = parse_document(_FRONTMATTER + "Text.\n")
+    document.sections[0].blocks = [Block(kind="quote", text="\t{{ref: nowhere}}")]
+    assert "ref-broken" not in validate_document(document).rules()  # four columns: code
+    written = parse_document(serialize_document(document))
+    assert "ref-broken" not in validate_document(written).rules()
+
+
+@pytest.mark.parametrize(("body", "outside"), [
+    # Raw HTML is no paragraph: an unquoted line after it is not the quote's.
+    ("> <div>\na {{placeholder: p}}\n", True),
+    ("> > <div>\n> > x\na {{placeholder: p}}\n", True),
+    ("> <!-- c\n> x\na {{placeholder: p}}\n", True),
+    # A nested quote's paragraph is: the line continues it.
+    ("> > x\na {{placeholder: p}}\n", False),
+])
+def test_what_ends_a_quote(body, outside):
+    blocks = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert (blocks[-1].kind == "paragraph") == outside
+    assert _placeholders(body) == 1
+
+
+def test_drafting_notes_are_found_in_a_quotes_blocks():
+    body = "> - a\n>\n>   > [!DRAFTING]\n>   > {{def: x}}\n\n> [!DRAFTING]\n> > {{def: y}}\n"
+    rules = [d.rule for d in _validate(body).diagnostics]
+    assert rules.count("drafting-note-def") == 2
+    # A quote that is not a note is no note because a note is nested in it.
+    assert "drafting-note-def" not in _validate("> {{def: z}}\n>\n> > [!DRAFTING]\n> > x\n").rules()
+
+
+def test_quotes_nested_past_the_limit_are_read_as_text():
+    from legaldown.parser import MAX_QUOTE_DEPTH
+
+    deep = ">" * (MAX_QUOTE_DEPTH + 5)
+    assert "ref-broken" in _validate(f"{deep}     {{{{ref: nowhere}}}}\n").rules()  # its text, lexed
+    assert "ref-broken" not in _validate(f"{'>' * 3}     {{{{ref: nowhere}}}}\n").rules()
+    document = parse_document(_FRONTMATTER + ">" * 10000 + " a\n")
+    assert parse_document(serialize_document(document)) == document
+    _validate(">" * 10000 + " a\n")

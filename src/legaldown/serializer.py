@@ -23,7 +23,7 @@ from .markdown import (
 )
 from .markers import Marker, format_marker
 from .models import Amends, Block, Document, ListItem, Metadata, list_items, metadata_from_dict
-from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE
+from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE, _expand_prefix
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -224,8 +224,11 @@ def _render_block(block: Block, *, in_item: bool = False) -> str:
     if block.kind in _LISTS:
         return _render_list(block) or ""
     if block.kind == "quote":
-        lines = block.text.split("\n")  # the parser joins quoted lines with LF
-        return "\n".join(f"> {line}".rstrip() for line in lines)
+        # The parser joins quoted lines with LF. A tab in a line's leading
+        # markers and indentation is written as the columns the quote's
+        # content gives it, which a tab after "> " would not keep.
+        lines = block.text.split("\n")
+        return "\n".join(f"> {_expand_prefix(line)}".rstrip() for line in lines)
     if block.kind == "table":
         # GFM needs a header row; a table built without one gets empty
         # header cells, as wide as its widest row.

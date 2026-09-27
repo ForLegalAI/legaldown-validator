@@ -42,7 +42,6 @@ from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
-    fence_end,
     indent_width,
 )
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
@@ -50,6 +49,7 @@ from .models import LIST_KINDS, Block, Document
 from .parser import (
     FRONTMATTER_RE,
     LIST_ITEM_RE,
+    MAX_QUOTE_DEPTH,
     _BlockSpan,
     _ItemSpan,
     _Layout,
@@ -57,6 +57,7 @@ from .parser import (
     _may_interrupt,
     _opens_paragraph,
     parse_document,
+    quote_content,
 )
 from .validator import validate_document
 from .validator.conditions import Condition
@@ -67,7 +68,7 @@ from .validator.templates import (
     DECISION_QUESTION_TYPES,
     Blank,
     answer_problem,
-    block_quotes,
+    is_drafting_note,
     question_type,
 )
 from .validator.units import find_markers, is_include_only, own_presence
@@ -171,6 +172,31 @@ def _within(spans: list[_BlockSpan], blocks: list[Block]) -> Iterator[tuple[_Blo
             yield from _within(item_span.blocks, item.blocks)
 
 
+def _content(
+    spans: list[_BlockSpan] | tuple[_BlockSpan, ...], blocks: list[Block] | tuple[Block, ...],
+    depth: int = 0, base: int = 0,
+) -> Iterator[tuple[_BlockSpan, Block, int, bool]]:
+    """Every block of *blocks*, of their list items, and of the block quotes
+    among them, in document order, as the validator reads them
+    (``definitions.block_fragments``): ``(span, block, base, leaf)`` — the
+    block's lines are ``[base + span.start, base + span.end)``, and *leaf*
+    tells whether its text is lexed as it stands, holding no blocks, nor
+    code or raw HTML (§11.4). A quote's content is read as blocks
+    (``parser.quote_content``), but for one in ``MAX_QUOTE_DEPTH`` items
+    and quotes, whose text is one. *depth*: the items and quotes *blocks*
+    are in."""
+    for span, block in zip(spans, blocks, strict=True):
+        read = block.kind == "quote" and depth < MAX_QUOTE_DEPTH
+        leaf = not read and block.kind not in (*LIST_KINDS, "code", "rule", "html")
+        yield span, block, base, leaf
+        for item_span, item in zip(span.items, block.items, strict=True):
+            yield from _content(item_span.blocks, item.blocks, depth + 1, base)
+        if read:
+            children, inner = quote_content(block.text, depth + 1)
+            # The quote's text holds one line per source line.
+            yield from _content(inner, children, depth + 1, base + span.start)
+
+
 def _pairs(layout: _Layout, document: Document) -> Iterator[tuple[int | None, int, _BlockSpan, Block]]:
     """Each source block with its model block: ``(section, index, source, model)``."""
     model = [document.preamble, *(section.blocks for section in document.sections)]
@@ -250,7 +276,6 @@ class _Source:
     item_lines: frozenset[int] = frozenset()
     malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
     include_lines: list[int] = field(default_factory=list)  # where ``{{include:}}`` is written
-    code: set[int] = field(default_factory=set)  # fenced code in list items and quotes
 
 
 def _unix(text: str) -> tuple[str, str]:
@@ -289,14 +314,12 @@ def _read_body(
             _read_list(source, span, block, markers, questions)
         elif _kind(span) == "paragraph":
             _read_paragraph(source, span, block, markers, questions)
-        for inner, inner_block in _within([span], [block]):
+        for inner, _inner_block in _within([span], [block]):
             items.update(item.start for item in inner.items)
-            if _kind(inner) == "quote":
-                # The parser's quote text holds one line per source line.
-                for first, last in _note_lines(inner_block.text):
-                    source.notes.update(range(inner.start + first, inner.start + last + 1))
-                source.code.update(inner.start + k for k in _fenced(inner_block.text))
-    source.occurrences, source.malformed, source.include_lines = _occurrences(layout, lines, source.code)
+        for inner, inner_block, base, _leaf in _content([span], [block]):
+            if inner_block.kind == "quote" and is_drafting_note(inner_block):
+                source.notes.update(range(base + inner.start, base + inner.end))
+    source.occurrences, source.malformed, source.include_lines = _occurrences(layout, document, lines)
     source.item_lines = frozenset(items)
     return source
 
@@ -380,73 +403,41 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
                                   _test(marker.marker.condition, questions), line, marker.source))
 
 
-def _fenced(text: str) -> Iterator[int]:
-    """The lines of *text* — a quote's, as the parser hands it to the
-    validator — inside fenced code, which the lexer blanks there (§11.4), a
-    one-line text's opening line included (``definitions.block_fragments``)."""
-    rows = text.split("\n")
-    index = 0
-    while index < len(rows):
-        opening = FENCE_OPEN_RE.match(rows[index])
-        if opening is None:
-            index += 1
-            continue
-        end = fence_end(rows, index, opening.group("fence"))
-        yield from range(index, end)
-        index = end
-
-
-def _note_lines(text: str) -> Iterator[tuple[int, int]]:
-    """The first and last line, within *text*, of each drafting note in a
-    quote block's text (§15.6), as the validator finds them."""
-    for quote in block_quotes(Block(kind="quote", text=text)):
-        if quote.is_drafting_note:
-            yield text.count("\n", 0, quote.start), text.count("\n", 0, quote.end)
-
-
 def _occurrences(
-    layout: _Layout, lines: list[str], code: set[int]
+    layout: _Layout, document: Document, lines: list[str]
 ) -> tuple[list[_Occurrence], list[Directive], list[int]]:
     """Every placeholder and choice in the body, lexed block by block as the
-    validator lexes them, so a code span or comment hides the same ones. No
-    directive is recognized in code or raw HTML (§11.4), fenced code inside a
-    quote (*code*) included. A list's items' blocks are lexed one by one, as
-    the validator lexes them: a code span or comment left open in one does
-    not run into the next. Also the malformed ones, and the lines each
+    validator lexes them (``_content``), so a code span or comment hides the
+    same ones and one left open in a block does not run into the next. No
+    directive is recognized in code or raw HTML (§11.4), in list items and
+    block quotes too. Also the malformed ones, and the lines each
     ``{{include:}}`` is written on."""
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
     includes: list[int] = []
-
-    def leaves(spans: list[_BlockSpan]) -> Iterator[_BlockSpan]:
-        for span in spans:
-            if span.items:
-                for item in span.items:
-                    yield from leaves(item.blocks)
-            elif _kind(span) not in ("code", "rule", "html", "list"):
-                yield span
-
-    for blocks in layout.containers():
-        for block in leaves(blocks):
-            for start, stop in [(block.start, block.end)]:
-                text = "\n".join(" " * len(lines[i]) if i in code else lines[i] for i in range(start, stop))
-                offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
-                for directive in lex(text).directives:
-                    row = bisect.bisect_right(offsets, directive.start) - 1
-                    if directive.name == "include" and not directive.malformed:
-                        includes.append(start + row)
-                    if directive.name not in ("placeholder", "choose"):
-                        continue
-                    if directive.malformed:
-                        # The parser joins a paragraph's lines with spaces, so
-                        # one written across lines is well-formed to the
-                        # validator — and could not be filled here.
-                        malformed.append(directive)
-                        continue
-                    column = directive.start - offsets[row]
-                    found.append(_Occurrence(directive, start + row, column,
-                                             column + directive.end - directive.start,
-                                             in_table=_kind(block) == "table"))
+    for _section, _index, span, model in _pairs(layout, document):
+        for block, _model, base, leaf in _content([span], [model]):
+            if not leaf:
+                continue
+            start = base + block.start
+            text = "\n".join(lines[start:base + block.end])
+            offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
+            for directive in lex(text).directives:
+                row = bisect.bisect_right(offsets, directive.start) - 1
+                if directive.name == "include" and not directive.malformed:
+                    includes.append(start + row)
+                if directive.name not in ("placeholder", "choose"):
+                    continue
+                if directive.malformed:
+                    # The parser joins a paragraph's lines with spaces, so
+                    # one written across lines is well-formed to the
+                    # validator — and could not be filled here.
+                    malformed.append(directive)
+                    continue
+                column = directive.start - offsets[row]
+                found.append(_Occurrence(directive, start + row, column,
+                                         column + directive.end - directive.start,
+                                         in_table=_kind(block) == "table"))
     return found, malformed, includes
 
 

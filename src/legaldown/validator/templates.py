@@ -14,8 +14,7 @@ from datetime import date, datetime
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
-from ..markdown import FENCE_OPEN_RE, closes_fence
-from ..models import Block, Document, list_items
+from ..models import Block, Document
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
 from .patterns import (
     DURATION_UNITS,
@@ -256,12 +255,11 @@ _DRAFTING_MARKER = "[!DRAFTING]"
 
 @dataclass(frozen=True, slots=True)
 class Quote:
-    """A block quote in a block's text: ``fragment[start:end]``, and its
-    first line without the ``>`` marker."""
-    fragment: str
-    start: int
-    end: int
+    """A block quote in a block: its first line without the ``>`` marker,
+    and the indices of its fragments in ``block_fragments(block)`` — the
+    blocks it holds, nested quotes' included."""
     first_line: str
+    fragments: range
 
     @property
     def is_drafting_note(self) -> bool:
@@ -277,60 +275,17 @@ class Quote:
         return _ALERT_RE.match(self.first_line) is not None and not self.is_drafting_note
 
 
-_QUOTE_MARKER_RE = re.compile(r"[ \t]*>[ \t]?")
-
-
-def _strip_markers(line: str, count: int) -> tuple[int, str]:
-    """Remove up to *count* leading ``>`` markers from *line*; return how
-    many there were and what follows them."""
-    removed = 0
-    while removed < count and (marker := _QUOTE_MARKER_RE.match(line)):
-        line = line[marker.end():]
-        removed += 1
-    return removed, line
-
-
-def _quotes_in(text: str, outer: int) -> list[Quote]:
-    """The block quotes in *text*, nested ones included. *outer* is how many
-    quotes *text* is already inside: 1 for a quote block's text, whose own
-    markers the parser removed, else 0. A quote at depth *d* is a run of
-    lines at depth *d* or deeper; lines in fenced code at the text's own
-    level are code, whatever they begin with."""
-    lines = text.split("\n")
-    depths: list[int] = []
-    fence: str | None = None
-    for line in lines:
-        if fence is not None:
-            depths.append(outer)
-            if closes_fence(line, fence):
-                fence = None
-            continue
-        markers, _content = _strip_markers(line, len(line))
-        if not markers and (opening := FENCE_OPEN_RE.match(line)):
-            fence = opening.group("fence")
-        depths.append(outer + markers)
-    starts = [0]
-    for line in lines:
-        starts.append(starts[-1] + len(line) + 1)
-    quotes: list[Quote] = []
-    for depth in range(1, max(depths, default=0) + 1):
-        run: int | None = None  # the open run's first line
-        for index, line_depth in enumerate([*depths, 0]):
-            if line_depth >= depth and run is None:
-                run = index
-            elif line_depth < depth and run is not None:
-                first = _strip_markers(lines[run], depth - outer)[1].strip()
-                quotes.append(Quote(text, starts[run], starts[index] - 1, first))
-                run = None
-    return quotes
+def is_drafting_note(quote: Block) -> bool:
+    """True if block *quote* is a drafting note (``Quote.is_drafting_note``)."""
+    return Quote(quote.text.split("\n", 1)[0].strip(), range(0)).is_drafting_note
 
 
 def block_quotes(block: Block) -> list[Quote]:
     """The block quotes in *block*, nested ones included: a quote block and
     the quotes in it, or those in a list's items."""
-    if block.kind == "quote":
-        return _quotes_in(block.text, 1)
-    return [quote for item in list_items(block) for child in item.blocks for quote in block_quotes(child)]
+    from ..definitions import quote_ranges  # see the import note in check_template_body
+
+    return [Quote(first_line, fragments) for first_line, fragments in quote_ranges(block)]
 
 
 # ── Insertion boundaries (§15.7.3) ────────────────────────────────
@@ -500,16 +455,13 @@ def check_template_body(
             elif quote.is_drafting_note:
                 notes.append(quote)
         all_notes.extend(notes)
-        for fragment in text_fragments(block):
+        for index, fragment in enumerate(text_fragments(block)):
             lexed = lex_fragment(fragment)
             masked: str | None = None  # template text, for the fragment's first insertion
+            in_note = any(index in note.fragments for note in notes)
             for directive in lexed.directives:
                 if directive.malformed:
                     continue
-                in_note = any(
-                    note.fragment == fragment and note.start <= directive.start < note.end
-                    for note in notes
-                )
                 if in_note and directive.name == "def":
                     result.error(
                         "drafting-note-def",

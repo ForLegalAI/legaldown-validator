@@ -182,8 +182,82 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
     one the parser split around a lifted {{ref:}} or {{term:}}) and the end
     of a list item's first paragraph; a block quote or a table cell never is
     one. A list's fragments are its items' blocks', in order
-    (``list_fragments``).
+    (``list_fragments``); a block quote's, those of the blocks it holds
+    (``parser.quote_content``), so that nothing written in one block — a
+    code span or comment left open — runs into the next, and code and raw
+    HTML in it hold none (§11.4).
     """
+    return [(text, position) for text, position, _items in _fragments(block)]
+
+
+def list_fragments(block: Block) -> list[tuple[str, bool, tuple[int, ...]]]:
+    """The fragments of a list's items, as ``block_fragments`` lists them:
+    each with whether its end is an anchor position — the end of an item's
+    first paragraph, the block it opens with (§5.7) — and the items it is
+    in, outermost first, each item numbered in document order among all the
+    list's items, nested ones included (§15.3). A list in a block quote is
+    no unit: its fragments are in the items the quote is in."""
+    return _fragments(block)
+
+
+def quote_ranges(block: Block) -> list[tuple[str, range]]:
+    """The block quotes in *block*, nested ones included, outermost first:
+    each quote's first line, and the indices of its fragments in
+    ``block_fragments(block)``."""
+    quotes: list[tuple[str, range]] = []
+    _fragments(block, quotes)
+    return quotes
+
+
+def _fragments(
+    block: Block, quotes: list[tuple[str, range]] | None = None
+) -> list[tuple[str, bool, tuple[int, ...]]]:
+    """``list_fragments`` of any block: the one walk that numbers fragments
+    and items, and finds the quotes (``quote_ranges``) when *quotes* is
+    given."""
+    from .parser import MAX_QUOTE_DEPTH, quote_content  # the parser builds on this module
+
+    fragments: list[tuple[str, bool, tuple[int, ...]]] = []
+    count = 0
+
+    def walk(block: Block, depth: int, path: tuple[int, ...], anchor: bool, units: bool) -> None:
+        # *depth*: the items and quotes *block* is in; *anchor*: whether its
+        # end may be an anchor position; *units*: whether its items are
+        # units, numbered — not in a quote.
+        nonlocal count
+        if block.kind in LIST_KINDS:
+            for item in list_items(block):
+                inner = path
+                if units:
+                    inner = (*path, count)
+                    count += 1
+                for k, child in enumerate(item.blocks):
+                    # A nested list's items' first paragraphs are anchor
+                    # positions as its own are; of the item's other blocks,
+                    # the first paragraph it opens with.
+                    first = child.kind in LIST_KINDS or (k == 0 and child.kind == "paragraph")
+                    walk(child, depth + 1, inner, anchor and first, units)
+        elif block.kind == "quote":
+            at, slot = len(fragments), len(quotes) if quotes is not None else 0
+            if quotes is not None:
+                quotes.append((block.text.split("\n", 1)[0].strip(), range(0)))
+            if depth < MAX_QUOTE_DEPTH:
+                children, _spans = quote_content(block.text, depth + 1)
+                for child in children:
+                    walk(child, depth + 1, path, False, False)
+            elif block.text:
+                fragments.append((block.text, False, path))  # too deep to read: its text as one
+            if quotes is not None:
+                quotes[slot] = (quotes[slot][0], range(at, len(fragments)))
+        else:
+            fragments.extend((text, position and anchor, path) for text, position in _own_fragments(block))
+
+    walk(block, 0, (), True, True)
+    return fragments
+
+
+def _own_fragments(block: Block) -> list[tuple[str, bool]]:
+    """The fragments of a block that holds no blocks: ``block_fragments``."""
     if block.kind == "html" or (
         block.kind == "code" and (
             is_indented_code(block.text)
@@ -200,55 +274,14 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
     lifted = block.kind in ("ref", "term")
     fragments: list[tuple[str, bool]] = []
     if block.text:
-        text = _code_if_fence(block.text) if block.kind == "quote" else block.text
-        fragments.append((text, paragraph))
+        fragments.append((block.text, paragraph))
     if block.prefix:
         fragments.append((block.prefix, False))
     if block.suffix:
         fragments.append((block.suffix, lifted))
-    if block.kind in LIST_KINDS:
-        fragments.extend((text, position) for text, position, _items in list_fragments(block))
     fragments.extend((cell, False) for cell in block.headers if cell)
     fragments.extend((cell, False) for row in block.rows for cell in row if cell)
     return fragments
-
-
-def list_fragments(block: Block) -> list[tuple[str, bool, tuple[int, ...]]]:
-    """The fragments of a list's items, as ``block_fragments`` lists them:
-    each with whether its end is an anchor position — the end of an item's
-    first paragraph, the block it opens with (§5.7) — and the items it is
-    in, outermost first, each item numbered in document order among all the
-    list's items, nested ones included (§15.3)."""
-    fragments: list[tuple[str, bool, tuple[int, ...]]] = []
-    count = 0
-
-    def walk(items: list, outer: tuple[int, ...]) -> None:
-        nonlocal count
-        for item in items:
-            path = (*outer, count)
-            count += 1
-            for k, child in enumerate(item.blocks):
-                if child.kind in LIST_KINDS:
-                    walk(list_items(child), path)
-                    continue
-                first = k == 0 and child.kind == "paragraph"
-                fragments.extend((text, position and first, path) for text, position in block_fragments(child))
-
-    walk(list_items(block), ())
-    return fragments
-
-
-def _code_if_fence(text: str) -> str:
-    """A quote's text, blanked when it is one line that opens
-    a fence: all of it is the fence's opening line and info string, code
-    (§11.4). The lexer blanks a fence in text of several lines; one line of
-    paragraph text, a heading or a table cell cannot open one. Blanked
-    rather than dropped, so the fragments keep their indices."""
-    if "\n" not in text and FENCE_OPEN_RE.match(text):
-        return " " * len(text)
-    return text
-
-
 def text_fragments(block: Block) -> list[str]:
     """All free-text fragments of a block that may contain inline directives."""
     return [fragment for fragment, _anchor_position in block_fragments(block)]

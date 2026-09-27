@@ -1111,10 +1111,7 @@ def validate_document(
                 value = directive.positional or ""
                 params = directive.params
                 if name in references and value:
-                    in_note = any(
-                        note.fragment == fragment and note.start <= directive.start < note.end
-                        for note in notes
-                    )
+                    in_note = any(fragment_index in note.fragments for note in notes)
                     references[name].append((value, presence, in_note))
                 if name in ("ref", "term") and not value:
                     result.error(
