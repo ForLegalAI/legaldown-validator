@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .markdown import strip_text
+from .markdown import is_blank, strip_text
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -241,7 +241,7 @@ def _clean_list(values: list) -> list[str]:
 
 
 def _cell(value: Any) -> str:
-    return str(value if value is not None else "").strip()
+    return strip_text(str(value if value is not None else ""))
 
 
 def _table_rows(rows: list, width: int) -> list[list[str]]:
@@ -298,16 +298,16 @@ def _block_text(kind: str, value: Any) -> str:
         # Kept as written, but for blank lines at its ends, which the
         # serializer's block separation would not keep.
         lines = text.split("\n")
-        while lines and not lines[0].strip():
+        while lines and is_blank(lines[0]):
             lines.pop(0)
-        return "\n".join(lines).rstrip()
+        return "\n".join(lines).rstrip(" \t\r\n")
     if kind == "quote":
         # A line's indentation is content: four columns make it code. Its
         # trailing whitespace is not written back (``serializer``).
-        return "\n".join(line.rstrip() for line in text.split("\n")).rstrip()
-    # Only spaces, tabs and line endings are stripped (CommonMark); text of
-    # nothing but whitespace is none — the parser reads such a line as blank.
-    return strip_text(text) if text.strip() else ""
+        return "\n".join(line.rstrip(" \t") for line in text.split("\n")).rstrip("\n")
+    # Only spaces, tabs and line endings are stripped (CommonMark): other
+    # whitespace, such as a no-break space, is text.
+    return strip_text(text)
 
 
 def _list_item(value: Any) -> ListItem:

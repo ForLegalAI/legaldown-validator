@@ -30,6 +30,7 @@ from .markdown import (
     html_block_opening,
     indent_width,
     indented_code_end,
+    is_blank,
     item_content_column,
     nested_offset,
     strip_text,
@@ -239,15 +240,15 @@ def _is_lazy_line(line: str) -> bool:
     parser has always read them. A line indented four or more columns
     starts none: indented code cannot interrupt a paragraph."""
     if indent_width(line) >= 4:
-        return bool(line.strip())
+        return bool(line.strip(" \t"))
     return (
-        bool(line.strip())
+        bool(line.strip(" \t"))
         and not FENCE_OPEN_RE.match(line)
         and not HEADING_RE.match(line)
         and not RULE_RE.match(line)
         and not LIST_ITEM_RE.match(line)
         and not HTML_BLOCK_START_RE.match(line)
-        and not line.lstrip().startswith((">", "|"))
+        and not line.lstrip(" \t").startswith((">", "|"))
     )
 
 
@@ -265,7 +266,7 @@ def _opens_paragraph(content: str) -> bool:
     if marker:
         inner = inner[marker.end():]
     return (
-        bool(inner.strip())
+        bool(inner.strip(" \t"))
         and not HEADING_RE.match(inner)
         and not RULE_RE.match(inner)
         and not HTML_BLOCK_START_RE.match(inner)
@@ -296,7 +297,7 @@ class _Quote:
         """Take one quoted line: its *content* after ``>`` and the one
         optional space."""
         if (self._fence is not None or self._html is not None) and (
-            not content.strip() or indent_width(content) >= self._column
+            not content.strip(" \t") or indent_width(content) >= self._column
         ):
             own = content[self._column:]  # as the item holding it has it
             if self._fence is not None:
@@ -304,16 +305,16 @@ class _Quote:
                     self._fence = None
             else:
                 (marker,) = self._html
-                if marker.search(own) if marker is not None else not own.strip():
+                if marker.search(own) if marker is not None else not own.strip(" \t"):
                     self._html = None
             self.paragraph = False
             return
         # A line short of the content of the item holding open code or HTML
         # ends that item, and them.
         self._fence = self._html = None
-        if indent_width(content) < 4 and content.lstrip().startswith(">") and self._depth < _QUOTE_DEPTH:
+        if indent_width(content) < 4 and content.lstrip(" \t").startswith(">") and self._depth < _QUOTE_DEPTH:
             self._inner = self._inner or _Quote(self._depth + 1)
-            self._inner.read(content.lstrip()[1:].removeprefix(" "))
+            self._inner.read(content.lstrip(" \t")[1:].removeprefix(" "))
             self.paragraph = self._inner.paragraph
             return
         if self._inner is not None:
@@ -324,7 +325,7 @@ class _Quote:
         # Code or HTML may open the line, or the item or items it starts.
         body, self._column = content, 0
         while indent_width(body) < 4 and not RULE_RE.match(body) and (item := LIST_ITEM_RE.match(body)):
-            if not body[item.end():].strip():
+            if not body[item.end():].strip(" \t"):
                 break
             column = item_content_column(body)
             body, self._column = body[column:], self._column + column
@@ -366,14 +367,14 @@ def _read_quote(lines: list[str], index: int) -> tuple[int, list[str], bool]:
     end = index
     while end < len(lines):
         line = lines[end]
-        if line.lstrip().startswith(">"):
-            text = _expand_prefix(line).lstrip()[1:].removeprefix(" ")
+        if line.lstrip(" \t").startswith(">"):
+            text = _expand_prefix(line).lstrip(" \t")[1:].removeprefix(" ")
             quote.read(text)
         elif quote.continues(line):
-            text = line.strip()
+            text = line.strip(" \t")
             if indent_width(line) >= 4:
                 for earlier in content[measured:]:
-                    widest = max(widest, len(_CONTAINER_PREFIX_RE.match(earlier).group(0))) if earlier.strip() else 0
+                    widest = max(widest, len(_CONTAINER_PREFIX_RE.match(earlier).group(0))) if earlier.strip(" \t") else 0
                 measured = len(content)
                 text = " " * (widest + 4) + text
         else:
@@ -458,7 +459,7 @@ def _scan_list(
                 fence_inside and indent_width(line) < content_indent
                 and _starts_item(line, chain, margin) is not None
             )
-            if not starts and (not line.strip() or indent_width(line) >= (chain[0] if chain else 2)):
+            if not starts and (is_blank(line) or indent_width(line) >= (chain[0] if chain else 2)):
                 code = dedent(line, content_indent, expand=True)
                 items[-1] += "\n" + code
                 end += 1
@@ -467,8 +468,8 @@ def _scan_list(
                 lazy = False
                 continue
             fence = None
-        if not line.strip():
-            following = next((k for k in range(end, len(lines)) if lines[k].strip()), None)
+        if is_blank(line):
+            following = next((k for k in range(end, len(lines)) if not is_blank(lines[k])), None)
             if following is None or (headings and HEADING_RE.match(lines[following])):
                 break  # a heading stays a section heading
             if not items[-1]:
@@ -532,7 +533,7 @@ def _scan_list(
             break  # an item of another type starts another list
         if marker:
             content_indent = item_content_column(line)
-            content = line[marker.end():].strip()
+            content = line[marker.end():].strip(" \t")
             items.append(content)
             if not depth:
                 own.append((end, content_indent))
@@ -546,11 +547,11 @@ def _scan_list(
             (chain and indent_width(line) >= chain[0])
             or ((quote.paragraph if quote is not None else open_paragraph) and (lazy_line or _is_lazy_line(line)))
         ):
-            content = dedent(line, content_indent, expand=True) if indented else line.strip()
+            content = dedent(line, content_indent, expand=True) if indented else line.strip(" \t")
             if lazy_line and quote is None:
                 # Kept four columns in, as if in the item's content: there too
                 # it continues the paragraph, and starts no item.
-                content = " " * 4 + content.strip()
+                content = " " * 4 + content.strip(" \t")
             if quote is not None and not content.startswith(">"):
                 # A lazy line (unindented) always continues the quote here:
                 # the list is lazy only while the quote's paragraph is open.
@@ -568,7 +569,7 @@ def _scan_list(
             ):
                 items[-1] += "\n" + content
             else:
-                items[-1] += " " + content.strip()
+                items[-1] += " " + content.strip(" \t")
         else:
             break
         if content.startswith(">"):
@@ -583,7 +584,7 @@ def _scan_list(
             # Opened in the item's content, not by a line short of it that
             # only this parser reads into the item (``indented``).
             fence_inside = marker is not None or indent_width(line) >= content_indent
-            lazy = fence is None and bool(content.strip())  # an empty item has no text
+            lazy = fence is None and bool(content.strip(" \t"))  # an empty item has no text
         # Content indented four more columns where no paragraph is open is
         # indented code, and a table's rows are no paragraph: a lazy line
         # continues neither (CommonMark).
@@ -665,7 +666,7 @@ def _parse_list(
         layout = _Layout()
         content = _item_lines(lines[first:stop], column, {k - first: at for k, at in text.items() if first <= k < stop})
         if depth >= MAX_LIST_DEPTH:
-            joined = " ".join(part.strip() for part in content if part.strip())
+            joined = " ".join(part.strip(" \t") for part in content if part.strip(" \t"))
             blocks = [Block(kind="paragraph", text=joined)] if joined else []
             if blocks:
                 layout.preamble.append(_BlockSpan("paragraph", offset + first, offset + stop))
@@ -680,7 +681,7 @@ def _parse_list(
 def _is_row(line: str) -> bool:
     """True if *line* can continue a table: it starts with ``|``, indented
     at most three columns."""
-    return line.lstrip().startswith("|") and indent_width(line) <= 3
+    return line.lstrip(" \t").startswith("|") and indent_width(line) <= 3
 
 
 def _split_row(line: str) -> list[str]:
@@ -690,7 +691,7 @@ def _split_row(line: str) -> list[str]:
     text, and that one backslash is removed, whatever precedes it
     (cmark-gfm). A pipe inside a code span splits the row like any other
     (GFM), so it too is written ``\\|``."""
-    row = line.strip()
+    row = line.strip(" \t")
     if row == "|":
         return []  # no cells (GFM)
     cells: list[str] = []
@@ -708,7 +709,7 @@ def _split_row(line: str) -> list[str]:
         cells.pop(0)
     if len(cells) > 1 and row.endswith("|") and not row.endswith("\\|"):
         cells.pop()
-    return [cell.strip() for cell in cells]
+    return [cell.strip(" \t") for cell in cells]
 
 
 _ALIGNMENTS = {(True, False): "left", (False, True): "right", (True, True): "center", (False, False): ""}
@@ -726,7 +727,7 @@ def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
     indented further is code), and a row that is only ``|`` has no cells:
     it is not a header and it ends the body.
     """
-    if not (lines[index].lstrip().startswith("|") and lines[index + 1:index + 2]):
+    if not (lines[index].lstrip(" \t").startswith("|") and lines[index + 1:index + 2]):
         return None
     if not _is_row(lines[index + 1]):
         return None
@@ -865,7 +866,7 @@ def _is_paragraph_text(content: str, *, nested: bool = False) -> bool:
     item's text counts too (`1. item` opens that item's paragraph)."""
     while nested and not RULE_RE.match(content) and (marker := LIST_ITEM_RE.match(content)):
         content = content[marker.end():]
-    return bool(content.strip()) and not (
+    return bool(content.strip(" \t")) and not (
         HEADING_RE.match(content) or RULE_RE.match(content) or LIST_ITEM_RE.match(content)
         or FENCE_OPEN_RE.match(content) or HTML_BLOCK_START_RE.match(content)
     )
@@ -895,7 +896,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool =
     item's content), a setext underline is more of the paragraph.
     """
     end = index + 1
-    while end < len(lines) and lines[end].strip():
+    while end < len(lines) and not is_blank(lines[end]):
         line = lines[end]
         if not headings and SETEXT_UNDERLINE_RE.match(line):
             end += 1
@@ -903,7 +904,7 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool =
         if (
             FENCE_OPEN_RE.match(line)
             or HEADING_RE.match(line)
-            or (line.lstrip().startswith(">") and indent_width(line) <= 3)
+            or (line.lstrip(" \t").startswith(">") and indent_width(line) <= 3)
             or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
             # The delimiter row decides: the header row is paragraph text.
@@ -1007,7 +1008,7 @@ def _parse_body(
     index = 0
     while index < len(lines):
         line = lines[index]
-        if not line.strip():
+        if is_blank(line):
             index += 1
             lazy = False
             continue
@@ -1041,14 +1042,14 @@ def _parse_body(
         elif not headings and HEADING_RE.match(line):
             # In an item, a heading is no section: its line is a paragraph
             # of its own, which nothing continues (CommonMark).
-            blocks.append(Block(kind="paragraph", text=line.strip()))
+            blocks.append(Block(kind="paragraph", text=line.strip(" \t")))
             index += 1
             lazy = False
         elif RULE_RE.match(line):
             blocks.append(Block(kind="rule"))
             index += 1
             lazy = False
-        elif line.lstrip().startswith(">"):
+        elif line.lstrip(" \t").startswith(">"):
             end, quoted, open_paragraph = _read_quote(lines, index)
             blocks.append(Block(kind="quote", text="\n".join(quoted)))
             index = end
@@ -1073,7 +1074,7 @@ def _parse_body(
         else:
             end, setext_level = _paragraph_end(lines, index, lazy, headings=headings)
             if setext_level:
-                text = " ".join(part.strip() for part in lines[index:end - 1])
+                text = " ".join(part.strip(" \t") for part in lines[index:end - 1])
                 heading = (*split_heading(text), setext_level)
             else:
                 if headings:
@@ -1081,7 +1082,7 @@ def _parse_body(
                 else:
                     # An item's lines are joined as its text always was: each
                     # stripped.
-                    blocks.append(Block(kind="paragraph", text=" ".join(part.strip() for part in lines[index:end])))
+                    blocks.append(Block(kind="paragraph", text=" ".join(part.strip(" \t") for part in lines[index:end])))
                 interrupted = end
             index = end
             lazy = False

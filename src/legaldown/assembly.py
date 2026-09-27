@@ -43,6 +43,7 @@ from .markdown import (
     HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
     indent_width,
+    is_blank,
 )
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import LIST_KINDS, Block, Document
@@ -214,7 +215,7 @@ def _pairs(layout: _Layout, document: Document) -> Iterator[tuple[int | None, in
 def _trim(lines: list[str], start: int, end: int) -> int:
     """*end* moved back past blank lines: a unit runs through its last
     non-blank line (§15.7.2 step 2)."""
-    while end > start + 1 and not lines[end - 1].strip():
+    while end > start + 1 and is_blank(lines[end - 1]):
         end -= 1
     return end
 
@@ -1011,7 +1012,7 @@ def _emit(source: _Source, removed: set[int], answers: _Answers) -> list[_Line]:
         follows_deleted = False
         if index in by_line:
             line.text, line.first = _fill(text, by_line[index], answers)
-            if text.strip() and not line.text.strip():
+            if not is_blank(text) and is_blank(line.text):
                 follows_deleted = True  # emptied by steps 4–5: deleted (step 5)
                 continue
             line.check |= line.first is not None
@@ -1207,7 +1208,7 @@ _ORDERED_RE = re.compile(r" {0,3}(?P<number>[0-9]{1,9})(?P<delim>[.)])(?:[ \t]+(
 def _construct(content: str, *, in_paragraph: bool) -> str | None:
     """The block construct *content* begins, as CommonMark reads it — after
     paragraph text (*in_paragraph*) only those that can interrupt one."""
-    if not content.strip():
+    if is_blank(content):
         return None
     if indent_width(content) >= 4:
         return None if in_paragraph else "code"
@@ -1239,7 +1240,7 @@ def _paragraph_open(line: str | None) -> bool:
     continue — the parser's own reading of a line's content."""
     return (
         line is not None
-        and bool(line.strip())
+        and not is_blank(line)
         and not FENCE_OPEN_RE.match(line)
         and not re.fullmatch(r" {0,3}=+[ \t]*", line)
         and _opens_paragraph(line)
@@ -1464,11 +1465,11 @@ def _finish(head: str, lines: list[_Line]) -> str:
     code = _code_lines(texts)
     out: list[str] = []
     for index, text in enumerate(texts):
-        if text.strip() or index in code:
+        if not is_blank(text) or index in code:
             out.append(text)
         elif not out or out[-1] != "" or (index - 1) in code:
             out.append("")
-    while out and not out[-1].strip():
+    while out and is_blank(out[-1]):
         out.pop()
     if not out:
         return head if not head or head.endswith("\n") else head + "\n"

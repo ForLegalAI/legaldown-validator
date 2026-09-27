@@ -84,7 +84,7 @@ def html_block_end(lines: list[str], index: int) -> int | None:
             )
     if _HTML_BLOCK_6_RE.match(line) or _HTML_BLOCK_7_RE.match(line):
         end = index + 1
-        while end < len(lines) and lines[end].strip():
+        while end < len(lines) and not is_blank(lines[end]):
             end += 1
         return end
     return None
@@ -124,6 +124,12 @@ LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
 _TAB = 4  # a tab advances to the next multiple of four columns
 
 
+def is_blank(line: str) -> bool:
+    """True if *line* is blank: nothing but spaces and tabs (CommonMark).
+    Other whitespace, such as a no-break space, is text."""
+    return not line.strip(" \t")
+
+
 def strip_text(text: str) -> str:
     """*text* without the spaces, tabs and line endings at its ends — the
     whitespace CommonMark strips from a paragraph. Other whitespace, such as
@@ -156,7 +162,7 @@ def item_content_column(line: str) -> int:
         return indent_width(line) + 2
     after = len(line[:marker.end()].expandtabs(4))
     rest = line[marker.end():]
-    if not rest.strip():
+    if is_blank(rest):
         return after + 1
     spacing = len(line[:len(line) - len(rest.lstrip(" \t"))].expandtabs(4)) - after
     return after + 1 if spacing > 4 else after + spacing
@@ -203,9 +209,9 @@ def indented_code_end(lines: list[str], index: int) -> int:
     (CommonMark): its lines are blank or indented four or more columns, and
     it ends before its trailing blank lines."""
     end = last = index + 1
-    while end < len(lines) and (not lines[end].strip() or indent_width(lines[end]) >= 4):
+    while end < len(lines) and (is_blank(lines[end]) or indent_width(lines[end]) >= 4):
         end += 1
-        if lines[end - 1].strip():
+        if not is_blank(lines[end - 1]):
             last = end
     return last
 
@@ -213,7 +219,7 @@ def indented_code_end(lines: list[str], index: int) -> int:
 def is_indented_code(text: str) -> bool:
     """True if every non-blank line of *text* is indented four or more
     columns, as an indented code block's are (CommonMark)."""
-    lines = [line for line in text.split("\n") if line.strip()]
+    lines = [line for line in text.split("\n") if not is_blank(line)]
     return bool(lines) and all(indent_width(line) >= 4 for line in lines)
 
 
@@ -221,7 +227,7 @@ def closes_fence(line: str, fence: str) -> bool:
     """True if *line* closes a code block opened with *fence*: at most three
     columns of indentation, then the same character at least as many times,
     and nothing else."""
-    stripped = line.strip()
+    stripped = line.strip(" \t")
     return (
         indent_width(line) <= 3
         and len(stripped) >= len(fence)
