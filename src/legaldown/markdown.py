@@ -117,6 +117,28 @@ def split_lone_tag(text: str) -> str | None:
 # not containing ``-->``, and ``-->``. The empty forms end at their own ``>``.
 HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)
 
+# Inline raw HTML other than a comment (CommonMark 0.31 §6.6, as cmark-gfm
+# reads it): an open tag, whose ``/`` is directly before its ``>``; a closing
+# tag, which takes no attributes; a processing instruction; a declaration,
+# its name followed by whitespace; a CDATA section.
+_INLINE_ATTRIBUTE = r"""(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
+INLINE_HTML_RE = re.compile(
+    r"<[A-Za-z][A-Za-z0-9-]*" + _INLINE_ATTRIBUTE + r"*\s*/?>"
+    r"|</[A-Za-z][A-Za-z0-9-]*\s*>"
+    r"|<\?.*?\?>"
+    r"|<![A-Za-z]+\s[^>]*>"
+    r"|<!\[CDATA\[.*?\]\]>",
+    re.DOTALL,
+)
+
+
+def is_comment_only(html: str) -> bool:
+    """True if raw HTML block text *html* holds nothing but comments (§8.6)
+    and whitespace: an unclosed ``<!--`` runs to its end."""
+    rest = HTML_COMMENT_RE.sub("", html)
+    opened = rest.find("<!--")
+    return not (rest[:opened] if opened >= 0 else rest).strip()
+
 # A line ending (CommonMark): LF, CR, or CRLF. Other characters that
 # str.splitlines() breaks at — form feed, U+2028, … — are characters.
 LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")

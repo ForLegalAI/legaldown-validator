@@ -13,7 +13,7 @@ analysis, and the editor glossary.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from .directives import Directive, Lexed, lex, mask_directives
@@ -255,6 +255,27 @@ def _fragments(
 
     walk(block, 0, (), True, True)
     return fragments
+
+
+def nested_blocks(block: Block) -> Iterator[Block]:
+    """*block* and every block in it, in document order: its list items'
+    blocks and the blocks its quotes hold (``parser.quote_content``), as
+    ``block_fragments`` reads them — a quote in ``MAX_QUOTE_DEPTH`` items and
+    quotes holding none but its text."""
+    from .parser import MAX_QUOTE_DEPTH, quote_content  # the parser builds on this module
+
+    def walk(block: Block, depth: int) -> Iterator[Block]:
+        yield block
+        if block.kind in LIST_KINDS:
+            for item in list_items(block):
+                for child in item.blocks:
+                    yield from walk(child, depth + 1)
+        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+            children, _spans = quote_content(block.text, depth + 1)
+            for child in children:
+                yield from walk(child, depth + 1)
+
+    yield from walk(block, 0)
 
 
 def _own_fragments(block: Block) -> list[tuple[str, bool]]:

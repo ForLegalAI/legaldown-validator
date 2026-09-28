@@ -18,9 +18,12 @@ from ..directives import (
     PLACEHOLDER_TYPE_PARAMS,
     Directive,
     Lexed,
+    is_escaped,
     iter_directives,
     lex,
+    mask_directives,
 )
+from ..markdown import HTML_COMMENT_RE, INLINE_HTML_RE, is_comment_only
 from ..models import Amends, Document
 from ..specification import SPEC_VERSION, parse_version
 from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
@@ -377,6 +380,54 @@ def _clashes(presence: Presence, others: list[Presence], questions: Any) -> bool
     """True if a declaration with *presence* can appear together with one of
     the earlier declarations of the same identifier (§15.4)."""
     return any(not exclusive(presence, other, questions) for other in others)
+
+
+# A pointy-bracket link destination, ``](<…>)``: no raw HTML (CommonMark).
+_LINK_DESTINATION_RE = re.compile(r"<[^<>\n]*>")
+
+
+def _inline_html(text: str, lexed: Lexed) -> str | None:
+    """The first inline raw HTML in *text* other than a comment (§8.7), as
+    written, or None: outside code spans, comments and directives (``lex``),
+    not after a backslash, and not a link's ``<…>`` destination."""
+    view = mask_directives(lexed.view, lexed.directives)
+    pos = 0
+    while (at := view.find("<", pos)) >= 0:
+        pos = at + 1
+        if is_escaped(view, at):
+            continue
+        if view[:at].rstrip(" \t").endswith("](") and (destination := _LINK_DESTINATION_RE.match(view, at)):
+            pos = destination.end()
+            continue
+        if tag := INLINE_HTML_RE.match(view, at):
+            return text[at:tag.end()]
+    return None
+
+
+def _check_raw_html(document: Document, lex_fragment: Callable[[str], Lexed], result: ValidationResult) -> None:
+    """Warn about raw HTML other than comments (§8.7), which renderers leave
+    out: once for each HTML block, in list items and quotes too, and once for
+    each text — a paragraph, a table cell, a heading — holding inline HTML."""
+    from ..definitions import block_fragments, nested_blocks  # see the import note in validate_document
+
+    def warn(what: str, source: str) -> None:
+        shown = source.strip().split("\n", 1)[0]
+        shown = shown if len(shown) <= 60 else shown[:57] + "..."
+        result.warning(
+            "raw-html",
+            f"Raw HTML {what} ('{shown}') is not rendered: renderers leave it out of the "
+            f"output (§8.7). Only a comment (<!-- -->) is portable (§8.6).",
+        )
+
+    texts = [section.title for section in document.sections]
+    for _section, _index, top in document.iter_indexed_blocks():
+        for block in nested_blocks(top):
+            if block.kind == "html" and not is_comment_only(block.text):
+                warn("block", HTML_COMMENT_RE.sub("", block.text))
+        texts.extend(fragment for fragment, _position in block_fragments(top))
+    for text in texts:
+        if "<" in text and (html := _inline_html(text, lex_fragment(text))) is not None:
+            warn("in text", html)
 
 
 def _check_never_true(
@@ -1327,6 +1378,7 @@ def validate_document(
         not_line_editable=meta.not_line_editable,
     )
     notes = check_template_body(document, lex_fragment, result, template=template)
+    _check_raw_html(document, lex_fragment, result)
     if final:
         _check_final(placeholders, chooses, notes, conditions, questions, result)
 
