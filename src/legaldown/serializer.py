@@ -276,7 +276,11 @@ def _render_block(block: Block, *, in_item: bool = False) -> str:
         return "---"
     if block.kind == "code":
         return _code(block.text, after_list=False)
-    if block.kind in ("html", "source"):
+    if block.kind == "source":
+        # As it stands, but for a fence it leaves open (``_render_blocks``
+        # keeps one open that ends the document).
+        return close_fences(block.text)
+    if block.kind == "html":
         return block.text
     return block.text.strip()
 

@@ -3321,6 +3321,8 @@ def test_a_source_blocks_text_from_a_dict():
     assert document.sections[0].blocks[0].text == "    code\n  x"
     assert document_from_dict(document_to_dict(document)) == document
     assert render_block(document.sections[0].blocks[0]) == "    code\n  x"
+    # Rendered on its own, what follows it is unknown: a fence it leaves open is closed.
+    assert render_block(Block(kind="source", text="```\ncode")) == "```\ncode\n```"
 
 
 def test_an_empty_source_block_is_not_written():
