@@ -56,6 +56,8 @@ class FoundMarker:
     #: True for a preamble paragraph's condition, which only a template
     #: places (§5.7).
     template_only: bool
+    #: Its offset in its text.
+    offset: int = 0
 
     def placed(self, template: bool) -> bool:
         """True if the marker is in a marker position: its #id and condition
@@ -157,7 +159,7 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
                 found.append(
                     FoundMarker(
                         m.group(0), marker, section, block_index, fragment_index,
-                        misplaced, include_only, template_only,
+                        misplaced, include_only, template_only, m.start(),
                     )
                 )
     return found

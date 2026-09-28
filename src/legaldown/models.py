@@ -189,6 +189,12 @@ class Document:
     sections: list[Section] = field(default_factory=list)
     filename: str = ""
     preamble: list[Block] = field(default_factory=list)
+    #: Where the parsed source holds its parts (``positions.SourceMap``), for
+    #: diagnostics that name their line (§16.9). Only ``parse_document`` sets
+    #: it; it describes the source as parsed, so a document changed afterwards
+    #: may no longer fit it (then its diagnostics name no line). Not part of
+    #: equality or of ``document_to_dict``.
+    source_map: Any = field(default=None, compare=False, repr=False)
 
     def iter_indexed_blocks(self) -> Iterator[tuple[int | None, int, Block]]:
         """Every body block in document order, as ``(section_index, index,
@@ -523,8 +529,14 @@ def document_from_dict(data: dict[str, Any] | None) -> Document:
 
 
 def document_to_dict(document: Document) -> dict[str, Any]:
-    """Convert a Document to a plain dict (for JSON serialization etc.)."""
-    return asdict(document)
+    """Convert a Document to a plain dict (for JSON serialization etc.),
+    without its source map."""
+    return {
+        "metadata": asdict(document.metadata),
+        "sections": [asdict(section) for section in document.sections],
+        "filename": document.filename,
+        "preamble": [asdict(block) for block in document.preamble],
+    }
 
 
 def empty_document() -> Document:
