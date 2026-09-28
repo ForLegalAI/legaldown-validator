@@ -124,6 +124,10 @@ FRONTMATTER_RE = re.compile(r"\A---[ \t\r]*\n(?:(.*?)\n)??---[ \t\r]*(?:\n|\Z)",
 # An ATX heading: its level and its text, which may end in a marker (split
 # off by markers.split_heading).
 HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+)$")  # the text is stripped by split_heading
+# An ATX heading as CommonMark reads it, whose text may be empty (``#``): in
+# a list item's or a block quote's content, where a heading is a block
+# (``_parse_body``). A section's heading needs text (HEADING_RE).
+ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*))?$")
 # A setext underline under a paragraph: ``===`` makes a level-1 heading,
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
@@ -247,7 +251,7 @@ def _is_lazy_line(line: str) -> bool:
     return (
         bool(line.strip(" \t"))
         and not FENCE_OPEN_RE.match(line)
-        and not HEADING_RE.match(line)
+        and not ATX_HEADING_RE.match(line)
         and not RULE_RE.match(line)
         and not LIST_ITEM_RE.match(line)
         and html_block_opening(line) is None
@@ -275,7 +279,7 @@ def _opens_paragraph(content: str) -> bool:
     return (
         bool(inner.strip(" \t"))
         and not (FENCE_OPEN_RE.match(inner) and indent_width(content) < 4)
-        and not HEADING_RE.match(inner)
+        and not ATX_HEADING_RE.match(inner)
         and not RULE_RE.match(inner)
         and not HTML_BLOCK_START_RE.match(inner)
     )
@@ -303,6 +307,8 @@ class _Quote:
         self._table = False  # a table is open: its rows are no paragraph
         self._last: str | None = None  # the paragraph's last line, a table's header if one follows
         self._item = False  # the open paragraph is a list item's, whose content this does not follow
+        self._item_column = 0  # that item's content column
+        self._item_quote = False  # the paragraph is a quote's, opened in the item's first line
 
     def read(self, content: str) -> None:
         """Take one quoted line: its *content* after ``>`` and the one
@@ -338,6 +344,16 @@ class _Quote:
         if self._table and _continues_table(content):
             return  # a row of the open table
         self._table = False
+        column = self._item_column if self._item else 0
+        if (
+            self.paragraph and not (self._item and self._item_quote)
+            and column <= indent_width(content) <= column + 3
+            and SETEXT_UNDERLINE_RE.match(content.lstrip(" \t"))
+        ):
+            # A setext underline in the paragraph's container: a heading,
+            # which ends the paragraph.
+            self.paragraph = False
+            return
         if (
             self.paragraph and last is not None and not self._item
             and _parse_table([last, content], 0) is not None
@@ -368,6 +384,11 @@ class _Quote:
             # the item's: a delimiter-like line may be its lazy text.
             starts_item = not RULE_RE.match(content) and LIST_ITEM_RE.match(content) is not None
             self._item = self.paragraph and (starts_item or (was and self._item))
+            if self.paragraph and starts_item:
+                # A quote in the item holds the paragraph: a line without its
+                # ``>`` only lazily continues it.
+                self._item_column = self._column
+                self._item_quote = body.lstrip(" \t").startswith(">")
 
     def continues(self, line: str) -> bool:
         """True if *line*, which has no ``>``, is a lazy continuation line of
@@ -393,8 +414,9 @@ def _read_quote(lines: list[str], index: int) -> tuple[int, list[str], bool]:
     counted at the columns they reach (CommonMark: a tab after ``>`` is
     partly that space). A lazy continuation line is content without its
     indentation — but for one indented four or more columns, which can
-    look like a block's start (a heading, a fence, an item) that it is not:
-    it is put four columns past the widest leading markers since the last
+    look like a block's start (a heading, a fence, an item) that it is not,
+    and for one that looks like a setext underline or a table's delimiter
+    row, which a lazy line never is: it is put four columns past the widest leading markers since the last
     blank line, past the content of any item it could be in, where it
     continues the paragraph again. Read as blocks (``quote_content``), the
     content is what the quote holds."""
@@ -404,13 +426,13 @@ def _read_quote(lines: list[str], index: int) -> tuple[int, list[str], bool]:
     end = index
     while end < len(lines):
         line = lines[end]
-        if line.lstrip(" \t").startswith(">"):
+        if indent_width(line) < 4 and line.lstrip(" \t").startswith(">"):
             text = _expand_prefix(line).lstrip(" \t")[1:].removeprefix(" ")
             quote.read(text)
         elif quote.continues(line):
             quote.lazy(line)
             text = line.strip(" \t")
-            if indent_width(line) >= 4 or _delimiter_row(line) is not None:
+            if indent_width(line) >= 4 or _delimiter_row(line) is not None or SETEXT_UNDERLINE_RE.match(line):
                 for earlier in content[measured:]:
                     widest = max(widest, len(_CONTAINER_PREFIX_RE.match(earlier).group(0))) if earlier.strip(" \t") else 0
                 measured = len(content)
@@ -486,9 +508,12 @@ def _scan_list(
     paragraph = False  # the current item's own last content is paragraph text
     open_paragraph = False  # so is it, or that of an item nested on its line
     table = False  # the current item's content is in a table
-    previous: str | None = None  # the item's last content line
+    previous: str | None = None  # the item's last content line, when paragraph text
     previous_code = False  # that line is indented code
+    para_column = 0  # the content column of the item whose paragraph is open
+    para_quote = False  # the paragraph is a quote's, in an item nested on the first line
     offset = 0  # the current item's nested_offset
+    innermost = 0  # past the item's content column, where its innermost first-line item's content starts
     end = index
     while end < len(lines):
         line = lines[end]
@@ -550,6 +575,7 @@ def _scan_list(
             lazy = paragraph = open_paragraph = table = False  # the blank line closed the item's paragraph
             quote = previous = None  # a later paragraph in the item is not the quote's
             continue
+        was_open, was_table = open_paragraph, table  # before this line
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         quote_lazy = False  # the line lazily continues the item's quote
         indented = indent_width(line) >= 2
@@ -571,7 +597,7 @@ def _scan_list(
                 marker = None
                 lazy_line = True
                 joined = quote is None
-                text[end] = content_indent + offset + 4
+                text[end] = content_indent + innermost + 4
             elif not depth:
                 break  # indented code after the list
             # Otherwise indented code in an earlier item's content, which the
@@ -600,6 +626,10 @@ def _scan_list(
             chain[depth:] = [content_indent]
             quote, table, previous = None, False, None
             offset = nested_offset(content)  # an item nested on its line: its content is further in
+            # So is that of a bare item ending the line (``1. -``), on the next.
+            rest = content[offset:]
+            bare = not RULE_RE.match(rest) and (end_marker := LIST_ITEM_RE.match(rest)) and is_blank(rest[end_marker.end():])
+            innermost = offset + (item_content_column(rest) if bare else 0)
         elif items and (
             # Into the content of an item still open: the list's (the item a
             # line is in is read from its lines, ``_parse_list``). Short of
@@ -608,24 +638,41 @@ def _scan_list(
             or ((quote.paragraph if quote is not None else open_paragraph) and (lazy_line or _is_lazy_line(line)))
         ):
             content = dedent(line, content_indent, expand=True) if indented else line.strip(" \t")
+            if indent_width(content) < 4 and content.lstrip(" \t").startswith(">"):
+                content = content.lstrip(" \t")  # a block quote, indented up to three columns
             if lazy_line and quote is None:
                 # Kept four columns in, as if in the item's content: there too
                 # it continues the paragraph, and starts no item.
                 content = " " * 4 + content.strip(" \t")
             elif (
                 quote is None and not (chain and indent_width(line) >= chain[0])
-                and (indent_width(line) >= 4 or _delimiter_row(line) is not None)
+                and (
+                    indent_width(line) >= 4 or _delimiter_row(line) is not None
+                    or SETEXT_UNDERLINE_RE.match(line)
+                )
             ):
-                # A lazy line four or more columns in, or a lazy delimiter
-                # row, which makes no table (GFM), is text of the paragraph:
-                # the item's content has it four columns into it, where it
-                # starts no block. (A quote's lazy lines are its own.)
-                text[end] = content_indent + offset + 4
+                # A lazy line four or more columns in, a lazy delimiter row,
+                # which makes no table (GFM), or a lazy setext underline,
+                # which makes no heading (CommonMark), is text of the
+                # paragraph: the item's content has it four columns into it,
+                # where it starts no block. (A quote's lazy lines are its own.)
+                text[end] = content_indent + innermost + 4
                 content = " " * 4 + content.strip(" \t")
             if quote is not None and not content.startswith(">"):
                 # A lazy line (unindented) always continues the quote here:
                 # the list is lazy only while the quote's paragraph is open.
-                if lazy_line or quote.continues(content):
+                # Whether the line is lazy is read in the innermost item it
+                # is in, where its indentation may keep it from starting a block.
+                within = dedent(line, chain[depth - 1], expand=True) if depth else line
+                if lazy_line or quote.continues(within):
+                    if not lazy_line and not depth and (
+                        indent_width(line) >= 4 or _delimiter_row(line) is not None
+                        or SETEXT_UNDERLINE_RE.match(line)
+                    ):
+                        # As a paragraph's lazy line above: four columns into
+                        # the item's content, where it still continues the
+                        # quote (``_read_quote``) and starts no block.
+                        text[end] = content_indent + innermost + 4
                     content = "> " + content
                     quote_lazy = True
                 else:
@@ -671,7 +718,7 @@ def _scan_list(
         # Content indented four more columns where no paragraph is open is
         # indented code, and a table's rows are no paragraph: a lazy line
         # continues neither (CommonMark).
-        code = indent_width(content) >= 4 + offset and not paragraph
+        code = indent_width(content) >= 4 + offset and not (paragraph or open_paragraph)
         table = (table and _continues_table(content)) or (
             previous is not None and not code and not previous_code
             # Short of an item nested on the first line, the line is lazy: a
@@ -679,12 +726,34 @@ def _scan_list(
             and indent_width(content) >= offset
             and _parse_table([previous, content], 0) is not None
         )
-        prose = lazy and quote is None and not code and not table
+        # A setext underline in the content of the item whose paragraph is
+        # open makes it a heading, which ends it (CommonMark).
+        underline = (
+            not marker and was_open and quote is None and not was_table and not para_quote
+            and para_column <= indent_width(line) <= para_column + 3
+            and SETEXT_UNDERLINE_RE.match(line.lstrip(" \t")) is not None
+        )
+        prose = lazy and quote is None and not code and not table and not underline
         paragraph = prose and (joined or _is_paragraph_text(content))
         # Open in the item or in an item nested on its line: a lazy line
         # continues either.
         open_paragraph = prose and (joined or _is_paragraph_text(content, nested=True))
-        previous, previous_code = content, code
+        if underline:
+            lazy = False
+        elif open_paragraph and (marker or not was_open):
+            # Opened in the innermost item the line is in: one nested on the
+            # current item's first line when it reaches that one's content.
+            if marker:
+                para_column = content_indent + offset
+            elif indent_width(line) >= content_indent + innermost:
+                para_column = content_indent + innermost
+            else:
+                para_column = chain[depth - 1] if depth else content_indent
+            # A quote there (``- - > a``) holds it: a line without its ``>``
+            # only lazily continues it.
+            para_quote = bool(marker) and content[nested_offset(content):].lstrip(" \t").startswith(">")
+        # Only paragraph text can be a table's header row (GFM).
+        previous, previous_code = (content, code) if open_paragraph else (None, False)
         end += 1
     # A following line is lazy only while a paragraph is open.
     return own, end, quote.paragraph if quote is not None else open_paragraph, text
@@ -988,7 +1057,7 @@ def _is_paragraph_text(content: str, *, nested: bool = False) -> bool:
     while nested and not RULE_RE.match(content) and (marker := LIST_ITEM_RE.match(content)):
         content = content[marker.end():]
     return bool(content.strip(" \t")) and not (
-        HEADING_RE.match(content) or RULE_RE.match(content) or LIST_ITEM_RE.match(content)
+        ATX_HEADING_RE.match(content) or RULE_RE.match(content) or LIST_ITEM_RE.match(content)
         or FENCE_OPEN_RE.match(content) or HTML_BLOCK_START_RE.match(content)
     )
 
@@ -1014,17 +1083,15 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool =
     numbered 1), none of them indented four or more columns. A *lazy* paragraph continues a
     list, block quote, or table (no blank line between), so it cannot be
     setext text: ``---`` under it is a rule. Without *headings* (a list
-    item's content), a setext underline is more of the paragraph.
+    item's or a quote's content), an ATX heading may be empty (``#``).
     """
+    atx = HEADING_RE if headings else ATX_HEADING_RE
     end = index + 1
     while end < len(lines) and not is_blank(lines[end]):
         line = lines[end]
-        if not headings and SETEXT_UNDERLINE_RE.match(line):
-            end += 1
-            continue
         if (
             FENCE_OPEN_RE.match(line)
-            or HEADING_RE.match(line)
+            or atx.match(line)
             or (line.lstrip(" \t").startswith(">") and indent_width(line) <= 3)
             or HTML_BLOCK_START_RE.match(line)
             or _starts_interrupting_item(line)
@@ -1045,6 +1112,17 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool =
             break
         end += 1
     return end, 0
+
+
+# An ATX heading's closing sequence (CommonMark): ``#`` characters ending
+# the line, after a space or tab or as all of its text.
+_CLOSING_SEQUENCE_RE = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
+
+
+def _atx_text(text: str) -> str:
+    """An ATX heading's text as CommonMark reads it, in a list item or a
+    quote: without the spaces around it and without a closing sequence."""
+    return _CLOSING_SEQUENCE_RE.sub("", text.strip(" \t")).strip(" \t")
 
 
 _Heading = tuple[str, Marker, int]  # title, marker, level
@@ -1120,10 +1198,10 @@ def _parse_body(
     source lines counted from *offset*. *depth*: how many list items the
     lines are in (``_parse_list``).
 
-    Without *headings*, the lines are a list item's content
-    (``_parse_list``): an ATX heading's line is a paragraph of its own, a
-    setext underline more of its paragraph, and a paragraph's directives
-    stay in its text.
+    Without *headings*, the lines are a list item's or a block quote's
+    content (``_parse_list``, ``quote_content``): a heading there, ATX or
+    setext, is a ``heading`` block, not a section, and a paragraph's
+    directives stay in its text.
     """
     spans = layout.preamble if layout is not None else None
     preamble: list[Block] = []
@@ -1165,10 +1243,11 @@ def _parse_body(
             hashes, text = atx.groups()
             heading = (*split_heading(text), len(hashes))
             index += 1
-        elif not headings and HEADING_RE.match(line):
-            # In an item, a heading is no section: its line is a paragraph
+        elif not headings and (inner := ATX_HEADING_RE.match(line)):
+            # In an item or a quote, a heading is no section (§4.1): a block
             # of its own, which nothing continues (CommonMark).
-            blocks.append(Block(kind="paragraph", text=line.strip(" \t")))
+            hashes, text = inner.groups()
+            blocks.append(Block(kind="heading", text=_atx_text(text or ""), level=len(hashes)))
             index += 1
             lazy = False
         elif RULE_RE.match(line):
@@ -1202,7 +1281,10 @@ def _parse_body(
             end, setext_level = _paragraph_end(lines, index, lazy, headings=headings)
             if setext_level:
                 text = " ".join(part.strip(" \t") for part in lines[index:end - 1])
-                heading = (*split_heading(text), setext_level)
+                if headings:
+                    heading = (*split_heading(text), setext_level)
+                else:
+                    blocks.append(Block(kind="heading", text=text, level=setext_level))
             else:
                 if headings:
                     blocks.append(_parse_paragraph(" ".join(lines[index:end])))
@@ -1234,7 +1316,8 @@ def quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], tuple[_
     """The blocks a block quote holds whose content is *text* — a quote
     block's text, one line per source line (``_read_quote``) — each with
     where it lies: lines counted from the quote's first. As in a list item,
-    no heading, and no lifting of a directive into block fields. *depth*:
+    a heading is a ``heading`` block, not a section, and no directive is
+    lifted into block fields. *depth*:
     how many list items and quotes the content is in (``_parse_list``).
     Cached, as the validator reads a quote's blocks more than once: the
     blocks are shared, not to be changed."""
