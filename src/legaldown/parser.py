@@ -1258,7 +1258,13 @@ def _parse_body(
         opening = FENCE_OPEN_RE.match(line)
         atx = HEADING_RE.match(line) if headings else None
         marker = LIST_ITEM_RE.match(line)
-        if opening:
+        if interrupting_table and indent_width(line) >= 4:
+            # The header row, four columns in or more, where no other block
+            # starts (a ``>`` there is no quote marker).
+            block, index = _parse_table(lines, index)
+            blocks.append(block)
+            lazy = True
+        elif opening:
             end = fence_end(lines, index, opening.group("fence"))
             blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
             index = end

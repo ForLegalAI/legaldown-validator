@@ -3499,3 +3499,19 @@ def test_a_models_paragraph_is_written_as_its_lines(text, read, in_item):
     if in_item:
         [block] = list_items(block)[0].blocks
     assert (block.kind, block.text) == ("paragraph", read)
+
+
+@pytest.mark.parametrize("body", [
+    "a\n    > b\n|-\n",
+    "a\n    - b\n|-\n",
+    "- title: x\n         > > > x\n  |-\n",
+])
+def test_a_table_header_row_four_columns_in_after_a_paragraph_is_read(body):
+    """Its ``>`` or list marker there starts nothing: the row is the header
+    of the table interrupting the paragraph (cmark-gfm). Once read in a
+    loop that never ended."""
+    blocks = parse_document(_FRONTMATTER + body).sections[0].blocks
+    if blocks[0].kind == _U:
+        blocks = list_items(blocks[0])[0].blocks
+    assert [block.kind for block in blocks] == ["paragraph", "table"]
+    _round_trips(body)
