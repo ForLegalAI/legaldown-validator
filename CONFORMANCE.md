@@ -36,7 +36,6 @@ files other than the document itself.
 | Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip` |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Rendering (§17.3) | `ref-not-enumerated` |
-| Lexer-level grammar (§11.2–11.4) | `raw-html` |
 | Other | `frontmatter-invalid-yaml` (reported by the CLI and assembly, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means validating a set of files is out of scope: the validator does not resolve
@@ -55,6 +54,17 @@ boundaries, and the final option (§15.9, `validate_document(final=True)` or
 - A LegalDown attachment file or include fragment validated on its own is checked as a
   standalone document: conditions, placeholders, and terms that refer to its template's
   questions and definitions are reported as undeclared.
+
+`raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
+each HTML block that holds more than comments (text after a comment's `-->` on its line
+included), in list items and quotes too, and once for each text — a paragraph, a table cell, a
+heading — holding an inline tag, processing instruction, declaration or CDATA section, as
+cmark-gfm reads them. Comments, autolinks, code spans, escaped `<`, a link's `<…>` destination
+and a directive's values are not raw HTML; frontmatter values are not Markdown. Comments and code
+spans are found by the directive lexer (§11.4), which reads comments by CommonMark 0.31 and knows
+no tags, so a few rare texts are read differently from cmark-gfm: a comment holding `--`, text
+after an unclosed `<!--` (where cmark-gfm finds no more inline HTML), and a backtick or `<!--`
+inside a CDATA section, declaration or processing instruction.
 
 Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body,
 in list items and in block quotes.
@@ -153,9 +163,9 @@ git clone https://github.com/ForLegalAI/LegalDown ../LegalDown
 LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
-Cases for the rules above are skipped by name, so the 29 `not implemented` skips reproduce this
-table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 91 passed
-and 39 skipped: eight of the other skips are the implemented rules named above, skipped as
+Cases for the rules above are skipped by name, so the 28 `not implemented` skips reproduce this
+table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 92 passed
+and 38 skipped: eight of the other skips are the implemented rules named above, skipped as
 `multi-file case` or `requires conformance level full`, and two are the `multi-file` assembly
 case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py` assembles it with
 a loader instead. Cases that need the final option run with it; cases that need an answers set

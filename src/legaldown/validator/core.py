@@ -18,9 +18,12 @@ from ..directives import (
     PLACEHOLDER_TYPE_PARAMS,
     Directive,
     Lexed,
+    is_escaped,
     iter_directives,
     lex,
+    mask_directives,
 )
+from ..markdown import HTML_COMMENT_RE, INLINE_HTML_RE, is_comment_only
 from ..models import Amends, Document
 from ..specification import SPEC_VERSION, parse_version
 from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
@@ -377,6 +380,75 @@ def _clashes(presence: Presence, others: list[Presence], questions: Any) -> bool
     """True if a declaration with *presence* can appear together with one of
     the earlier declarations of the same identifier (§15.4)."""
     return any(not exclusive(presence, other, questions) for other in others)
+
+
+# A link's pointy-bracket destination, ``](<…>)``, then an optional title and
+# the closing parenthesis: no raw HTML (CommonMark).
+_LINK_DESTINATION_RE = re.compile(r"""<[^<>\n]*>[ \t]*(?:(?:"[^"]*"|'[^']*'|\([^()]*\))[ \t]*)?\)""")
+
+
+def _inline_html(text: str, lexed: Lexed) -> str | None:
+    """The first inline raw HTML in *text* other than a comment (§8.7), as
+    written, or None: outside code spans, comments and directives (``lex``),
+    not after a backslash, and not a link's ``<…>`` destination."""
+    # What the lexer blanked, a comment or a code span, is filled with a
+    # character no tag holds outside a quoted value: no tag runs across it.
+    view = "".join(
+        "`" if seen == " " and written not in " \t\n" else seen
+        for seen, written in zip(mask_directives(lexed.view, lexed.directives), text, strict=True)
+    )
+    opened = -1  # the last unescaped ``[`` before *at* with no ``]`` after it but a link's
+    scanned = 0
+    pos = 0
+    while (at := view.find("<", pos)) >= 0:
+        pos = at + 1
+        if is_escaped(view, at):
+            continue
+        for k in range(scanned, at):
+            if view[k] == "[" and not is_escaped(view, k):
+                opened = k
+            elif view[k] == "]" and view[k + 1:k + 2] != "(":
+                opened = -1
+        scanned = at
+        before = at
+        while before > 0 and view[before - 1] in " \t":
+            before -= 1
+        if (
+            opened >= 0 and view[before - 2:before] == "]("
+            and (destination := _LINK_DESTINATION_RE.match(view, at))
+        ):
+            pos = scanned = destination.end()
+            opened = -1
+            continue
+        if tag := INLINE_HTML_RE.match(view, at):
+            return text[at:tag.end()]
+    return None
+
+
+def _check_raw_html(document: Document, lex_fragment: Callable[[str], Lexed], result: ValidationResult) -> None:
+    """Warn about raw HTML other than comments (§8.7), which renderers leave
+    out: once for each HTML block, in list items and quotes too, and once for
+    each text — a paragraph, a table cell, a heading — holding inline HTML."""
+    from ..definitions import block_fragments, nested_blocks  # see the import note in validate_document
+
+    def warn(what: str, source: str) -> None:
+        shown = source.strip().split("\n", 1)[0]
+        shown = shown if len(shown) <= 60 else shown[:57] + "..."
+        result.warning(
+            "raw-html",
+            f"Raw HTML {what} ('{shown}') is not rendered: renderers leave it out of the "
+            f"output (§8.7). Only a comment (<!-- -->) is portable (§8.6).",
+        )
+
+    texts = [section.title for section in document.sections]
+    for _section, _index, top in document.iter_indexed_blocks():
+        for block in nested_blocks(top):
+            if block.kind == "html" and not is_comment_only(block.text):
+                warn("block", HTML_COMMENT_RE.sub("", block.text))
+        texts.extend(fragment for fragment, _position in block_fragments(top))
+    for text in texts:
+        if "<" in text and (html := _inline_html(text, lex_fragment(text))) is not None:
+            warn("in text", html)
 
 
 def _check_never_true(
@@ -1327,6 +1399,7 @@ def validate_document(
         not_line_editable=meta.not_line_editable,
     )
     notes = check_template_body(document, lex_fragment, result, template=template)
+    _check_raw_html(document, lex_fragment, result)
     if final:
         _check_final(placeholders, chooses, notes, conditions, questions, result)
 

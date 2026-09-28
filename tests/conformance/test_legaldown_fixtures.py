@@ -74,7 +74,7 @@ IMPLEMENTED_RULES = {
     "placeholder-id-malformed", "placeholder-in-structural-field",
     "placeholder-question-mismatch", "placeholder-type-inconsistent",
     "placeholder-type-invalid", "placeholder-unfilled", "placeholder-unknown-currency",
-    "question-invalid", "question-unused",
+    "question-invalid", "question-unused", "raw-html",
     "ref-broken", "ref-targets-attachment", "representative-name-empty",
     "side-name-duplicate", "side-name-malformed", "side-party-name-format",
     "side-unknown", "sides-absent", "sides-minimum", "supersedes-title-empty",

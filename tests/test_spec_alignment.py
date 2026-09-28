@@ -1990,12 +1990,13 @@ def test_a_whole_line_after_a_comment_is_raw_html():
     text is not rendered and its directives are not recognized (§11.4)."""
     source = _FRONTMATTER + "<!-- TODO --> The Buyer pays {{money: 5}} under {{ref: nope}}.\n"
     result = validate_document(parse_document(source))
-    assert result.diagnostics == [] and result.inline_money == []
+    # Raw HTML, not a comment: rendered nowhere, and warned about (§8.7).
+    assert result.rules() == {"raw-html"} and result.inline_money == []
 
 
 def test_nothing_in_an_html_block_is_validated():
     source = _FRONTMATTER + '<div>{{ref: nope}} {{bogus: x}} {{ "Fee" {{def: fee}}\n{#anchor}</div>\n\nSee {{ref: anchor}}.\n'
-    assert validate_document(parse_document(source)).rules() == {"ref-broken"}
+    assert validate_document(parse_document(source)).rules() == {"ref-broken", "raw-html"}
 
 
 @pytest.mark.parametrize(
@@ -3017,3 +3018,64 @@ def test_a_directive_split_by_a_table_row_is_reported():
 def test_a_table_under_a_quotes_paragraph_not_an_items(body, kinds):
     assert [block.kind for block in parse_document(_FRONTMATTER + body).sections[0].blocks] == kinds
     _round_trips(body)
+
+
+# ── Raw HTML other than comments (§8.7, #40) ──────────────────────
+
+
+@pytest.mark.parametrize(("body", "shown"), [
+    ("<div>Raw</div>\n", ["block ('<div>Raw</div>')"]),
+    ("<!-- a --> x\n", ["block ('x')"]),  # text after a comment, on its line
+    ("- <div>\n", ["block ('<div>')"]),
+    ("> <div>\n", ["block ('<div>')"]),
+    ("Text <b>x</b> and <i>y</i>.\n", ["in text ('<b>')"]),  # once for the text
+    ("- item <span>x</span>\n", ["in text ('<span>')"]),
+    ("> quote <i>x</i>\n", ["in text ('<i>')"]),
+    ("| a | b |\n|---|---|\n| <b>x</b> | c |\n", ["in text ('<b>')"]),
+    ("A <br /> and <b\nclass=x>.\n", ["in text ('<br />')"]),
+    ("A <?php x ?>, <!DOCTYPE html>, <![CDATA[x]]>.\n", ["in text ('<?php x ?>')"]),
+    ("x ](<ab> and b)](<a>\n", ["in text ('<ab>')"]),  # no link, so no destination
+    ('<a title="<!-- x -->"> y\n', ["in text ('<a title=\"<!-- x -->\">')"]),
+])
+def test_raw_html_is_a_warning(body, shown):
+    diagnostics = [d for d in _validate(body).diagnostics if d.rule == "raw-html"]
+    assert [d.level for d in diagnostics] == ["warning"] * len(shown)
+    assert all(part in d.message for part, d in zip(shown, diagnostics, strict=True))
+
+
+@pytest.mark.parametrize("body", [
+    "<!-- c -->\n",
+    "<!-- a --> <!-- b -->\n",
+    "<!-- open\nmore\n",  # an unclosed comment runs to the end
+    "Text <!-- c --> y <!--> <!---> z\n",
+    "See <https://example.com> and <a@b.cz>.\n",  # autolinks
+    "`<b>` and ``<i>``\n",  # code spans
+    "\\<b> escaped\n",
+    "[a](<foo bar>)\n",  # a link destination
+    '[a](<b> "title") and [c]( <d> )\n',
+    '{{placeholder: p, note="<b>"}} x\n',  # a directive's value
+    "a < b and c<d, <3 and <!D> and </b class=\"x\"> and <br/ > and <!doctype x>\n",  # no tag (cmark-gfm)
+    "The rate is <a <!-- draft: confirm --> capped >\n",  # no tag runs across a comment
+    "x `<a` then > and <a <!-- c -->>\n",
+    "```\n<div>\n```\n",
+    "    <div>\n",
+])
+def test_no_raw_html(body):
+    assert "raw-html" not in _validate(body).rules()
+
+
+def test_raw_html_in_a_heading():
+    source = _FRONTMATTER.replace("# Terms {#terms}", "# Terms <b>x</b> {#terms}") + "Text.\n"
+    assert "raw-html" in validate_document(parse_document(source)).rules()
+
+
+def test_raw_html_is_found_in_linear_time():
+    import time
+
+    from legaldown.directives import lex
+    from legaldown.validator.core import _inline_html
+
+    for text in ("<" * 200_000, "](<" * 70_000, "< " * 100_000):
+        start = time.perf_counter()
+        assert _inline_html(text, lex(text)) is None
+        assert time.perf_counter() - start < 2
