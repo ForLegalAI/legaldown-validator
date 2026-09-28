@@ -766,7 +766,7 @@ def test_a_final_document_passes_the_final_check():
 
 def test_a_lazy_line_continues_its_list_item():
     document = parse_document("---\ntitle: T\n---\n\n# A\n\n- item\ncontinued {#item}\n")
-    assert [[item_text(item) for item in b.items] for b in document.sections[0].blocks] == [["item continued {#item}"]]
+    assert [[item_text(item) for item in b.items] for b in document.sections[0].blocks] == [["item\ncontinued {#item}"]]
     result = validate_document(document)
     assert "anchor-misplaced" not in result.rules()
     assert "item" in result.section_lookup

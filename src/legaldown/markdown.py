@@ -93,13 +93,14 @@ def html_block_end(lines: list[str], index: int) -> int | None:
 def split_lone_tag(text: str) -> str | None:
     """*text*, with a line break in place of its first plain space, if
     *text* (no line break of its own) is by itself a complete HTML tag
-    (kind 7): joined into one line, it would misread as an HTML block
+    (kind 7): written on one line, it would misread as an HTML block
     rather than the paragraph text it is, and it cannot interrupt a
     paragraph, so a preceding blank line is enough to start it. None when
     *text* is not one, or holds no plain space to split at (a tab-only
     attribute separator, or a bare tag): the caller falls back to escaping
-    it, since only a paragraph joined from two lines — always at a plain
-    space — can hold one (``strip_text`` leaves tabs elsewhere as text)."""
+    it. Only a model that joined a paragraph's two lines at a space holds
+    one: one built in code, or read by an earlier version, which joined
+    them so."""
     if not _HTML_BLOCK_7_RE.match(text):
         return None
     at = text.find(" ")
@@ -158,6 +159,15 @@ def strip_text(text: str) -> str:
     a no-break space, is text: ``\u00a0- item`` is a paragraph, and stays
     one when written back."""
     return text.strip(" \t\r\n")
+
+
+def paragraph_text(lines: list[str]) -> str:
+    """The text of a paragraph of *lines* (CommonMark paragraph content):
+    each line without its leading spaces and tabs, joined with LF, and the
+    whole ``strip_text``-ed. A line's trailing whitespace is kept but for the
+    last line's: before a line break it may be a hard break (two spaces or
+    more), as may a backslash ending a line."""
+    return strip_text("\n".join(line.lstrip(" \t") for line in lines))
 
 
 def indent_width(line: str) -> int:

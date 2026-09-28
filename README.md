@@ -251,8 +251,8 @@ reads as its id (`id_term`), and an id that is not a valid identifier is left ou
 
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it
 valid, so what you authored is exactly what the validator judges. The serializer, by contrast,
-normalizes: frontmatter is re-emitted as canonical YAML, paragraphs are written as single
-lines, setext (underlined) headings are written as `#` headings, list items are written with
+normalizes: frontmatter is re-emitted as canonical YAML, setext (underlined) headings are
+written as `#` headings, list items are written with
 `-` (`+` where `-` would read as a thematic break) or `1.`, `2.`, … whichever marker they
 had, each nested list at its parent item's content and numbered on its own, without blank
 lines between items, and table rows are written
@@ -278,6 +278,15 @@ Tables follow GFM: a table needs a delimiter row with one cell per header, rows 
 header's width, and a `|` inside a cell — a code span's included — is written `\|`. A
 table block's `headers` and `rows` hold the cell text with those escapes removed, and
 `align` holds each column's alignment (`"left"`, `"right"`, `"center"`, or `""`).
+
+A paragraph's `text` (a definition's, and a ref's or term's `prefix` and `suffix`, too) keeps
+its lines, joined with `\n` and without their indentation, as CommonMark reads them: a line
+ending in `\` or in two spaces is a hard line break, and each other line break a soft one,
+which a renderer shows as a space. Link reference definitions stay on their lines. It is written
+back as those lines; a line that would, at the margin, end the paragraph (a list item, a
+heading, a setext underline, a table's delimiter row, and the like — only a lazy line or a model
+built in code holds one) is written four columns in, where it continues the paragraph and is
+read back as it was. A blank line in a model's paragraph, which would end it, is left out.
 
 Lines indented four or more columns are an indented code block, as in CommonMark, so a
 paragraph indented that far is code: its directives and anchors are literal (§11.4). A

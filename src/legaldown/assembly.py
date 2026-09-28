@@ -437,9 +437,8 @@ def _occurrences(
                 if directive.name not in ("placeholder", "choose"):
                     continue
                 if directive.malformed:
-                    # The parser joins a paragraph's lines with spaces, so
-                    # one written across lines is well-formed to the
-                    # validator — and could not be filled here.
+                    # One written across lines, say, which the validator
+                    # reports too: it could not be filled here.
                     malformed.append(directive)
                     continue
                 column = directive.start - offsets[row]
@@ -775,8 +774,8 @@ def _file_problems(path: str, kind: str, source: _Source, front: _Frontmatter | 
 
 def _malformed(*sources: _Source, front: _Frontmatter | None) -> list[Diagnostic]:
     """A placeholder or choice the lexer cannot read — one written across
-    lines, which the parser joins into one — cannot be filled, so the
-    template is refused rather than assembled with it unfilled."""
+    lines, say — cannot be filled, so the template is refused rather than
+    assembled with it unfilled."""
     found = [(source.path, d) for source in sources for d in source.malformed]
     found += [("", d) for d in (front.malformed if front else [])]
     return [
