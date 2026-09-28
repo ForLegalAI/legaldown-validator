@@ -6,6 +6,7 @@ a dict has none, and its diagnostics carry no line.
 """
 from __future__ import annotations
 
+import bisect
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -54,11 +55,17 @@ def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], 
             return  # an alias to a node already being walked
         seen = seen | {id(node)}
         if isinstance(node, yaml.MappingNode):
+            merged: list[yaml.Node] = []
             for key, value in node.value:
-                if isinstance(key, yaml.ScalarNode):
+                if isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge":
+                    merged.append(value)  # its keys are this mapping's, below its own
+                elif isinstance(key, yaml.ScalarNode):
                     inner = (*path, key.value)
                     keys.setdefault(inner, key.start_mark.line + first_line)
                     walk(value, inner, seen)
+            for value in merged:
+                for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
+                    walk(source, path, seen)
         elif isinstance(node, yaml.SequenceNode):
             entries = [entry for entry in node.value if isinstance(entry, yaml.MappingNode)]
             for index, entry in enumerate(entries):
@@ -122,21 +129,45 @@ class SourceMap:
         """The first line of a top-level block."""
         return self.body_start + self.span(section, index).start + 1
 
-    def find(self, start: int, end: int, needle: str, texts: list[str], text: int | None, offset: int, nth: int) -> int:
+    def find(
+        self,
+        start: int,
+        end: int,
+        needle: str,
+        texts: list[str],
+        text: int | None,
+        offset: int,
+        nth: int,
+        cache: dict[Any, Any] | None = None,
+    ) -> int:
         """The line, among file lines ``[start, end)``, of *needle* — the
         source of a directive or marker — as the occurrence it is in *texts*,
         the model's texts of those lines in order: the one at *offset* in
         ``texts[text]``, or without a text, occurrence *nth* (from 0). A
         needle is looked for by its start, and then by its opener alone,
         since a text may join or unescape what the source splits or escapes;
-        one not found is placed at *start*."""
+        one not found is placed at *start*. *cache* keeps what is found of
+        the same lines and texts (``Locator``): each is read once, so a block
+        holding many directives is not read once for each."""
         lines = self.lines[start - 1:end - 1]
+        cache = {} if cache is None else cache
         for candidate in _candidates(needle):
-            before = nth
-            if text is not None:
-                before = sum(_count(earlier, candidate) for earlier in texts[:text])
-                before += _count(texts[text][:offset], candidate)
-            line = _nth(lines, candidate, before)
+            if not candidate.startswith("{"):
+                # Not a directive or marker (a quote's first line, raw HTML):
+                # few in a block, looked for as they are.
+                before = nth
+                if text is not None:
+                    before = sum(_count(earlier, candidate) for earlier in texts[:text])
+                    before += _count(texts[text][:offset], candidate)
+                line = _nth(lines, candidate, before)
+            else:
+                size = len(candidate)
+                before = nth
+                if text is not None:
+                    places = _braces(cache, ("texts", id(texts), size), texts).get(candidate, [])
+                    before = bisect.bisect_left(places, (text, offset))
+                rows = _braces(cache, ("lines", start, end, size), lines).get(candidate, [])
+                line = rows[before][0] if before < len(rows) else None
             if line is not None:
                 return start + line
         return start
@@ -156,6 +187,23 @@ def _candidates(needle: str) -> list[str]:
     if opener and opener not in found:
         found.append(opener)
     return [candidate for candidate in found if candidate]
+
+
+def _braces(cache: dict[Any, Any], key: tuple[Any, ...], texts: list[str]) -> dict[str, list[tuple[int, int]]]:
+    """Where each unescaped ``{`` in *texts* starts which text of
+    ``key[-1]`` characters: ``(text index, offset)`` in order, by that text.
+    Kept in *cache* under *key*."""
+    if key not in cache:
+        size = key[-1]
+        found: dict[str, list[tuple[int, int]]] = {}
+        for number, text in enumerate(texts):
+            at = text.find("{")
+            while at >= 0:
+                if not is_escaped(text, at):
+                    found.setdefault(text[at:at + size], []).append((number, at))
+                at = text.find("{", at + 1)
+        cache[key] = found
+    return cache[key]
 
 
 def _count(text: str, needle: str) -> int:
@@ -209,6 +257,7 @@ class Locator:
         self._map: SourceMap | None = source_map if source_map is not None and source_map.fits(document) else None
         self._document = document
         self._leaves: dict[tuple[int | None, int], list[_Leaf] | None] = {}
+        self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
 
     def start(self) -> int | None:
         """The document's first line."""
@@ -255,8 +304,10 @@ class Locator:
             for leaf in self._leaves_of(section, index) or ():
                 if fragment in leaf.places:
                     text, base = leaf.places[fragment]
-                    return self._map.find(leaf.start, leaf.end, needle, leaf.texts, text, base + offset, 0)
-        return self._map.find(start, end, needle, [], None, 0, nth)
+                    return self._map.find(
+                        leaf.start, leaf.end, needle, leaf.texts, text, base + offset, 0, self._cache
+                    )
+        return self._map.find(start, end, needle, [], None, 0, nth, self._cache)
 
     def lifted(self, section: int | None, index: int, needle: str) -> int | None:
         """The line of the directive the parser lifted out of a top-level
@@ -267,7 +318,7 @@ class Locator:
         leaves = self._leaves_of(section, index)
         if leaves and leaves[0].lifted is not None:
             leaf = leaves[0]
-            return self._map.find(leaf.start, leaf.end, needle, leaf.texts, 0, leaf.lifted, 0)
+            return self._map.find(leaf.start, leaf.end, needle, leaf.texts, 0, leaf.lifted, 0, self._cache)
         return self.find(section, index, needle)
 
     def _leaves_of(self, section: int | None, index: int) -> list[_Leaf] | None:

@@ -66,6 +66,33 @@ def test_a_frontmatter_diagnostic_names_its_key(frontmatter, rule, line):
     assert line in _lines(f"---\n{frontmatter}---\n\n# A\n\nText.\n", rule)
 
 
+def test_a_merged_key_is_where_it_is_written():
+    """A mapping merged into a list entry (`<<: *base`) brings its keys, at
+    the lines they are written on; the entry's own keys come first."""
+    frontmatter = (
+        "title: T\nsides:\n  - &base\n    name: providers\n    parties:\n      - name: acme\n"
+        "        type: legal_entity\n  - <<: *base\n    name: clients\n"
+    )
+    document = parse_document(f"---\n{frontmatter}---\n\n# A\n")
+    assert document.source_map.key("sides", 1, "parties", 0, "name") == 7
+    assert document.source_map.key("sides", 1, "name") == 10
+    assert _lines(f"---\n{frontmatter}---\n\n# A\n", "party-name-duplicate") == [7]
+
+
+def test_many_directives_in_one_block_are_found_quickly():
+    """Each block's source is read once, not once per directive."""
+    import time
+
+    rows = "\n".join(f"| {{{{ref: bad-{n}}}}} | x |" for n in range(3000))
+    source = _HEAD + "| a | b |\n|---|---|\n" + rows + "\n\n" + " ".join(f"{{{{ref: p-{n}}}}}" for n in range(3000))
+    document = parse_document(source)
+    start = time.perf_counter()
+    lines = [d.line for d in validate_document(document).diagnostics if d.rule == "ref-broken"]
+    assert time.perf_counter() - start < 5
+    assert lines[:3] == [_BODY + 2, _BODY + 3, _BODY + 4]
+    assert lines[-1] == _BODY + 3003
+
+
 def test_frontmatter_that_cannot_be_read_names_its_line():
     with pytest.raises(FrontmatterError) as raised:
         parse_document("---\ntitle: Fixture\n  bad indent: [unclosed\n---\n\n# A\n")
