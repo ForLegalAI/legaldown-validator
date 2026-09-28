@@ -158,8 +158,8 @@ def list_items(block: Block) -> list[ListItem]:
 
 
 def item_text(item: ListItem) -> str:
-    """An item's text as one line: its first paragraph's, or ``""`` when it
-    opens with something else or is empty."""
+    """An item's text: its first paragraph's (its lines joined with LF), or
+    ``""`` when it opens with something else or is empty."""
     first = item.blocks[0] if item.blocks else None
     return first.text if first is not None and first.kind == "paragraph" else ""
 
@@ -320,12 +320,17 @@ def _block_text(kind: str, value: Any) -> str:
     if kind == "heading":
         return heading_text(text)
     if kind == "quote":
-        # A line's indentation is content: four columns make it code. Its
-        # trailing whitespace is not written back (``serializer``).
-        return "\n".join(line.rstrip(" \t") for line in text.split("\n")).rstrip("\n")
+        # A line's indentation is content: four columns make it code; so is
+        # its trailing whitespace, which may be a hard break. A blank line is
+        # written as ">" (``serializer``), and those at the end not at all.
+        lines = ["" if is_blank(line) else line for line in text.split("\n")]
+        while lines and not lines[-1]:
+            lines.pop()
+        return "\n".join(lines)
     # Only spaces, tabs and line endings are stripped (CommonMark): other
-    # whitespace, such as a no-break space, is text.
-    return strip_text(text)
+    # whitespace, such as a no-break space, is text. A paragraph's lines are
+    # joined with LF (``paragraph_text``).
+    return strip_text(LINE_ENDING_RE.sub("\n", text))
 
 
 def _list_item(value: Any) -> ListItem:

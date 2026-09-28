@@ -117,17 +117,10 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> li
             lexed = lex_fragment(fragment)
             for m in marker_matches(fragment, lexed):
                 marker = parse_marker(m.group(0))
-                # Only whitespace and comments may follow a marker: a
-                # comment is not rendered (§8.6), but a code span is text.
-                # An item's marker ends its first paragraph, its first
-                # line here: a note or code may follow (§5.7).
-                line_end = fragment.find("\n", m.end())
-                rest = fragment[m.end():line_end] if line_end >= 0 else fragment[m.end():]
-                at_end = (
-                    position
-                    and "\n" not in fragment[:m.start()]
-                    and not HTML_COMMENT_RE.sub("", rest).strip()
-                )
+                # Only whitespace and comments may follow a marker, to the
+                # end of its paragraph: a comment is not rendered (§8.6),
+                # but a code span is text.
+                at_end = position and not HTML_COMMENT_RE.sub("", fragment[m.end():]).strip()
                 include_only = (
                     at_end
                     and block.kind == "paragraph"

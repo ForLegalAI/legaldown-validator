@@ -33,6 +33,7 @@ from .markdown import (
     is_blank,
     item_content_column,
     nested_offset,
+    paragraph_text,
     strip_text,
 )
 from .markers import Marker, split_heading
@@ -844,7 +845,7 @@ def _parse_list(
         layout = _Layout()
         content = _item_lines(lines[first:stop], column, {k - first: at for k, at in text.items() if first <= k < stop})
         if depth >= MAX_LIST_DEPTH:
-            joined = " ".join(part.strip(" \t") for part in content if part.strip(" \t"))
+            joined = paragraph_text([part for part in content if not is_blank(part)])
             blocks = [Block(kind="paragraph", text=joined)] if joined else []
             if blocks:
                 layout.preamble.append(_BlockSpan("paragraph", offset + first, offset + stop))
@@ -1257,7 +1258,13 @@ def _parse_body(
         opening = FENCE_OPEN_RE.match(line)
         atx = HEADING_RE.match(line) if headings else None
         marker = LIST_ITEM_RE.match(line)
-        if opening:
+        if interrupting_table and indent_width(line) >= 4:
+            # The header row, four columns in or more, where no other block
+            # starts (a ``>`` there is no quote marker).
+            block, index = _parse_table(lines, index)
+            blocks.append(block)
+            lazy = True
+        elif opening:
             end = fence_end(lines, index, opening.group("fence"))
             blocks.append(Block(kind="code", text="\n".join(lines[index:end])))
             index = end
@@ -1309,12 +1316,9 @@ def _parse_body(
                 else:
                     blocks.append(Block(kind="heading", text=text, level=setext_level))
             else:
-                if headings:
-                    blocks.append(_parse_paragraph(" ".join(lines[index:end])))
-                else:
-                    # An item's lines are joined as its text always was: each
-                    # stripped.
-                    blocks.append(Block(kind="paragraph", text=" ".join(part.strip(" \t") for part in lines[index:end])))
+                # Its lines, line breaks kept (hard ones among them).
+                text = paragraph_text(lines[index:end])
+                blocks.append(_parse_paragraph(text) if headings else Block(kind="paragraph", text=text))
                 interrupted = end
             index = end
             lazy = False

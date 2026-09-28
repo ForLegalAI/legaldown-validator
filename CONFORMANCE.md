@@ -174,10 +174,11 @@ the first heading is at level 1 (§4.1). A document without frontmatter may be a
 fragment or an attachment file validated on its own, which has no level-1 heading (§12), so
 its first heading is not checked; the skips after it are.
 
-`directive-malformed` is evaluated on the text the parser hands the validator. The parser joins
-the lines of a paragraph (and a list item's continuation lines) with a space, so a directive
-broken across two of those lines reaches the validator on one line and is not reported. A
-directive left unclosed at the end of its paragraph, list item, or table cell is reported.
+`directive-malformed` is evaluated on the text the parser hands the validator, which keeps a
+paragraph's lines (in a list item and a block quote too): a directive broken across two of them
+is reported (§11.2, §11.5), as is one left unclosed at the end of its paragraph, list item, or
+table cell. So is a `{{def:}}` whose quoted term is on the line before it: §7.2 puts the term on
+the same line (`def-no-quoted-span`).
 
 ## Checking this yourself
 
@@ -223,8 +224,7 @@ asks, all of them or those an answers set still leaves open.
   `include-file-missing`. The other Full checks — `include-cycle`, the `*-anchor-duplicate` and
   `include-heading-skip` rules, and the path rules — are not made.
 - A `{{placeholder:}}` or `{{choose:}}` written across two lines is refused with
-  `directive-malformed`: the validator reads it on one line (see above), but it could not be
-  filled.
+  `directive-malformed`, which the validator reports too (see above): it could not be filled.
 - A template with `translations` is refused with `translation-file-missing`: its linked templates
   are assembled with it (§15.7.2), which this implementation does not do. The specification has
   no id for a capability an implementation lacks, so the refusal uses the rule it would otherwise

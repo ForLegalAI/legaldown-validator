@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from .directives import Directive, Lexed, lex, mask_directives
+from .directives import Directive, Lexed, blank_fenced_code, lex, mask_directives
 from .markdown import FENCE_OPEN_RE, is_indented_code
 from .models import LIST_KINDS, Block, Document, list_items
 from .validator.helpers import generate_identifier
@@ -249,7 +249,8 @@ def _fragments(
                 for child in children:
                     walk(child, depth + 1, path, False, False)
             elif block.text:
-                fragments.append((block.text, False, path))  # too deep to read: its text as one
+                # Too deep to read: its text as one, its fenced code blanked.
+                fragments.append((blank_fenced_code(block.text), False, path))
             if quotes is not None:
                 quotes[slot] = (quotes[slot][0], range(at, len(fragments)))
         else:
@@ -290,15 +291,18 @@ def _own_fragments(block: Block) -> list[tuple[str, bool]]:
     ):
         # Raw HTML and indented code: no directive or marker is recognized
         # (§11.4). A source block is not read at all: its text is read once
-        # written and parsed (``serialize_document``). A fenced block's text is lexed, which blanks the fence:
-        # text a model puts after its closing fence is checked -- which needs
+        # written and parsed (``serialize_document``). A fenced block's text
+        # is read with its fence blanked (below): text a model puts after its
+        # closing fence is checked -- which needs
         # at least the fence's own line and one more, so a fence with nothing
         # after it (unclosed at EOF, one line) is code through and through.
         return []
     paragraph = block.kind in ("paragraph", "definition")
     lifted = block.kind in ("ref", "term")
     fragments: list[tuple[str, bool]] = []
-    if block.text:
+    if block.kind == "code" and block.text:
+        fragments.append((blank_fenced_code(block.text), False))
+    elif block.text:
         fragments.append((block.text, paragraph))
     if block.prefix:
         fragments.append((block.prefix, False))

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from .directives import is_escaped
+from .markdown import paragraph_text
 
 if TYPE_CHECKING:
     from .models import Block, Document
@@ -381,7 +382,7 @@ def _lifted(block: Block, own: list[str], first: int, lines: list[str], start: i
     holds the lifted directive as written between its fragments (a ref's or
     term's prefix and suffix; a definition's text, after its anchor). None
     when the fragments do not fit the source."""
-    joined = " ".join(lines).strip(" \t")
+    joined = paragraph_text(lines)
     places: dict[int, tuple[int, int]] = {}
     if block.kind == "definition":
         body = own[0] if own else ""

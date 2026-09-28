@@ -314,7 +314,6 @@ _COMBINING = "&<\\"
 # A line's container markers: block quote markers, then a list item marker.
 _CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?")
 # A link reference definition: its label, destination, and optional title.
-# The parser joins a paragraph's lines, so only this span is the definition.
 _LINK_REFERENCE_RE = re.compile(
     r" {0,3}\[[^\]]+\]:[ \t]*\S*(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
 )
@@ -368,9 +367,9 @@ def insertion_boundary_problem(
         ):
             return f"'{after}' directly after it"
     reference = _LINK_REFERENCE_RE.match(template, content_start)
-    # A definition is the whole line; text after it makes the line a
-    # paragraph (the parser joins a paragraph's lines, so a definition
-    # followed by more text is not told apart, and is not flagged).
+    # A definition is the whole line; text after it on the line makes the
+    # line a paragraph's. (One a later line follows is still a definition:
+    # a paragraph keeps its lines.)
     if reference and start < reference.end() and not template[reference.end():line_end].strip():
         return "it is in a link reference definition"
     destination = template.rfind("](", line_start, start)

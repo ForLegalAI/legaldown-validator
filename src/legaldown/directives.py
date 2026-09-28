@@ -80,10 +80,11 @@ def _blank(text: str, start: int, end: int) -> str:
     return text[:start] + blanked + text[end:]
 
 
-def _blank_fenced_code(text: str) -> str:
-    """*text* with its fenced code blocks blanked. A fence needs lines of its
-    own, so single-line text (a paragraph, which the parser joins onto one
-    line, or a table cell) has none."""
+def blank_fenced_code(text: str) -> str:
+    """*text* — text holding blocks, such as a code block's or a block
+    quote's — with its fenced code blocks blanked, line breaks kept. Not a
+    paragraph's: a fence cannot interrupt one, so a line of it that opens
+    like one (read without its indentation, or lazy) is text."""
     if "\n" not in text:
         return text
     lines = text.split("\n")
@@ -299,8 +300,8 @@ def _malformed_end(text: str, start: int, body: int) -> int:
 class Lexed:
     """What the lexer found in a piece of text.
 
-    ``view`` has the same offsets as the text, with fenced code, comments,
-    and code spans blanked. Callers that look around directives (the defined
+    ``view`` has the same offsets as the text, with comments and code spans
+    blanked. Callers that look around directives (the defined
     term before a ``{{def:}}``, anchor markers) use it so they agree with the
     lexer about what is literal.
     """
@@ -313,14 +314,16 @@ class Lexed:
 def lex(text: str) -> Lexed:
     """Lex *text* for directives, outside literal regions (§11.4).
 
-    Fenced code blocks are found first, by line, as block structure precedes
-    inline structure. The rest is read once, left to right, taking whichever
+    *text* is inline text, such as a paragraph's: fenced code is not looked
+    for. Text that can hold one (a code block's, a block quote's) is passed
+    through ``blank_fenced_code`` first, as block structure precedes inline
+    structure. It is read once, left to right, taking whichever
     of a directive, a comment, or a code span opens first. A directive is
     lexed from the source as written and consumes its own text, so a quoted
     value may hold backticks or ``<!--`` without opening anything. Any other
     unescaped ``{{`` is literal text that is usually a typo (a stray brace).
     """
-    view = _blank_fenced_code(text or "")
+    view = text or ""
     directives: list[Directive] = []
     stray_braces: list[int] = []
     pos = 0

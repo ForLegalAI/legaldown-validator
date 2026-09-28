@@ -907,7 +907,7 @@ _PREAMBLE_SOURCE = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + (
 def test_preamble_is_kept_out_of_the_numbered_sections():
     document = parse_document(_PREAMBLE_SOURCE)
     assert [s.identifier for s in document.sections] == ["confidentiality"]
-    assert "entered into between" in document.preamble[0].text
+    assert "entered into\nbetween" in document.preamble[0].text
 
 
 def test_definition_in_the_preamble_is_document_wide():
@@ -1219,8 +1219,8 @@ def test_a_list_item_or_quote_that_is_one_fence_line_is_code(body):
 
 
 @pytest.mark.parametrize(("body", "items"), [
-    ("- a\n  2. ~~~ {{ref: x}}\n", [("unordered_list", ["a 2. ~~~ {{ref: x}}"])]),
-    ("1. a\n   2. b\n   3. c\n", [("ordered_list", ["a 2. b 3. c"])]),
+    ("- a\n  2. ~~~ {{ref: x}}\n", [("unordered_list", ["a\n2. ~~~ {{ref: x}}"])]),
+    ("1. a\n   2. b\n   3. c\n", [("ordered_list", ["a\n2. b\n3. c"])]),
     # A nested list, written numbered from 1.
     ("- a\n  1. b\n", [("unordered_list", ["a\n1. b"])]),
     ("- a\n  - b\n", [("unordered_list", ["a\n- b"])]),
@@ -1888,7 +1888,7 @@ def test_rows_take_the_header_width_and_empty_rows_are_kept():
 def test_rows_without_a_matching_delimiter_row_are_a_paragraph(body):
     block = _table(body)
     assert block.kind == "paragraph"
-    assert block.text == " ".join(body.split("\n")).strip()
+    assert block.text == body.strip()
     _round_trips(body)
 
 
@@ -2177,7 +2177,7 @@ def test_code_directly_after_a_list_is_written_so_it_stays_code():
     document = parse_document(_FRONTMATTER + "- a\n\n<a\nhref='x'>\n\n    code {{ref: nope}}\n")
     reparsed = parse_document(serialize_document(document))
     assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [
-        ("unordered_list", ""), ("paragraph", "<a href='x'>"), ("code", "    code {{ref: nope}}")
+        ("unordered_list", ""), ("paragraph", "<a\nhref='x'>"), ("code", "    code {{ref: nope}}")
     ]
     assert "ref-broken" not in validate_document(reparsed).rules()
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
@@ -2308,9 +2308,9 @@ def test_an_item_of_another_type_short_of_the_items_content_starts_another_list(
 def test_a_marker_four_columns_into_an_item_starts_no_item():
     # Four or more columns into the item's content: paragraph text, or
     # indented code after a blank line (CommonMark).
-    assert _shape(_list("- a\n      - b\n"))[1] == [["a - b"]]
+    assert _shape(_list("- a\n      - b\n"))[1] == [["a\n- b"]]
     assert _shape(_list("- a\n\n      - b\n"))[1] == [["a", ("code", "    - b")]]
-    assert _shape(_list("- a\n  - b\n        - c\n"))[1] == [["a", (_U, [["b - c"]])]]
+    assert _shape(_list("- a\n  - b\n        - c\n"))[1] == [["a", (_U, [["b\n- c"]])]]
 
 
 def test_a_fence_in_a_nested_item_ends_at_its_siblings_marker():
@@ -2369,12 +2369,12 @@ def test_a_list_indented_into_an_earlier_items_content_is_the_items():
     [
         # Four columns in, short of the item's content (5): no item, but a
         # lazy continuation of the paragraph open there (CommonMark).
-        ("10.  a\n    - {{placeholder: p}}\n", [["a - {{placeholder: p}}"]]),
-        ("10.  1. y\n    - b\n", [[(_O, [["y - b"]])]]),
+        ("10.  a\n    - {{placeholder: p}}\n", [["a\n- {{placeholder: p}}"]]),
+        ("10.  1. y\n    - b\n", [[(_O, [["y\n- b"]])]]),
         # The quote keeps the lazy line four columns in, where its content,
         # read as blocks, still continues the paragraph.
         ("10.  > q\n    - b\n", [[("quote", "q\n    - b")]]),
-        ("10.  a\n\n     b\n    - c\n", [["a", "b - c"]]),
+        ("10.  a\n\n     b\n    - c\n", [["a", "b\n- c"]]),
     ],
 )
 def test_a_marker_short_of_the_items_content_but_four_columns_in_is_lazy_text(body, shape):
@@ -2399,7 +2399,7 @@ def test_a_line_short_of_an_items_content_ends_it_after_anything_but_a_paragraph
         (_O, [[("html", "</div>")]]), ("code", "  ~~~\n   - a {{placeholder: p}}")
     ]
     # After a paragraph it is a lazy continuation line.
-    assert _shape(_list("10.  a\n  b\n"))[1] == [["a b"]]
+    assert _shape(_list("10.  a\n  b\n"))[1] == [["a\nb"]]
 
 
 # ── include_signatures (#48) ──────────────────────────────────────
@@ -2676,7 +2676,7 @@ def test_lists_nested_past_the_limit_are_read_as_text():
         block = item.blocks[-1]
     [item] = block.items
     assert [child.kind for child in item.blocks] == ["paragraph"]
-    assert item.blocks[0].text.startswith(f"level {MAX_LIST_DEPTH} - level")
+    assert item.blocks[0].text.startswith(f"level {MAX_LIST_DEPTH}\n- level")
 
 
 # ── A quote's blocks (#41, #56) ───────────────────────────────────
@@ -2721,9 +2721,9 @@ def test_a_quotes_blocks_are_its_fragments():
 @pytest.mark.parametrize(("body", "text", "paragraphs"), [
     # A lazy line four columns in can look like a heading, a fence or an
     # item: the quote keeps it where, read again, it continues the paragraph.
-    ("> a\n    # b\n", "a\n    # b", ["a # b"]),
-    ("> a\n    ```\n", "a\n    ```", ["a ```"]),
-    ("> - a\n    - b\n", "- a\n      - b", ["a - b"]),
+    ("> a\n    # b\n", "a\n    # b", ["a\n# b"]),
+    ("> a\n    ```\n", "a\n    ```", ["a\n```"]),
+    ("> - a\n    - b\n", "- a\n      - b", ["a\n- b"]),
     ("> a\n\n", "a", ["a"]),
     # A tab in the leading markers is the columns it reaches.
     (">\tb\n", "  b", ["b"]),
@@ -2830,15 +2830,15 @@ _NBSP = " "
     # A line of a no-break space (text pasted from Word) is not blank: it
     # continues what a blank line would end.
     (f"<div>\n{_NBSP}\n# H\n", [("html", f"<div>\n{_NBSP}\n# H")]),
-    (f"para\n{_NBSP}\nmore\n", [f"para {_NBSP} more"]),
-    (f"- a\n{_NBSP}\n- b\n", [(_U, [[f"a {_NBSP}"], ["b"]])]),
+    (f"para\n{_NBSP}\nmore\n", [f"para\n{_NBSP}\nmore"]),
+    (f"- a\n{_NBSP}\n- b\n", [(_U, [[f"a\n{_NBSP}"], ["b"]])]),
     (f"> a\n> {_NBSP}\n> b\n", [("quote", f"a\n{_NBSP}\nb")]),
-    (f"    code\n{_NBSP}\n    more\n", [("code", "    code"), f"{_NBSP}     more"]),
+    (f"    code\n{_NBSP}\n    more\n", [("code", "    code"), f"{_NBSP}\nmore"]),
     # Nor is it indentation: the line is paragraph text.
     (f"{_NBSP}> x\n", [f"{_NBSP}> x"]),
     (f"{_NBSP}# h\n", [f"{_NBSP}# h"]),
     (f"{_NBSP}- x\n", [f"{_NBSP}- x"]),
-    (f"{_NBSP}| a | b |\n{_NBSP}|---|---|\n", [f"{_NBSP}| a | b | {_NBSP}|---|---|"]),
+    (f"{_NBSP}| a | b |\n{_NBSP}|---|---|\n", [f"{_NBSP}| a | b |\n{_NBSP}|---|---|"]),
 ])
 def test_a_no_break_space_is_text(body, shape):
     document = parse_document(_FRONTMATTER + body)
@@ -2898,10 +2898,10 @@ def test_raw_html_in_an_item_takes_no_lazy_line(body):
     # Lines reaching the item's content are the HTML's, whatever they look like.
     ("- <div>\n  - x\n  1. y\n  ---\n", [[("html", "<div>\n- x\n1. y\n---")]]),
     # A lone tag cannot interrupt the item's paragraph: a lazy line continues it.
-    ("- a\n  <span>\ny\n", [["a <span> y"]]),
+    ("- a\n  <span>\ny\n", [["a\n<span>\ny"]]),
     # A blank line ends a block-level tag's HTML; a later item is a sibling.
     ("- <div>\n\n  x\n- b\n", [[("html", "<div>"), "x"], ["b"]]),
-    ("1. a\n2. <table>\n   <tr>\n3. b\nz\n", [["a"], [("html", "<table>\n<tr>")], ["b z"]]),
+    ("1. a\n2. <table>\n   <tr>\n3. b\nz\n", [["a"], [("html", "<table>\n<tr>")], ["b\nz"]]),
 ])
 def test_raw_html_in_an_item(body, items):
     [block] = parse_document(_FRONTMATTER + body).sections[0].blocks
@@ -2954,21 +2954,21 @@ def _tables(body: str):
     ("| a |\n|---|\n    code\n", [("table", ["a"], []), ("code", "    code")]),
     ("| a |\n|---|\n<span>\n", [("table", ["a"], []), ("html", "<span>")]),
     ("| a |\n|---|\n---\n", [("table", ["a"], []), ("rule", "")]),
-    ("| a |\n|---|\n|\n| b |\n", [("table", ["a"], []), "| | b |"]),
+    ("| a |\n|---|\n|\n| b |\n", [("table", ["a"], []), "|\n| b |"]),
     # A delimiter row needs a pipe, and is no list item.
     ("a | b\n- | -\n", ["a | b", (_U, [["| -"]])]),
-    ("a | b\n    --- | ---\n", ["a | b     --- | ---"]),
+    ("a | b\n    --- | ---\n", ["a | b\n--- | ---"]),
     # A table interrupts a paragraph; a header indented any amount is its line.
     ("p\na | b\n--- | ---\n", ["p", ("table", ["a", "b"], [])]),
     ("Text.\n    | a |\n|---|\n", ["Text.", ("table", ["a"], [])]),
     # A setext underline, or a delimiter-like line, is no header there.
-    ("p\n|---|---|\n--- | ---\n", ["p |---|---| --- | ---"]),
+    ("p\n|---|---|\n--- | ---\n", ["p\n|---|---|\n--- | ---"]),
     # In items and quotes.
     ("- | a |\n  |---|\nb\n", [(_U, [[("table", "")]]), "b"]),  # (a nested table's shape)
     ("- a\n| b |\n  |---|\n", [(_U, [["a", ("table", "")]])]),
     # A `|` line lazily continues a paragraph; a lazy delimiter row makes no table.
-    ("- a\n| b |\n", [(_U, [["a | b |"]])]),
-    ("- a\n| b |\n|---|\n", [(_U, [["a | b | |---|"]])]),
+    ("- a\n| b |\n", [(_U, [["a\n| b |"]])]),
+    ("- a\n| b |\n|---|\n", [(_U, [["a\n| b |\n|---|"]])]),
 ])
 def test_gfm_tables(body, shape):
     assert _tables(body) == shape
@@ -2976,8 +2976,8 @@ def test_gfm_tables(body, shape):
 
 
 @pytest.mark.parametrize(("body", "text", "paragraphs"), [
-    ("> a\n| b |\n", "a\n| b |", ["a | b |"]),
-    ("> a\n| b |\n|---|\n", "a\n| b |\n    |---|", ["a | b | |---|"]),  # kept where it makes no table
+    ("> a\n| b |\n", "a\n| b |", ["a\n| b |"]),
+    ("> a\n| b |\n|---|\n", "a\n| b |\n    |---|", ["a\n| b |\n|---|"]),  # kept where it makes no table
     ("> a\n| b |\n> |---|\n", "a\n| b |\n|---|", ["a", "b"]),  # a lazy header, the delimiter in the quote
     ("> | a |\n> |---|\n> b\n", "| a |\n|---|\nb", ["a", "b"]),
 ])
@@ -3003,7 +3003,7 @@ def test_an_item_opening_with_code_has_no_paragraph():
 
 def test_a_lazy_line_four_columns_in_is_the_items_text():
     [block] = parse_document(_FRONTMATTER + "-    ===\n\t````\n x\n").sections[0].blocks
-    assert _shape(block) == (_U, [["=== ```` x"]])
+    assert _shape(block) == (_U, [["===\n````\nx"]])
 
 
 def test_a_directive_split_by_a_table_row_is_reported():
@@ -3153,25 +3153,25 @@ def test_a_heading_in_an_item_or_a_quote_is_a_heading_block(body, trees):
     ("body", "trees"),
     [
         # A setext underline is never a lazy line's: it continues the paragraph.
-        ("- a\n===\n", [(_U, [["a ==="]])]),
-        ("> a\n===\n", [("quote", ["a ==="])]),
-        ("> a\n--\n", [("quote", ["a --"])]),
-        ("> - a\n> ===\n", [("quote", [(_U, [["a ==="]])])]),
-        ("> - a\n>  ===\n", [("quote", [(_U, [["a ==="]])])]),
-        ("- - a\n  ===\n", [(_U, [[(_U, [["a ==="]])]])]),
-        ("- a\n  - b\n  ===\n", [(_U, [["a", (_U, [["b ==="]])]])]),
-        ("- a\n\t\t===\n", [(_U, [["a ==="]])]),
-        ("> > a\n> ===\n", [("quote", [("quote", ["a ==="])])]),
+        ("- a\n===\n", [(_U, [["a\n==="]])]),
+        ("> a\n===\n", [("quote", ["a\n==="])]),
+        ("> a\n--\n", [("quote", ["a\n--"])]),
+        ("> - a\n> ===\n", [("quote", [(_U, [["a\n==="]])])]),
+        ("> - a\n>  ===\n", [("quote", [(_U, [["a\n==="]])])]),
+        ("- - a\n  ===\n", [(_U, [[(_U, [["a\n==="]])]])]),
+        ("- a\n  - b\n  ===\n", [(_U, [["a", (_U, [["b\n==="]])]])]),
+        ("- a\n\t\t===\n", [(_U, [["a\n==="]])]),
+        ("> > a\n> ===\n", [("quote", [("quote", ["a\n==="])])]),
         # A ``>`` four columns in is no quote marker: the line is lazy text.
-        ("> b\n    > ---\n", [("quote", ["b > ---"])]),
-        ("- x\n  > b\n      > ---\n", [(_U, [["x", ("quote", ["b > ---"])]])]),
+        ("> b\n    > ---\n", [("quote", ["b\n> ---"])]),
+        ("- x\n  > b\n      > ---\n", [(_U, [["x", ("quote", ["b\n> ---"])]])]),
         # A bare item ending the first line has its content further in.
-        ("   1. -\n         b\n     ===\n", [(_O, [[(_U, [["b ==="]])]])]),
-        ("   1. -\n         b\n      ===\nc\n", [(_O, [[(_U, [["b === c"]])]])]),
-        ("- > a\n  ===\n", [(_U, [[("quote", ["a ==="])]])]),
+        ("   1. -\n         b\n     ===\n", [(_O, [[(_U, [["b\n==="]])]])]),
+        ("   1. -\n         b\n      ===\nc\n", [(_O, [[(_U, [["b\n===\nc"]])]])]),
+        ("- > a\n  ===\n", [(_U, [[("quote", ["a\n==="])]])]),
         # A quote in an item, on its first line, holds the paragraph.
-        ("- - > p\n    ===\nb\n", [(_U, [[(_U, [[("quote", ["p === b"])]])]])]),
-        ("> - > x\n>   ===\n |-\n", [("quote", [(_U, [[("quote", ["x === |-"])]])])]),
+        ("- - > p\n    ===\nb\n", [(_U, [[(_U, [[("quote", ["p\n===\nb"])]])]])]),
+        ("> - > x\n>   ===\n |-\n", [("quote", [(_U, [[("quote", ["x\n===\n|-"])]])])]),
     ],
 )
 def test_a_lazy_setext_underline_makes_no_heading(body, trees):
@@ -3191,7 +3191,7 @@ def test_a_lazy_setext_underline_makes_no_heading(body, trees):
         ("- - a\n\n  b\n  ===\nc\n", [(_U, [[(_U, [["a"]]), ("heading", 1, "b")]]), "c"]),
         ("- \n  - a\n    ===\nb\n", [(_U, [[(_U, [[("heading", 1, "a")]])]]), "b"]),
         # A delimiter row under a heading is no table: its paragraph's line.
-        ("- # H\n  |---|\na\n", [(_U, [[("heading", 1, "H"), "|---| a"]])]),
+        ("- # H\n  |---|\na\n", [(_U, [[("heading", 1, "H"), "|---|\na"]])]),
         # A line of ``#`` alone is a heading, which no lazy line is. (Outside
         # items and quotes, a section's heading needs text: it is text there.)
         ("- a\n#\n", [(_U, [["a"]]), "#"]),
@@ -3205,11 +3205,11 @@ def test_a_heading_in_an_item_or_a_quote_ends_its_paragraph(body, trees):
     ("body", "trees"),
     [
         # A quote in an item indented up to three columns is a quote.
-        ("- a\n   > p\n    ===\nb\n", [(_U, [["a", ("quote", ["p === b"])]])]),
-        ("- a\n   > p\nb\n", [(_U, [["a", ("quote", ["p b"])]])]),
+        ("- a\n   > p\n    ===\nb\n", [(_U, [["a", ("quote", ["p\n===\nb"])]])]),
+        ("- a\n   > p\nb\n", [(_U, [["a", ("quote", ["p\nb"])]])]),
         # A lazy line of its paragraph four columns in starts no block.
-        ("  1. y\n     > p\n    <div>\n", [(_O, [["y", ("quote", ["p <div>"])]])]),
-        ("  1. y\n     > p\n    ---\n", [(_O, [["y", ("quote", ["p ---"])]])]),
+        ("  1. y\n     > p\n    <div>\n", [(_O, [["y", ("quote", ["p\n<div>"])]])]),
+        ("  1. y\n     > p\n    ---\n", [(_O, [["y", ("quote", ["p\n---"])]])]),
         ("  1. y\n     > p\n     <div>\n", [(_O, [["y", ("quote", ["p"]), ("html",)]])]),
     ],
 )
@@ -3374,3 +3374,144 @@ def test_a_source_block_in_a_list_item_is_its_content():
     assert "- a\n\n  * x\n  * y\n" in source
     [item] = list_items(parse_document(source).sections[0].blocks[0])
     assert [(b.kind, len(b.items)) for b in item.blocks] == [("paragraph", 0), ("unordered_list", 2)]
+
+
+# ── A paragraph keeps its lines (#25, #7) ─────────────────────────
+
+
+@pytest.mark.parametrize(("body", "text"), [
+    # A hard line break: a backslash, or two spaces or more, ending a line.
+    ("a\\\nb\n", "a\\\nb"),
+    ("a  \nb\n", "a  \nb"),
+    # A line's indentation is not its text, nor is the last line's trailing
+    # whitespace (CommonMark).
+    ("a\n   b  \n", "a\nb"),
+    ("a\n    - b\n", "a\n- b"),
+    # Link reference definitions, each on its line.
+    ("[a]: https://example.com/a\n[b]: https://example.com/b\n", "[a]: https://example.com/a\n[b]: https://example.com/b"),
+])
+def test_a_paragraph_keeps_its_lines(body, text):
+    [block] = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert (block.kind, block.text) == ("paragraph", text)
+    _round_trips(body)
+
+
+@pytest.mark.parametrize("body", [
+    "a\\\nb\n",
+    "a  \nb\n",
+    "- a  \n  b\n",
+    "- a\\\n  b\n",
+    "> a  \n> b\n",
+    "- > a  \n  > b\n",
+    "[a]: https://example.com/a\n[b]: https://example.com/b\n\nSee [a] and [b].\n",
+])
+def test_a_hard_line_break_is_written_back(body):
+    assert serialize_document(parse_document(_FRONTMATTER + body)).endswith("\n" + body)
+
+
+def test_an_items_and_a_quotes_paragraphs_keep_their_lines():
+    [block] = parse_document(_FRONTMATTER + "- a  \n  b\n  c\n").sections[0].blocks
+    assert _shape(block) == (_U, [["a  \nb\nc"]])
+    [quote] = parse_document(_FRONTMATTER + "> a  \n> b\nc\n").sections[0].blocks
+    assert quote.text == "a  \nb\nc"
+    assert text_fragments(quote) == ["a  \nb\nc"]
+
+
+@pytest.mark.parametrize("body", [
+    "See {{ref:\nterms}} here.\n",
+    "- See {{ref:\n  terms}} here.\n",
+    "> See {{ref:\n> terms}} here.\n",
+    "Pay {{placeholder: fee,\ntype=money}}.\n",
+])
+def test_a_directive_split_across_lines_is_malformed(body):
+    """A directive is written on one line (§11.2, §11.5)."""
+    assert "directive-malformed" in _validate(body).rules()
+
+
+def test_a_defined_term_on_the_line_before_its_anchor_is_no_definition():
+    """The quoted term is on the anchor's line (§7.2)."""
+    rules = _validate('"Term"\n{{def: term}} means the thing.\n').rules()
+    assert "def-no-quoted-span" in rules
+
+
+def test_a_definition_over_lines_is_lifted_with_its_lines():
+    body = '"Term" {{def: term}} means\nthe thing.\n'
+    [block] = parse_document(_FRONTMATTER + body).sections[0].blocks
+    assert (block.kind, block.term, block.text) == ("definition", "Term", "means\nthe thing.")
+    assert serialize_document(parse_document(_FRONTMATTER + body)).endswith("\n" + body)
+
+
+def test_a_marker_ends_a_paragraph_over_lines_only_at_its_end():
+    assert "t" in _validate("Text\nmore. {#t}\n").section_lookup
+    assert "anchor-misplaced" in _validate("Text {#t}\nmore.\n").rules()
+    assert "anchor-misplaced" in _validate("- a {#t}\n  b\n").rules()
+    assert "anchor-misplaced" not in _validate("- a\n  b {#t}\n").rules()
+
+
+@pytest.mark.parametrize("body", [
+    "a\n    ```\nb {{ref: nowhere}}\n",
+    "-    ===\n\t````\n x {{ref: nowhere}}\n",
+    "> a\n    ~~~\n> b {{ref: nowhere}}\n",
+])
+def test_a_paragraph_line_opening_like_a_fence_is_text(body):
+    """A fence cannot interrupt a paragraph: a line of it that opens like one
+    (four columns in, or lazy) hides nothing after it (CommonMark)."""
+    assert "ref-broken" in _validate(body).rules()
+
+
+def test_a_placeholder_in_a_link_reference_definition_followed_by_a_line():
+    body = "[a]: {{placeholder: url}}\nmore\n"
+    assert "insertion-boundary" in _validate(body).rules()
+
+
+def test_a_directive_is_reported_on_its_line_in_a_paragraph_over_lines():
+    lines = (_FRONTMATTER + "See\nthe {{ref: nowhere}} here.\n").split("\n")
+    [line] = [d.line for d in _validate("See\nthe {{ref: nowhere}} here.\n").diagnostics if d.rule == "ref-broken"]
+    assert "{{ref: nowhere}}" in lines[line - 1]
+
+
+@pytest.mark.parametrize("in_item", [False, True])
+@pytest.mark.parametrize(("text", "read"), [
+    # A line that would end the paragraph at the margin is written four
+    # columns in, where it continues it.
+    ("a\n- x", "a\n- x"),
+    ("a\n1. x", "a\n1. x"),
+    ("a\n2. x", "a\n2. x"),
+    ("a\n# x", "a\n# x"),
+    ("a\n#", "a\n#"),
+    ("a\n===", "a\n==="),
+    ("a\n---", "a\n---"),
+    ("a\n> q", "a\n> q"),
+    ("a\n```", "a\n```"),
+    ("a\n<div>", "a\n<div>"),
+    ("a\n|---|", "a\n|---|"),
+    ("|a|\n|---|", "|a|\n|---|"),
+    ("a\n|h|\n|-|", "a\n|h|\n|-|"),
+    # A blank line would end it: it is left out; so is indentation.
+    ("a\n\nb", "a\nb"),
+    ("a\n   b", "a\nb"),
+])
+def test_a_models_paragraph_is_written_as_its_lines(text, read, in_item):
+    paragraph = {"kind": "paragraph", "text": text}
+    blocks = [{"kind": "unordered_list", "items": [{"blocks": [paragraph]}]}] if in_item else [paragraph]
+    document = document_from_dict({"sections": [{"title": "A", "blocks": blocks}]})
+    [block] = parse_document(serialize_document(document)).sections[0].blocks
+    if in_item:
+        [block] = list_items(block)[0].blocks
+    assert (block.kind, block.text) == ("paragraph", read)
+
+
+@pytest.mark.parametrize("body", [
+    "a\n    > b\n|-\n",
+    "a\n    - b\n|-\n",
+    "- title: x\n         > > > x\n  |-\n",
+])
+def test_a_table_header_row_four_columns_in_after_a_paragraph_is_read(body):
+    """Its ``>`` or list marker there starts nothing: the row is the header
+    of the table interrupting the paragraph (cmark-gfm). Once read in a
+    loop that never ended."""
+    blocks = parse_document(_FRONTMATTER + body).sections[0].blocks
+    if blocks[0].kind == _U:
+        blocks = list_items(blocks[0])[0].blocks
+    assert [block.kind for block in blocks] == ["paragraph", "table"]
+    _round_trips(body)

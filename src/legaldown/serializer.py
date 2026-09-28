@@ -17,6 +17,7 @@ from .markdown import (
     dedent,
     html_block_end,
     indent_width,
+    is_blank,
     is_indented_code,
     split_lone_tag,
     strip_text,
@@ -33,7 +34,7 @@ from .models import (
     list_items,
     metadata_from_dict,
 )
-from .parser import ATX_HEADING_RE, HEADING_RE, LIST_ITEM_RE, RULE_RE, _expand_prefix
+from .parser import ATX_HEADING_RE, HEADING_RE, LIST_ITEM_RE, RULE_RE, _expand_prefix, _paragraph_end, _parse_table
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -156,19 +157,48 @@ def _opens_block(text: str, *, in_item: bool = False) -> bool:
 
 
 def _paragraph(text: str, *, in_item: bool = False) -> str:
-    """A paragraph's text, written at the margin. A paragraph whose text
-    only reads as a complete HTML tag (kind 7) got that way by being
-    joined, at a space, from two source lines that alone opened nothing
-    (``_parse_paragraph``); writing it back over two lines the same way,
-    at that space, is lossless (``split_lone_tag``) and keeps it a
-    paragraph rather than an HTML block. Anything else that would open a
-    block (a fence, a heading, an HTML block kind 1–6, a block quote, a
-    thematic break, a list item) gets a
-    backslash before it instead, which renders as nothing (CommonMark): only a model
-    built in code, not one from ``parse_document``, holds that, since the
-    parser never turns the start of a block into paragraph text. *in_item*:
-    in a list item's content, where ``#`` alone is a heading too."""
-    if split := split_lone_tag(text):
+    """A paragraph's text, written at the margin as its lines
+    (``_paragraph_line``, ``_continues``). *in_item*: in a list item's
+    content, where ``#`` alone is a heading too. A blank line, which only a
+    model built in code holds, would end the paragraph: it is left out."""
+    lines = [line for line in text.split("\n") if not is_blank(line)]
+    if not lines:
+        return ""
+    written = [_paragraph_line(lines[0].lstrip(" \t"), in_item=in_item, alone=len(lines) == 1)]
+    for line in lines[1:]:
+        # A line's indentation is not its text (``paragraph_text``).
+        line = line.lstrip(" \t")
+        # Written as it is where the parser reads it as continuing the
+        # paragraph: else four columns in, where a line always does, and is
+        # read without its indentation. The parser never makes a paragraph
+        # of lines that need it but for lazy ones (``===`` under a quote's
+        # or an item's paragraph, where it is no underline).
+        written.append(line if _continues([*written, line]) else "    " + line)
+    return "\n".join(written)
+
+
+def _continues(lines: list[str]) -> bool:
+    """True if *lines* at the margin read as one paragraph: neither a table
+    (GFM) nor a paragraph that ends, as a setext heading or otherwise,
+    before its last line. A line of ``#`` alone, which only outside items
+    and quotes the parser reads as text (a section's heading needs text),
+    ends it too, as it does for CommonMark."""
+    return _parse_table(lines, 0) is None and _paragraph_end(lines, 0, False, headings=False) == (len(lines), 0)
+
+
+def _paragraph_line(text: str, *, in_item: bool, alone: bool) -> str:
+    """A paragraph's first line, written at the margin. A paragraph of one
+    line that only reads as a complete HTML tag (kind 7) got that way by
+    being joined, at a space, from two lines that alone opened nothing (a
+    model of an older version, or one built in code); writing it back over
+    two lines the same way, at that space, is lossless
+    (``split_lone_tag``) and keeps it a paragraph rather than an HTML block.
+    Anything else that would open a block (a fence, a heading, an HTML block,
+    a block quote, a thematic break, a list item) gets a backslash before it
+    instead, which renders as nothing (CommonMark): only a model built in
+    code, not one from ``parse_document``, holds that, since the parser
+    never turns the start of a block into paragraph text."""
+    if alone and (split := split_lone_tag(text)):
         return split
     if _opens_block(text, in_item=in_item) or text.startswith(">") or RULE_RE.match(text):
         return "\\" + text
@@ -255,9 +285,11 @@ def _render_block(block: Block, *, in_item: bool = False) -> str:
     if block.kind == "quote":
         # The parser joins quoted lines with LF. A tab in a line's leading
         # markers and indentation is written as the columns the quote's
-        # content gives it, which a tab after "> " would not keep.
+        # content gives it, which a tab after "> " would not keep. A line's
+        # trailing whitespace is kept (it may be a hard break); a blank line
+        # is written as ">".
         lines = block.text.split("\n")
-        return "\n".join(f"> {_expand_prefix(line)}".rstrip(" \t") for line in lines)
+        return "\n".join(">" if is_blank(line) else f"> {_expand_prefix(line)}" for line in lines)
     if block.kind == "table":
         # GFM needs a header row; a table built without one gets empty
         # header cells, as wide as its widest row.
