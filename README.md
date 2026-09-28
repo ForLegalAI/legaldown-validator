@@ -275,6 +275,15 @@ paragraph indented that far is code: its directives and anchors are literal (§1
 paragraph that a model holds but that would, written at the margin, open a heading, a fence,
 or an HTML block is written with a backslash before it.
 
+To write markdown source exactly as typed — an editor's row holding a list, a table or a
+quote — put it in a `source` block (`{"kind": "source", "text": "* a\n* b"}`): the serializer
+writes its text as it stands, respelling and escaping nothing, and reads it back as the blocks
+it holds. Only blank lines at its ends are dropped, and a fence it leaves open is closed unless
+it ends the document. It is written next to its neighbours as it stands, so it means what that
+text means there: in a list item it is the item's content, and a list in it right after a list
+with the same bullet joins that list. The parser never produces a `source` block, and the
+validator does not read one: validate the written text.
+
 Raw HTML follows CommonMark's HTML blocks: a block of raw HTML, or an HTML comment on
 lines of its own, is an `html` block holding its source as written. No heading, directive,
 or anchor inside it is recognized (§8.6, §11.4), so a clause commented out with

@@ -228,6 +228,10 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     # A heading in a list item or a block quote: not a section (§4.1), so
     # not numbered and without an identifier. Its text is one line.
     "heading": {"kind": "heading", "text": "", "level": 1},
+    # Markdown source a caller built, such as an editor's row: written as it
+    # stands (``serialize_document``), never produced by the parser and not
+    # read by the validator. Read back, it is the blocks it holds.
+    "source": {"kind": "source", "text": ""},
 }
 
 
@@ -300,10 +304,10 @@ def _block_text(kind: str, value: Any) -> str:
     text = str(value or "")
     if kind == "code":
         return text
-    if kind == "html":
+    if kind in ("html", "source"):
         # Kept as written, but for blank lines at its ends, which the
         # serializer's block separation would not keep.
-        lines = text.split("\n")
+        lines = LINE_ENDING_RE.sub("\n", text).split("\n")
         while lines and is_blank(lines[0]):
             lines.pop(0)
         return "\n".join(lines).rstrip(" \t\r\n")
