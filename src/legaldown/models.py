@@ -358,7 +358,7 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         headers=headers,
         rows=_table_rows(list(merged.get("rows") or []), len(headers)),
         align=_table_align(list(merged.get("align") or []), len(headers)),
-        level=_heading_level(merged.get("level")) if kind == "heading" else 0,
+        level=heading_level(merged.get("level")) if kind == "heading" else 0,
     )
 
 
@@ -367,7 +367,7 @@ def heading_text(text: str) -> str:
     return strip_text(LINE_ENDING_RE.sub(" ", text))
 
 
-def _heading_level(value: Any) -> int:
+def heading_level(value: Any) -> int:
     """A heading block's level, 1 to 6; 1 when *value* is none."""
     try:
         level = int(value)

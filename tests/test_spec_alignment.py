@@ -3161,6 +3161,12 @@ def test_a_heading_in_an_item_or_a_quote_is_a_heading_block(body, trees):
         ("- a\n  - b\n  ===\n", [(_U, [["a", (_U, [["b ==="]])]])]),
         ("- a\n\t\t===\n", [(_U, [["a ==="]])]),
         ("> > a\n> ===\n", [("quote", [("quote", ["a ==="])])]),
+        # A ``>`` four columns in is no quote marker: the line is lazy text.
+        ("> b\n    > ---\n", [("quote", ["b > ---"])]),
+        ("- x\n  > b\n      > ---\n", [(_U, [["x", ("quote", ["b > ---"])]])]),
+        # A bare item ending the first line has its content further in.
+        ("   1. -\n         b\n     ===\n", [(_O, [[(_U, [["b ==="]])]])]),
+        ("   1. -\n         b\n      ===\nc\n", [(_O, [[(_U, [["b === c"]])]])]),
         ("- > a\n  ===\n", [(_U, [[("quote", ["a ==="])]])]),
         # A quote in an item, on its first line, holds the paragraph.
         ("- - > p\n    ===\nb\n", [(_U, [[(_U, [[("quote", ["p === b"])]])]])]),
@@ -3240,6 +3246,7 @@ def test_a_heading_block_from_a_dict():
         (Block(kind="heading", text="", level=3), "### #", ""),
         (Block(kind="heading", text="a\nb", level=0), "# a b", "a b"),
         (Block(kind="heading", text="x", level=7), "###### x", "x"),
+        (Block(kind="heading", text="x", level="2"), "## x", "x"),
         (Block(kind="heading", text="# x {#y}", level=1), "# # x {#y}", "# x {#y}"),
     ],
 )
@@ -3252,7 +3259,7 @@ def test_a_model_built_heading_block_is_written_as_one_in_an_item(heading, writt
     # Four columns in, where a heading after a blank line stays the item's.
     assert f"-   a\n    {written}\n" in source
     [reread] = list_items(parse_document(source).sections[0].blocks[0])[0].blocks[1:]
-    assert (reread.kind, reread.text, reread.level) == ("heading", text, min(max(heading.level, 1), 6))
+    assert (reread.kind, reread.text, reread.level) == ("heading", text, written.count("#", 0, written.index(" ")))
 
 
 def test_a_model_built_heading_outside_an_item_is_written_as_text():

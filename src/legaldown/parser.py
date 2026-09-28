@@ -426,7 +426,7 @@ def _read_quote(lines: list[str], index: int) -> tuple[int, list[str], bool]:
     end = index
     while end < len(lines):
         line = lines[end]
-        if line.lstrip(" \t").startswith(">"):
+        if indent_width(line) < 4 and line.lstrip(" \t").startswith(">"):
             text = _expand_prefix(line).lstrip(" \t")[1:].removeprefix(" ")
             quote.read(text)
         elif quote.continues(line):
@@ -513,6 +513,7 @@ def _scan_list(
     para_column = 0  # the content column of the item whose paragraph is open
     para_quote = False  # the paragraph is a quote's, in an item nested on the first line
     offset = 0  # the current item's nested_offset
+    innermost = 0  # past the item's content column, where its innermost first-line item's content starts
     end = index
     while end < len(lines):
         line = lines[end]
@@ -596,7 +597,7 @@ def _scan_list(
                 marker = None
                 lazy_line = True
                 joined = quote is None
-                text[end] = content_indent + offset + 4
+                text[end] = content_indent + innermost + 4
             elif not depth:
                 break  # indented code after the list
             # Otherwise indented code in an earlier item's content, which the
@@ -625,6 +626,10 @@ def _scan_list(
             chain[depth:] = [content_indent]
             quote, table, previous = None, False, None
             offset = nested_offset(content)  # an item nested on its line: its content is further in
+            # So is that of a bare item ending the line (``1. -``), on the next.
+            rest = content[offset:]
+            bare = not RULE_RE.match(rest) and (end_marker := LIST_ITEM_RE.match(rest)) and is_blank(rest[end_marker.end():])
+            innermost = offset + (item_content_column(rest) if bare else 0)
         elif items and (
             # Into the content of an item still open: the list's (the item a
             # line is in is read from its lines, ``_parse_list``). Short of
@@ -651,7 +656,7 @@ def _scan_list(
                 # which makes no heading (CommonMark), is text of the
                 # paragraph: the item's content has it four columns into it,
                 # where it starts no block. (A quote's lazy lines are its own.)
-                text[end] = content_indent + offset + 4
+                text[end] = content_indent + innermost + 4
                 content = " " * 4 + content.strip(" \t")
             if quote is not None and not content.startswith(">"):
                 # A lazy line (unindented) always continues the quote here:
@@ -667,7 +672,7 @@ def _scan_list(
                         # As a paragraph's lazy line above: four columns into
                         # the item's content, where it still continues the
                         # quote (``_read_quote``) and starts no block.
-                        text[end] = content_indent + offset + 4
+                        text[end] = content_indent + innermost + 4
                     content = "> " + content
                     quote_lazy = True
                 else:
@@ -738,8 +743,10 @@ def _scan_list(
         elif open_paragraph and (marker or not was_open):
             # Opened in the innermost item the line is in: one nested on the
             # current item's first line when it reaches that one's content.
-            if marker or indent_width(line) >= content_indent + offset:
+            if marker:
                 para_column = content_indent + offset
+            elif indent_width(line) >= content_indent + innermost:
+                para_column = content_indent + innermost
             else:
                 para_column = chain[depth - 1] if depth else content_indent
             # A quote there (``- - > a``) holds it: a line without its ``>``

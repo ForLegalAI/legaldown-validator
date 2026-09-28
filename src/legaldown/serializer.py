@@ -22,7 +22,17 @@ from .markdown import (
     strip_text,
 )
 from .markers import Marker, format_marker
-from .models import Amends, Block, Document, ListItem, Metadata, heading_text, list_items, metadata_from_dict
+from .models import (
+    Amends,
+    Block,
+    Document,
+    ListItem,
+    Metadata,
+    heading_level,
+    heading_text,
+    list_items,
+    metadata_from_dict,
+)
 from .parser import ATX_HEADING_RE, HEADING_RE, LIST_ITEM_RE, RULE_RE, _expand_prefix
 
 # ── Internal helpers ──────────────────────────────────────────────
@@ -175,7 +185,7 @@ def _heading(block: Block) -> str:
     text, which would be read as a closing sequence, gets a backslash before
     it; an empty heading is written with one (``# #``), as ``#`` alone
     would not be read as a heading."""
-    hashes = "#" * min(max(block.level, 1), 6)
+    hashes = "#" * heading_level(block.level)
     text = heading_text(block.text)
     if not text:
         return f"{hashes} #"
