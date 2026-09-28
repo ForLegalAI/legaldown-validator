@@ -276,6 +276,10 @@ def _render_block(block: Block, *, in_item: bool = False) -> str:
         return "---"
     if block.kind == "code":
         return _code(block.text, after_list=False)
+    if block.kind == "source":
+        # As it stands, but for a fence it leaves open (``_render_blocks``
+        # keeps one open that ends the document).
+        return close_fences(block.text)
     if block.kind == "html":
         return block.text
     return block.text.strip()
@@ -451,7 +455,7 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
     for index, block in enumerate(blocks):
         following = blocks[index + 1] if index + 1 < len(blocks) else None
         keep_open = last and index == final
-        if block.kind in _LISTS and following is not None and following.kind in ("code", "html"):
+        if block.kind in _LISTS and following is not None and following.kind in ("code", "html", "source"):
             # A block indented to the last item's content would continue it:
             # the item is written with its content further in.
             rendered = _render_list(
@@ -469,11 +473,15 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # a fence left open in them ends.
             rendered = _render_list(block, own=markers[index], close_last=same, in_item=in_item) or ""
         elif index in as_written:
-            rendered = (block.text if keep_open else close_fences(block.text)) if block.kind == "code" else block.text
+            rendered = (block.text if keep_open else close_fences(block.text)) if block.kind != "html" else block.text
         elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":
             rendered = _code(block.text, after_list=True, keep_open=keep_open)
         elif block.kind == "code":
             rendered = _code(block.text, after_list=False, keep_open=keep_open)
+        elif block.kind == "source":
+            # As it stands, but for a fence it leaves open, which would run
+            # on into what follows it: closed unless nothing does.
+            rendered = block.text if keep_open else close_fences(block.text)
         else:
             rendered = _render_block(block, in_item=in_item)
         if rendered:
@@ -511,7 +519,7 @@ def _ends_open(blocks: list[Block]) -> bool:
     last = written[-1]
     if last.kind in _LISTS:
         return bool(last.items) and _ends_open(list_items(last)[-1].blocks)
-    return last.kind == "code" and close_fences(last.text) != last.text
+    return last.kind in ("code", "source") and close_fences(last.text) != last.text
 
 
 class _BlockDumper(yaml.SafeDumper):
@@ -538,8 +546,8 @@ def serialize_document(document: Document) -> str:
         frontmatter = yaml.dump(payload, Dumper=_BlockDumper, sort_keys=False, allow_unicode=True).strip()
         parts = ["---", frontmatter, "---"]
     preamble = _render_blocks(document.preamble, last=not document.sections)
-    if bare and preamble[1:2] == ["---"]:
-        preamble[1] = "***"
+    if bare and preamble[1:2] and preamble[1].split("\n", 1)[0] == "---":
+        preamble[1] = "***" + preamble[1][3:]
     parts.extend(preamble)
     blocks = document.preamble
     for number, section in enumerate(document.sections, 1):

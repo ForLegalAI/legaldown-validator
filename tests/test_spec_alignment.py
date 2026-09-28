@@ -17,6 +17,7 @@ from legaldown import (
     document_from_dict,
     document_to_dict,
     iter_directives,
+    render_block,
     render_item,
     serialize_document,
 )
@@ -3277,3 +3278,99 @@ def test_a_paragraph_in_an_item_that_reads_as_a_heading_is_escaped(text):
     ]}]}]})
     [item] = list_items(parse_document(serialize_document(document)).sections[0].blocks[0])
     assert [(b.kind, b.text) for b in item.blocks] == [("paragraph", "a"), ("paragraph", "\\" + text)]
+
+
+# ── #79: a source block is written as it stands ──
+
+
+_ROWS = [
+    "* a\n* b",
+    "3) x\n4) y",
+    "***",
+    "| a | b |\n|:--|--:|\n| 1 | 2 |",
+    "> quoted\ntext",
+    "```py\nx = 1\n```",
+    "<div>\nraw\n</div>",
+    "Plain *text* {{placeholder: fee}}.",
+    "- one\n\n  two",
+]
+
+
+def _with_sources(*rows: str, preamble: tuple[str, ...] = ()) -> str:
+    document = document_from_dict({
+        "metadata": {"title": "T"},
+        "preamble": [{"kind": "source", "text": row} for row in preamble],
+        "sections": [{"title": "A", "blocks": [{"kind": "source", "text": row} for row in rows]}],
+    })
+    return serialize_document(document)
+
+
+def test_source_blocks_are_written_as_they_stand():
+    """#79: an editor's rows, each a block's markdown as typed."""
+    source = _with_sources(*_ROWS)
+    assert source.endswith("# A\n\n" + "\n\n".join(_ROWS) + "\n")
+    typed = parse_document(source)
+    expected = parse_document("---\ntitle: T\n---\n\n# A\n\n" + "\n\n".join(_ROWS) + "\n")
+    assert typed.sections == expected.sections
+
+
+def test_a_source_blocks_text_from_a_dict():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "source", "text": "\r\n \n    code\r\n  x  \r\n\r\n"},
+    ]}]})
+    assert document.sections[0].blocks[0].text == "    code\n  x"
+    assert document_from_dict(document_to_dict(document)) == document
+    assert render_block(document.sections[0].blocks[0]) == "    code\n  x"
+    # Rendered on its own, what follows it is unknown: a fence it leaves open is closed.
+    assert render_block(Block(kind="source", text="```\ncode")) == "```\ncode\n```"
+
+
+def test_an_empty_source_block_is_not_written():
+    assert _with_sources("", "a").endswith("# A\n\na\n")
+
+
+def test_a_fence_a_source_leaves_open_is_closed_unless_it_ends_the_document():
+    source = _with_sources("```\ncode", "After.")
+    assert "```\ncode\n```\n\nAfter.\n" in source
+    assert [b.kind for b in parse_document(source).sections[0].blocks] == ["code", "paragraph"]
+    assert _with_sources("After.", "```\ncode").endswith("After.\n\n```\ncode\n")
+    document = document_from_dict({"sections": [
+        {"title": "A", "blocks": [{"kind": "source", "text": "~~~\ncode"}]}, {"title": "B"},
+    ]})
+    assert [s.title for s in parse_document(serialize_document(document)).sections] == ["A", "B"]
+
+
+def test_a_source_after_a_list_is_not_read_into_it():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["a"]}, {"kind": "source", "text": "    code"},
+    ]}]})
+    blocks = parse_document(serialize_document(document)).sections[0].blocks
+    assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("code", "    code")]
+
+
+def test_a_document_without_frontmatter_opening_with_a_rule_in_a_source():
+    document = document_from_dict({"preamble": [{"kind": "source", "text": "---\nText."}]})
+    document.metadata.frontmatter_absent = True
+    source = serialize_document(document)
+    assert source == "***\nText.\n"
+    reread = parse_document(source)
+    assert reread.metadata.frontmatter_absent and [b.kind for b in reread.preamble] == ["rule", "paragraph"]
+
+
+def test_a_source_block_is_not_validated():
+    """Its text is read once written and parsed."""
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "source", "text": "See {{ref: nope}}."},
+    ]}]})
+    assert "ref-broken" not in validate_document(document).rules()
+    assert "ref-broken" in validate_document(parse_document(serialize_document(document))).rules()
+
+
+def test_a_source_block_in_a_list_item_is_its_content():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "unordered_list", "items": [
+        {"blocks": [{"kind": "paragraph", "text": "a"}, {"kind": "source", "text": "* x\n* y"}]},
+    ]}]}]})
+    source = serialize_document(document)
+    assert "- a\n\n  * x\n  * y\n" in source
+    [item] = list_items(parse_document(source).sections[0].blocks[0])
+    assert [(b.kind, len(b.items)) for b in item.blocks] == [("paragraph", 0), ("unordered_list", 2)]

@@ -280,14 +280,15 @@ def nested_blocks(block: Block) -> Iterator[Block]:
 
 def _own_fragments(block: Block) -> list[tuple[str, bool]]:
     """The fragments of a block that holds no blocks: ``block_fragments``."""
-    if block.kind == "html" or (
+    if block.kind in ("html", "source") or (
         block.kind == "code" and (
             is_indented_code(block.text)
             or ("\n" not in block.text and FENCE_OPEN_RE.match(block.text))
         )
     ):
         # Raw HTML and indented code: no directive or marker is recognized
-        # (§11.4). A fenced block's text is lexed, which blanks the fence:
+        # (§11.4). A source block is not read at all: its text is read once
+        # written and parsed (``serialize_document``). A fenced block's text is lexed, which blanks the fence:
         # text a model puts after its closing fence is checked -- which needs
         # at least the fence's own line and one more, so a fence with nothing
         # after it (unclosed at EOF, one line) is code through and through.
