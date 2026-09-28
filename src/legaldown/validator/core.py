@@ -382,22 +382,43 @@ def _clashes(presence: Presence, others: list[Presence], questions: Any) -> bool
     return any(not exclusive(presence, other, questions) for other in others)
 
 
-# A pointy-bracket link destination, ``](<…>)``: no raw HTML (CommonMark).
-_LINK_DESTINATION_RE = re.compile(r"<[^<>\n]*>")
+# A link's pointy-bracket destination, ``](<…>)``, then an optional title and
+# the closing parenthesis: no raw HTML (CommonMark).
+_LINK_DESTINATION_RE = re.compile(r"""<[^<>\n]*>[ \t]*(?:(?:"[^"]*"|'[^']*'|\([^()]*\))[ \t]*)?\)""")
 
 
 def _inline_html(text: str, lexed: Lexed) -> str | None:
     """The first inline raw HTML in *text* other than a comment (§8.7), as
     written, or None: outside code spans, comments and directives (``lex``),
     not after a backslash, and not a link's ``<…>`` destination."""
-    view = mask_directives(lexed.view, lexed.directives)
+    # What the lexer blanked, a comment or a code span, is filled with a
+    # character no tag holds outside a quoted value: no tag runs across it.
+    view = "".join(
+        "`" if seen == " " and written not in " \t\n" else seen
+        for seen, written in zip(mask_directives(lexed.view, lexed.directives), text, strict=True)
+    )
+    opened = -1  # the last unescaped ``[`` before *at* with no ``]`` after it but a link's
+    scanned = 0
     pos = 0
     while (at := view.find("<", pos)) >= 0:
         pos = at + 1
         if is_escaped(view, at):
             continue
-        if view[:at].rstrip(" \t").endswith("](") and (destination := _LINK_DESTINATION_RE.match(view, at)):
-            pos = destination.end()
+        for k in range(scanned, at):
+            if view[k] == "[" and not is_escaped(view, k):
+                opened = k
+            elif view[k] == "]" and view[k + 1:k + 2] != "(":
+                opened = -1
+        scanned = at
+        before = at
+        while before > 0 and view[before - 1] in " \t":
+            before -= 1
+        if (
+            opened >= 0 and view[before - 2:before] == "]("
+            and (destination := _LINK_DESTINATION_RE.match(view, at))
+        ):
+            pos = scanned = destination.end()
+            opened = -1
             continue
         if tag := INLINE_HTML_RE.match(view, at):
             return text[at:tag.end()]

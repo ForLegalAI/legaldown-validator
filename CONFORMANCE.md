@@ -60,7 +60,11 @@ each HTML block that holds more than comments (text after a comment's `-->` on i
 included), in list items and quotes too, and once for each text — a paragraph, a table cell, a
 heading — holding an inline tag, processing instruction, declaration or CDATA section, as
 cmark-gfm reads them. Comments, autolinks, code spans, escaped `<`, a link's `<…>` destination
-and a directive's values are not raw HTML; frontmatter values are not Markdown.
+and a directive's values are not raw HTML; frontmatter values are not Markdown. Comments and code
+spans are found by the directive lexer (§11.4), which reads comments by CommonMark 0.31 and knows
+no tags, so a few rare texts are read differently from cmark-gfm: a comment holding `--`, text
+after an unclosed `<!--` (where cmark-gfm finds no more inline HTML), and a backtick or `<!--`
+inside a CDATA section, declaration or processing instruction.
 
 Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body,
 in list items and in block quotes.

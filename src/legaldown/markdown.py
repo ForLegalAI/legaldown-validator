@@ -120,13 +120,13 @@ HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)
 # Inline raw HTML other than a comment (CommonMark 0.31 §6.6, as cmark-gfm
 # reads it): an open tag, whose ``/`` is directly before its ``>``; a closing
 # tag, which takes no attributes; a processing instruction; a declaration,
-# its name followed by whitespace; a CDATA section.
+# its name of capital letters followed by whitespace; a CDATA section.
 _INLINE_ATTRIBUTE = r"""(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
 INLINE_HTML_RE = re.compile(
     r"<[A-Za-z][A-Za-z0-9-]*" + _INLINE_ATTRIBUTE + r"*\s*/?>"
     r"|</[A-Za-z][A-Za-z0-9-]*\s*>"
     r"|<\?.*?\?>"
-    r"|<![A-Za-z]+\s[^>]*>"
+    r"|<![A-Z]+\s[^>]*>"
     r"|<!\[CDATA\[.*?\]\]>",
     re.DOTALL,
 )

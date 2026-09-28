@@ -3034,6 +3034,8 @@ def test_a_table_under_a_quotes_paragraph_not_an_items(body, kinds):
     ("| a | b |\n|---|---|\n| <b>x</b> | c |\n", ["in text ('<b>')"]),
     ("A <br /> and <b\nclass=x>.\n", ["in text ('<br />')"]),
     ("A <?php x ?>, <!DOCTYPE html>, <![CDATA[x]]>.\n", ["in text ('<?php x ?>')"]),
+    ("x ](<ab> and b)](<a>\n", ["in text ('<ab>')"]),  # no link, so no destination
+    ('<a title="<!-- x -->"> y\n', ["in text ('<a title=\"<!-- x -->\">')"]),
 ])
 def test_raw_html_is_a_warning(body, shown):
     diagnostics = [d for d in _validate(body).diagnostics if d.rule == "raw-html"]
@@ -3050,8 +3052,11 @@ def test_raw_html_is_a_warning(body, shown):
     "`<b>` and ``<i>``\n",  # code spans
     "\\<b> escaped\n",
     "[a](<foo bar>)\n",  # a link destination
+    '[a](<b> "title") and [c]( <d> )\n',
     '{{placeholder: p, note="<b>"}} x\n',  # a directive's value
-    "a < b and c<d, <3 and <!D> and </b class=\"x\"> and <br/ >\n",  # no tag (cmark-gfm)
+    "a < b and c<d, <3 and <!D> and </b class=\"x\"> and <br/ > and <!doctype x>\n",  # no tag (cmark-gfm)
+    "The rate is <a <!-- draft: confirm --> capped >\n",  # no tag runs across a comment
+    "x `<a` then > and <a <!-- c -->>\n",
     "```\n<div>\n```\n",
     "    <div>\n",
 ])
@@ -3062,3 +3067,15 @@ def test_no_raw_html(body):
 def test_raw_html_in_a_heading():
     source = _FRONTMATTER.replace("# Terms {#terms}", "# Terms <b>x</b> {#terms}") + "Text.\n"
     assert "raw-html" in validate_document(parse_document(source)).rules()
+
+
+def test_raw_html_is_found_in_linear_time():
+    import time
+
+    from legaldown.directives import lex
+    from legaldown.validator.core import _inline_html
+
+    for text in ("<" * 200_000, "](<" * 70_000, "< " * 100_000):
+        start = time.perf_counter()
+        assert _inline_html(text, lex(text)) is None
+        assert time.perf_counter() - start < 2
