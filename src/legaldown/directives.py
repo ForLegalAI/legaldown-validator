@@ -314,9 +314,10 @@ class Lexed:
 def lex(text: str) -> Lexed:
     """Lex *text* for directives, outside literal regions (§11.4).
 
-    *text* is inline text, such as a paragraph's: fenced code in text that
-    holds blocks is blanked first (``blank_fenced_code``), as block
-    structure precedes inline structure. It is read once, left to right, taking whichever
+    *text* is inline text, such as a paragraph's: fenced code is not looked
+    for. Text that can hold one (a code block's, a block quote's) is passed
+    through ``blank_fenced_code`` first, as block structure precedes inline
+    structure. It is read once, left to right, taking whichever
     of a directive, a comment, or a code span opens first. A directive is
     lexed from the source as written and consumes its own text, so a quoted
     value may hold backticks or ``<!--`` without opening anything. Any other
