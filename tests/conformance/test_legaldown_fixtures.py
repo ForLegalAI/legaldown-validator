@@ -84,7 +84,7 @@ IMPLEMENTED_RULES = {
 
 # Expected lines this implementation disputes, by case (file or directory
 # name), rule and level: each points elsewhere than the node the diagnostic
-# is about, as the corpus's other cases do (reported to the specification).
+# is about, as the corpus's other cases do (ForLegalAI/LegalDown#42).
 _DISPUTED_LINES = {
     # Line 10 is the second side; the duplicate party is its entry at line 12,
     # as side-name-duplicate and representative-name-empty point at theirs.

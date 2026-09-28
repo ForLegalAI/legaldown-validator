@@ -20,7 +20,8 @@ not asserted at their given line:
   `assemble` receives already parsed, so its diagnostics name no line.
 - `party-name-duplicate` gives line 10, the second side; this implementation reports line 12,
   the duplicate party's own entry, as `side-name-duplicate` and `representative-name-empty`
-  point at theirs (reported to the specification).
+  point at theirs ([ForLegalAI/LegalDown#42](https://github.com/ForLegalAI/LegalDown/issues/42),
+  which also covers `attachment-id-duplicate`, a multi-file case not run here).
 
 The specification defines 116 rules. The corpus has no fixture for three of them, since a
 document alone cannot exercise them. This implementation covers two of the three,
