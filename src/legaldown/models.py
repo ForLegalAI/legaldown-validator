@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .markdown import is_blank, strip_text
+from .markdown import LINE_ENDING_RE, is_blank, strip_text
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -118,10 +118,10 @@ class Metadata:
 @dataclass(slots=True)
 class ListItem:
     """A list item: the blocks it holds (§5.7), in order — its first
-    paragraph, then later paragraphs, nested lists, code, quotes, tables.
-    An empty item holds none. Blocks in an item are never headings, and
-    its paragraphs are always of kind ``paragraph``: a directive in one is
-    inline text (§8)."""
+    paragraph, then later paragraphs, headings, nested lists, code, quotes,
+    tables. An empty item holds none. Blocks in an item are never sections:
+    a heading in one is a ``heading`` block (§4.1), and its paragraphs are
+    always of kind ``paragraph``: a directive in one is inline text (§8)."""
     blocks: list[Block] = field(default_factory=list)
 
 
@@ -143,6 +143,9 @@ class Block:
     #: A table's column alignments, one per column: ``"left"``, ``"right"``,
     #: ``"center"``, or ``""`` for none (§9.1).
     align: list[str] = field(default_factory=list)
+    #: A ``heading`` block's level, 1 to 6: a heading in a list item or a
+    #: block quote, which is not a section (§4.1). 0 for other blocks.
+    level: int = 0
 
 
 LIST_KINDS = ("ordered_list", "unordered_list")
@@ -222,6 +225,9 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     "html": {"kind": "html", "text": ""},
     "table": {"kind": "table", "headers": ["Column 1", "Column 2"], "rows": [["", ""]]},
     "rule": {"kind": "rule"},
+    # A heading in a list item or a block quote: not a section (§4.1), so
+    # not numbered and without an identifier. Its text is one line.
+    "heading": {"kind": "heading", "text": "", "level": 1},
 }
 
 
@@ -301,6 +307,8 @@ def _block_text(kind: str, value: Any) -> str:
         while lines and is_blank(lines[0]):
             lines.pop(0)
         return "\n".join(lines).rstrip(" \t\r\n")
+    if kind == "heading":
+        return heading_text(text)
     if kind == "quote":
         # A line's indentation is content: four columns make it code. Its
         # trailing whitespace is not written back (``serializer``).
@@ -350,7 +358,22 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         headers=headers,
         rows=_table_rows(list(merged.get("rows") or []), len(headers)),
         align=_table_align(list(merged.get("align") or []), len(headers)),
+        level=_heading_level(merged.get("level")) if kind == "heading" else 0,
     )
+
+
+def heading_text(text: str) -> str:
+    """A heading block's *text* as one line, its line endings spaces."""
+    return strip_text(LINE_ENDING_RE.sub(" ", text))
+
+
+def _heading_level(value: Any) -> int:
+    """A heading block's level, 1 to 6; 1 when *value* is none."""
+    try:
+        level = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 1
+    return min(max(level, 1), 6)
 
 
 def section_from_dict(data: dict[str, Any] | None) -> Section:

@@ -1244,8 +1244,12 @@ def test_an_item_numbered_1_however_written_interrupts_a_paragraph(number):
     assert [b.kind for b in document.sections[0].blocks] == ["paragraph", "ordered_list"]
 
 
-def test_an_anchored_heading_item_before_a_nested_item_keeps_its_anchor():
-    assert _validate("- # Heading item {#h}\n  2. More.\n\nSee {{ref: h}}.\n").rules() == set()
+def test_an_anchor_after_a_heading_in_an_item_is_misplaced():
+    """An item's anchor ends its first paragraph (§5.7); a heading in an item
+    is none, but a heading (#78): the marker is its text."""
+    result = _validate("- # Heading item {#h}\n  2. More.\n\nSee {{ref: h}}.\n")
+    assert result.rules() == {"anchor-misplaced", "ref-broken"}
+    assert _validate("- Item {#h}\n  # Heading\n  2. More.\n\nSee {{ref: h}}.\n").rules() == set()
 
 
 @pytest.mark.parametrize("text", [" See {{ref: x}}.", "See {{ref: x}} ", " Use {{term: x}}."])
@@ -2132,7 +2136,7 @@ def test_an_indented_line_after_a_list_round_trips_whatever_it_begins_with(opene
     document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)) == document
     last = {
-        "# foo": "# foo", "<div>": ("html", "  <div>"), "```": ("code", "  ```\n  ```"),
+        "# foo": ("heading", "foo"), "<div>": ("html", "  <div>"), "```": ("code", "  ```\n  ```"),
         "~~~": ("code", "  ~~~\n  ~~~"), "<!-- c -->": ("html", "  <!-- c -->"),
     }[opener]
     assert [_shape(b) for b in document.sections[0].blocks] == [
@@ -2229,7 +2233,7 @@ def test_a_pipe_paragraph_does_not_end_the_list_item(first):
     body = f"- a\n\n    {first}\n\n    # foo\n"
     document = parse_document(_FRONTMATTER + body)
     assert parse_document(serialize_document(document)) == document
-    assert [_shape(b) for b in document.sections[0].blocks] == [("unordered_list", [["a", first, "# foo"]])]
+    assert [_shape(b) for b in document.sections[0].blocks] == [("unordered_list", [["a", first, ("heading", "foo")]])]
     assert "ref-broken" not in validate_document(document).rules()
 
 
@@ -2437,10 +2441,12 @@ def test_the_default_include_signatures_is_not_written():
         ("1.\n   - b\n", [[(_U, [["b"]])]]),
         ("- a\n\n  -\n", [["a", (_U, [[]])]]),
         ("- a\n  - b\n  -\n", [["a", (_U, [["b"], []])]]),
-        ("- a\n  -\n    - b\n  - c\n", [["a -", (_U, [["b"], ["c"]])]]),  # "-" may not interrupt a
+        # "-" may not interrupt a paragraph as an item: it underlines it (a
+        # setext heading, cmark-gfm).
+        ("- a\n  -\n    - b\n  - c\n", [[("heading", "a"), (_U, [["b"], ["c"]])]]),
         ("-\n  -\n    - b\n", [[(_U, [[(_U, [["b"]])]])]]),
         # An empty item ends at a blank line; its parent's content goes on.
-        ("- a\n  -\n\n  b\n", [["a -", "b"]]),
+        ("- a\n  -\n\n  b\n", [[("heading", "a"), "b"]]),
         ("- a\n\n  -\n\n  b\n", [["a", (_U, [[]]), "b"]]),
     ],
 )
@@ -3079,3 +3085,188 @@ def test_raw_html_is_found_in_linear_time():
         start = time.perf_counter()
         assert _inline_html(text, lex(text)) is None
         assert time.perf_counter() - start < 2
+
+
+# ── #78: a heading in a list item or a block quote is a heading block ──
+
+
+def _tree(block: Block):
+    """A block as plain data, a quote's content included: a paragraph as its
+    text, a heading as ``("heading", level, text)``."""
+    from legaldown.parser import quote_content
+
+    if block.kind.endswith("list"):
+        return (block.kind, [[_tree(child) for child in item.blocks] for item in list_items(block)])
+    if block.kind == "quote":
+        return ("quote", [_tree(child) for child in quote_content(block.text)[0]])
+    if block.kind == "heading":
+        return ("heading", block.level, block.text)
+    return block.text if block.kind == "paragraph" else (block.kind,)
+
+
+def _trees(body: str) -> list:
+    document = parse_document(_FRONTMATTER + body)
+    assert parse_document(serialize_document(document)) == document
+    return [_tree(block) for block in document.sections[0].blocks]
+
+
+@pytest.mark.parametrize(
+    ("body", "trees"),
+    [
+        # ATX headings (cmark-gfm): the hashes and a closing sequence are syntax.
+        ("- # Heading\n", [(_U, [[("heading", 1, "Heading")]])]),
+        ("> # Heading\n> text\n", [("quote", [("heading", 1, "Heading"), "text"])]),
+        ("- # foo ##\n", [(_U, [[("heading", 1, "foo")]])]),
+        ("- # foo#\n", [(_U, [[("heading", 1, "foo#")]])]),
+        ("- # foo \\#\n", [(_U, [[("heading", 1, "foo \\#")]])]),
+        ("- ###### six\n", [(_U, [[("heading", 6, "six")]])]),
+        ("- ####### seven\n", [(_U, [["####### seven"]])]),
+        ("- #hash\n", [(_U, [["#hash"]])]),
+        # An empty heading.
+        ("- #\n", [(_U, [[("heading", 1, "")]])]),
+        ("- # #\n", [(_U, [[("heading", 1, "")]])]),
+        ("> ##\n", [("quote", [("heading", 2, "")])]),
+        # A heading interrupts a paragraph, and nothing continues it.
+        ("- a\n  # H\n  b\n", [(_U, [["a", ("heading", 1, "H"), "b"]])]),
+        ("- a\n  #\n  b\n", [(_U, [["a", ("heading", 1, ""), "b"]])]),
+        ("- # H\n  2. x\n", [(_U, [[("heading", 1, "H"), (_O, [["x"]])]])]),
+        # Setext headings.
+        ("> title: x\n> ---\n> after\n", [("quote", [("heading", 2, "title: x"), "after"])]),
+        ("- a\n  b\n  ---\n", [(_U, [[("heading", 2, "a b")]])]),
+        ("- a\n  ===\n", [(_U, [[("heading", 1, "a")]])]),
+        ("- a\n  -\n", [(_U, [[("heading", 2, "a")]])]),
+        ("- a\n\t===\n", [(_U, [[("heading", 1, "a")]])]),
+        ("- - a\n    ===\n", [(_U, [[(_U, [[("heading", 1, "a")]])]])]),
+        ("- \n  - a\n    ===\n", [(_U, [[(_U, [[("heading", 1, "a")]])]])]),
+        ("> - a\n>   ===\n", [("quote", [(_U, [[("heading", 1, "a")]])])]),
+        ("1. a\n   > b\n   > ---\n", [(_O, [["a", ("quote", [("heading", 2, "b")])]])]),
+        ("- a\n\n  b\n  ===\n", [(_U, [["a", ("heading", 1, "b")]])]),
+    ],
+)
+def test_a_heading_in_an_item_or_a_quote_is_a_heading_block(body, trees):
+    """cmark-gfm reads each as a heading; it is not a section (§4.1)."""
+    assert _trees(body) == trees
+
+
+@pytest.mark.parametrize(
+    ("body", "trees"),
+    [
+        # A setext underline is never a lazy line's: it continues the paragraph.
+        ("- a\n===\n", [(_U, [["a ==="]])]),
+        ("> a\n===\n", [("quote", ["a ==="])]),
+        ("> a\n--\n", [("quote", ["a --"])]),
+        ("> - a\n> ===\n", [("quote", [(_U, [["a ==="]])])]),
+        ("> - a\n>  ===\n", [("quote", [(_U, [["a ==="]])])]),
+        ("- - a\n  ===\n", [(_U, [[(_U, [["a ==="]])]])]),
+        ("- a\n  - b\n  ===\n", [(_U, [["a", (_U, [["b ==="]])]])]),
+        ("- a\n\t\t===\n", [(_U, [["a ==="]])]),
+        ("> > a\n> ===\n", [("quote", [("quote", ["a ==="])])]),
+        ("- > a\n  ===\n", [(_U, [[("quote", ["a ==="])]])]),
+        # A quote in an item, on its first line, holds the paragraph.
+        ("- - > p\n    ===\nb\n", [(_U, [[(_U, [[("quote", ["p === b"])]])]])]),
+        ("> - > x\n>   ===\n |-\n", [("quote", [(_U, [[("quote", ["x === |-"])]])])]),
+    ],
+)
+def test_a_lazy_setext_underline_makes_no_heading(body, trees):
+    assert _trees(body) == trees
+
+
+@pytest.mark.parametrize(
+    ("body", "trees"),
+    [
+        # A heading ends the paragraph: the next line is not lazy (cmark-gfm).
+        ("- a\n  ===\nb\n", [(_U, [[("heading", 1, "a")]]), "b"]),
+        ("> a\n> ===\nb\n", [("quote", [("heading", 1, "a")]), "b"]),
+        ("> - a\n>   ===\nb\n", [("quote", [(_U, [[("heading", 1, "a")]])]), "b"]),
+        ("- # H\nb\n", [(_U, [[("heading", 1, "H")]]), "b"]),
+        ("> # H\nb\n", [("quote", [("heading", 1, "H")]), "b"]),
+        ("- #\nb\n", [(_U, [[("heading", 1, "")]]), "b"]),
+        ("- - a\n\n  b\n  ===\nc\n", [(_U, [[(_U, [["a"]]), ("heading", 1, "b")]]), "c"]),
+        ("- \n  - a\n    ===\nb\n", [(_U, [[(_U, [[("heading", 1, "a")]])]]), "b"]),
+        # A delimiter row under a heading is no table: its paragraph's line.
+        ("- # H\n  |---|\na\n", [(_U, [[("heading", 1, "H"), "|---| a"]])]),
+        # A line of ``#`` alone is a heading, which no lazy line is. (Outside
+        # items and quotes, a section's heading needs text: it is text there.)
+        ("- a\n#\n", [(_U, [["a"]]), "#"]),
+    ],
+)
+def test_a_heading_in_an_item_or_a_quote_ends_its_paragraph(body, trees):
+    assert _trees(body) == trees
+
+
+@pytest.mark.parametrize(
+    ("body", "trees"),
+    [
+        # A quote in an item indented up to three columns is a quote.
+        ("- a\n   > p\n    ===\nb\n", [(_U, [["a", ("quote", ["p === b"])]])]),
+        ("- a\n   > p\nb\n", [(_U, [["a", ("quote", ["p b"])]])]),
+        # A lazy line of its paragraph four columns in starts no block.
+        ("  1. y\n     > p\n    <div>\n", [(_O, [["y", ("quote", ["p <div>"])]])]),
+        ("  1. y\n     > p\n    ---\n", [(_O, [["y", ("quote", ["p ---"])]])]),
+        ("  1. y\n     > p\n     <div>\n", [(_O, [["y", ("quote", ["p"]), ("html",)]])]),
+    ],
+)
+def test_a_quote_in_an_item_takes_its_lazy_lines(body, trees):
+    assert _trees(body) == trees
+
+
+def test_a_heading_blocks_directives_are_checked_and_its_markers_are_text():
+    """A heading in an item or a quote is inline text for directives (§8), as
+    a paragraph there is; it is no paragraph for an item's anchor (§5.7)."""
+    assert "ref-broken" in _validate("- # See {{ref: nope}}\n").rules()
+    assert "ref-broken" in _validate("> ## See {{ref: nope}}\n").rules()
+    assert "anchor-misplaced" in _validate("> # Heading {#h}\n").rules()
+
+
+def test_a_heading_block_from_a_dict():
+    def block(**payload):
+        document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "heading", **payload}]}]})
+        return document.sections[0].blocks[0]
+
+    assert (block(text=" a\nb\r\nc ", level=2).text, block(level=2).level) == ("a b c", 2)
+    assert [block(level=value).level for value in (None, "3", 0, 9, "x", float("inf"), 2.5)] == [1, 3, 1, 6, 1, 1, 2]
+    other = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "level": 3}]}]})
+    assert other.sections[0].blocks[0].level == 0
+    document = parse_document(_FRONTMATTER + "- ## H\n")
+    assert document_to_dict(document)["sections"][0]["blocks"][0]["items"][0]["blocks"][0]["level"] == 2
+    assert document_from_dict(document_to_dict(document)) == document
+
+
+@pytest.mark.parametrize(
+    ("heading", "written", "text"),
+    [
+        (Block(kind="heading", text="foo #", level=2), "## foo \\#", "foo \\#"),
+        (Block(kind="heading", text="##", level=1), "# \\##", "\\##"),
+        (Block(kind="heading", text="", level=3), "### #", ""),
+        (Block(kind="heading", text="a\nb", level=0), "# a b", "a b"),
+        (Block(kind="heading", text="x", level=7), "###### x", "x"),
+        (Block(kind="heading", text="# x {#y}", level=1), "# # x {#y}", "# x {#y}"),
+    ],
+)
+def test_a_model_built_heading_block_is_written_as_one_in_an_item(heading, written, text):
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": [{"blocks": [{"kind": "paragraph", "text": "a"}]}]},
+    ]}]})
+    list_items(document.sections[0].blocks[0])[0].blocks.append(heading)
+    source = serialize_document(document)
+    # Four columns in, where a heading after a blank line stays the item's.
+    assert f"-   a\n    {written}\n" in source
+    [reread] = list_items(parse_document(source).sections[0].blocks[0])[0].blocks[1:]
+    assert (reread.kind, reread.text, reread.level) == ("heading", text, min(max(heading.level, 1), 6))
+
+
+def test_a_model_built_heading_outside_an_item_is_written_as_text():
+    """At the margin it would be a section's heading."""
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "heading", "text": "T", "level": 3}]}]})
+    source = serialize_document(document)
+    assert "\n\\### T\n" in source
+    assert [(b.kind, b.text) for b in parse_document(source).sections[0].blocks] == [("paragraph", "\\### T")]
+
+
+@pytest.mark.parametrize("text", ["#", "# x", "## x", "#\tx"])
+def test_a_paragraph_in_an_item_that_reads_as_a_heading_is_escaped(text):
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "unordered_list", "items": [
+        {"blocks": [{"kind": "paragraph", "text": "a"}, {"kind": "paragraph", "text": text}]},
+    ]}]}]})
+    [item] = list_items(parse_document(serialize_document(document)).sections[0].blocks[0])
+    assert [(b.kind, b.text) for b in item.blocks] == [("paragraph", "a"), ("paragraph", "\\" + text)]

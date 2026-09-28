@@ -96,11 +96,22 @@ an item still open goes on in that item, and another item of the list keeps the 
 loose list). Code and raw HTML in an item hold no directive, a marker ends only an item's first
 paragraph, and a nested item's presence includes the conditions of the items it is nested in
 (§15.3). Blocks in an item are never sections, and a directive in an item's paragraph stays in
-its text. What the model does not keep, or reads more simply than CommonMark:
+its text.
+
+A heading in an item or a block quote, ATX (`#` alone too) or setext, is a `heading` block
+([#78](https://github.com/ForLegalAI/legaldown-validator/issues/78)): its level and its text,
+without the hashes, a closing sequence or the underline. It is not a section (§4.1): not
+numbered, without an identifier, and not checked by the heading rules. Its directives are
+checked as a paragraph's are, and a marker after it is text, as it is no paragraph for an item's
+anchor (§5.7): `- # Title {#x}` is `anchor-misplaced`. As in CommonMark, a heading ends the
+paragraph before it, so a line after it is not a lazy continuation line, and a setext underline
+never lazily continues a paragraph into a heading. Outside items and quotes, a section's heading
+needs text: a line of `#` alone is paragraph text there, where CommonMark reads an empty heading.
+
+What the model does not keep, or reads more simply than CommonMark:
 
 - An ATX heading indented after a list, after a blank line, stays a section heading, where
-  CommonMark reads it in the item. In an item, a heading's line is a paragraph of its own, and a
-  setext underline more of its paragraph.
+  CommonMark reads it in the item.
 - An ordered item's number is not kept: a list is written numbered from 1. Whether a list is
   loose or tight is not kept either: items are written without blank lines between them.
 - A fence left open in an item, under an item nested on its first line and short of that

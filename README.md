@@ -251,12 +251,15 @@ with a pipe at each end and every `|` in a cell escaped as `\|`, so expect a
 formatting-normalized file rather than a byte-for-byte copy.
 
 A list block's `items` are `ListItem`s, each holding the blocks of its content in order: its
-first paragraph, then later paragraphs, nested lists (a list block of their own kind), code,
-quotes, tables and raw HTML. An empty item holds none. A paragraph in an item is always of kind
-`paragraph`: a directive in it stays in its text. `item_text(item)` gives an item's first
-paragraph's text, and `render_item(item)` its content as written after its marker; a string
-item in `document_from_dict` (as models before 0.3 held them) is read as such content. A
-nested item's condition applies within those of the items it is nested in (§15.3).
+first paragraph, then later paragraphs, headings, nested lists (a list block of their own kind),
+code, quotes, tables and raw HTML. An empty item holds none. A paragraph in an item is always of
+kind `paragraph`: a directive in it stays in its text. A heading in an item or a quote is a
+`heading` block, not a section: its `text` without the `#` syntax, and its `level` (1–6; `level`
+is 0 on every other block). Written outside an item, where it would be a section's heading, a
+`heading` block becomes paragraph text with a backslash before it. `item_text(item)` gives an
+item's first paragraph's text, and `render_item(item)` its content as written after its marker;
+a string item in `document_from_dict` (as models before 0.3 held them) is read as such content.
+A nested item's condition applies within those of the items it is nested in (§15.3).
 
 A quote block keeps its `text`: its content, one line per source line without the `>` marker.
 The validator and assembly read that content as blocks, as they read an item's, so code and raw

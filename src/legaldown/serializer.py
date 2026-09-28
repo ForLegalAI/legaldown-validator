@@ -22,8 +22,8 @@ from .markdown import (
     strip_text,
 )
 from .markers import Marker, format_marker
-from .models import Amends, Block, Document, ListItem, Metadata, list_items, metadata_from_dict
-from .parser import HEADING_RE, LIST_ITEM_RE, RULE_RE, _expand_prefix
+from .models import Amends, Block, Document, ListItem, Metadata, heading_text, list_items, metadata_from_dict
+from .parser import ATX_HEADING_RE, HEADING_RE, LIST_ITEM_RE, RULE_RE, _expand_prefix
 
 # ── Internal helpers ──────────────────────────────────────────────
 
@@ -138,12 +138,11 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
     return payload
 
 
-def _opens_block(text: str, *, headings: bool = True) -> bool:
-    """True if *text* at the margin would open a code block, a heading (where
-    there are *headings*), or an HTML block rather than a paragraph."""
-    return bool(
-        FENCE_OPEN_RE.match(text) or (headings and HEADING_RE.match(text)) or html_block_end([text], 0) is not None
-    )
+def _opens_block(text: str, *, in_item: bool = False) -> bool:
+    """True if *text* at the margin would open a code block, a heading (in a
+    list item, an empty one too), or an HTML block rather than a paragraph."""
+    heading = ATX_HEADING_RE if in_item else HEADING_RE
+    return bool(FENCE_OPEN_RE.match(text) or heading.match(text) or html_block_end([text], 0) is not None)
 
 
 def _paragraph(text: str, *, in_item: bool = False) -> str:
@@ -157,11 +156,11 @@ def _paragraph(text: str, *, in_item: bool = False) -> str:
     thematic break, a list item) gets a
     backslash before it instead, which renders as nothing (CommonMark): only a model
     built in code, not one from ``parse_document``, holds that, since the
-    parser never turns the start of a block into paragraph text. In a list
-    item (*in_item*), a heading's line is paragraph text as it stands."""
+    parser never turns the start of a block into paragraph text. *in_item*:
+    in a list item's content, where ``#`` alone is a heading too."""
     if split := split_lone_tag(text):
         return split
-    if _opens_block(text, headings=not in_item) or text.startswith(">") or RULE_RE.match(text):
+    if _opens_block(text, in_item=in_item) or text.startswith(">") or RULE_RE.match(text):
         return "\\" + text
     if marker := LIST_ITEM_RE.match(text):
         # A list item's marker, bare ones included: the backslash goes before
@@ -169,6 +168,20 @@ def _paragraph(text: str, *, in_item: bool = False) -> str:
         at = marker.start("delimiter") if marker.group("delimiter") else marker.start("bullet")
         return text[:at] + "\\" + text[at:]
     return text
+
+
+def _heading(block: Block) -> str:
+    """A heading block as an ATX heading line (§4.1). A ``#`` run ending its
+    text, which would be read as a closing sequence, gets a backslash before
+    it; an empty heading is written with one (``# #``), as ``#`` alone
+    would not be read as a heading."""
+    hashes = "#" * min(max(block.level, 1), 6)
+    text = heading_text(block.text)
+    if not text:
+        return f"{hashes} #"
+    if closing := re.search(r"(?:^|[ \t])(#+)$", text):
+        text = text[: closing.start(1)] + "\\" + text[closing.start(1):]
+    return f"{hashes} {text}"
 
 
 def _code(text: str, *, after_list: bool, keep_open: bool = False) -> str:
@@ -204,6 +217,12 @@ def _render_block(block: Block, *, in_item: bool = False) -> str:
     """*block* as source; *in_item*: in a list item's content."""
     if block.kind == "paragraph":
         return _paragraph(strip_text(block.text), in_item=in_item)
+    if block.kind == "heading":
+        # A heading at the margin would be a section's: outside an item —
+        # only a model built in code has one there — it is written as a
+        # paragraph of its line, with a backslash before it.
+        line = _heading(block)
+        return line if in_item else "\\" + line
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()
@@ -453,14 +472,14 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # tight as it is written.
             before = blocks[index - 1] if index > 0 else None
             closed = before is not None and before.kind == "code" and FENCE_OPEN_RE.match(before.text.split("\n")[0])
-            heading = block.kind == "paragraph" and HEADING_RE.match(rendered)
+            heading = block.kind == "heading"
             tight = in_item and before is not None and (
                 # A heading's line, which a blank line before it would make a
                 # section's (``parser._scan_list``), follows any block that
                 # ends at it.
                 (heading and before.kind != "html")
                 or
-                (block.kind in _LISTS and before.kind in ("paragraph", *_LISTS) and not _bare(rendered))
+                (block.kind in _LISTS and before.kind in ("paragraph", "heading", *_LISTS) and not _bare(rendered))
                 or (before.kind == "paragraph" and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered.split("\n")[0])))
                 # After a closed fence a block starts on the next line.
                 or (closed and close_fences(before.text) == before.text and not _bare(rendered))

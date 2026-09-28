@@ -1026,3 +1026,26 @@ class TestTables:
         body = "# A\n\na | b\n--- | ---\n{{placeholder: name}} | x\n"
         result = assemble(_template(body, _TEXT), {"name": "A | B"})
         assert _body(result) == "\n# A\n\na | b\n--- | ---\nA \\| B | x\n"
+
+
+class TestHeadingBlocks:
+    """#78: a heading in a list item or a quote is a block of its own."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "# A\n\n- ## For {{placeholder: name}}\n  Text.\n",
+            "# A\n\n> For {{placeholder: name}}\n> ===\n",
+        ],
+    )
+    def test_a_blank_in_a_heading_block_is_filled(self, body):
+        result = assemble(_template(body, _TEXT), {"name": "Acme"})
+        assert _body(result) == "\n" + body.replace("{{placeholder: name}}", "Acme")
+        assert "placeholder-unfilled" not in validate_document(parse_document(result.output)).rules()
+
+    def test_a_marker_after_a_heading_block_is_no_condition(self):
+        """An item's marker ends its first paragraph (§5.7): after a heading
+        it is text, which the validator reports (anchor-misplaced)."""
+        body = "# A\n\n- ## Heading {when=x}\n- b\n"
+        result = assemble(_template(body, _BOOL), {"x": False})
+        assert _body(result) == "\n" + body
