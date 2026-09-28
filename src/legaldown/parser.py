@@ -37,6 +37,7 @@ from .markdown import (
 )
 from .markers import Marker, split_heading
 from .models import Block, Document, ListItem, document_from_dict
+from .positions import SourceMap, document_shape, frontmatter_keys
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -150,35 +151,44 @@ class FrontmatterError(yaml.YAMLError, ValueError):
     """The frontmatter cannot be read (§3.1, frontmatter-invalid-yaml): its
     YAML is malformed, nested too deep, or a mapping of another kind (a
     ``!!set``). A ``yaml.YAMLError`` and a ``ValueError``, as what
-    ``parse_document`` raised for it before."""
+    ``parse_document`` raised for it before. ``line`` is the file line (from
+    1) of the problem, when the YAML reader gives one (§16.9)."""
+
+    def __init__(self, message: str, line: int | None = None) -> None:
+        super().__init__(message)
+        self.line = line
 
 
-def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, bool]:
+def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, bool, dict[tuple[Any, ...], int]]:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
-    body, absent)``; the first is read from how the YAML is written, which
-    the parsed data loses. The frontmatter is *absent* when no closed
+    body, absent, lines)``; the first is read from how the YAML is written,
+    which the parsed data loses, and the last is where each frontmatter node
+    is (``positions.frontmatter_keys``, the opening ``---`` at the empty
+    path), empty without frontmatter. The frontmatter is *absent* when no closed
     ``---`` block opens the source, or when the block's YAML is a scalar or
     a list rather than a mapping of fields: then its ``---`` lines are
     thematic breaks, and the whole source is body. A block that is empty or
     holds only comments is present and empty."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return [], {}, source, True
+        return [], {}, source, True, {}
     loader = _StrDateSafeLoader(match.group(1) or "")
     try:
         node = loader.get_single_node()
         if node is None:
-            return [], {}, source[match.end():], False
+            return [], {}, source[match.end():], False, {(): 1}
         if not isinstance(node, yaml.MappingNode):
-            return [], {}, source, True
+            return [], {}, source, True, {}
         if node.tag != "tag:yaml.org,2002:map":
             # A mapping tagged as something else (!!set, a flow !!omap) is
             # meant as frontmatter, but holds no fields. (A block !!omap is
             # a sequence: not frontmatter.)
-            raise FrontmatterError("Frontmatter must be a YAML mapping of fields.")
+            raise FrontmatterError("Frontmatter must be a YAML mapping of fields.", node.start_mark.line + 2)
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
         loader.flatten_mapping(node)
+        # The YAML starts on the line after the opening `---` (line 1).
+        keys = {(): 1, **frontmatter_keys(node, 2)}
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
@@ -189,12 +199,25 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, boo
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        raise FrontmatterError(str(exc) or type(exc).__name__) from exc
+        raise FrontmatterError(str(exc) or type(exc).__name__, _error_line(exc)) from exc
     finally:
         loader.dispose()
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
-    return not_line_editable, metadata, source[match.end():], False
+    return not_line_editable, metadata, source[match.end():], False, keys
+
+
+def _error_line(exc: BaseException) -> int | None:
+    """The file line of a YAML error in the frontmatter, whose YAML starts on
+    line 2: where the problem is — or, for a quoted scalar or a flow
+    collection left open, where it opens, which the problem is only found
+    far past."""
+    context = getattr(exc, "context", None) or ""
+    context_mark = getattr(exc, "context_mark", None)
+    problem_mark = getattr(exc, "problem_mark", None)
+    opened = context_mark is not None and ("quoted" in context or "flow" in context)
+    mark = context_mark if opened else problem_mark or context_mark
+    return mark.line + 2 if mark is not None else None
 
 
 def _has_flow_style(node: yaml.Node) -> bool:
@@ -1345,11 +1368,12 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     # A byte-order mark is an encoding artifact, not content. Lines end at
     # LF, CR, or CRLF (CommonMark), and nowhere else.
     source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
-    not_line_editable, metadata, body, absent = _split_frontmatter(source)
+    not_line_editable, metadata, body, absent, keys = _split_frontmatter(source)
     lines = body.split("\n")
     if lines[-1] == "":
         lines.pop()  # the last line's ending, not a line
-    preamble, sections = _parse_body(lines)
+    layout = _Layout()
+    preamble, sections = _parse_body(lines, layout)
     payload: dict[str, Any] = {
         "metadata": metadata,
         "sections": [
@@ -1370,6 +1394,13 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     document = document_from_dict(payload)
     document.metadata.not_line_editable = not_line_editable
     document.metadata.frontmatter_absent = absent
+    document.source_map = SourceMap(
+        lines=source.split("\n"),
+        body_start=source.count("\n", 0, len(source) - len(body)),
+        keys=keys,
+        layout=layout,
+        shape=document_shape(document),
+    )
     return document
 
 

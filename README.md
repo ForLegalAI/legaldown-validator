@@ -87,14 +87,14 @@ legaldown validate contract.lgd
 ```
 
 ```
-contract.lgd: error: [ref-broken] Broken section reference: 'payment-terms'.
-contract.lgd: warning: [money-missing-currency] Money directive without currency parameter.
+contract.lgd:14: error: [ref-broken] Broken section reference: 'payment-terms'.
+contract.lgd:22: warning: [money-missing-currency] Money directive without currency parameter.
 
 1 error(s), 1 warning(s), 0 info(s)
 ```
 
-One diagnostic per line, each prefixed with its rule id. A clean document reports
-`No issues found.` and exits `0`.
+One diagnostic per line, each prefixed with its file and line (§16.9) and its rule id, in source
+order. A clean document reports `No issues found.` and exits `0`.
 
 Diagnostics go to **stdout**; the trailing summary and `No issues found.` go to **stderr**, so
 `legaldown validate contracts/ > report.txt` captures the findings alone. `--quiet` drops the
@@ -153,6 +153,7 @@ integrations, and dashboards:
       "file": "contract.lgd",
       "rule": "ref-broken",
       "level": "error",
+      "line": 14,
       "message": "Broken section reference: 'payment-terms'."
     }
   ]
@@ -198,7 +199,7 @@ so a renderer or a UI can reuse the work instead of re-deriving it:
 
 | Attribute | Contents |
 |---|---|
-| `diagnostics` | `Diagnostic(rule, level, message)` — the authoritative record |
+| `diagnostics` | `Diagnostic(rule, level, message, line, file)` — the authoritative record |
 | `is_valid` | `True` when no Error-level diagnostic was reported |
 | `errors` / `warnings` / `infos` | Message strings by severity |
 | `rules(level=None)` | Set of rule ids present, optionally filtered by severity |
@@ -230,8 +231,16 @@ it has none. The identifiers the validator generates (§5.3, §5.5) are not writ
 model: read them from `ValidationResult.sections`.
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
-structures, except the two fields that describe the parsed source rather than the document,
-`Metadata.not_line_editable` and `Metadata.frontmatter_absent`. `render_block()` renders a single block when you are driving your own layout.
+structures, except the fields that describe the parsed source rather than the document,
+`Metadata.not_line_editable`, `Metadata.frontmatter_absent` and `Document.source_map`.
+
+Each diagnostic names its `line` (from 1) and its `file` (the document's `filename`), as §16.9
+requires: the line of the directive, marker, heading or block it is about, or of the
+frontmatter key — for a missing key, the key that holds it, or the frontmatter's first. Lines
+come from the `source_map` that `parse_document` gives a document. A document built from a dict
+has none, and one changed after parsing no longer fits its map: their diagnostics have no line
+(`None`) rather than a stale one. `FrontmatterError.line` is the line of YAML that cannot be
+read. `render_block()` renders a single block when you are driving your own layout.
 `iter_directives()` lexes the directives in a piece of text by the §11.2
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 

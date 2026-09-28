@@ -11,10 +11,12 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from functools import partial
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
 from ..models import Block, Document
+from ..positions import Locator
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
 from .patterns import (
     DURATION_UNITS,
@@ -23,7 +25,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import ValidationResult
+from .result import Line, ValidationResult
 
 _CURRENCY_RE = re.compile(r"[A-Z]{3}")
 _LINE_BREAK_RE = re.compile(r"[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
@@ -52,6 +54,8 @@ class Blank:
     #: fixes none. Two codes are an Error (placeholder-type-inconsistent).
     codes: set[str] = field(default_factory=set)
     in_frontmatter: bool = False
+    #: The line of the first occurrence fixing each code (§16.9).
+    code_lines: dict[str, Any] = field(default_factory=dict)  # a ``result.Line`` each
 
 
 def question_type(questions: Any, question_id: str) -> str | None:
@@ -191,20 +195,28 @@ def check_questions(
     *,
     template: bool,
     not_line_editable: list[str],
+    where: Locator | None = None,
 ) -> None:
     """Report malformed question declarations (question-invalid, §15.2).
 
     *blanks* are the document's placeholders by id: a default must agree with
     the currency or unit its question's placeholders fix, and in a *template*
-    an undeclared placeholder id is a question id too.
+    an undeclared placeholder id is a question id too. *where* gives each
+    diagnostic's line: the question's, or the key's.
     """
+    def line_of(*path: Any) -> int | None:
+        return where.key(*path) if where is not None else None
+
+    line = line_of("questions")  # of the declaration each diagnostic is about
+
     def invalid(message: str) -> None:
-        result.error("question-invalid", message)
+        result.error("question-invalid", message, line=line)
 
     if questions is not None and not isinstance(questions, dict):
         invalid("'questions' must be a map of question id to declaration (§15.2).")
     declared = questions if isinstance(questions, dict) else {}
     for qid, declaration in declared.items():
+        line = line_of("questions", qid)
         problem = _id_problem(str(qid))
         if problem:
             invalid(f"Question id '{qid}' {problem} (§15.2).")
@@ -231,12 +243,14 @@ def check_questions(
             if problem:
                 invalid(f"The default of question '{qid}' is not a valid answer (§15.7.1): {problem}.")
     for key in not_line_editable:
+        line = line_of(key)
         if key == "questions" or template:
             invalid(
                 f"'{key}' must be written in YAML block style, one key per line"
                 + (", each entry beginning with '- id:'" if key == "attachments" else "")
                 + ", so that assembly can edit it line by line (§15.2)."
             )
+    line = line_of("questions")
     if template:
         for pid in blanks:
             if pid not in declared and pid in YAML_KEYWORDS:
@@ -424,37 +438,53 @@ def check_template_body(
     result: ValidationResult,
     *,
     template: bool,
-) -> list[Quote]:
+    where: Locator | None = None,
+) -> list[tuple[Quote, Line]]:
     """Report what §16.12 checks in the body of a document: drafting notes
     (drafting-note-unrecognized, drafting-note-def), a blank or choice in a
     defined term (def-term-variable) or against template text
     (insertion-boundary), and, in a *template*, the Core parts of
-    template-fragment-invalid. Return the document's drafting notes."""
+    template-fragment-invalid. Return the document's drafting notes, each
+    with its line. *where* gives the lines."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, text_fragments
 
-    for section in document.sections:  # headings are body text too
+    def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
+             nth: int = 0) -> Line:
+        """The line of *needle* (``Locator.find``), found only when a
+        diagnostic is made there."""
+        if where is None:
+            return None
+        return partial(where.find, section, block, needle, fragment, offset, nth=nth)
+
+    for heading, section in enumerate(document.sections):  # headings are body text too
         lexed = lex_fragment(section.title)
         for directive in lexed.directives:
             if directive.name in _INSERTIONS and not directive.malformed:
                 masked = template_text(section.title, lexed.directives)
-                _check_insertion(section.title, masked, directive, lexed.directives, result)
-    includes: list[str] = []
-    all_notes: list[Quote] = []
-    for _section, _index, block in document.iter_blocks():
+                line = where.heading(heading) if where is not None else None
+                _check_insertion(section.title, masked, directive, lexed.directives, result, line)
+    includes: list[tuple[str, Line]] = []
+    all_notes: list[tuple[Quote, Line]] = []
+    for block_section, block_index, block in document.iter_indexed_blocks():
         notes: list[Quote] = []
+        firsts: list[str] = []  # the first lines of the quotes before
         for quote in block_quotes(block):
+            first = quote.first_line.strip()
+            line = find(block_section, block_index, first, nth=firsts.count(first))
+            firsts.append(first)
             if quote.is_unrecognized_alert:
                 result.warning(
                     "drafting-note-unrecognized",
                     f"The quote begins '{quote.first_line}', which looks like an alert marker "
                     f"but is not [!DRAFTING]: it is an ordinary quote and would reach the "
                     f"finished document (§15.6).",
+                    line=line,
                 )
             elif quote.is_drafting_note:
                 notes.append(quote)
-        all_notes.extend(notes)
+                all_notes.append((quote, line))
         for index, fragment in enumerate(text_fragments(block)):
             lexed = lex_fragment(fragment)
             masked: str | None = None  # template text, for the fragment's first insertion
@@ -462,26 +492,29 @@ def check_template_body(
             for directive in lexed.directives:
                 if directive.malformed:
                     continue
+                line = find(block_section, block_index, directive.source, index, directive.start)
                 if in_note and directive.name == "def":
                     result.error(
                         "drafting-note-def",
                         f"'{directive.source}' is inside a drafting note, which assembly removes "
                         f"with the definition (§15.6).",
+                        line=line,
                     )
                 if directive.name == "include" and directive.positional:
                     if not in_note:
-                        includes.append(posixpath.normpath(directive.positional))
+                        includes.append((posixpath.normpath(directive.positional), line))
                     elif template:
                         result.error(
                             "template-fragment-invalid",
                             f"'{directive.source}' is inside a drafting note; in a template an "
                             f"include belongs in the template's own body (§15.3).",
+                            line=line,
                         )
                 # A drafting note is removed before anything is inserted
                 # (§15.7.2 step 2), so a blank in one is never filled.
                 if directive.name in _INSERTIONS and not in_note:
                     masked = masked or template_text(fragment, lexed.directives)
-                    _check_insertion(fragment, masked, directive, lexed.directives, result)
+                    _check_insertion(fragment, masked, directive, lexed.directives, result, line)
             for anchor in find_definition_anchors(
                 fragment, language=document.metadata.language, lexed=lexed
             ):
@@ -494,50 +527,72 @@ def check_template_body(
                             f"'{directive.source}' is inside the term that "
                             f"'{anchor.directive.source}' defines: the term, and any id derived "
                             f"from it, must be the same in every assembled document (§15.5).",
+                            line=find(block_section, block_index, directive.source, index, directive.start),
                         )
     if template:
-        _check_fragments(document, includes, result)
+        _check_fragments(document, includes, result, where)
     return all_notes
 
 
 def _check_insertion(
-    text: str, masked: str, insertion: Directive, directives: list[Directive], result: ValidationResult
+    text: str,
+    masked: str,
+    insertion: Directive,
+    directives: list[Directive],
+    result: ValidationResult,
+    line: Line = None,
 ) -> None:
-    """Report *insertion* if it is not kept apart from template text."""
+    """Report *insertion*, at *line*, if it is not kept apart from template text."""
     problem = insertion_boundary_problem(text, masked, insertion, directives)
     if problem:
         result.error(
             "insertion-boundary",
             f"'{insertion.source}' is not kept apart from the text around it: {problem} (§15.7.3).",
+            line=line,
         )
 
 
-def _check_fragments(document: Document, includes: list[str], result: ValidationResult) -> None:
+def _check_fragments(
+    document: Document, includes: list[tuple[str, Line]], result: ValidationResult, where: Locator | None
+) -> None:
     """The Core parts of template-fragment-invalid (§15.3): each fragment is
     included once, and each LegalDown attachment file is declared by one
-    entry and is not also a fragment."""
-    included = Counter(includes)
-    for path in sorted(path for path, count in included.items() if count > 1):
-        result.error(
-            "template-fragment-invalid",
-            f"Fragment '{path}' is included more than once; in a template each fragment has "
-            f"one place (§15.3).",
-        )
+    entry and is not also a fragment. *includes*: each fragment's path and
+    the line of its {{include:}}; a second one is reported at its own line,
+    an attachment file at its later entry."""
+    included = Counter(path for path, _line in includes)
+    seen: set[str] = set()
+    for path, line in includes:
+        if path in seen and included[path] > 1:
+            included[path] = 0  # reported once
+            result.error(
+                "template-fragment-invalid",
+                f"Fragment '{path}' is included more than once; in a template each fragment has "
+                f"one place (§15.3).",
+                line=line,
+            )
+        seen.add(path)
     files = [
-        posixpath.normpath(att.file)
-        for att in document.metadata.attachments
+        (posixpath.normpath(att.file), index)
+        for index, att in enumerate(document.metadata.attachments)
         if att.file.endswith(LEGALDOWN_EXTENSIONS)
     ]
-    declared = Counter(files)
-    for path in sorted(declared):
-        if declared[path] > 1:
+    entries: dict[str, list[int]] = {}
+    for path, index in files:
+        entries.setdefault(path, []).append(index)
+    fragments = {path for path, _line in includes}
+    for path in sorted(entries):
+        indices = entries[path]
+        if len(indices) > 1:
             result.error(
                 "template-fragment-invalid",
                 f"Attachment file '{path}' is declared by more than one attachment; in a "
                 f"template each LegalDown attachment file has one entry (§15.3).",
+                line=where.key("attachments", indices[1], "file") if where is not None else None,
             )
-        if path in included:
+        if path in fragments:
             result.error(
                 "template-fragment-invalid",
                 f"Attachment file '{path}' is also included as a fragment (§15.3).",
+                line=where.key("attachments", indices[0], "file") if where is not None else None,
             )

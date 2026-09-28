@@ -173,6 +173,8 @@ class DefinitionRef:
     #: True if deriving the id dropped letters or digits without an ASCII
     #: form (§5.3): an explicit id is recommended (def-lossy-slug).
     lossy_id: bool = False
+    #: The ``{{def:}}``'s offset in its text, for an inline anchor.
+    offset: int = 0
 
 
 def block_fragments(block: Block) -> list[tuple[str, bool]]:
@@ -362,6 +364,7 @@ def collect_definitions(
                         inline=True,
                         auto_id=not raw_id,
                         lossy_id=lossy,
+                        offset=anchor.directive.start,
                     )
                 )
     return refs

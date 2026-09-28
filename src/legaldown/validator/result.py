@@ -1,6 +1,8 @@
 """Validation result types."""
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 
@@ -26,11 +28,22 @@ class Diagnostic:
 
     Carries the **stable rule id** defined by specification §16.1 — the only
     part of a diagnostic that is stable across implementations and spec
-    revisions (§16.9) — plus the severity level and human-readable message.
+    revisions (§16.9) — plus the severity level and human-readable message,
+    and where it is (§16.9): the file, and the line (from 1) of what it
+    reports, which a document parsed from source has (``parse_document``)
+    and one built from a dict has not (None). Compare diagnostics by their
+    fields, not with one built without a line.
     """
     rule: str
     level: str  # "error" | "warning" | "info"
     message: str
+    line: int | None = None
+    file: str = ""
+
+
+#: A diagnostic's line (from 1), or a function giving it, called only when a
+#: diagnostic is recorded at it: finding a line costs more than knowing where.
+Line = int | None | Callable[[], "int | None"]
 
 
 @dataclass(slots=True)
@@ -57,20 +70,42 @@ class ValidationResult:
     inline_durations: list[tuple[str, str]] = field(default_factory=list)
     inline_fields: list[tuple[str, str]] = field(default_factory=list)
     inline_placeholders: list[tuple[str, str]] = field(default_factory=list)
+    #: The lines diagnostics are recorded at by default (``at``), innermost last.
+    _lines: list[Line] = field(default_factory=list, repr=False, compare=False)
 
-    def error(self, rule: str, message: str) -> None:
-        """Record an Error-level diagnostic under stable rule id *rule*."""
-        self.diagnostics.append(Diagnostic(rule=rule, level="error", message=message))
+    @contextmanager
+    def at(self, line: Line) -> Iterator[None]:
+        """Record the diagnostics made inside the block at *line*, unless
+        they give their own."""
+        self._lines.append(line)
+        try:
+            yield
+        finally:
+            self._lines.pop()
+
+    def _record(self, rule: str, level: str, message: str, line: Line) -> None:
+        if line is None and self._lines:
+            line = self._lines[-1]
+        if callable(line):
+            line = line()
+        self.diagnostics.append(Diagnostic(rule=rule, level=level, message=message, line=line))
+
+    def error(self, rule: str, message: str, *, line: Line = None) -> None:
+        """Record an Error-level diagnostic under stable rule id *rule*, at
+        *line* (``at``)."""
+        self._record(rule, "error", message, line)
         self.errors.append(message)
 
-    def warning(self, rule: str, message: str) -> None:
-        """Record a Warning-level diagnostic under stable rule id *rule*."""
-        self.diagnostics.append(Diagnostic(rule=rule, level="warning", message=message))
+    def warning(self, rule: str, message: str, *, line: Line = None) -> None:
+        """Record a Warning-level diagnostic under stable rule id *rule*, at
+        *line* (``at``)."""
+        self._record(rule, "warning", message, line)
         self.warnings.append(message)
 
-    def info(self, rule: str, message: str) -> None:
-        """Record an Info-level diagnostic under stable rule id *rule*."""
-        self.diagnostics.append(Diagnostic(rule=rule, level="info", message=message))
+    def info(self, rule: str, message: str, *, line: Line = None) -> None:
+        """Record an Info-level diagnostic under stable rule id *rule*, at
+        *line* (``at``)."""
+        self._record(rule, "info", message, line)
         self.infos.append(message)
 
     def rules(self, level: str | None = None) -> set[str]:

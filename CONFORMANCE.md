@@ -7,7 +7,20 @@ parse and validate a single document in memory. It also claims the **Assembly** 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
 validation rule, paired with the diagnostic a conforming validator must produce. **84 of the
-corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes.**
+corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes**,
+at the line each case gives.
+
+Every diagnostic names its file and line (§16.9, [#27](https://github.com/ForLegalAI/legaldown-validator/issues/27)):
+the line of the directive, marker, heading or block it is about, or of the frontmatter node — a
+mapping key, or a list entry's `-` line, at whatever depth — and for a missing key, the key that
+holds it (`amends:` for a missing `amends.title`) or the frontmatter's first key. Two cases are
+not asserted at their given line:
+
+- The answer rules (`answer-invalid`, `answer-unknown`) point into the answers file, which
+  `assemble` receives already parsed, so its diagnostics name no line.
+- `party-name-duplicate` gives line 10, the second side; this implementation reports line 12,
+  the duplicate party's own entry, as `side-name-duplicate` and `representative-name-empty`
+  point at theirs (reported to the specification).
 
 The specification defines 116 rules. The corpus has no fixture for three of them, since a
 document alone cannot exercise them. This implementation covers two of the three,
@@ -174,6 +187,7 @@ git clone https://github.com/ForLegalAI/LegalDown ../LegalDown
 LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
+Each case's expected rule is asserted at its expected line, where the case gives one (above).
 Cases for the rules above are skipped by name, so the 28 `not implemented` skips reproduce this
 table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 92 passed
 and 38 skipped: eight of the other skips are the implemented rules named above, skipped as

@@ -51,6 +51,7 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
                 "file": str(path),
                 "rule": "frontmatter-invalid-yaml",
                 "level": "error",
+                "line": exc.line,
                 "message": str(exc),
             }
         ], None
@@ -68,6 +69,7 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
             "file": str(path),
             "rule": d.rule,
             "level": d.level,
+            "line": d.line,
             "message": d.message,
         }
         for d in result.diagnostics
@@ -76,7 +78,8 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
 
 def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
     for d in diagnostics:
-        print(f"{d['file']}: {d['level']}: [{d['rule']}] {d['message']}")
+        where = f"{d['file']}:{d['line']}" if d.get("line") else d["file"]
+        print(f"{where}: {d['level']}: [{d['rule']}] {d['message']}")
     if quiet:
         return
     counts = {level: 0 for level in _LEVEL_ORDER}
@@ -113,7 +116,9 @@ def _run_validate(args: argparse.Namespace) -> int:
             if d["level"] == "warning":
                 d["level"] = "error"
 
-    collected.sort(key=lambda d: (d["file"], _LEVEL_ORDER.get(d["level"], 9), d["rule"]))
+    # By file, then in source order (a diagnostic without a line first), then
+    # by level and rule.
+    collected.sort(key=lambda d: (d["file"], d.get("line") or 0, _LEVEL_ORDER.get(d["level"], 9), d["rule"]))
 
     if args.format == "json":
         print(
@@ -207,7 +212,8 @@ def _run_assemble(args: argparse.Namespace) -> int:
 
     result = assemble(template, answers, load_file=load_file)
     for d in result.diagnostics:
-        print(f"{template_path}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
+        where = f"{template_path}:{d.line}" if d.line else f"{template_path}"
+        print(f"{where}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
     if not result.ok:
         return EXIT_DIAGNOSTICS
 

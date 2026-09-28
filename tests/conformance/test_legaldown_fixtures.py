@@ -82,6 +82,16 @@ IMPLEMENTED_RULES = {
 }
 
 
+# Expected lines this implementation disputes, by case (file or directory
+# name), rule and level: each points elsewhere than the node the diagnostic
+# is about, as the corpus's other cases do (reported to the specification).
+_DISPUTED_LINES = {
+    # Line 10 is the second side; the duplicate party is its entry at line 12,
+    # as side-name-duplicate and representative-name-empty point at theirs.
+    ("basic.lgd", "party-name-duplicate", "error"),
+}
+
+
 def _load_expectation(case_dir_or_file: Path) -> tuple[Path, dict]:
     """Return (entry .lgd path, expectation dict) for a fixture case."""
     if case_dir_or_file.is_file():
@@ -195,6 +205,7 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
 
     result = _validate_file(entry, config)
     produced = {(d.rule, d.level) for d in result.diagnostics}
+    located = {(d.rule, d.level, d.line) for d in result.diagnostics}
     for diag in expected.get("diagnostics", []):
         want = (diag["rule"], diag["level"])
         if diag["rule"] not in IMPLEMENTED_RULES:
@@ -202,6 +213,15 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         assert want in produced, (
             f"expected {want} not produced; got {sorted(produced)}"
         )
+        # The line, where the case gives one (§16.9) — but for the answer
+        # rules, whose line is in the answers file, which assembly receives
+        # parsed — and where the corpus is not known to be wrong (below).
+        line = diag.get("line")
+        if line is not None and "answers" not in config and (case.name, *want) not in _DISPUTED_LINES:
+            assert (*want, line) in located, (
+                f"expected {want} at line {line}; got it at "
+                f"{sorted(d.line or 0 for d in result.diagnostics if (d.rule, d.level) == want)}"
+            )
 
 
 def _iter_assembly_templates():
