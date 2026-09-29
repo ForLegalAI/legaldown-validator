@@ -147,7 +147,7 @@ integrations, and dashboards:
 ```json
 {
   "legaldown_spec": "0.2",
-  "validator_version": "0.2.0",
+  "validator_version": "0.3.0",
   "diagnostics": [
     {
       "file": "contract.lgd",
