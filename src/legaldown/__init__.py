@@ -89,11 +89,11 @@ from .validator import (
     PlacedMarker,
     SectionIndexEntry,
     ValidationResult,
+    is_drafting_note,
     is_template,
     slugify_identifier,
     validate_document,
 )
-from .validator.templates import is_drafting_note
 
 __version__ = "0.2.0"
 

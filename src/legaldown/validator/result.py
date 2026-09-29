@@ -41,7 +41,7 @@ class Diagnostic:
     file: str = ""
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True, frozen=True, kw_only=True)
 class PlacedMarker:
     """A marker in body text that is in a marker position and applies in
     its document (§5.7, §15.3), as ``validate_document`` places it — the
@@ -51,10 +51,13 @@ class PlacedMarker:
     It is in fragment *fragment* of ``block_fragments(block)``, block
     *block* of the preamble (*section* None) or of section *section*, at
     *offset* in that fragment's text: ``text[offset:offset + len(source)]``
-    is *source*. A fragment holds at most one placed marker, which ends it.
+    is *source*. That text is the *field* of the block holding it: ``text``
+    (a paragraph's or a definition's, a list item's first paragraph's), or
+    ``suffix`` (the text after a ``{{ref:}}`` or ``{{term:}}`` lifted out of
+    a paragraph). A fragment holds at most one placed marker, which ends it.
     In a list, *item* is the list item it marks, numbered in document order
-    among all the list's items, nested ones included, as ``list_fragments``
-    numbers them; None elsewhere.
+    among all the list's items — nested ones and empty ones included — as
+    ``list_fragments`` numbers them; None elsewhere.
 
     *identifier* is the ``#id`` that applies: ``""`` for the marker of a
     paragraph holding only an ``{{include:}}``, whose ``#id`` is ignored
@@ -68,6 +71,7 @@ class PlacedMarker:
     source: str
     identifier: str
     condition: str
+    field: str = "text"
     item: int | None = None
     include_only: bool = False
     line: int | None = None

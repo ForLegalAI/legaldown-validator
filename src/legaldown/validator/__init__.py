@@ -20,11 +20,13 @@ from .patterns import (
     VALID_PLACEHOLDER_TYPES,
 )
 from .result import Diagnostic, PlacedMarker, SectionIndexEntry, ValidationResult
+from .templates import is_drafting_note
 
 __all__ = [
     # Core
     "validate_document",
     "is_template",
+    "is_drafting_note",
     "DefinitionsImporter",
     "AttachmentDefinitionsImporter",
     # Result types

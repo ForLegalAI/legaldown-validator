@@ -195,7 +195,8 @@ The public API is what the `legaldown` and `legaldown.validator` packages export
 `__all__`). Changes to it are listed in the notes of each
 [GitHub release](https://github.com/ForLegalAI/legaldown-validator/releases); before 1.0 a
 minor release may change it, a patch release does not. Other modules are internal and may
-change in any release.
+change in any release; constants still only there are to be made public
+([#34](https://github.com/ForLegalAI/legaldown-validator/issues/34)).
 
 ### Working with the result
 
@@ -213,7 +214,7 @@ so a renderer or a UI can reuse the work instead of re-deriving it:
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
 | `inline_dates`, `inline_money`, `inline_durations`, `inline_fields`, `inline_placeholders` | Field-spec values found in the body |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
-| `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`; `item` is the list item it marks (numbered as `list_fragments` numbers them), and `identifier` is `""` where it does not apply (an include-only paragraph, §12.2) |
+| `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2) |
 
 A renderer builds from these decisions rather than re-deriving them, with the helpers the
 validator reads the document with:
@@ -221,9 +222,9 @@ validator reads the document with:
 | Helper | What it gives |
 |---|---|
 | `lex(text)` → `Lexed` | The directives in inline text (§11.4), and a `view` of it with comments and code spans blanked; `is_escaped(text, offset)` |
-| `block_fragments(block)`, `list_fragments(block)`, `list_items(block)` | The texts of a block that hold directives and markers, in the order `PlacedMarker.fragment` counts them; a list's, with the items each is in |
+| `block_fragments(block)`, `list_fragments(block)`, `list_items(block)` | The texts of a block that hold directives and markers, in the order `PlacedMarker.fragment` counts them; the same for a list, with the items each is in; a list's items, as `ListItem`s |
 | `is_template(document)`, `is_drafting_note(block)` | The template decision without validating (§15.1); whether a quote block is a drafting note (§15.6) |
-| `legaldown.validator`: `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units (each the set of conditions it appears under, `Presence`) can never appear together |
+| `legaldown.validator`: `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units (each the set of conditions it appears under, `Presence`) can never appear together, given the document's `questions` |
 | `legaldown.validator`: `is_valid_iso_date`, `is_valid_money_amount`, `is_positive_numeric`, `IDENTIFIER_RE`, `KNOWN_CURRENCIES` | Value checks (§3.10, §10) |
 
 ### Reading and editing the document model

@@ -1573,12 +1573,18 @@ def _placed_markers(
     from ..definitions import list_fragments  # see the import note in validate_document
 
     placed = []
+    lists: dict[tuple[int | None, int], list[tuple[str, bool, tuple[int, ...]]]] = {}  # each list walked once
     for found in markers:
         if found.marker is None or not found.placed(template):
             continue
         blocks = document.preamble if found.section is None else document.sections[found.section].blocks
         block = blocks[found.block]
-        items = list_fragments(block)[found.fragment][2] if block.kind in LIST_KINDS else ()
+        items: tuple[int, ...] = ()
+        if block.kind in LIST_KINDS:
+            key = (found.section, found.block)
+            if key not in lists:
+                lists[key] = list_fragments(block)
+            items = lists[key][found.fragment][2]
         placed.append(PlacedMarker(
             section=found.section,
             block=found.block,
@@ -1587,6 +1593,7 @@ def _placed_markers(
             source=found.source,
             identifier="" if found.include_only else found.marker.identifier,
             condition=found.marker.condition,
+            field="suffix" if block.kind in ("ref", "term") else "text",
             item=items[-1] if items else None,
             include_only=found.include_only,
             line=line(found),

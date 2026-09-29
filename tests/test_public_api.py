@@ -144,3 +144,44 @@ def test_the_decisions_are_the_validators_own(path: Path):
         text = block_fragments(blocks[marker.block])[marker.fragment][0]
         assert text[marker.offset:marker.offset + len(marker.source)] == marker.source
         assert marker.source in lines[marker.line - 1]
+
+
+def test_a_marker_after_a_lifted_reference_is_in_the_suffix():
+    [marker] = _markers("# A\n\nSee {{ref: a}} below. {#t}\n\n# B {#a}\n\nText.\n")
+    block = parse_document(_FRONTMATTER + "# A\n\nSee {{ref: a}} below. {#t}\n\n# B {#a}\n\nText.\n").sections[0].blocks[0]
+    assert (block.kind, marker.field) == ("ref", "suffix")
+    assert block.suffix[marker.offset:] == "{#t}"
+
+
+def test_a_list_items_marker_has_its_line():
+    body = "# A\n\n- first {#a}\n\n  second para\n- \n- third\n  more {#c}\n"
+    markers = _markers(body)
+    lines = (_FRONTMATTER + body).split("\n")
+    assert [(m.identifier, m.item) for m in markers] == [("a", 0), ("c", 2)]
+    assert [lines[m.line - 1] for m in markers] == ["- first {#a}", "  more {#c}"]
+
+
+def test_a_list_is_walked_once(monkeypatch):
+    """Its fragments are read once for the placed markers, however many it
+    holds (not once a marker, which is quadratic in a long list)."""
+    import legaldown.definitions
+
+    calls = []
+    real = legaldown.definitions.list_fragments
+    monkeypatch.setattr(legaldown.definitions, "list_fragments", lambda block: calls.append(1) or real(block))
+    markers = _markers("# A\n\n" + "".join(f"- item {{#i{n}}}\n" for n in range(50)))
+    assert [m.item for m in markers] == list(range(50))
+    assert len(calls) <= 2  # the units' reading, and the placed markers'
+
+
+def test_a_document_changed_since_parsing_has_no_lines():
+    document = parse_document(_FRONTMATTER + "# A\n\nText {#t}\n\n- a {#b}\n")
+    document.sections[0].blocks.insert(0, document.sections[0].blocks[0])
+    assert [m.line for m in validate_document(document).placed_markers] == [None, None, None]
+
+
+def test_a_list_of_string_items_built_in_code():
+    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+        {"kind": "unordered_list", "items": ["a {#x}", "b\n\n  - c {#y}"]},
+    ]}]})
+    assert [(m.identifier, m.item) for m in validate_document(document).placed_markers] == [("x", 0), ("y", 2)]
