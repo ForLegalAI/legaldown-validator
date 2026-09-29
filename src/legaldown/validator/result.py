@@ -41,6 +41,38 @@ class Diagnostic:
     file: str = ""
 
 
+@dataclass(slots=True, frozen=True)
+class PlacedMarker:
+    """A marker in body text that is in a marker position and applies in
+    its document (§5.7, §15.3), as ``validate_document`` places it — the
+    marker of a top-level paragraph or of a list item's first paragraph. A
+    section's own marker is its ``Section.identifier`` and ``condition``.
+
+    It is in fragment *fragment* of ``block_fragments(block)``, block
+    *block* of the preamble (*section* None) or of section *section*, at
+    *offset* in that fragment's text: ``text[offset:offset + len(source)]``
+    is *source*. A fragment holds at most one placed marker, which ends it.
+    In a list, *item* is the list item it marks, numbered in document order
+    among all the list's items, nested ones included, as ``list_fragments``
+    numbers them; None elsewhere.
+
+    *identifier* is the ``#id`` that applies: ``""`` for the marker of a
+    paragraph holding only an ``{{include:}}``, whose ``#id`` is ignored
+    (§12.2, *include_only*). *line* is its line (§16.9), None for a document
+    built in code or changed since it was parsed."""
+
+    section: int | None
+    block: int
+    fragment: int
+    offset: int
+    source: str
+    identifier: str
+    condition: str
+    item: int | None = None
+    include_only: bool = False
+    line: int | None = None
+
+
 #: A diagnostic's line (from 1), or a function giving it, called only when a
 #: diagnostic is recorded at it: finding a line costs more than knowing where.
 Line = int | None | Callable[[], "int | None"]
@@ -70,6 +102,12 @@ class ValidationResult:
     inline_durations: list[tuple[str, str]] = field(default_factory=list)
     inline_fields: list[tuple[str, str]] = field(default_factory=list)
     inline_placeholders: list[tuple[str, str]] = field(default_factory=list)
+    #: Whether the document is a template (§15.1): it declares questions,
+    #: carries a condition, or holds a ``{{choose:}}``.
+    is_template: bool = False
+    #: The markers in body text that apply (``PlacedMarker``), in document
+    #: order.
+    placed_markers: list[PlacedMarker] = field(default_factory=list)
     #: The lines diagnostics are recorded at by default (``at``), innermost last.
     _lines: list[Line] = field(default_factory=list, repr=False, compare=False)
 

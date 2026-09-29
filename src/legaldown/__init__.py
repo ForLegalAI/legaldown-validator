@@ -33,16 +33,21 @@ from .definitions import (
     DELIMITER_PAIRS,
     DefinitionAnchor,
     DefinitionRef,
+    block_fragments,
     collect_definitions,
     definition_lookup,
     find_definition_anchors,
     id_term,
+    list_fragments,
 )
 from .directives import (
     DIRECTIVE_PARAMS,
     KNOWN_DIRECTIVES,
     Directive,
+    Lexed,
+    is_escaped,
     iter_directives,
+    lex,
 )
 from .models import (
     BLOCK_DEFAULTS,
@@ -62,6 +67,7 @@ from .models import (
     document_to_dict,
     empty_document,
     item_text,
+    list_items,
     metadata_from_dict,
     party_from_dict,
     section_from_dict,
@@ -80,11 +86,14 @@ from .validator import (
     AttachmentDefinitionsImporter,
     DefinitionsImporter,
     Diagnostic,
+    PlacedMarker,
     SectionIndexEntry,
     ValidationResult,
+    is_template,
     slugify_identifier,
     validate_document,
 )
+from .validator.templates import is_drafting_note
 
 __version__ = "0.2.0"
 
@@ -126,8 +135,13 @@ __all__ = [
     "DELIMITER_PAIRS",
     "find_definition_anchors",
     "DefinitionAnchor",
-    # Directives (§11)
+    # Directives (§11): the lexer, and where text holding them is
     "iter_directives",
+    "lex",
+    "Lexed",
+    "is_escaped",
+    "block_fragments",
+    "list_fragments",
     "Directive",
     "DIRECTIVE_PARAMS",
     "KNOWN_DIRECTIVES",
@@ -138,6 +152,10 @@ __all__ = [
     "ValidationResult",
     "SectionIndexEntry",
     "Diagnostic",
+    "PlacedMarker",
+    # What validate_document decides, on its own (§15.1, §15.6)
+    "is_template",
+    "is_drafting_note",
     # Document model
     "Document",
     "Metadata",
@@ -145,6 +163,7 @@ __all__ = [
     "Block",
     "ListItem",
     "item_text",
+    "list_items",
     "Side",
     "Party",
     "Representative",

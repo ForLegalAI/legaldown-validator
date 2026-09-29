@@ -290,7 +290,8 @@ class Quote:
 
 
 def is_drafting_note(quote: Block) -> bool:
-    """True if block *quote* is a drafting note (``Quote.is_drafting_note``)."""
+    """True if block *quote* is a drafting note: its first line is exactly
+    ``[!DRAFTING]``, letters in any case (§15.6)."""
     return Quote(quote.text.split("\n", 1)[0].strip(), range(0)).is_drafting_note
 
 

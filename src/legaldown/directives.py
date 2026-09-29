@@ -316,7 +316,7 @@ def lex(text: str) -> Lexed:
 
     *text* is inline text, such as a paragraph's: fenced code is not looked
     for. Text that can hold one (a code block's, a block quote's) is passed
-    through ``blank_fenced_code`` first, as block structure precedes inline
+    through ``blank_fenced_code`` first — ``block_fragments`` gives it so — as block structure precedes inline
     structure. It is read once, left to right, taking whichever
     of a directive, a comment, or a code span opens first. A directive is
     lexed from the source as written and consumes its own text, so a quoted

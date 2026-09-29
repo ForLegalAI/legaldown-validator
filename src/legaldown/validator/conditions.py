@@ -90,7 +90,9 @@ def satisfiable(presence: Iterable[Condition], questions: Any) -> bool:
 
 
 def exclusive(first: Presence, second: Presence, questions: Any) -> bool:
-    """True if two units can never appear together (§15.4)."""
+    """True if two units, appearing under the conditions *first* and
+    *second* (their ``Presence``), can never appear together for any answers
+    to the document's *questions* (§15.4)."""
     return not satisfiable(first | second, questions)
 
 
