@@ -268,6 +268,10 @@ class Locator:
         """A frontmatter node's line, or the nearest written one above it."""
         return self._map.key(*path) if self._map else None
 
+    def has(self, *path: Any) -> bool:
+        """True if the frontmatter node at *path* is written."""
+        return self._map is not None and path in self._map.keys
+
     def field(self, name: str) -> int | None:
         """A top-level frontmatter key's line, or the frontmatter's first
         key's when it is not written: where it would go."""

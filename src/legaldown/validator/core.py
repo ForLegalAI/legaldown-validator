@@ -107,12 +107,15 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
     )
 
 
-def _frontmatter_fields(meta: Any) -> tuple[list[tuple[str, str, tuple[Any, ...]]], list[tuple[str, tuple[Any, ...]]]]:
+def _frontmatter_fields(
+    meta: Any, where: Locator | None = None
+) -> tuple[list[tuple[str, str, tuple[Any, ...]]], list[tuple[str, tuple[Any, ...]]]]:
     """The frontmatter fields that may hold text: ``(label, value, path)`` of
     each identifier, structural, or format-checked field, where a
     placeholder is not allowed, and ``(value, path)`` of the value fields,
     where it is (§3.10). A path is the field's place in the frontmatter
-    (``positions.SourceMap.key``)."""
+    (``positions.SourceMap.key``), as *where* tells it when a custom field
+    may be written in either form."""
     structural: list[tuple[str, str, tuple[Any, ...]]] = [
         ("document_type", meta.document_type, ("document_type",)),
         ("legaldown", meta.legaldown, ("legaldown",)),
@@ -163,8 +166,12 @@ def _frontmatter_fields(meta: Any) -> tuple[list[tuple[str, str, tuple[Any, ...]
             for k, rep in enumerate(party.representatives):
                 values.append((rep.name, (*party_path, "representatives", k, "name")))
                 values.append((rep.title, (*party_path, "representatives", k, "title")))
-            # A custom field is a key of the party's own (§3.4).
-            values.extend((cf.value, (*party_path, cf.label)) for cf in party.custom_fields)
+            # A custom field is a key of the party's own (§3.4), or an entry
+            # of its `custom_fields` list, the form a model's dict holds.
+            for k, cf in enumerate(party.custom_fields):
+                listed = (*party_path, "custom_fields", k, "value")
+                keyed = where is None or not where.has(*listed)
+                values.append((cf.value, (*party_path, cf.label) if keyed else listed))
     return structural, values
 
 
@@ -613,7 +620,7 @@ def validate_document(
     lex_fragment = cache(lex)
     meta = document.metadata
     questions = meta.questions
-    structural_fields, value_fields = _frontmatter_fields(meta)
+    structural_fields, value_fields = _frontmatter_fields(meta, where)
     frontmatter_texts = [(text, path) for _label, text, path in structural_fields] + value_fields
     headings = [section.title for section in document.sections]
 

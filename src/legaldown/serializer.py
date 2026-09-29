@@ -116,8 +116,9 @@ def _side(side: Side) -> dict[str, Any]:
 
 def _party(party: Party) -> dict[str, Any]:
     """A party as frontmatter (§3.4): its name always, its other fields when
-    set, and its custom fields as keys of their own — but for one without a
-    label, or named as a field, which no key can hold."""
+    set, and its custom fields as keys of their own — an empty one too, a
+    row whose label is not yet written — but for one named as a field, or
+    as a custom field before it, which no key can hold."""
     written: dict[str, Any] = {"name": party.name}
     for key in ("label", "type", "legal_name", "identification_number", "address", "date_of_birth"):
         if value := getattr(party, key):
@@ -127,8 +128,9 @@ def _party(party: Party) -> dict[str, Any]:
             {"name": rep.name} | ({"title": rep.title} if rep.title else {}) for rep in party.representatives
         ]
     for custom in party.custom_fields:
-        if custom.label and custom.label not in PARTY_KEYS and custom.label not in written:
-            written[custom.label] = custom.value
+        label = custom.label.strip()
+        if label not in PARTY_KEYS and label not in written:
+            written[label] = custom.value
     return written
 
 

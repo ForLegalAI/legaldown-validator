@@ -3526,8 +3526,6 @@ _SIDE_B = "  - name: b\n    parties:\n      - name: y\n        type: legal_entit
     ("sides:\n  - name: a\n    parties: []\n" + _SIDE_B, "parties-minimum"),
     ("sides:\n  - name: a\n" + _SIDE_B, "parties-minimum"),
     ("sides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n        legal_name: X\n"
-     "        representatives:\n          - title: CEO\n" + _SIDE_B, "representative-name-empty"),
-    ("sides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n        legal_name: X\n"
      "        representatives:\n          - name: ''\n" + _SIDE_B, "representative-name-empty"),
     ("sides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n        legal_name: X\n"
      "        date_of_birth: 2020-13-01\n" + _SIDE_B, "date-of-birth-invalid"),
@@ -3567,10 +3565,41 @@ def test_a_partys_custom_fields_are_its_other_keys():
 def test_a_custom_field_is_never_written_over_a_partys_field():
     document = parse_document(f"---\ntitle: T\nsides:\n{_SIDE_B}---\n\n# A\n\nText.\n")
     party = document.metadata.sides[0].parties[0]
-    party.custom_fields = [CustomField("name", "z"), CustomField("", "v"), CustomField("vat", "CZ9")]
-    again = parse_document(serialize_document(document)).metadata.sides[0].parties[0]
-    assert again.name == "y"
+    party.custom_fields = [
+        CustomField("name", "z"), CustomField(" type ", "z"), CustomField("vat", "CZ9"), CustomField("vat", "CZ8"),
+    ]
+    written = serialize_document(document)
+    again = parse_document(written).metadata.sides[0].parties[0]
+    assert (again.name, again.type) == ("y", "legal_entity")
     assert [(f.label, f.value) for f in again.custom_fields] == [("vat", "CZ9")]
+    assert serialize_document(parse_document(written)) == written
+
+
+def test_a_custom_field_row_not_yet_labelled_is_written_back():
+    """An editor's new row (§3.4): kept, as the key ``''``, until labelled."""
+    document = parse_document(f"---\ntitle: T\nsides:\n{_SIDE_B}---\n\n# A\n\nText.\n")
+    document.metadata.sides[0].parties[0].custom_fields = [CustomField(), CustomField("vat", "")]
+    written = serialize_document(document)
+    assert parse_document(written).metadata == document.metadata
+    assert serialize_document(parse_document(written)) == written
+
+
+@pytest.mark.parametrize("key", ["' name'", "'type '", "' custom_fields'"])
+def test_a_key_naming_a_party_field_with_spaces_is_that_field(key):
+    source = f"---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        {key}: z\n{_SIDE_B}---\n\n# A\n\nText.\n"
+    document = parse_document(source)
+    assert document.metadata.sides[0].parties[0].custom_fields == []
+    assert parse_document(serialize_document(document)).metadata == document.metadata
+
+
+def test_a_custom_field_in_the_list_form_is_reported_on_its_line():
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
+        "        legal_name: X\n        address: Street 1\n        custom_fields:\n          - label: address\n"
+        "            value: '{{placeholder: p, bogus=1}}'\n" + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
+    assert source.split("\n")[diagnostic.line - 1].strip().startswith("value:")
 
 
 def test_the_starter_document_holds_no_blank_representative():

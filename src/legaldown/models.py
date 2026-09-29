@@ -420,8 +420,9 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
     it, so the validator reports party-type-invalid or side-party-name-format
     (§16.6) instead of the model silently repairing the document. A key that
     is none of its fields (``PARTY_KEYS``) is a custom field (§3.4), when its
-    value is one (not a list or a mapping); so is each entry of a
-    ``custom_fields`` list, the form a model's dict holds them in.
+    value is one (not a list or a mapping) — an empty key too, a row whose
+    label is not yet written; so is each entry of a ``custom_fields`` list,
+    the form a model's dict holds them in.
     """
     payload = data or {}
     custom = [
@@ -429,11 +430,10 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
         for cf in list(payload.get("custom_fields") or [])
         if isinstance(cf, dict)
     ]
-    custom += [
-        CustomField(label=str(key).strip(), value="" if value is None else str(value).strip())
-        for key, value in payload.items()
-        if key not in PARTY_KEYS and str(key).strip() and not isinstance(value, (dict, list))
-    ]
+    for key, value in payload.items():
+        label = "" if key is None else str(key).strip()
+        if label not in PARTY_KEYS and not isinstance(value, (dict, list)):
+            custom.append(CustomField(label=label, value="" if value is None else str(value).strip()))
 
     return Party(
         name=_str(payload.get("name")),
