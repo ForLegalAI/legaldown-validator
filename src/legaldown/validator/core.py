@@ -25,7 +25,7 @@ from ..directives import (
     mask_directives,
 )
 from ..markdown import HTML_COMMENT_RE, INLINE_HTML_RE, is_comment_only
-from ..models import Amends, Document
+from ..models import LIST_KINDS, Amends, Document
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
 from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
@@ -47,7 +47,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Line, SectionIndexEntry, ValidationResult
+from .result import Line, PlacedMarker, SectionIndexEntry, ValidationResult
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
@@ -525,15 +525,21 @@ def _check_never_true(
             )
 
 
-def is_template(
-    document: Document,
-    markers: list[FoundMarker] | None = None,
-    lex_fragment: Callable[[str], Lexed] = lex,
-) -> bool:
+def is_template(document: Document) -> bool:
     """True if *document* is a template (§15.1): it declares ``questions``,
     carries a condition — on a section, an attachment, or a placed marker —
-    or contains a ``{{choose:}}``, wherever it is. *markers* are
-    ``find_markers(document, lex_fragment)`` when the caller has them."""
+    or contains a ``{{choose:}}``, wherever it is. ``validate_document``
+    reports it too (``ValidationResult.is_template``)."""
+    return _is_template(document, None, lex)
+
+
+def _is_template(
+    document: Document,
+    markers: list[FoundMarker] | None,
+    lex_fragment: Callable[[str], Lexed],
+) -> bool:
+    """``is_template``; *markers* are ``find_markers(document,
+    lex_fragment)`` when the caller has them."""
     from ..definitions import text_fragments  # see the import note in validate_document
 
     meta = document.metadata
@@ -649,7 +655,7 @@ def validate_document(
     # Markers are found first: only a template gives a preamble paragraph's
     # condition its place (§5.7).
     markers = find_markers(document, lex_fragment)
-    template = is_template(document, markers, lex_fragment)
+    template = _is_template(document, markers, lex_fragment)
     units = Units(document, markers, questions, template=template)
     body_directives = {
         directive.name
@@ -1547,6 +1553,49 @@ def validate_document(
                 line=definition_line(ref),
             )
 
+    # What a renderer builds from: the template decision and the markers
+    # that apply, as every check above read them.
+    result.is_template = template
+    result.placed_markers = _placed_markers(document, markers, template, marker_line)
+
     if document.filename:
         result.diagnostics = [replace(d, file=document.filename) for d in result.diagnostics]
     return result
+
+
+def _placed_markers(
+    document: Document,
+    markers: list[FoundMarker],
+    template: bool,
+    line: Callable[[FoundMarker], int | None],
+) -> list[PlacedMarker]:
+    """The markers of *markers* that apply (``PlacedMarker``)."""
+    from ..definitions import list_fragments  # see the import note in validate_document
+
+    placed = []
+    lists: dict[tuple[int | None, int], list[tuple[str, bool, tuple[int, ...]]]] = {}  # each list walked once
+    for found in markers:
+        if found.marker is None or not found.placed(template):
+            continue
+        blocks = document.preamble if found.section is None else document.sections[found.section].blocks
+        block = blocks[found.block]
+        items: tuple[int, ...] = ()
+        if block.kind in LIST_KINDS:
+            key = (found.section, found.block)
+            if key not in lists:
+                lists[key] = list_fragments(block)
+            items = lists[key][found.fragment][2]
+        placed.append(PlacedMarker(
+            section=found.section,
+            block=found.block,
+            fragment=found.fragment,
+            offset=found.offset,
+            source=found.source,
+            identifier="" if found.include_only else found.marker.identifier,
+            condition=found.marker.condition,
+            field="suffix" if block.kind in ("ref", "term") else "text",
+            item=items[-1] if items else None,
+            include_only=found.include_only,
+            line=line(found),
+        ))
+    return placed

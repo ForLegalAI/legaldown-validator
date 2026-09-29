@@ -1,7 +1,8 @@
 """legaldown.validator — Document validation and structural analysis."""
 from __future__ import annotations
 
-from .core import AttachmentDefinitionsImporter, DefinitionsImporter, validate_document
+from .conditions import ALWAYS, Condition, Presence, condition_problem, exclusive, parse_condition
+from .core import AttachmentDefinitionsImporter, DefinitionsImporter, is_template, validate_document
 from .helpers import (
     format_section_number,
     is_positive_numeric,
@@ -18,17 +19,28 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Diagnostic, SectionIndexEntry, ValidationResult
+from .result import Diagnostic, PlacedMarker, SectionIndexEntry, ValidationResult
+from .templates import is_drafting_note
 
 __all__ = [
     # Core
     "validate_document",
+    "is_template",
+    "is_drafting_note",
     "DefinitionsImporter",
     "AttachmentDefinitionsImporter",
     # Result types
     "ValidationResult",
     "SectionIndexEntry",
     "Diagnostic",
+    "PlacedMarker",
+    # Conditions (§15.3, §15.4): a condition's presence, a set of them
+    "parse_condition",
+    "Condition",
+    "condition_problem",
+    "exclusive",
+    "Presence",
+    "ALWAYS",
     # Helpers
     "slugify_identifier",
     "format_section_number",
