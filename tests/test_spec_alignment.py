@@ -24,7 +24,7 @@ from legaldown import (
 from legaldown.definitions import text_fragments
 from legaldown.directives import format_value, lex
 from legaldown.markers import Marker, split_heading
-from legaldown.models import list_items
+from legaldown.models import CustomField, empty_document, list_items
 from legaldown.parser import collect_source_directives, parse_document
 from legaldown.validator import validate_document
 from legaldown.validator.helpers import generate_identifier
@@ -3515,3 +3515,119 @@ def test_a_table_header_row_four_columns_in_after_a_paragraph_is_read(body):
         blocks = list_items(blocks[0])[0].blocks
     assert [block.kind for block in blocks] == ["paragraph", "table"]
     _round_trips(body)
+
+
+# ── Frontmatter entries not yet complete are written back (#83) ──
+
+_SIDE_B = "  - name: b\n    parties:\n      - name: y\n        type: legal_entity\n        legal_name: Y\n"
+
+
+@pytest.mark.parametrize(("frontmatter", "rule"), [
+    ("sides:\n  - name: a\n    parties: []\n" + _SIDE_B, "parties-minimum"),
+    ("sides:\n  - name: a\n" + _SIDE_B, "parties-minimum"),
+    ("sides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n        legal_name: X\n"
+     "        representatives:\n          - name: ''\n" + _SIDE_B, "representative-name-empty"),
+    ("sides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n        legal_name: X\n"
+     "        date_of_birth: 2020-13-01\n" + _SIDE_B, "date-of-birth-invalid"),
+    ("attachments:\n  - id: a\n    title: ''\n    file: a.lgd\n", "attachment-title-empty"),
+    ("attachments:\n  - id: a\n    title: A\n", "attachment-file-missing"),
+    ("attachments:\n  - id: ''\n    title: A\n    file: a.lgd\n", "anchor-format"),
+])
+def test_an_entry_not_yet_complete_is_written_back(frontmatter, rule):
+    """The serializer writes what the model holds: an entry declared but not
+    yet filled in keeps its Error, rather than vanishing and leaving others
+    in its place (attach-undeclared, sides-absent)."""
+    document = parse_document(f"---\ntitle: T\n{frontmatter}---\n\n# A\n\nText.\n")
+    again = parse_document(serialize_document(document))
+    assert again.metadata == document.metadata
+    assert rule in validate_document(document).rules()
+    assert validate_document(again).rules() == validate_document(document).rules()
+
+
+def test_a_partys_custom_fields_are_its_other_keys():
+    """Additional fields on a party object are custom fields (§3.4), read
+    and written as keys of their own."""
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
+        "        legal_name: X\n        tax_id: CZ123\n        vat:\n        count: 0\n        nested: {a: 1}\n"
+        + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    document = parse_document(source)
+    party = document.metadata.sides[0].parties[0]
+    assert [(f.label, f.value) for f in party.custom_fields] == [("tax_id", "CZ123"), ("vat", ""), ("count", "0")]
+    written = serialize_document(document)
+    assert "tax_id: CZ123\n" in written
+    assert parse_document(written).metadata == document.metadata
+    # A model's own, in the dict form it holds them in.
+    assert document_from_dict(document_to_dict(document)).metadata == document.metadata
+
+
+@pytest.mark.parametrize("fields", [
+    [CustomField("address", "Street 1")],
+    [CustomField("name", "z"), CustomField(" type ", "z")],
+    [CustomField("vat", "CZ9"), CustomField("vat", "CZ8")],
+    [CustomField(), CustomField()],
+])
+def test_custom_fields_no_keys_can_hold_are_written_as_a_list(fields):
+    """A label written twice, or naming a party field: the party's
+    ``custom_fields`` list holds them, in order, and its fields stay."""
+    document = parse_document(f"---\ntitle: T\nsides:\n{_SIDE_B}---\n\n# A\n\nText.\n")
+    document.metadata.sides[0].parties[0].custom_fields = fields
+    written = serialize_document(document)
+    again = parse_document(written).metadata.sides[0].parties[0]
+    assert (again.name, again.type) == ("y", "legal_entity")
+    assert [(f.label, f.value) for f in again.custom_fields] == [(f.label.strip(), f.value) for f in fields]
+    assert serialize_document(parse_document(written)) == written
+
+
+def test_a_placeholder_in_a_custom_fields_name_is_reported():
+    """Its name is a key, where a placeholder has no place (§3.10)."""
+    source = (
+        "---\ntitle: T\nquestions:\n  tid:\n    type: text\n    label: Tax ID\nsides:\n  - name: a\n    parties:\n"
+        "      - name: x\n        type: legal_entity\n        legal_name: X\n        '{{placeholder: tid}}': v\n"
+        + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "placeholder-in-structural-field"]
+    assert diagnostic.line == 13
+
+
+def test_a_custom_field_row_not_yet_labelled_is_written_back():
+    """An editor's new row (§3.4): kept, as the key ``''``, until labelled."""
+    document = parse_document(f"---\ntitle: T\nsides:\n{_SIDE_B}---\n\n# A\n\nText.\n")
+    document.metadata.sides[0].parties[0].custom_fields = [CustomField(), CustomField("vat", "")]
+    written = serialize_document(document)
+    assert parse_document(written).metadata == document.metadata
+    assert serialize_document(parse_document(written)) == written
+
+
+@pytest.mark.parametrize("key", ["' name'", "'type '", "' custom_fields'"])
+def test_a_key_naming_a_party_field_with_spaces_is_no_custom_field(key):
+    source = f"---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        {key}: z\n{_SIDE_B}---\n\n# A\n\nText.\n"
+    document = parse_document(source)
+    assert document.metadata.sides[0].parties[0].custom_fields == []
+    assert parse_document(serialize_document(document)).metadata == document.metadata
+
+
+def test_a_custom_field_in_the_list_form_is_reported_on_its_line():
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
+        "        legal_name: X\n        address: Street 1\n        custom_fields:\n          - label: address\n"
+        "            value: '{{placeholder: p, bogus=1}}'\n" + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
+    assert source.split("\n")[diagnostic.line - 1].strip().startswith("value:")
+
+
+def test_the_starter_document_holds_no_blank_representative():
+    assert "representative-name-empty" not in validate_document(empty_document()).rules()
+
+
+def test_a_custom_fields_value_is_checked_as_a_partys_other_values_are():
+    """A directive in it is a frontmatter value's (§3.4), reported on its own
+    key's line."""
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
+        "        legal_name: X\n        tax_id: '{{placeholder: tid, bogus=1}}'\n" + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
+    assert diagnostic.line == 9

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -222,6 +223,39 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
                 f"expected {want} at line {line}; got it at "
                 f"{sorted(d.line or 0 for d in result.diagnostics if (d.rule, d.level) == want)}"
             )
+
+
+def _iter_documents():
+    for kind in ("valid", "invalid"):
+        root = Path(FIXTURES_DIR) / kind
+        if root.is_dir():
+            for lgd in sorted(root.rglob("*.lgd")):
+                yield pytest.param(lgd, id=lgd.relative_to(root.parent).as_posix())
+
+
+@pytest.mark.parametrize("path", list(_iter_documents()))
+def test_a_fixture_keeps_its_diagnostics_when_written_back(path: Path):
+    """``parse → serialize → parse`` keeps what the validator reports, for
+    the frontmatter and the body alike: the serializer writes what the model
+    holds, an entry not yet complete included (#83)."""
+    from collections import Counter
+
+    from legaldown import serialize_document
+    from legaldown.parser import FrontmatterError
+
+    try:
+        document = parse_document(_read(path), filename=path.name)
+    except FrontmatterError:
+        pytest.skip("unreadable frontmatter: nothing to write back")
+    again = parse_document(serialize_document(document), filename=path.name)
+    # How the source writes its YAML is not the model's (block style when
+    # written back).
+    assert replace(again.metadata, not_line_editable=[]) == replace(document.metadata, not_line_editable=[])
+
+    def rules(document):
+        return Counter((d.rule, d.level) for d in validate_document(document).diagnostics)
+
+    assert rules(again) == rules(document)
 
 
 def _iter_assembly_templates():

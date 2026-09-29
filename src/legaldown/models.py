@@ -403,15 +403,37 @@ def section_from_dict(data: dict[str, Any] | None) -> Section:
     )
 
 
+#: The keys of a party object that are its fields (§3.4, §3.5). Any other
+#: key is a custom field (§3.4), and ``custom_fields`` is the list a model's
+#: dict holds them in (``document_to_dict``).
+PARTY_KEYS = frozenset({
+    "name", "label", "type", "legal_name", "identification_number", "address",
+    "date_of_birth", "representatives", "custom_fields",
+})
+
+
 def party_from_dict(data: dict[str, Any] | None) -> Party:
     """Construct a Party from a frontmatter dict (§3.4).
 
     Values are taken verbatim: an unknown ``type`` or a non-identifier ``name``
     is preserved, and a missing ``type`` stays empty even though §3.4 requires
     it, so the validator reports party-type-invalid or side-party-name-format
-    (§16.6) instead of the model silently repairing the document.
+    (§16.6) instead of the model silently repairing the document. A key that
+    is none of its fields (``PARTY_KEYS``) is a custom field (§3.4), when its
+    value is one (not a list or a mapping) — an empty key too, a row whose
+    label is not yet written; so is each entry of a ``custom_fields`` list,
+    the form a model's dict holds them in.
     """
     payload = data or {}
+    custom = [
+        CustomField(label=_str(cf.get("label")), value=_str(cf.get("value")))
+        for cf in list(payload.get("custom_fields") or [])
+        if isinstance(cf, dict)
+    ]
+    for key, value in payload.items():
+        label = "" if key is None else str(key).strip()
+        if label not in PARTY_KEYS and not isinstance(value, (dict, list)):
+            custom.append(CustomField(label=label, value="" if value is None else str(value).strip()))
 
     return Party(
         name=_str(payload.get("name")),
@@ -426,11 +448,7 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
             for r in list(payload.get("representatives") or [])
             if isinstance(r, dict)
         ],
-        custom_fields=[
-            CustomField(label=_str(cf.get("label")), value=_str(cf.get("value")))
-            for cf in list(payload.get("custom_fields") or [])
-            if isinstance(cf, dict)
-        ],
+        custom_fields=custom,
     )
 
 
@@ -557,7 +575,6 @@ def empty_document() -> Document:
                     parties=[Party(
                         name="provider-llc", label="Provider",
                         type="legal_entity", legal_name="Provider LLC",
-                        representatives=[Representative()],
                     )],
                 ),
                 Side(
@@ -565,7 +582,6 @@ def empty_document() -> Document:
                     parties=[Party(
                         name="client-llc", label="Client",
                         type="legal_entity", legal_name="Client LLC",
-                        representatives=[Representative()],
                     )],
                 ),
             ],
