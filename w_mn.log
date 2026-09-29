@@ -1,5 +1,0 @@
-Traceback (most recent call last):
-  File "/tmp/claude-0/review10/worker.py", line 33, in <module>
-    bodies = json.load(open(sys.argv[2]))
-                       ^^^^^^^^^^^^^^^^^
-FileNotFoundError: [Errno 2] No such file or directory: 'bodies1.json'

@@ -599,7 +599,7 @@ def _scan_list(
             lazy = paragraph = open_paragraph = table = False  # the blank line closed the item's paragraph
             quote = previous = None  # a later paragraph in the item is not the quote's
             continue
-        was_open, was_table = open_paragraph, table  # before this line
+        was_open, was_table, was_paragraph = open_paragraph, table, paragraph  # before this line
         marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
         quote_lazy = False  # the line lazily continues the item's quote
         indented = indent_width(line) >= 2
@@ -758,7 +758,12 @@ def _scan_list(
             and SETEXT_UNDERLINE_RE.match(line.lstrip(" \t")) is not None
         )
         prose = lazy and quote is None and not code and not table and not underline
-        paragraph = prose and (joined or _is_paragraph_text(content))
+        # Not the item's own when the line continues the paragraph of an item
+        # nested on its first line (``- 1. a`` and ``     b``): a sibling of
+        # that nested item then starts a list, as after no text at all.
+        paragraph = prose and (joined or _is_paragraph_text(content)) and (
+            joined or marker is not None or was_paragraph or not was_open
+        )
         # Open in the item or in an item nested on its line: a lazy line
         # continues either.
         open_paragraph = prose and (joined or _is_paragraph_text(content, nested=True))

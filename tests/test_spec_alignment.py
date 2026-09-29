@@ -3631,3 +3631,122 @@ def test_a_custom_fields_value_is_checked_as_a_partys_other_values_are():
     )
     [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
     assert diagnostic.line == 9
+
+
+def _custom_field_diagnostic_line(entry: str) -> tuple[int, str]:
+    """The line of the one directive-unknown-param in a party written with
+    *entry* (lines of frontmatter), and that line's text."""
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
+        "        legal_name: X\n" + entry + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
+    return diagnostic.line, source.split("\n")[diagnostic.line - 1]
+
+
+def test_a_custom_field_key_with_spaces_is_reported_on_its_own_line():
+    """The key is read stripped (§3.4) and written as it is: its line is its own."""
+    line, text = _custom_field_diagnostic_line("        ' tax ': '{{placeholder: p, bogus=1}}'\n")
+    assert line == 9
+    assert text.strip().startswith("' tax '")
+
+
+def test_padded_and_plain_custom_field_keys_each_keep_their_own_line():
+    line, text = _custom_field_diagnostic_line(
+        "        ' tax ': plain\n        tax: '{{placeholder: p, bogus=1}}'\n"
+    )
+    assert (line, text.strip().startswith("tax:")) == (10, True)
+    line, text = _custom_field_diagnostic_line(
+        "        ' tax ': '{{placeholder: p, bogus=1}}'\n        tax: plain\n"
+    )
+    assert (line, text.strip().startswith("' tax '")) == (9, True)
+
+
+def test_a_padded_key_naming_a_party_field_is_no_custom_field_and_moves_no_line():
+    """``' name'`` is ignored (§3.4): nothing is checked, or placed, by it."""
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - ' name': '{{placeholder: p, bogus=1}}'\n"
+        "        type: legal_entity\n" + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    document = parse_document(source)
+    assert document.metadata.sides[0].parties[0].custom_fields == []
+    assert "directive-unknown-param" not in validate_document(document).rules()
+
+
+def test_custom_field_lines_are_unchanged_for_plain_keys_and_the_list_form():
+    line, text = _custom_field_diagnostic_line("        tax_id: '{{placeholder: p, bogus=1}}'\n")
+    assert (line, text.strip().startswith("tax_id:")) == (9, True)
+    line, text = _custom_field_diagnostic_line(
+        "        custom_fields:\n          - label: tax\n            value: '{{placeholder: p, bogus=1}}'\n"
+    )
+    assert (line, text.strip().startswith("value:")) == (11, True)
+
+
+def _last_code_text(body):
+    """The text of the code block a document's list ends in, at any depth."""
+    blocks = parse_document("---\ntitle: T\n---\n\n" + body).preamble
+    while blocks[-1].kind != "code":
+        blocks = blocks[-1].items[-1].blocks
+    return blocks[-1].text
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected"),
+    [
+        # An unclosed fence ends an item that holds it, the blank line after
+        # it going into the code: whatever the item's earlier siblings hold.
+        ("- 1. z\n  2. ```\n\n", "```\n"),
+        ("- 1. z\n     a\n  2. ```\n\n", "```\n"),
+        ("- 1. z\na\n  2. ```\n\n", "```\n"),
+        ("- 1. z\n     a\n  2. y\n     b\n  3. ```\n\n", "```\n"),
+        ("- 1. z\n     a\n  2. ```\n\n\n", "```\n\n"),
+        ("- 1. z\n     a\n  2. ```\n     code\n\n", "```\ncode\n"),
+        ("- - a\n    b\n  - ```\n\n", "```\n"),
+        ("- - - a\n      b\n    - ```\n\n", "```\n"),
+        ("1. z\n   a\n2. ```\n\n", "```\n"),
+        ("- a\n  b\n- ```\n\n", "```\n"),
+    ],
+)
+def test_a_fence_left_open_in_a_list_item_keeps_its_blank_lines_whatever_the_siblings_hold(shape, expected):
+    """A continuation line of an earlier sibling nested on its item's first
+    line (``- 1. z`` and ``     a``) is that sibling's paragraph, not the
+    enclosing item's own: a later ``2. ```` still starts an item, and the
+    scan follows its fence to the document's end."""
+    assert _last_code_text(shape) == expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "* 2. z\na\n  1. ```\n\n",
+        "- 1. z\n     a\n  2. ```\n\n",
+        "- 1. z\n     a\n  2. ```\n\nafter\n",
+        "- - - a\n      b\n    - ```\n\n",
+    ],
+)
+def test_a_fence_left_open_in_a_nested_item_survives_the_round_trip(source):
+    document = parse_document("---\ntitle: T\n---\n\n" + source)
+    again = parse_document(serialize_document(document))
+    assert again == document
+    assert serialize_document(again) == serialize_document(document)
+
+
+def test_an_item_nested_after_the_first_line_text_of_an_item_that_only_nests_ends_a_paragraph_no_more_than_before():
+    """The text of a nested item's paragraph does not make ``2.`` text of the
+    enclosing item's own paragraph, which no ordered item but ``1.`` may
+    interrupt: after ``- a``, ``  2. b`` is text."""
+    assert [b.kind for b in parse_document("---\ntitle: T\n---\n\n- a\n  2. b\n").preamble[0].items[0].blocks] == ["paragraph"]
+    nested = parse_document("---\ntitle: T\n---\n\n- 1. z\n     a\n  2. b\n").preamble[0].items[0].blocks
+    assert [b.kind for b in nested] == ["ordered_list"] and len(nested[0].items) == 2
+
+
+def test_a_custom_field_merged_in_keeps_its_line_next_to_a_padded_key():
+    """A field merged in (``<<``) has no key of its own: the padded key's
+    line is not given to it."""
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
+        "        legal_name: X\n        <<: {tax: '{{placeholder: p, bogus=1}}'}\n        ' tax ': ok\n"
+        + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
+    assert source.split("\n")[diagnostic.line - 1].strip().startswith("<<:")
