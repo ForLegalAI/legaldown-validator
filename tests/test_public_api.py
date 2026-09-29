@@ -185,3 +185,35 @@ def test_a_list_of_string_items_built_in_code():
         {"kind": "unordered_list", "items": ["a {#x}", "b\n\n  - c {#y}"]},
     ]}]})
     assert [(m.identifier, m.item) for m in validate_document(document).placed_markers] == [("x", 0), ("y", 2)]
+
+
+def test_two_lists_in_a_section_number_their_own_items():
+    """Each list's fragments are its own: the first list's fragment 1 is in
+    its item 0, the second's in its item 1."""
+    markers = _markers("# A\n\n- a {#a}\n\n  more\n- b {#b}\n\nText.\n\n1. c\n2. d {#d}\n")
+    assert [(m.identifier, m.block, m.fragment, m.item) for m in markers] == [
+        ("a", 0, 0, 0), ("b", 0, 2, 1), ("d", 2, 1, 1),
+    ]
+
+
+def test_a_marker_after_a_lifted_term_is_in_the_suffix():
+    body = '"Thing" {{def: thing}} means a thing.\n\n# A\n\nUse the {{term: thing}} well. {#t}\n'
+    [marker] = _markers(body)
+    block = parse_document(_FRONTMATTER + body).sections[0].blocks[0]
+    assert (block.kind, marker.field) == ("term", "suffix")
+    assert block.suffix[marker.offset:] == "{#t}"
+
+
+def test_only_a_quote_block_is_a_drafting_note():
+    from legaldown import Block
+
+    assert not is_drafting_note(Block(kind="paragraph", text="[!DRAFTING]\nx"))
+    assert is_drafting_note(Block(kind="quote", text="[!DRAFTING]\nx"))
+
+
+def test_fragments_have_names():
+    [block] = parse_document(_FRONTMATTER + "# A\n\n- a {#a}\n  - b\n").sections[0].blocks
+    first = list_fragments(block)[0]
+    assert (first.text, first.anchor, first.items) == ("a {#a}", True, (0,))
+    text, anchor = block_fragments(block)[1]
+    assert (text, anchor) == ("b", True)

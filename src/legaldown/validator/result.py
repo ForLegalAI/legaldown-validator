@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass(slots=True)
@@ -55,14 +56,16 @@ class PlacedMarker:
     (a paragraph's or a definition's, a list item's first paragraph's), or
     ``suffix`` (the text after a ``{{ref:}}`` or ``{{term:}}`` lifted out of
     a paragraph). A fragment holds at most one placed marker, which ends it.
-    In a list, *item* is the list item it marks, numbered in document order
-    among all the list's items — nested ones and empty ones included — as
-    ``list_fragments`` numbers them; None elsewhere.
+    In a list, *item* is the list item it marks, numbered in pre-order among
+    all the list's items — an item before the items nested in it, empty ones
+    included — as ``list_fragments`` numbers them; None elsewhere.
 
     *identifier* is the ``#id`` that applies: ``""`` for the marker of a
     paragraph holding only an ``{{include:}}``, whose ``#id`` is ignored
-    (§12.2, *include_only*). *line* is its line (§16.9), None for a document
-    built in code or changed since it was parsed."""
+    (§12.2, *include_only*). Both are as written: an invalid one is
+    reported (anchor-format, condition-invalid), so check the result's
+    ``is_valid`` before relying on them. *line* is its line (§16.9), None
+    for a document built in code or changed since it was parsed."""
 
     section: int | None
     block: int
@@ -71,7 +74,7 @@ class PlacedMarker:
     source: str
     identifier: str
     condition: str
-    field: str = "text"
+    field: Literal["text", "suffix"] = "text"
     item: int | None = None
     include_only: bool = False
     line: int | None = None

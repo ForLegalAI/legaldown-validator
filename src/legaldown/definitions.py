@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from .directives import Directive, Lexed, blank_fenced_code, lex, mask_directives
 from .markdown import FENCE_OPEN_RE, is_indented_code
@@ -177,7 +178,25 @@ class DefinitionRef:
     offset: int = 0
 
 
-def block_fragments(block: Block) -> list[tuple[str, bool]]:
+class Fragment(NamedTuple):
+    """A text of a block that may hold directives and markers
+    (``block_fragments``): the *text*, and whether its end is an anchor
+    position (§5.7)."""
+
+    text: str
+    anchor: bool
+
+
+class ListFragment(NamedTuple):
+    """A ``Fragment`` of a list (``list_fragments``), with the *items* it is
+    in: each item's number, outermost first."""
+
+    text: str
+    anchor: bool
+    items: tuple[int, ...]
+
+
+def block_fragments(block: Block) -> list[Fragment]:
     """The free-text fragments of *block* that may contain inline directives,
     each with whether a ``{#id}`` at its very end is in an anchor position.
 
@@ -190,17 +209,18 @@ def block_fragments(block: Block) -> list[tuple[str, bool]]:
     code span or comment left open — runs into the next, and code and raw
     HTML in it hold none (§11.4).
     """
-    return [(text, position) for text, position, _items in _fragments(block)]
+    return [Fragment(text, position) for text, position, _items in _fragments(block)]
 
 
-def list_fragments(block: Block) -> list[tuple[str, bool, tuple[int, ...]]]:
+def list_fragments(block: Block) -> list[ListFragment]:
     """The fragments of a list's items, as ``block_fragments`` lists them:
     each with whether its end is an anchor position — the end of an item's
     first paragraph, the block it opens with (§5.7) — and the items it is
-    in, outermost first, each item numbered in document order among all the
-    list's items, nested ones included (§15.3). A list in a block quote is
-    no unit: its fragments are in the items the quote is in."""
-    return _fragments(block)
+    in, outermost first. Items are numbered in pre-order among all the
+    list's items: an item before the items nested in it, empty items
+    included (§15.3). A list in a block quote is no unit: its fragments are
+    in the items the quote is in."""
+    return [ListFragment(*fragment) for fragment in _fragments(block)]
 
 
 def quote_ranges(block: Block) -> list[tuple[str, range]]:
