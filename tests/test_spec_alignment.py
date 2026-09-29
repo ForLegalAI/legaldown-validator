@@ -3680,3 +3680,61 @@ def test_custom_field_lines_are_unchanged_for_plain_keys_and_the_list_form():
         "        custom_fields:\n          - label: tax\n            value: '{{placeholder: p, bogus=1}}'\n"
     )
     assert (line, text.strip().startswith("value:")) == (11, True)
+
+
+def _last_code_text(body):
+    """The text of the code block a document's list ends in, at any depth."""
+    blocks = parse_document("---\ntitle: T\n---\n\n" + body).preamble
+    while blocks[-1].kind != "code":
+        blocks = blocks[-1].items[-1].blocks
+    return blocks[-1].text
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected"),
+    [
+        # An unclosed fence ends an item that holds it, the blank line after
+        # it going into the code: whatever the item's earlier siblings hold.
+        ("- 1. z\n  2. ```\n\n", "```\n"),
+        ("- 1. z\n     a\n  2. ```\n\n", "```\n"),
+        ("- 1. z\na\n  2. ```\n\n", "```\n"),
+        ("- 1. z\n     a\n  2. y\n     b\n  3. ```\n\n", "```\n"),
+        ("- 1. z\n     a\n  2. ```\n\n\n", "```\n\n"),
+        ("- 1. z\n     a\n  2. ```\n     code\n\n", "```\ncode\n"),
+        ("- - a\n    b\n  - ```\n\n", "```\n"),
+        ("- - - a\n      b\n    - ```\n\n", "```\n"),
+        ("1. z\n   a\n2. ```\n\n", "```\n"),
+        ("- a\n  b\n- ```\n\n", "```\n"),
+    ],
+)
+def test_a_fence_left_open_in_a_list_item_keeps_its_blank_lines_whatever_the_siblings_hold(shape, expected):
+    """A continuation line of an earlier sibling nested on its item's first
+    line (``- 1. z`` and ``     a``) is that sibling's paragraph, not the
+    enclosing item's own: a later ``2. ```` still starts an item, and the
+    scan follows its fence to the document's end."""
+    assert _last_code_text(shape) == expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "* 2. z\na\n  1. ```\n\n",
+        "- 1. z\n     a\n  2. ```\n\n",
+        "- 1. z\n     a\n  2. ```\n\nafter\n",
+        "- - - a\n      b\n    - ```\n\n",
+    ],
+)
+def test_a_fence_left_open_in_a_nested_item_survives_the_round_trip(source):
+    document = parse_document("---\ntitle: T\n---\n\n" + source)
+    again = parse_document(serialize_document(document))
+    assert again == document
+    assert serialize_document(again) == serialize_document(document)
+
+
+def test_an_item_nested_after_the_first_line_text_of_an_item_that_only_nests_ends_a_paragraph_no_more_than_before():
+    """The text of a nested item's paragraph does not make ``2.`` text of the
+    enclosing item's own paragraph, which no ordered item but ``1.`` may
+    interrupt: after ``- a``, ``  2. b`` is text."""
+    assert [b.kind for b in parse_document("---\ntitle: T\n---\n\n- a\n  2. b\n").preamble[0].items[0].blocks] == ["paragraph"]
+    nested = parse_document("---\ntitle: T\n---\n\n- 1. z\n     a\n  2. b\n").preamble[0].items[0].blocks
+    assert [b.kind for b in nested] == ["ordered_list"] and len(nested[0].items) == 2
