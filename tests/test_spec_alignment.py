@@ -3631,3 +3631,52 @@ def test_a_custom_fields_value_is_checked_as_a_partys_other_values_are():
     )
     [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
     assert diagnostic.line == 9
+
+
+def _custom_field_diagnostic_line(entry: str) -> tuple[int, str]:
+    """The line of the one directive-unknown-param in a party written with
+    *entry* (lines of frontmatter), and that line's text."""
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
+        "        legal_name: X\n" + entry + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
+    return diagnostic.line, source.split("\n")[diagnostic.line - 1]
+
+
+def test_a_custom_field_key_with_spaces_is_reported_on_its_own_line():
+    """The key is read stripped (§3.4) and written as it is: its line is its own."""
+    line, text = _custom_field_diagnostic_line("        ' tax ': '{{placeholder: p, bogus=1}}'\n")
+    assert line == 9
+    assert text.strip().startswith("' tax '")
+
+
+def test_padded_and_plain_custom_field_keys_each_keep_their_own_line():
+    line, text = _custom_field_diagnostic_line(
+        "        ' tax ': plain\n        tax: '{{placeholder: p, bogus=1}}'\n"
+    )
+    assert (line, text.strip().startswith("tax:")) == (10, True)
+    line, text = _custom_field_diagnostic_line(
+        "        ' tax ': '{{placeholder: p, bogus=1}}'\n        tax: plain\n"
+    )
+    assert (line, text.strip().startswith("' tax '")) == (9, True)
+
+
+def test_a_padded_key_naming_a_party_field_is_no_custom_field_and_moves_no_line():
+    """``' name'`` is ignored (§3.4): nothing is checked, or placed, by it."""
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - ' name': '{{placeholder: p, bogus=1}}'\n"
+        "        type: legal_entity\n" + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    document = parse_document(source)
+    assert document.metadata.sides[0].parties[0].custom_fields == []
+    assert "directive-unknown-param" not in validate_document(document).rules()
+
+
+def test_custom_field_lines_are_unchanged_for_plain_keys_and_the_list_form():
+    line, text = _custom_field_diagnostic_line("        tax_id: '{{placeholder: p, bogus=1}}'\n")
+    assert (line, text.strip().startswith("tax_id:")) == (9, True)
+    line, text = _custom_field_diagnostic_line(
+        "        custom_fields:\n          - label: tax\n            value: '{{placeholder: p, bogus=1}}'\n"
+    )
+    assert (line, text.strip().startswith("value:")) == (11, True)

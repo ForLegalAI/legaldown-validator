@@ -169,13 +169,20 @@ def _frontmatter_fields(
             # A custom field is a key of the party's own (§3.4), or an entry
             # of its `custom_fields` list. Its label, a key, holds no
             # placeholder; its value is a value field.
+            # A key's label is read stripped (``models.party_from_dict``), the
+            # key is written as it is: a label's nth field is the nth key
+            # that strips to it, in the order of the source.
+            written: dict[str, list[str]] = {}
+            for raw in where.children(*party_path) if where is not None else ():
+                written.setdefault(raw.strip(), []).append(raw)
             for k, cf in enumerate(party.custom_fields):
                 listed = (*party_path, "custom_fields", k)
                 keyed = where is None or not where.has(*listed)
+                key = written[cf.label].pop(0) if keyed and written.get(cf.label) else cf.label
                 structural.append((
-                    "a party's custom field name", cf.label, (*party_path, cf.label) if keyed else (*listed, "label")
+                    "a party's custom field name", cf.label, (*party_path, key) if keyed else (*listed, "label")
                 ))
-                values.append((cf.value, (*party_path, cf.label) if keyed else (*listed, "value")))
+                values.append((cf.value, (*party_path, key) if keyed else (*listed, "value")))
     return structural, values
 
 

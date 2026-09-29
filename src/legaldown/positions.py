@@ -272,6 +272,14 @@ class Locator:
         """True if the frontmatter node at *path* is written."""
         return self._map is not None and path in self._map.keys
 
+    def children(self, *path: Any) -> list[str]:
+        """The keys written in the frontmatter mapping at *path*, as written
+        (a padded key keeps its spaces), in the order of the source."""
+        if self._map is None:
+            return []
+        n = len(path)
+        return [k[n] for k in self._map.keys if len(k) == n + 1 and k[:n] == path and isinstance(k[n], str)]
+
     def field(self, name: str) -> int | None:
         """A top-level frontmatter key's line, or the frontmatter's first
         key's when it is not written: where it would go."""

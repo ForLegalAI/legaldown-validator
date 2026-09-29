@@ -287,7 +287,8 @@ party's custom fields (§3.4) are the keys of its object that are none of its fi
 read into `custom_fields` and written back as keys of their own, a row whose label is still
 empty as the key `''`. When keys cannot hold them all (a label written twice, or naming one of
 the party's fields), they are written as the party's `custom_fields` list of `label` and
-`value` entries, which is read too. A value that is a list or a mapping is not kept: a custom
+`value` entries, which is read too; a key named `custom_fields` is that list's, never a custom
+field. A value that is a list or a mapping is not kept: a custom
 field holds text.
 
 A list block's `items` are `ListItem`s, each holding the blocks of its content in order: its
