@@ -24,11 +24,14 @@ from .markdown import (
 )
 from .markers import Marker, format_marker
 from .models import (
+    PARTY_KEYS,
     Amends,
     Block,
     Document,
     ListItem,
     Metadata,
+    Party,
+    Side,
     heading_level,
     heading_text,
     list_items,
@@ -60,59 +63,11 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
         payload["amends"] = amends_obj
 
     if metadata.sides:
-        sides_list: list[dict[str, Any]] = []
-        for side in metadata.sides:
-            if not side.parties:
-                continue
-            side_obj: dict[str, Any] = {"name": side.name}
-            if side.label:
-                side_obj["label"] = side.label
-
-            party_dicts: list[dict[str, Any]] = []
-            for party in side.parties:
-                if not party.name and not party.legal_name:
-                    continue
-                party_dict: dict[str, Any] = {"name": party.name}
-                if party.label:
-                    party_dict["label"] = party.label
-                if party.type:
-                    party_dict["type"] = party.type
-                if party.legal_name:
-                    party_dict["legal_name"] = party.legal_name
-                if party.identification_number:
-                    party_dict["identification_number"] = party.identification_number
-                if party.address:
-                    party_dict["address"] = party.address
-                if party.type == "natural_person" and party.date_of_birth:
-                    party_dict["date_of_birth"] = party.date_of_birth
-                if party.representatives:
-                    reps = [
-                        {
-                            k: v
-                            for k, v in [
-                                ("name", r.name),
-                                ("title", r.title),
-                            ]
-                            if v
-                        }
-                        for r in party.representatives
-                        if r.name or r.title
-                    ]
-                    if reps:
-                        party_dict["representatives"] = reps
-                if party.custom_fields:
-                    for cf in party.custom_fields:
-                        if cf.label and cf.value:
-                            party_dict[cf.label] = cf.value
-                party_dicts.append(party_dict)
-
-            if party_dicts:
-                side_obj["parties"] = party_dicts
-                sides_list.append(side_obj)
-
-        if sides_list:
-            payload["sides"] = sides_list
-
+        # Every side and party the model holds, as far as it is filled in:
+        # one declared but not yet complete stays, where the validator
+        # reports what it lacks (parties-minimum, representative-name-empty)
+        # rather than what its absence would cause.
+        payload["sides"] = [_side(side) for side in metadata.sides]
     if metadata.governing_law:
         payload["governing_law"] = metadata.governing_law
     payload["language"] = metadata.language
@@ -132,11 +87,11 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
     elif metadata.supersedes:
         payload["supersedes"] = metadata.supersedes
     if metadata.attachments:
+        # Each with its required fields, empty ones too (attachment-title-empty).
         payload["attachments"] = [
             {"id": att.id, "title": att.title, "file": att.file}
             | ({"when": att.when} if att.when else {})
             for att in metadata.attachments
-            if att.id and att.title and att.file
         ]
     if metadata.questions is not None:
         payload["questions"] = metadata.questions
@@ -147,6 +102,34 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
     if metadata.tags:
         payload["tags"] = metadata.tags
     return payload
+
+
+def _side(side: Side) -> dict[str, Any]:
+    """A side as frontmatter (§3.3): its name and parties always, empty ones
+    too."""
+    written: dict[str, Any] = {"name": side.name}
+    if side.label:
+        written["label"] = side.label
+    written["parties"] = [_party(party) for party in side.parties]
+    return written
+
+
+def _party(party: Party) -> dict[str, Any]:
+    """A party as frontmatter (§3.4): its name always, its other fields when
+    set, and its custom fields as keys of their own — but for one without a
+    label, or named as a field, which no key can hold."""
+    written: dict[str, Any] = {"name": party.name}
+    for key in ("label", "type", "legal_name", "identification_number", "address", "date_of_birth"):
+        if value := getattr(party, key):
+            written[key] = value
+    if party.representatives:
+        written["representatives"] = [
+            {"name": rep.name} | ({"title": rep.title} if rep.title else {}) for rep in party.representatives
+        ]
+    for custom in party.custom_fields:
+        if custom.label and custom.label not in PARTY_KEYS and custom.label not in written:
+            written[custom.label] = custom.value
+    return written
 
 
 def _opens_block(text: str, *, in_item: bool = False) -> bool:

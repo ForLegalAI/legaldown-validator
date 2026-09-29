@@ -163,10 +163,8 @@ def _frontmatter_fields(meta: Any) -> tuple[list[tuple[str, str, tuple[Any, ...]
             for k, rep in enumerate(party.representatives):
                 values.append((rep.name, (*party_path, "representatives", k, "name")))
                 values.append((rep.title, (*party_path, "representatives", k, "title")))
-            values.extend(
-                (cf.value, (*party_path, "custom_fields", k, "value"))
-                for k, cf in enumerate(party.custom_fields)
-            )
+            # A custom field is a key of the party's own (§3.4).
+            values.extend((cf.value, (*party_path, cf.label)) for cf in party.custom_fields)
     return structural, values
 
 
