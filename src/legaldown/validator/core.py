@@ -171,12 +171,23 @@ def _frontmatter_fields(
             # placeholder; its value is a value field.
             # A key's label is read stripped (``models.party_from_dict``), the
             # key is written as it is: a label's nth field is the nth key
-            # that strips to it, in the order of the source.
+            # that strips to it, in the order of the source — when each has
+            # one, and none may be merged in (``<<``), which the model reads
+            # before the party's own: else it is looked for by its label.
             written: dict[str, list[str]] = {}
             for raw in where.children(*party_path) if where is not None else ():
                 written.setdefault(raw.strip(), []).append(raw)
-            for k, cf in enumerate(party.custom_fields):
-                listed = (*party_path, "custom_fields", k)
+            listed_paths = [(*party_path, "custom_fields", k) for k in range(len(party.custom_fields))]
+            keyed_fields = [
+                cf.label for cf, listed in zip(party.custom_fields, listed_paths, strict=True)
+                if where is None or not where.has(*listed)
+            ]
+            merges = where is not None and where.merges(*party_path)
+            for label in set(keyed_fields):
+                count = keyed_fields.count(label)
+                if len(written.get(label, ())) != count or (merges and count > 1):
+                    written.pop(label, None)
+            for cf, listed in zip(party.custom_fields, listed_paths, strict=True):
                 keyed = where is None or not where.has(*listed)
                 key = written[cf.label].pop(0) if keyed and written.get(cf.label) else cf.label
                 structural.append((

@@ -41,6 +41,11 @@ def document_shape(document: Document) -> tuple[Any, ...]:
     )
 
 
+#: The last element of a mapping's path in ``frontmatter_keys`` when it
+#: merges keys in (``<<``): at the merge key's line.
+MERGE = object()
+
+
 def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], int]:
     """The line of each node in the frontmatter's YAML *root*, by its path:
     a mapping key's line, and a sequence entry's (its ``-`` line). A
@@ -48,7 +53,8 @@ def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], 
     (``models``: a side, a party, an attachment, a representative or a
     custom field that is not a mapping is left out), so a path indexes the
     model's lists. *first_line* is the file line of the YAML's first line.
-    A merged or aliased node is where it is written, not where it is used."""
+    A merged or aliased node is where it is written, not where it is used;
+    a mapping that merges keys in has ``(*path, MERGE)`` too."""
     keys: dict[tuple[Any, ...], int] = {}
 
     def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
@@ -60,6 +66,7 @@ def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], 
             for key, value in node.value:
                 if isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge":
                     merged.append(value)  # its keys are this mapping's, below its own
+                    keys.setdefault((*path, MERGE), key.start_mark.line + first_line)
                 elif isinstance(key, yaml.ScalarNode):
                     inner = (*path, key.value)
                     keys.setdefault(inner, key.start_mark.line + first_line)
@@ -271,6 +278,10 @@ class Locator:
     def has(self, *path: Any) -> bool:
         """True if the frontmatter node at *path* is written."""
         return self._map is not None and path in self._map.keys
+
+    def merges(self, *path: Any) -> bool:
+        """True if the frontmatter mapping at *path* merges keys in (``<<``)."""
+        return self._map is not None and (*path, MERGE) in self._map.keys
 
     def children(self, *path: Any) -> list[str]:
         """The keys written in the frontmatter mapping at *path*, as written

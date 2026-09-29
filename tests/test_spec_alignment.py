@@ -3738,3 +3738,15 @@ def test_an_item_nested_after_the_first_line_text_of_an_item_that_only_nests_end
     assert [b.kind for b in parse_document("---\ntitle: T\n---\n\n- a\n  2. b\n").preamble[0].items[0].blocks] == ["paragraph"]
     nested = parse_document("---\ntitle: T\n---\n\n- 1. z\n     a\n  2. b\n").preamble[0].items[0].blocks
     assert [b.kind for b in nested] == ["ordered_list"] and len(nested[0].items) == 2
+
+
+def test_a_custom_field_merged_in_keeps_its_line_next_to_a_padded_key():
+    """A field merged in (``<<``) has no key of its own: the padded key's
+    line is not given to it."""
+    source = (
+        "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
+        "        legal_name: X\n        <<: {tax: '{{placeholder: p, bogus=1}}'}\n        ' tax ': ok\n"
+        + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "directive-unknown-param"]
+    assert source.split("\n")[diagnostic.line - 1].strip().startswith("<<:")
