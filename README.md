@@ -265,9 +265,10 @@ representative and attachment the model holds, one not yet filled in too (a side
 parties, an attachment without a title), where the validator reports what it lacks. A
 party's custom fields (§3.4) are the keys of its object that are none of its fields; they are
 read into `custom_fields` and written back as keys of their own, a row whose label is still
-empty as the key `''`. A key holds one of them only: a custom field named as one of the party's
-fields, or as a custom field before it, is not written, nor is one whose value is a list or a
-mapping, which a custom field, holding text, does not keep.
+empty as the key `''`. When keys cannot hold them all (a label written twice, or naming one of
+the party's fields), they are written as the party's `custom_fields` list of `label` and
+`value` entries, which is read too. A value that is a list or a mapping is not kept: a custom
+field holds text.
 
 A list block's `items` are `ListItem`s, each holding the blocks of its content in order: its
 first paragraph, then later paragraphs, headings, nested lists (a list block of their own kind),

@@ -3562,17 +3562,33 @@ def test_a_partys_custom_fields_are_its_other_keys():
     assert document_from_dict(document_to_dict(document)).metadata == document.metadata
 
 
-def test_a_custom_field_is_never_written_over_a_partys_field():
+@pytest.mark.parametrize("fields", [
+    [CustomField("address", "Street 1")],
+    [CustomField("name", "z"), CustomField(" type ", "z")],
+    [CustomField("vat", "CZ9"), CustomField("vat", "CZ8")],
+    [CustomField(), CustomField()],
+])
+def test_custom_fields_no_keys_can_hold_are_written_as_a_list(fields):
+    """A label written twice, or naming a party field: the party's
+    ``custom_fields`` list holds them, in order, and its fields stay."""
     document = parse_document(f"---\ntitle: T\nsides:\n{_SIDE_B}---\n\n# A\n\nText.\n")
-    party = document.metadata.sides[0].parties[0]
-    party.custom_fields = [
-        CustomField("name", "z"), CustomField(" type ", "z"), CustomField("vat", "CZ9"), CustomField("vat", "CZ8"),
-    ]
+    document.metadata.sides[0].parties[0].custom_fields = fields
     written = serialize_document(document)
     again = parse_document(written).metadata.sides[0].parties[0]
     assert (again.name, again.type) == ("y", "legal_entity")
-    assert [(f.label, f.value) for f in again.custom_fields] == [("vat", "CZ9")]
+    assert [(f.label, f.value) for f in again.custom_fields] == [(f.label.strip(), f.value) for f in fields]
     assert serialize_document(parse_document(written)) == written
+
+
+def test_a_placeholder_in_a_custom_fields_name_is_reported():
+    """Its name is a key, where a placeholder has no place (§3.10)."""
+    source = (
+        "---\ntitle: T\nquestions:\n  tid:\n    type: text\n    label: Tax ID\nsides:\n  - name: a\n    parties:\n"
+        "      - name: x\n        type: legal_entity\n        legal_name: X\n        '{{placeholder: tid}}': v\n"
+        + _SIDE_B + "---\n\n# A\n\nText.\n"
+    )
+    [diagnostic] = [d for d in validate_document(parse_document(source)).diagnostics if d.rule == "placeholder-in-structural-field"]
+    assert diagnostic.line == 13
 
 
 def test_a_custom_field_row_not_yet_labelled_is_written_back():
@@ -3585,7 +3601,7 @@ def test_a_custom_field_row_not_yet_labelled_is_written_back():
 
 
 @pytest.mark.parametrize("key", ["' name'", "'type '", "' custom_fields'"])
-def test_a_key_naming_a_party_field_with_spaces_is_that_field(key):
+def test_a_key_naming_a_party_field_with_spaces_is_no_custom_field(key):
     source = f"---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        {key}: z\n{_SIDE_B}---\n\n# A\n\nText.\n"
     document = parse_document(source)
     assert document.metadata.sides[0].parties[0].custom_fields == []

@@ -116,9 +116,11 @@ def _side(side: Side) -> dict[str, Any]:
 
 def _party(party: Party) -> dict[str, Any]:
     """A party as frontmatter (§3.4): its name always, its other fields when
-    set, and its custom fields as keys of their own — an empty one too, a
-    row whose label is not yet written — but for one named as a field, or
-    as a custom field before it, which no key can hold."""
+    set, and its custom fields as keys of their own, an empty one too (a row
+    whose label is not yet written). When keys cannot hold them all — a
+    label written twice, or naming one of the party's fields — they are
+    written as its ``custom_fields`` list instead, in order, which the
+    parser reads as well."""
     written: dict[str, Any] = {"name": party.name}
     for key in ("label", "type", "legal_name", "identification_number", "address", "date_of_birth"):
         if value := getattr(party, key):
@@ -127,10 +129,13 @@ def _party(party: Party) -> dict[str, Any]:
         written["representatives"] = [
             {"name": rep.name} | ({"title": rep.title} if rep.title else {}) for rep in party.representatives
         ]
-    for custom in party.custom_fields:
-        label = custom.label.strip()
-        if label not in PARTY_KEYS and label not in written:
-            written[label] = custom.value
+    labels = [custom.label.strip() for custom in party.custom_fields]
+    if len(set(labels)) == len(labels) and not PARTY_KEYS.intersection(labels):
+        written.update(zip(labels, (custom.value for custom in party.custom_fields), strict=True))
+    elif labels:
+        written["custom_fields"] = [
+            {"label": label, "value": custom.value} for label, custom in zip(labels, party.custom_fields, strict=True)
+        ]
     return written
 
 

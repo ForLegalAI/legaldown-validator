@@ -167,11 +167,15 @@ def _frontmatter_fields(
                 values.append((rep.name, (*party_path, "representatives", k, "name")))
                 values.append((rep.title, (*party_path, "representatives", k, "title")))
             # A custom field is a key of the party's own (§3.4), or an entry
-            # of its `custom_fields` list, the form a model's dict holds.
+            # of its `custom_fields` list. Its label, a key, holds no
+            # placeholder; its value is a value field.
             for k, cf in enumerate(party.custom_fields):
-                listed = (*party_path, "custom_fields", k, "value")
+                listed = (*party_path, "custom_fields", k)
                 keyed = where is None or not where.has(*listed)
-                values.append((cf.value, (*party_path, cf.label) if keyed else listed))
+                structural.append((
+                    "a party's custom field name", cf.label, (*party_path, cf.label) if keyed else (*listed, "label")
+                ))
+                values.append((cf.value, (*party_path, cf.label) if keyed else (*listed, "value")))
     return structural, values
 
 
