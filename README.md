@@ -34,6 +34,10 @@ alongside its severity and message, so you can suppress one check, escalate anot
 build on exactly the rules you care about. Rule ids survive specification renumbering — they are
 the part of a diagnostic that is safe to depend on.
 
+🖨️ **Rendering** a document to HTML or plain text, with its numbering, cross-references, and
+defined terms, is the job of [`legaldown-render`](https://github.com/ForLegalAI/legaldown-render),
+the reference renderer built on this package (`pip install legaldown-render`).
+
 ## Install
 
 ```bash
@@ -217,7 +221,8 @@ so a renderer or a UI can reuse the work instead of re-deriving it:
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
 A renderer builds from these decisions rather than re-deriving them, with the helpers the
-validator reads the document with:
+validator reads the document with.
+[`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way:
 
 | Helper | What it gives |
 |---|---|
