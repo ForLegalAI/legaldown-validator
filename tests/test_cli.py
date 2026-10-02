@@ -622,3 +622,58 @@ def test_a_failure_to_save_the_answers_is_an_error(write, capsys, tmp_path):
     blocked.write_text("a file, not a directory", encoding="utf-8")
     code = main(["assemble", str(template), "--answers", str(answers), "--save-answers", str(blocked / "a.yaml")])
     assert code == EXIT_ERROR and "cannot write the answers" in capsys.readouterr().err
+
+
+def test_a_template_that_cannot_be_assembled_asks_nothing(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW.replace("Hi {{placeholder: who}}.", 'Hi {{choose: x, true="only one phrase"}}.'))
+    _type(monkeypatch, "no", "Ann")
+    assert main(["assemble", str(template), "-i"]) == EXIT_DIAGNOSTICS
+    err = capsys.readouterr().err
+    assert "[choose-invalid]" in err and "Keep the extras?" not in err
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))  # no terminal
+    assert main(["assemble", str(template), "-i"]) == EXIT_DIAGNOSTICS
+    err = capsys.readouterr().err
+    assert "[choose-invalid]" in err and "must be answered" not in err
+
+
+def test_the_empty_line_drops_an_answer_that_is_not_valid(write, capsys, monkeypatch, tmp_path):
+    template = write("t.lgd", _INTERVIEW)
+    answers = write("a.yaml", "x: no\nwho: '  '\nfee: 5000\n")
+    saved = tmp_path / "saved.yaml"
+    _type(monkeypatch, "", "")
+    code = main(["assemble", str(template), "--answers", str(answers), "-i", "--save-answers", str(saved)])
+    assert code == EXIT_OK  # the blanks stay; nothing invalid is left
+    assert "who" not in yaml.safe_load(saved.read_text(encoding="utf-8"))
+
+
+def test_text_that_is_not_utf8_is_not_an_answer(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW)
+    _type(monkeypatch, "no", "\udcff\udcfe bad", "Ann", "")
+    assert main(["assemble", str(template), "-i"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert "Hi Ann." in captured.out and "UTF-8" in captured.err
+
+
+def test_the_answers_are_saved_beside_and_moved_into_place(write, tmp_path):
+    from legaldown.cli import _save_answers
+
+    saved = tmp_path / "a.yaml"
+    saved.write_text("# my notes\nwho: Old\n", encoding="utf-8")
+    assert _save_answers(saved, {"who": "New"}) is None
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"who": "New"}
+    assert [p.name for p in tmp_path.iterdir()] == ["a.yaml"]  # no temporary file left
+    assert "cannot write" in _save_answers(saved, {"who": object()})
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"who": "New"}  # as it was
+    assert [p.name for p in tmp_path.iterdir()] == ["a.yaml"]
+    assert _save_answers(saved, {"who": "\udcff"}) is None  # YAML writes it escaped, and it reads back
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"who": "\udcff"}
+
+
+def test_the_default_that_is_accepted_is_echoed(write, capsys, monkeypatch):
+    template = write(
+        "t.lgd",
+        _INTERVIEW.replace("    prompt: Keep the extras?\n", "    prompt: Keep the extras?\n  fee:\n    type: money\n    default:\n      amount: '100'\n      currency: EUR\n", 1),
+    )
+    _type(monkeypatch, "no", "Ann", "")
+    assert main(["assemble", str(template), "-i"]) == EXIT_OK
+    assert "the default, 100 EUR" in capsys.readouterr().err

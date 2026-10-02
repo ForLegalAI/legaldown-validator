@@ -15,8 +15,11 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -170,6 +173,21 @@ def _write_stdout(text: str) -> None:
         sys.stdout.write(text)
 
 
+def _write_atomically(path: Path, text: str) -> None:
+    """*text* to *path*: all of it, or the file as it was — written beside it and
+    moved into place, since the file may be the answers a person typed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.replace(name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(name)
+        raise
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -189,11 +207,20 @@ def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]
 
 
 def _ask(prompt: str) -> str | None:
-    """A line from standard input, after *prompt* on standard error (standard output
-    is the assembled template); ``None`` at the end of the input."""
-    print(prompt, end="", file=sys.stderr, flush=True)
-    line = sys.stdin.readline()
-    return line.rstrip("\r\n") if line else None
+    """A line typed after *prompt*, on standard error (standard output is the
+    assembled template), with the editing and history of the terminal; ``None``
+    at the end of the input. A line that is not text the terminal's encoding
+    reads is asked for again."""
+    with contextlib.suppress(ImportError):
+        import readline  # noqa: F401  (its presence gives input() line editing)
+    while True:
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                return input(prompt)
+        except EOFError:
+            return None
+        except UnicodeDecodeError:
+            print("That is not text in this terminal's encoding; type it again.", file=sys.stderr, flush=True)
 
 
 def _say(message: str) -> None:
@@ -234,6 +261,9 @@ def _interview(template: Template, answers: dict, ask=_ask, say=_say) -> bool:
         elif question in form.blocking:
             say("An answer is needed.")
         else:
+            answers.pop(question.id, None)  # an answer that is not valid does not stay: the default, or the blank
+            if question.default is not None:
+                say(f"  {question.id}: the default, {question.to_text(question.default)}")
             skipped.add(question.id)
 
 
@@ -252,8 +282,10 @@ def _save_answers(path: Path, answers: dict) -> str | None:
     """*answers* to the YAML file at *path*; a failure as text. Money amounts stay
     quoted strings, dates the dates they are."""
     try:
-        _write(path, yaml.safe_dump(answers, sort_keys=False, allow_unicode=True, default_flow_style=False))
-    except (OSError, yaml.YAMLError) as exc:
+        text = yaml.safe_dump(answers, sort_keys=False, allow_unicode=True, default_flow_style=False)
+        text.encode("utf-8")
+        _write_atomically(path, text)
+    except (OSError, ValueError, yaml.YAMLError) as exc:  # UnicodeEncodeError is a ValueError
         return f"cannot write the answers to {path}: {exc}"
     return None
 
@@ -264,7 +296,7 @@ def _run_assemble(args: argparse.Namespace) -> int:
     try:
         code = _assemble(args, state)
     except KeyboardInterrupt:
-        print("\ninterrupted; nothing was assembled", file=sys.stderr)
+        print("\ninterrupted", file=sys.stderr)
     finally:
         # Also after an interruption or a failure: what was typed is not lost.
         if args.save_answers and state["answers"] is not None:
@@ -297,7 +329,7 @@ def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
     if result is None:
         try:
             answers = state["answers"] = template.coerce(answers)
-            if args.interactive:
+            if args.interactive and not template.problems:  # a template that cannot be assembled asks nothing
                 if sys.stdin.isatty():
                     _interview(template, answers)
                 else:

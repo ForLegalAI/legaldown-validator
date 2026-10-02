@@ -89,6 +89,10 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
             return "must not contain a line break"
         if answer != answer.strip(" \t"):
             return "must not begin or end with a space or tab"
+        try:
+            answer.encode("utf-8")
+        except UnicodeEncodeError:
+            return "must be text that can be written as UTF-8 (it holds a lone surrogate)"
         if blank is not None and blank.in_frontmatter and "{{" in answer:
             return "must not contain '{{' when it fills a placeholder in frontmatter"
         return None
