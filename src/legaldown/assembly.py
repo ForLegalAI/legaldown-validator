@@ -28,16 +28,20 @@ whose linked templates are assembled with it (§15.7.2).
 from __future__ import annotations
 
 import bisect
+import copy
 import posixpath
 import re
+import reprlib
+import warnings
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from datetime import date
 from functools import cache
 from typing import Any
 
 from .definitions import list_fragments
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
+from .files import LoadFile, relative_path
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
@@ -59,13 +63,14 @@ from .parser import (
     _may_interrupt,
     _opens_paragraph,
     _row_width_end,
-    parse_document,
+    parse,
     quote_content,
 )
-from .validator import validate_document
+from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
-from .validator.patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
+from .validator.helpers import is_positive_numeric, is_valid_money_amount
+from .validator.patterns import DURATION_UNITS, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
 from .validator.result import Diagnostic
 from .validator.templates import (
     DECISION_QUESTION_TYPES,
@@ -77,6 +82,7 @@ from .validator.templates import (
 from .validator.units import find_markers, is_include_only, own_presence
 
 __all__ = [
+    "frontmatter_diagnostic",
     "AssemblyError",
     "AssemblyResult",
     "LoadFile",
@@ -85,10 +91,6 @@ __all__ = [
     "needed_questions",
     "template_questions",
 ]
-
-#: Reads an include fragment or LegalDown attachment file by its path as the
-#: template writes it (normalized); ``None`` when there is no such file.
-LoadFile = Callable[[str], "str | None"]
 
 #: A question with neither an answer nor a default.
 _MISSING = object()
@@ -120,13 +122,18 @@ class AssemblyResult:
         return not any(d.level == "error" for d in self.diagnostics)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True)
 class Question:
     """One question the person filling a template is asked (§15.2): declared
     in ``questions``, or implicit — an undeclared placeholder, with no prompt
     and no default. ``type`` is the effective type; ``currency``/``unit`` is
     set when every placeholder for the question fixes the same one, which is
-    when the bare amount or value is an acceptable answer (§15.7.1)."""
+    when the bare amount or value is an acceptable answer (§15.7.1).
+
+    A question is a fixed value, copied from the template's declaration: it
+    cannot be reassigned, and ``choices`` and a map-valued ``default`` (a money
+    or duration default) are copies of the declaration's. Treat them as
+    read-only: the question is shared by every form of its template."""
 
     id: str
     type: str
@@ -136,11 +143,211 @@ class Question:
     currency: str | None = None
     unit: str | None = None
     declared: bool = True
+    #: What the placeholders of the question fix (``Blank``): every code, and
+    #: whether one is in frontmatter, which ``problem`` needs. Not a field: it is
+    #: not part of the value (``asdict``, ``replace`` and equality leave it out). A
+    #: question made without it behaves as if its placeholders fix the ``currency``
+    #: or ``unit`` it names, if any, and none is in frontmatter.
+    _blank: InitVar[Blank | None] = None
+
+    def __post_init__(self, _blank: Blank | None) -> None:
+        object.__setattr__(self, "choices", dict(self.choices or {}))
+        object.__setattr__(self, "default", copy.deepcopy(self.default))
+        object.__setattr__(self, "_info", _blank)
 
     @property
     def is_decision(self) -> bool:
         return self.type in DECISION_QUESTION_TYPES
 
+    def problem(self, answer: Any) -> str | None:
+        """Why *answer* is not a valid answer to this question (§15.7.1), or
+        None when it is."""
+        return answer_problem(
+            self.type, answer, choices=self.choices if self.type == "choice" else None, blank=self._placeholders()
+        )
+
+    def _placeholders(self) -> Blank | None:
+        """What the placeholders fix: as recorded, else as ``currency``/``unit`` name."""
+        if self._info is not None:
+            return self._info
+        fixed = self.currency if self.type == "money" else self.unit if self.type == "duration" else None
+        return Blank(type=self.type, codes={fixed}) if fixed else None
+
+    @property
+    def _fixed(self) -> str | None:
+        """The currency (money) or unit (duration) every placeholder fixes, if one:
+        what ``problem`` goes by, so that the hint and ``from_text`` never differ from it."""
+        blank = self._placeholders()
+        if blank is None or self.type not in ("money", "duration"):
+            return None
+        return next(iter(blank.codes)) if len(blank.codes) == 1 and "" not in blank.codes else None
+
+    @property
+    def hint(self) -> str:
+        """What to type to answer it, as a phrase to follow "Enter": ``yes or
+        no``, ``an amount and a currency, like 5000 EUR``, ``one of: courts
+        (State courts), arbitration`` — for a person, a web form or an agent."""
+        if self.type == "boolean":
+            return "yes or no"
+        if self.type == "date":
+            return "a date, YYYY-MM-DD"
+        if self.type == "choice":
+            if not self.choices:
+                return "an answer (the question declares no choices)"
+            return "one of: " + ", ".join(
+                f"{key} ({label})" if label and label.casefold() != key.casefold() else key
+                for key, label in self.choices.items()
+            )
+        if self.type == "money":
+            if self._fixed:
+                return f"an amount, like 5000 (in {self._fixed})"
+            return "an amount and a currency, like 5000 EUR"
+        if self.type == "duration":
+            if self._fixed:
+                return f"a number, like 30 (in {self._fixed})"
+            return f"a number and a unit, like 30 D (units: {', '.join(DURATION_UNITS)})"
+        if self._info is not None and self._info.in_frontmatter:
+            return "text, without '{{'"
+        return "text"
+
+    @property
+    def accepts(self) -> dict[str, Any]:
+        """What the question accepts, for a form or an agent to build its input
+        from: ``kind`` (the type), and what that kind needs — the words of a
+        boolean, the choices, the currency or unit the placeholders fix and the
+        units there are, whether the text fills frontmatter. ``hint`` says it in
+        words."""
+        if self.type == "boolean":
+            return {"kind": "boolean", "words": {"true": ["yes", "y", "true"], "false": ["no", "n", "false"]}}
+        if self.type == "date":
+            return {"kind": "date", "format": "YYYY-MM-DD"}
+        if self.type == "choice":
+            return {"kind": "choice", "choices": [{"key": key, "label": label} for key, label in self.choices.items()]}
+        if self.type == "money":
+            return {"kind": "money", "currency": self._fixed}
+        if self.type == "duration":
+            return {"kind": "duration", "unit": self._fixed, "units": list(DURATION_UNITS)}
+        return {"kind": "text", "frontmatter": bool(self._info is not None and self._info.in_frontmatter)}
+
+    def to_text(self, answer: Any) -> str:
+        """*answer* as a person would type it — the inverse of :meth:`from_text`:
+        to show a default or a saved answer, or to fill in an input. ``yes`` or
+        ``no`` for a boolean, ``5000 EUR`` for money, ``30 D`` for a duration, an
+        ISO date; the empty text for no answer. Anything else as ``str`` has it."""
+        if answer is None:
+            return ""
+        if isinstance(answer, bool):
+            return "yes" if answer else "no"
+        if isinstance(answer, date):
+            return answer.isoformat()
+        if isinstance(answer, dict):
+            keys = ("amount", "currency") if self.type == "money" else ("value", "unit")
+            if self.type in ("money", "duration") and set(answer) == set(keys):
+                return f"{answer[keys[0]]} {answer[keys[1]]}"
+        try:
+            if isinstance(answer, (dict, list, tuple, set, frozenset)):
+                return _DESCRIBE.repr(answer)[:200]  # not an answer it knows: described, within bounds
+            return str(answer)
+        except (ValueError, RecursionError):  # an integer too long for Python to write as text
+            return ""
+
+    def from_text(self, text: str) -> Any:
+        """The answer that *text*, as a person types it, gives to this question:
+        the shape ``assemble`` takes, which :meth:`problem` accepts — or ``None``
+        for no answer (the empty text: the default applies, or the blank stays).
+        Surrounding spaces are dropped. Strict, and not locale-aware:
+
+        - ``text``: the text. ``date``: ``YYYY-MM-DD``.
+        - ``boolean``: yes, no, true, false, y, n, in any case.
+        - ``choice``: a choice's key, else its label, in any case; a label two
+          choices share is ambiguous.
+        - ``money``: ``5000 EUR`` (or ``5000EUR``), and the amount alone where the
+          placeholders fix a currency. ``duration``: ``30 D``, and the number
+          alone where they fix a unit. No grouping separators or symbols.
+
+        Raises ``ValueError``, saying what to enter, for text that is no answer,
+        and ``TypeError`` for what is not text.
+        """
+        if not isinstance(text, str):
+            raise TypeError(f"the text of an answer is a string, not {type(text).__name__}")
+        text = text.strip()
+        if not text:
+            return None
+        value = self._answer_from(text)
+        if self.type not in ("boolean", "choice", "date", "money", "duration"):
+            # What a person types is held to more than the specification asks of an
+            # answer (§15.7.1): no key's escape sequence, no byte that is no UTF-8.
+            if _CONTROL_RE.search(value):
+                raise ValueError(f"Enter {self.hint}. (it must not contain a control character)")
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(f"Enter {self.hint}. (it must be text that can be written as UTF-8)") from None
+        problem = self.problem(value)
+        if problem:
+            # Said as the question is, where what is wrong is not the shape of what was typed.
+            detail = "" if self.type in ("boolean", "choice", "date") else f" ({problem})"
+            raise ValueError(f"Enter {self.hint}.{detail}")
+        return value
+
+    def _answer_from(self, text: str) -> Any:
+        shape = ValueError(f"Enter {self.hint}.")
+        if self.type == "boolean":
+            word = text.casefold()
+            if word in ("yes", "y", "true"):
+                return True
+            if word in ("no", "n", "false"):
+                return False
+            raise shape
+        if self.type == "choice":
+            if text in self.choices:
+                return text
+            word = text.casefold()
+            keys = [key for key in self.choices if key.casefold() == word]
+            if keys:
+                return keys[0]
+            labels = [key for key, label in self.choices.items() if label.casefold() == word]
+            if len(labels) == 1:
+                return labels[0]
+            if labels:
+                raise ValueError(f"'{text}' is the label of more than one choice ({', '.join(labels)}); "
+                                 f"enter {self.hint}.")
+            raise shape
+        if self.type in ("money", "duration"):
+            found = re.fullmatch(r"(\S*?\d)\s*([A-Za-z]+)?", text)
+            if found is None:
+                raise shape
+            amount, code = found.group(1), (found.group(2) or "").upper()
+            if not (is_valid_money_amount(amount) if self.type == "money" else is_positive_numeric(amount)):
+                what = "an amount" if self.type == "money" else "a positive number"
+                shown = amount if len(amount) <= 40 else amount[:37] + "..."
+                raise ValueError(f"'{shown}' is not {what}: digits and at most one decimal point, with no "
+                                 f"separators or symbols. Enter {self.hint}.")
+            if not code:
+                if not self._fixed:
+                    raise shape
+                return amount
+            names = ("amount", "currency") if self.type == "money" else ("value", "unit")
+            return {names[0]: amount, names[1]: code}
+        return text
+
+
+#: C0 controls but the tab (line breaks are refused by ``problem``), and DEL: what a terminal's
+#: keys and escape sequences say, not text.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _describer() -> reprlib.Repr:
+    describer = reprlib.Repr()
+    describer.maxlevel = 3
+    describer.maxlist = describer.maxtuple = describer.maxdict = describer.maxset = describer.maxfrozenset = 4
+    describer.maxstring = 40
+    describer.maxother = 80
+    return describer
+
+
+#: How an answer of no known shape is described (``Question.to_text``): shallow and short.
+_DESCRIBE = _describer()
 
 # ── Where the parser's blocks lie in the source ──────────────────
 
@@ -303,7 +510,7 @@ def _read_body(
 ) -> _Source:
     lines = body.split("\n")
     if lines[-1] == "":
-        lines.pop()  # the last line's ending, not a line -- as parse_document reads it
+        lines.pop()  # the last line's ending, not a line -- as parse reads it
     layout = _layout(lines)
     found: dict[tuple[int | None, int], list] = {}
     for marker in find_markers(document, cache(lex)):
@@ -656,12 +863,16 @@ class _Template:
     types: dict[str, str]  # every question's effective type: declared, then implicit
     bom: str
     problems: list[Diagnostic]
+    document: Document
+    #: The template's own heading identifiers (step 7), worked out when an
+    #: assembly first needs them, then kept: they do not depend on the answers.
+    identifiers: dict | None = None
 
 
 def _read(template: str, load_file: LoadFile | None) -> _Template:
     bom = "\ufeff" if template.startswith("\ufeff") else ""
     source, newline = _unix(template)
-    document = parse_document(source)
+    document = parse(source)
     declared = document.metadata.questions if isinstance(document.metadata.questions, dict) else {}
     template_like = is_template(document)
     front, body = _split(source, document)
@@ -687,7 +898,7 @@ def _read(template: str, load_file: LoadFile | None) -> _Template:
     types = {qid: qtype for qid in declared if (qtype := question_type(declared, qid))}
     for pid, blank in blanks.items():
         types.setdefault(pid, blank.type or "text")
-    return _Template(front, main, subs, declared, blanks, types, bom, problems)
+    return _Template(front, main, subs, declared, blanks, types, bom, problems, document)
 
 
 def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
@@ -703,7 +914,9 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     for path, kind in wanted:
         if path in subs:
             continue
-        text = load_file(path) if load_file is not None else None
+        # Only a path within the template's directory (§2.3) is asked for: a loader is
+        # not handed ``../x``, an absolute path or a drive letter to open.
+        text = load_file(path) if load_file is not None and relative_path(path) is not None else None
         if text is None:
             reason = "cannot be read" if load_file else "needs the Full level (§17.6)"
             message = f"'{path}' {reason}; the template is not assembled."
@@ -711,7 +924,7 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
             continue
         text, newline = _unix(text)
         try:
-            sub_document = parse_document(text)
+            sub_document = parse(text)
         except FrontmatterError as exc:
             problems.append(Diagnostic(
                 "frontmatter-invalid-yaml", "error",
@@ -837,6 +1050,7 @@ def _questions(t: _Template) -> list[Question]:
             currency=fixed if qtype == "money" else None,
             unit=fixed if qtype == "duration" else None,
             declared=qid in t.declared,
+            _blank=t.blanks.get(qid),
         ))
     return questions
 
@@ -859,27 +1073,67 @@ class _Answers:
         return _MISSING if value is None else value
 
 
-def _answer_diagnostics(t: _Template, answers: Mapping[str, Any]) -> list[Diagnostic]:
-    diagnostics = [
-        Diagnostic("answer-unknown", "warning",
-                   f"'{key}' is neither a question nor a placeholder of the template; its answer "
-                   f"is ignored (§15.7.1).")
-        for key in answers
-        if not isinstance(key, str) or (key not in t.types and key not in t.declared)
-    ]
+def _answer_problem(t: _Template, qid: str, answer: Any) -> str | None:
+    """Why *answer* is not a valid answer to question *qid* of *t*, or None."""
+    qtype = t.types.get(qid)
+    if qtype is None:
+        return None
+    declaration = t.declared.get(qid)
+    choices = declaration.get("choices") if isinstance(declaration, dict) else None
+    return answer_problem(qtype, answer, choices=choices, blank=t.blanks.get(qid))
+
+
+def _answer_pairs(t: _Template, answers: Mapping[str, Any]) -> Iterator[tuple[str, Diagnostic]]:
+    """What is wrong with *answers*, as ``(question id, diagnostic)``: a key
+    that is no question (its own id), and every answer that is not valid (the
+    answer to a question not reached included)."""
+    for key in answers:
+        if not isinstance(key, str) or (key not in t.types and key not in t.declared):
+            yield str(key), Diagnostic(
+                "answer-unknown", "warning",
+                f"'{key}' is neither a question nor a placeholder of the template; its answer "
+                f"is ignored (§15.7.1).")
     resolved = _Answers(answers, t.declared)
-    for qid, qtype in t.types.items():
+    for qid in t.types:
         answer = resolved.get(qid)
         if answer is _MISSING:
             continue
-        declaration = t.declared.get(qid)
-        choices = declaration.get("choices") if isinstance(declaration, dict) else None
-        problem = answer_problem(qtype, answer, choices=choices, blank=t.blanks.get(qid))
+        problem = _answer_problem(t, qid, answer)
         if problem:
             whose = "answer to" if answers.get(qid) is not None else "default of"
-            diagnostics.append(Diagnostic("answer-invalid", "error",
-                                          f"The {whose} '{qid}' {problem} (§15.7.1)."))
-    return diagnostics
+            yield qid, Diagnostic("answer-invalid", "error",
+                                  f"The {whose} '{qid}' {problem} (§15.7.1).")
+
+
+def _missing_diagnostic(qid: str) -> Diagnostic:
+    return Diagnostic("answer-missing", "error",
+                      f"'{qid}' decides what the assembled document holds, and has neither an "
+                      f"answer nor a default (§15.7.2 step 1).")
+
+
+class _FormAnswers(_Answers):
+    """The answers of a form: as ``_Answers``, except that an answer that is
+    not valid counts as no answer — it does not steer which units are present,
+    and the default does not stand in for it. It is reported on its own
+    (``answer-invalid``)."""
+
+    def __init__(self, answers: Mapping[str, Any], t: _Template) -> None:
+        super().__init__(answers, t.declared)
+        self._t = t
+        self._valid: dict[str, bool] = {}
+
+    def get(self, qid: str) -> Any:
+        explicit = self._answers.get(qid)
+        if explicit is not None:
+            if qid not in self._valid:
+                self._valid[qid] = _answer_problem(self._t, qid, explicit) is None
+            if not self._valid[qid]:
+                return _MISSING
+        return super().get(qid)
+
+
+def _answer_diagnostics(t: _Template, answers: Mapping[str, Any]) -> list[Diagnostic]:
+    return [diagnostic for _qid, diagnostic in _answer_pairs(t, answers)]
 
 
 @dataclass(slots=True)
@@ -893,10 +1147,14 @@ class _Decision:
     missing: dict[str, None] = field(default_factory=dict)
 
 
-def _decide(t: _Template, answers: _Answers) -> _Decision:
+def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decision:
     """Evaluate every condition that is reached (§15.7.2 steps 1–2). A unit
     inside a removed one is never reached, so its question is not needed; one
-    under an unanswered condition is not reached *yet*."""
+    under an unanswered condition is not reached *yet*. With *inline*, an
+    include fragment is read where its ``{{include:}}`` is, so that the
+    questions are in the order they are reached; otherwise after the body.
+    Which lines are removed, and which files, is the same either way (a file
+    included twice is read at its last include, which decides it)."""
     decision = _Decision()
 
     def holds(test: Condition | None) -> bool | None:
@@ -928,7 +1186,18 @@ def _decide(t: _Template, answers: _Answers) -> _Decision:
     for occ in front.occurrences if front else []:
         if occ.line not in dropped:  # a blank in a removed attachment's title
             use(occ)
-    decision.removed[""], pending = _walk(t.main, holds, use)
+    walked: set[str] = set()
+
+    # A file included twice is kept or removed as its last include says.
+    last = {include.path: include for include in t.main.includes}
+
+    def enter(include: _Include) -> None:
+        source = t.subs.get(include.path)
+        if source is not None and last[include.path] is include and include.path not in walked:
+            walked.add(include.path)
+            decision.removed[include.path], _pending = _walk(source, holds, use)
+
+    decision.removed[""], pending = _walk(t.main, holds, use, enter if inline else None)
     for include in t.main.includes:
         if include.start in decision.removed[""]:
             decision.files[include.path] = False
@@ -938,23 +1207,30 @@ def _decide(t: _Template, answers: _Answers) -> _Decision:
         if item.file:
             decision.files[item.file] = kept
     for path, source in t.subs.items():
-        if decision.files.get(path):
+        if decision.files.get(path) and path not in walked:
             decision.removed[path], _pending = _walk(source, holds, use)
     return decision
 
 
-def _walk(source: _Source, holds: Callable, use: Callable) -> tuple[set[int], set[int]]:
+def _walk(
+    source: _Source, holds: Callable, use: Callable, enter: Callable | None = None
+) -> tuple[set[int], set[int]]:
     """The lines of *source* assembly removes — drafting notes first, then
     absent units — and those waiting on an unanswered question. Units and
     insertions are visited in source order, so an enclosing unit is decided
-    before anything inside it."""
+    before anything inside it. *enter*, when given, is called with each include
+    that is present, after the units that start on its line."""
     removed, pending = set(source.notes), set()
     events = sorted(
         [(unit.start, 0, k) for k, unit in enumerate(source.units)]
         + [(occ.line, 1, k) for k, occ in enumerate(source.occurrences)]
+        + ([(include.start, 2, k) for k, include in enumerate(source.includes)] if enter else [])
     )
     for line, kind, k in events:
         if line in removed or line in pending:
+            continue
+        if kind == 2:
+            enter(source.includes[k])
             continue
         if kind == 1:
             use(source.occurrences[k])
@@ -1392,8 +1668,8 @@ def _identifiers(head: str, rows: list[_Row]) -> dict[_Key, tuple[str, bool]]:
     """Each heading's identifier in the combined document, and whether it is
     explicit — generated by the validator, which knows alternatives (§5.5)."""
     lines = [text for text, _key in rows]
-    document = parse_document(head + "\n".join(lines))
-    entries = validate_document(document).sections
+    document = parse(head + "\n".join(lines))
+    entries = validate(document).index.sections
     headings = _layout(lines).headings
     if len(headings) != len(entries):
         raise AssemblyError("The combined document's headings do not match its parsed sections.")
@@ -1405,6 +1681,12 @@ def _identifiers(head: str, rows: list[_Row]) -> dict[_Key, tuple[str, bool]]:
 
 
 def _template_identifiers(t: _Template) -> dict[_Key, tuple[str, bool]]:
+    if t.identifiers is None:
+        t.identifiers = _compute_template_identifiers(t)
+    return t.identifiers
+
+
+def _compute_template_identifiers(t: _Template) -> dict[_Key, tuple[str, bool]]:
     front = t.front
     files = [(item.file, t.subs[item.file].lines, str(item.test) if item.test else "")
              for item in (front.items if front else []) if item.file in t.subs]
@@ -1492,28 +1774,45 @@ def assemble(
 ) -> AssemblyResult:
     """Assemble *template* with *answers* (§15.7.2).
 
+    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(text,
+    resolve=...).form(answers).assemble()``, which reads the template once.
+
     A draft or an ordinary document goes through the same steps: its drafting
     notes are removed, its answered blanks filled and its blank lines
     collapsed. *load_file* reads the include fragments and LegalDown
     attachment files; the assembled ones are returned in ``files``.
     """
+    warnings.warn(
+        "legaldown.assemble() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.load_template() or parse_template(), then .form(answers).assemble()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     try:
         t = _read(template, load_file)
     except FrontmatterError as exc:
-        return AssemblyResult(diagnostics=[Diagnostic(
-            "frontmatter-invalid-yaml", "error",
-            f"The template's frontmatter cannot be read, so it is not assembled: {exc}",
-        )])
+        return AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
     if t.problems:
-        return AssemblyResult(diagnostics=t.problems)
+        return AssemblyResult(diagnostics=list(t.problems))
     resolved = _Answers(answers, t.declared)
     decision = _decide(t, resolved)
-    diagnostics = _answer_diagnostics(t, answers) + [
-        Diagnostic("answer-missing", "error",
-                   f"'{qid}' decides what the assembled document holds, and has neither an "
-                   f"answer nor a default (§15.7.2 step 1).")
-        for qid in decision.missing
-    ]
+    diagnostics = _answer_diagnostics(t, answers) + [_missing_diagnostic(qid) for qid in decision.missing]
+    return _emit_result(t, resolved, decision, diagnostics)
+
+
+def frontmatter_diagnostic(exc: FrontmatterError) -> Diagnostic:
+    """The error assembly reports for frontmatter that cannot be read."""
+    return Diagnostic(
+        "frontmatter-invalid-yaml", "error",
+        f"The template's frontmatter cannot be read, so it is not assembled: {exc}",
+    )
+
+
+def _emit_result(
+    t: _Template, resolved: _Answers, decision: _Decision, diagnostics: list[Diagnostic]
+) -> AssemblyResult:
+    """Steps 3–8 on a template whose answers have been decided; nothing is
+    emitted while *diagnostics* hold an Error (§15.7.2 step 1)."""
     if any(d.level == "error" for d in diagnostics):
         return AssemblyResult(diagnostics=diagnostics)
     head = _emit_frontmatter(t.front, decision, resolved) if t.front is not None else ""
@@ -1540,7 +1839,15 @@ def template_questions(
     """Every question of *template* (§15.2): the declared ones in declaration
     order, then each undeclared placeholder, in the order first written.
     Raises ``FrontmatterError`` when the template's frontmatter cannot be
-    read."""
+    read.
+
+    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(...).questions``."""
+    warnings.warn(
+        "legaldown.template_questions() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.load_template() or parse_template(), then .questions",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _questions(_read(template, load_file))
 
 
@@ -1556,7 +1863,15 @@ def needed_questions(
     a value question when one of its placeholders does. A unit under a
     condition whose question is still unanswered is not reached yet, so the
     form grows as decisions are made. Raises ``FrontmatterError`` when the
-    template's frontmatter cannot be read."""
+    template's frontmatter cannot be read.
+
+    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(...).form(answers).questions``."""
+    warnings.warn(
+        "legaldown.needed_questions() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.load_template() or parse_template(), then .form(answers).questions",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     t = _read(template, load_file)
     decision = _decide(t, _Answers(answers, t.declared))
     by_id = {question.id: question for question in _questions(t)}

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .conditions import ALWAYS, Condition, Presence, condition_problem, exclusive, parse_condition
-from .core import AttachmentDefinitionsImporter, DefinitionsImporter, is_template, validate_document
+from .core import AttachmentDefinitionsImporter, DefinitionsImporter, is_template, validate, validate_document
 from .helpers import (
     format_section_number,
     is_positive_numeric,
@@ -19,18 +19,21 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Diagnostic, PlacedMarker, SectionIndexEntry, ValidationResult
+from .result import Diagnostic, DocumentIndex, InlineValues, PlacedMarker, SectionIndexEntry, ValidationResult
 from .templates import is_drafting_note
 
 __all__ = [
     # Core
-    "validate_document",
+    "validate",
+    "validate_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate``
     "is_template",
     "is_drafting_note",
-    "DefinitionsImporter",
-    "AttachmentDefinitionsImporter",
+    "DefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0
+    "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0
     # Result types
     "ValidationResult",
+    "DocumentIndex",
+    "InlineValues",
     "SectionIndexEntry",
     "Diagnostic",
     "PlacedMarker",

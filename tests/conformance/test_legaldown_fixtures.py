@@ -30,9 +30,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from legaldown import CAPABILITIES, assemble
-from legaldown.parser import parse_document
-from legaldown.validator import validate_document
+from legaldown import CAPABILITIES, Template, assemble, parse_template
+from legaldown.parser import parse
+from legaldown.validator import validate
 
 FIXTURES_DIR = os.environ.get("LEGALDOWN_FIXTURES_DIR", "")
 
@@ -155,7 +155,16 @@ def _loader(case: Path):
 
 def _assemble_case(template: Path, answers: Path):
     loaded = yaml.safe_load(_read(answers)) or {}
-    return assemble(_read(template), loaded, load_file=_loader(template.parent))
+    with pytest.warns(DeprecationWarning):  # assemble is deprecated for Template (0.4.0); it is still pinned
+        return assemble(_read(template), loaded, load_file=_loader(template.parent))
+
+
+def _assemble_case_with_a_form(template: Path, answers: Path):
+    """The same by way of ``Template`` and ``Form``, without the validator's template rules:
+    the form and its result."""
+    loaded = yaml.safe_load(_read(answers)) or {}
+    form = Template(_read(template), resolve=_loader(template.parent), check=False).form(loaded)
+    return form, form.assemble()
 
 
 def _validate_file(path: Path, config: dict):
@@ -163,8 +172,8 @@ def _validate_file(path: Path, config: dict):
     reports the answer rules (§16.12)."""
     if "answers" in config:
         return _assemble_case(path, path.parent / config["answers"])
-    document = parse_document(path.read_text(encoding="utf-8"), filename=path.name)
-    return validate_document(document, final=bool(config.get("final")))
+    document = parse(path.read_text(encoding="utf-8"), filename=path.name)
+    return validate(document, final=bool(config.get("final")))
 
 
 @pytest.mark.parametrize("case", list(_iter_valid_cases()))
@@ -244,16 +253,16 @@ def test_a_fixture_keeps_its_diagnostics_when_written_back(path: Path):
     from legaldown.parser import FrontmatterError
 
     try:
-        document = parse_document(_read(path), filename=path.name)
+        document = parse(_read(path), filename=path.name)
     except FrontmatterError:
         pytest.skip("unreadable frontmatter: nothing to write back")
-    again = parse_document(serialize_document(document), filename=path.name)
+    again = parse(serialize_document(document), filename=path.name)
     # How the source writes its YAML is not the model's (block style when
     # written back).
     assert replace(again.metadata, not_line_editable=[]) == replace(document.metadata, not_line_editable=[])
 
     def rules(document):
-        return Counter((d.rule, d.level) for d in validate_document(document).diagnostics)
+        return Counter((d.rule, d.level) for d in validate(document).diagnostics)
 
     assert rules(again) == rules(document)
 
@@ -305,4 +314,12 @@ def test_assembly_case_assembles_byte_for_byte(case: Path):
     assert result.ok, result.diagnostics
     assert {"template.lgd": result.output, **result.files} == _expected_tree(case)
     # The assembly guarantee (§15.7.4): the output has no Errors either.
-    assert not validate_document(parse_document(result.output)).errors
+    assert not validate(parse(result.output)).errors
+    # And a ``Template`` with its ``Form`` assembles the same bytes, and says assembly can run.
+    form, through_a_form = _assemble_case_with_a_form(case / "template.lgd", case / "answers.yaml")
+    assert form.ready and (through_a_form.output, through_a_form.files) == (result.output, result.files)
+    # ... and so does the public door, with the validator's template rules on: the fixtures are valid templates.
+    loaded = yaml.safe_load(_read(case / "answers.yaml")) or {}
+    public = parse_template(_read(case / "template.lgd"), resolve=_loader(case)).form(loaded)
+    assert public.ready, (public.diagnostics, public._template.problems)
+    assert (public.assemble().output, public.assemble().files) == (result.output, result.files)

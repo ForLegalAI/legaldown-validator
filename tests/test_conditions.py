@@ -6,8 +6,8 @@ import pytest
 
 from legaldown import serialize_document
 from legaldown.markers import Marker, parse_marker, split_heading
-from legaldown.parser import parse_document
-from legaldown.validator import validate_document
+from legaldown.parser import parse
+from legaldown.validator import validate
 
 _SIDES = """sides:
   - name: providers
@@ -31,11 +31,18 @@ _QUESTIONS = """questions:
 
 
 def _parse(body: str, frontmatter: str = _QUESTIONS):
-    return parse_document(f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n{body}\n")
+    return parse(f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n{body}\n")
+
+
+def _original(**terms: str) -> str:
+    """A LegalDown file declaring the definitions *terms* (id=term), as an
+    amended original or an attachment file does."""
+    declared = "".join(f'"{term}" {{{{def: {id}}}}} means x.\n\n' for id, term in terms.items())
+    return f"---\ntitle: Original\n---\n\n# Terms\n\n{declared}"
 
 
 def _rules(body: str, frontmatter: str = _QUESTIONS, **options) -> set[str]:
-    return validate_document(_parse(body, frontmatter), **options).rules()
+    return validate(_parse(body, frontmatter), **options).rules()
 
 
 # ── Markers (§15.3) ───────────────────────────────────────────────
@@ -71,8 +78,8 @@ def test_a_conditional_heading_round_trips_and_its_identifier_is_generated():
     section = document.sections[0]
     assert (section.title, section.identifier, section.condition) == ("Services", "", "vat")
     assert "\n# Services {when=vat}\n" in serialize_document(document)
-    result = validate_document(document)
-    assert result.sections[0].identifier == "services"
+    result = validate(document)
+    assert result.index.sections[0].identifier == "services"
     assert document.sections[0].identifier == ""  # validation leaves the document as it was
 
 
@@ -125,7 +132,7 @@ def test_a_unit_that_can_never_appear_is_a_warning(body):
 
 def test_only_the_contradicting_unit_is_reported():
     body = "# A {when=vat}\n\n## B {when=!vat}\n\n### C {when=forum:courts}\n\nText."
-    result = validate_document(_parse(body))
+    result = validate(_parse(body))
     assert [d.rule for d in result.diagnostics].count("condition-never-true") == 1
 
 
@@ -190,21 +197,21 @@ def test_alternative_attachments_may_share_an_id():
 
 def test_headings_that_never_appear_together_do_not_collide():
     body = "# Services {when=vat}\n\nA.\n\n# Services {when=!vat}\n\nB."
-    result = validate_document(_parse(body))
-    assert [entry.identifier for entry in result.sections] == ["services", "services"]
+    result = validate(_parse(body))
+    assert [entry.identifier for entry in result.index.sections] == ["services", "services"]
     assert "anchor-autogen-collision" not in result.rules()
 
 
 def test_an_explicit_identifier_always_wins_even_later():
     body = "# Scope\n\nA.\n\n# Other {#scope}\n\nB."
-    result = validate_document(_parse(body, ""))
-    assert [entry.identifier for entry in result.sections] == ["scope-2", "scope"]
+    result = validate(_parse(body, ""))
+    assert [entry.identifier for entry in result.index.sections] == ["scope-2", "scope"]
     assert "anchor-autogen-collision" in result.rules("warning")
 
 
 def test_two_generated_identifiers_collide_as_a_warning():
-    result = validate_document(_parse("# Scope\n\nA.\n\n# Scope\n\nB.", ""))
-    assert [entry.identifier for entry in result.sections] == ["scope", "scope-2"]
+    result = validate(_parse("# Scope\n\nA.\n\n# Scope\n\nB.", ""))
+    assert [entry.identifier for entry in result.index.sections] == ["scope", "scope-2"]
     assert result.rules() == {"anchor-autogen-collision"}
 
 
@@ -229,7 +236,7 @@ def test_a_reference_must_resolve_whenever_it_is_present(body, unsafe):
 def test_terms_and_attachments_are_checked_too():
     frontmatter = _QUESTIONS + "attachments:\n  - id: dpa\n    title: DPA\n    file: dpa.pdf\n    when: vat\n"
     body = '# A {when=vat}\n\n"Fee" {{def: fee}} means the fee.\n\n# B\n\nPay the {{term: fee}} under {{attach: dpa}}.'
-    result = validate_document(_parse(body, frontmatter))
+    result = validate(_parse(body, frontmatter))
     messages = [d.message for d in result.diagnostics if d.rule == "condition-reference-unsafe"]
     assert len(messages) == 2
 
@@ -272,7 +279,7 @@ def test_a_condition_alone_makes_a_template():
 
 def test_the_final_check_reports_conditions():
     body = "# A {when=vat}\n\nText. {when=!vat}\n\n- item {#i when=vat}"
-    result = validate_document(_parse(body), final=True)
+    result = validate(_parse(body), final=True)
     rules = [d.rule for d in result.diagnostics]
     # the questions key and three conditions
     assert rules.count("template-construct-present") == 4
@@ -296,7 +303,7 @@ def test_a_question_may_be_used_in_a_fragment_the_validator_does_not_read():
 
 def test_a_unit_that_can_never_appear_is_reported_once():
     body = "# A {when=vat}\n\n- item {when=!vat} and {when=!vat}"
-    result = validate_document(_parse(body))
+    result = validate(_parse(body))
     assert [d.rule for d in result.diagnostics].count("condition-never-true") == 1
 
 
@@ -310,9 +317,9 @@ _ALTERNATIVE_ATTACHMENTS = _QUESTIONS + (
 
 
 def _with_attachment_definitions(body: str):
-    return validate_document(
+    return validate(
         _parse(body, _ALTERNATIVE_ATTACHMENTS),
-        import_attachment_definitions=lambda path: {"fee": f"Fee ({path})"},
+        resolve=lambda path: _original(fee=f"Fee ({path})"),
     )
 
 
@@ -327,9 +334,9 @@ def test_a_term_from_a_conditional_attachment_is_checked_for_safety():
     )
     assert "condition-reference-unsafe" not in covered.rules()  # one of the two is always present
     frontmatter = _QUESTIONS + "attachments:\n  - id: s\n    title: S\n    file: s.lgd\n    when: vat\n"
-    result = validate_document(
+    result = validate(
         _parse("# A\n\nSee {{attach: s}}. {when=vat}\n\nThe {{term: fee}}.", frontmatter),
-        import_attachment_definitions=lambda path: {"fee": "Fee"},
+        resolve=lambda path: _original(fee="Fee"),
     )
     assert "condition-reference-unsafe" in result.rules("error")
 
@@ -344,10 +351,9 @@ def test_a_term_from_the_amended_original_is_always_present():
         "amends:\n  title: Original\n  file: original.lgd\n"
         "attachments:\n  - id: s\n    title: S\n    file: s.lgd\n    when: vat\n"
     )
-    result = validate_document(
+    result = validate(
         _parse("# A\n\nSee {{attach: s}}. {when=vat}", frontmatter),
-        import_definitions=lambda *_: {"fee": "Fee"},
-        import_attachment_definitions=lambda path: {"fee": "Fee"},
+        resolve=lambda path: _original(fee="Fee"),
     )
     assert "def-duplicate-id" in result.rules("error")
 
@@ -364,18 +370,18 @@ def test_a_preamble_list_item_carries_no_condition():
 def test_a_term_redefined_under_a_condition_stays_defined_by_the_original():
     frontmatter = _QUESTIONS + "amends:\n  title: Original\n  file: original.lgd\n"
     body = '# A\n\n"Services" {{def: services}} means x. {when=vat}\n\nWe provide {{term: services}}.'
-    result = validate_document(_parse(body, frontmatter), import_definitions=lambda *_: {"services": "Services"})
+    result = validate(_parse(body, frontmatter), resolve=lambda path: _original(services="Services"))
     assert "condition-reference-unsafe" not in result.rules()
 
 
 def test_a_preamble_list_items_condition_is_explained():
-    result = validate_document(_parse("- item {when=vat}\n\n# A\n\nText."))
+    result = validate(_parse("- item {when=vat}\n\n# A\n\nText."))
     [message] = [d.message for d in result.diagnostics if d.rule == "anchor-misplaced"]
     assert "only a paragraph may carry a condition" in message
 
 
 def test_alternative_attachments_are_unreferenced_once():
-    result = validate_document(_parse("# A\n\nText.", _ALTERNATIVE_ATTACHMENTS))
+    result = validate(_parse("# A\n\nText.", _ALTERNATIVE_ATTACHMENTS))
     assert [d.rule for d in result.diagnostics].count("attachment-unreferenced") == 1
 
 
@@ -383,7 +389,7 @@ def test_a_comment_may_follow_a_heading_marker():
     document = _parse("# Termination {when=vat} <!-- optional -->\n\nText.")
     [section] = document.sections
     assert (section.title, section.condition) == ("Termination <!-- optional -->", "vat")
-    assert parse_document(serialize_document(document)).sections[0].condition == "vat"
+    assert parse(serialize_document(document)).sections[0].condition == "vat"
 
 
 def test_a_dotted_path_is_not_a_reference():
@@ -391,8 +397,8 @@ def test_a_dotted_path_is_not_a_reference():
 
 
 def test_a_comment_in_a_heading_is_not_part_of_its_identifier():
-    result = validate_document(_parse("# Title {when=vat} <!-- internal note -->\n\nSee {{ref: title}}."))
-    assert result.sections[0].identifier == "title"
+    result = validate(_parse("# Title {when=vat} <!-- internal note -->\n\nSee {{ref: title}}."))
+    assert result.index.sections[0].identifier == "title"
     assert "ref-broken" not in result.rules()
 
 
@@ -405,8 +411,8 @@ def test_alternatives_share_a_number():
         "# Disputes {#disputes when=forum:courts}\n\n## Venue\n\nText.\n\n"
         "# Disputes {#disputes when=forum:arbitration}\n\n## Seat\n\nText.\n\n# Notices\n\nText."
     )
-    result = validate_document(_parse(body))
-    assert [s.number for s in result.sections] == ["1", "1.1", "1", "1.1", "2"]
+    result = validate(_parse(body))
+    assert [s.number for s in result.index.sections] == ["1", "1.1", "1", "1.1", "2"]
 
 
 def test_what_alternatives_contain_shares_numbers_after_a_skip():
@@ -416,8 +422,8 @@ def test_what_alternatives_contain_shares_numbers_after_a_skip():
         "# Root\n\n## Choice {#choice when=forum:courts}\n\n### Real\n\n##### Deep One\n\n"
         "## Choice {#choice when=forum:arbitration}\n\n##### Deep Two\n\n## After\n"
     )
-    result = validate_document(_parse(body))
-    assert [s.number for s in result.sections] == ["1", "1.1", "1.1.1", "1.1.1.1.1", "1.1", "1.1.1.1.1", "1.2"]
+    result = validate(_parse(body))
+    assert [s.number for s in result.index.sections] == ["1", "1.1", "1.1.1", "1.1.1.1.1", "1.1", "1.1.1.1.1", "1.2"]
 
 
 @pytest.mark.parametrize(
@@ -486,7 +492,7 @@ def test_an_amendments_term_is_not_checked_when_its_original_is_unread():
 
 def test_a_nested_items_presence_includes_the_items_it_is_nested_in():
     body = "# A\n\n- parent {when=vat}\n  - child {when=!vat}\n- other"
-    result = validate_document(_parse(body))
+    result = validate(_parse(body))
     messages = [d.message for d in result.diagnostics if d.rule == "condition-never-true"]
     assert len(messages) == 1 and "'{when=!vat}'" in messages[0]
 
@@ -500,7 +506,7 @@ def test_every_item_a_nested_item_is_in_counts():
 
 def test_an_item_nested_in_one_that_can_never_appear_is_not_reported_again():
     body = "# A {when=vat}\n\n- a {when=!vat}\n  - b {when=!vat}"
-    result = validate_document(_parse(body))
+    result = validate(_parse(body))
     assert [d.rule for d in result.diagnostics].count("condition-never-true") == 1
 
 

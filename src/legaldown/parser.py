@@ -9,10 +9,13 @@ The parser handles:
 from __future__ import annotations
 
 import bisect
+import os
 import re
+import warnings
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -152,7 +155,7 @@ class FrontmatterError(yaml.YAMLError, ValueError):
     """The frontmatter cannot be read (§3.1, frontmatter-invalid-yaml): its
     YAML is malformed, nested too deep, or a mapping of another kind (a
     ``!!set``). A ``yaml.YAMLError`` and a ``ValueError``, as what
-    ``parse_document`` raised for it before. ``line`` is the file line (from
+    ``parse`` raised for it before. ``line`` is the file line (from
     1) of the problem, when the YAML reader gives one (§16.9)."""
 
     def __init__(self, message: str, line: int | None = None) -> None:
@@ -1366,8 +1369,37 @@ def parse_item_content(text: str) -> list[Block]:
     return blocks
 
 
-def parse_document(source: str, *, filename: str = "") -> Document:
+def load(path: str | os.PathLike[str]) -> Document:
+    """Open the LegalDown file at *path* as a Document.
+
+    The one call for a document that lives in a file: it reads the file as
+    UTF-8 and parses it as ``parse`` does, naming it in the result:
+    ``Document.filename`` is the file's name (without its directory) and
+    ``Document.path`` its absolute path, so a caller resolving files the document refers to
+    (``amends``, includes, attachments) knows where to look. Symbolic links
+    are not followed: the document is where it was named.
+
+    Raises ``FileNotFoundError`` (or another ``OSError``) when the file cannot
+    be read, ``UnicodeDecodeError`` when it is not UTF-8, and
+    ``FrontmatterError`` when its frontmatter cannot be read.
+    """
+    # The path as given is what is read: ``..`` after a symbolic link leads
+    # where the operating system takes it, which tidying the text of the path
+    # first could not tell. ``absolute`` makes it absolute and nothing more.
+    file = Path(path)
+    # Bytes, decoded once: a byte-order mark and the line endings (LF, CR and
+    # CRLF alike) are the parser's to read, so the text layer's own
+    # translation would only be a second, redundant pass over the file.
+    document = parse(file.read_bytes().decode("utf-8"), filename=file.name)
+    document.path = file.absolute()
+    return document
+
+
+def parse(source: str, *, filename: str = "") -> Document:
     """Parse a LegalDown source string into a Document object.
+
+    For a file, ``load`` reads and parses it in one call. ``filename`` only
+    names the document in its diagnostics.
 
     The parser is deliberately faithful to the source: nothing is rewritten to
     make a document valid, so the validator reports what the document actually
@@ -1411,6 +1443,18 @@ def parse_document(source: str, *, filename: str = "") -> Document:
         shape=document_shape(document),
     )
     return document
+
+
+def parse_document(source: str, *, filename: str = "") -> Document:
+    """Deprecated since 0.4.0, removed in 0.5.0. Same as ``parse``, with the same
+    arguments; ``load`` is the call for a file."""
+    warnings.warn(
+        "legaldown.parse_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.parse() for a string, or legaldown.load() for a file",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return parse(source, filename=filename)
 
 
 def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:

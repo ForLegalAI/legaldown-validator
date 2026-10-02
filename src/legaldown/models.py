@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .markdown import LINE_ENDING_RE, is_blank, strip_text
@@ -105,12 +106,12 @@ class Metadata:
     #: Frontmatter keys (``questions``, ``attachments``) the parsed source
     #: does not write as §15.2 requires for assembly to edit them line by
     #: line: in YAML block style, each attachment entry beginning with
-    #: ``id``. Only ``parse_document`` sets it: a document built or rebuilt
+    #: ``id``. Only ``parse`` and ``load`` set it: a document built or rebuilt
     #: from a dict has no source, and the serializer writes block style.
     not_line_editable: list[str] = field(default_factory=list)
     #: True when the parsed source has no frontmatter (§3.1): no ``---``
     #: block opens it, or the block's YAML is not a mapping of fields, in
-    #: which case the source is all body. Only ``parse_document`` sets it,
+    #: which case the source is all body. Only ``parse`` and ``load`` set it,
     #: like ``not_line_editable``.
     frontmatter_absent: bool = False
 
@@ -190,11 +191,16 @@ class Document:
     filename: str = ""
     preamble: list[Block] = field(default_factory=list)
     #: Where the parsed source holds its parts (``positions.SourceMap``), for
-    #: diagnostics that name their line (§16.9). Only ``parse_document`` sets
-    #: it; it describes the source as parsed, so a document changed afterwards
+    #: diagnostics that name their line (§16.9). Only ``parse`` and ``load``
+    #: set it; it describes the source as parsed, so a document changed afterwards
     #: may no longer fit it (then its diagnostics name no line). Not part of
     #: equality or of ``document_to_dict``.
     source_map: Any = field(default=None, compare=False, repr=False)
+    #: The file the document was loaded from, absolute (``load`` sets it), for
+    #: resolving the files it refers to. ``None`` for a document
+    #: parsed from a string or built in code. Not part of equality or of
+    #: ``document_to_dict``: where a document lives is not what it says.
+    path: Path | None = field(default=None, compare=False)
 
     def iter_indexed_blocks(self) -> Iterator[tuple[int | None, int, Block]]:
         """Every body block in document order, as ``(section_index, index,

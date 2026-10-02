@@ -186,7 +186,7 @@ def _paragraph_line(text: str, *, in_item: bool, alone: bool) -> str:
     Anything else that would open a block (a fence, a heading, an HTML block,
     a block quote, a thematic break, a list item) gets a backslash before it
     instead, which renders as nothing (CommonMark): only a model built in
-    code, not one from ``parse_document``, holds that, since the parser
+    code, not one from ``parse``, holds that, since the parser
     never turns the start of a block into paragraph text."""
     if alone and (split := split_lone_tag(text)):
         return split

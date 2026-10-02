@@ -15,18 +15,23 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
-import posixpath
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from . import SPEC_VERSION, __version__
-from .assembly import assemble
-from .parser import FrontmatterError, parse_document
-from .validator import validate_document
+from .assembly import AssemblyResult, frontmatter_diagnostic
+from .files import within
+from .parser import FrontmatterError, load
+from .template import AnswersError, Form, Template, load_answers, load_template
+from .validator import validate
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
 EXIT_OK = 0
@@ -39,12 +44,9 @@ _LEVEL_ORDER = {"error": 0, "warning": 1, "info": 2}
 def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str | None]:
     """Validate one file; return (diagnostics, read/parse failure message)."""
     try:
-        source = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        document = load(path)
+    except (OSError, UnicodeDecodeError) as exc:
         return [], f"cannot read {path}: {exc}"
-
-    try:
-        document = parse_document(source, filename=path.name)
     except FrontmatterError as exc:
         return [
             {
@@ -63,7 +65,14 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
             f"(please report this)"
         )
 
-    result = validate_document(document, final=final)
+    try:
+        result = validate(document, final=final)
+    except Exception as exc:
+        # As above: validating reads the files the document refers to, too.
+        return [], (
+            f"internal error while validating {path}: {type(exc).__name__}: {exc} "
+            f"(please report this)"
+        )
     return [
         {
             "file": str(path),
@@ -153,23 +162,49 @@ def _read(path: Path) -> str:
         return handle.read()
 
 
+def _write_stdout(text: str, errors: str = "strict") -> None:
+    """*text* to standard output as UTF-8 bytes, whatever the terminal's encoding
+    and line-break translation. A character UTF-8 cannot hold (a lone surrogate) is
+    an error, unless *errors* says to write it escaped."""
+    data = text.encode("utf-8", errors=errors)  # before anything is written
+    sys.stdout.flush()
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is not None:
+        stream.write(data)
+        stream.flush()
+    else:
+        sys.stdout.write(text)
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """*text* to *path*: all of it, or the file as it was — written beside it and
+    moved into place, since the file may be the answers a person typed. A symbolic
+    link is written through, and the file keeps its permissions (a new one gets
+    those a file made now would have)."""
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        mode = stat.S_IMODE(target.stat().st_mode)
+    else:
+        mask = os.umask(0)
+        os.umask(mask)
+        mode = 0o666 & ~mask
+    descriptor, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.chmod(name, mode)
+        os.replace(name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(name)
+        raise
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         handle.write(text)
-
-
-def _within(base: Path, relative: str) -> Path | None:
-    """*relative* under directory *base*, or None when it is absolute, leads
-    out of it (§2.3), or is no path at all (a null byte, a symlink loop)."""
-    if not relative or posixpath.isabs(relative) or Path(relative).is_absolute():
-        return None
-    try:
-        root = base.resolve()
-        target = (root / relative).resolve()
-    except (OSError, ValueError, RuntimeError):
-        return None
-    return target if target.is_relative_to(root) else None
 
 
 def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]:
@@ -177,44 +212,173 @@ def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]
     if path is None:
         return {}, None
     try:
-        answers = yaml.safe_load(_read(path))
+        return load_answers(path), None
     except OSError as exc:
         return None, f"cannot read {path}: {exc}"
-    except (yaml.YAMLError, ValueError) as exc:  # a date such as 2026-13-45 raises ValueError
-        return None, f"cannot read the answers in {path}: {exc}"
-    if answers is None:
-        return {}, None
-    if not isinstance(answers, dict):
-        return None, f"the answers in {path} must be a YAML mapping of question ids to answers"
-    return answers, None
+    except AnswersError as exc:
+        return None, str(exc)
+
+
+def _ask(prompt: str) -> str | None:
+    """A line from standard input, after *prompt* on standard error (standard output
+    is the assembled template); ``None`` at the end of the input. A line that is not
+    text in the terminal's encoding is asked for again. It reads the line as it is:
+    no editing or history, which Python gives only where standard output is the
+    terminal."""
+    while True:
+        print(prompt, end="", file=sys.stderr, flush=True)
+        try:
+            line = sys.stdin.readline()
+        except UnicodeDecodeError:
+            print("That is not text in this terminal's encoding; type it again.", file=sys.stderr, flush=True)
+            continue
+        return line.rstrip("\r\n") if line else None
+
+
+def _say(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def _interview(template: Template, answers: dict, ask=_ask, say=_say) -> bool:
+    """Ask for the answers that *answers* does not give, as the form grows, until
+    the form has nothing left to ask; *answers* gets what is typed. A decision
+    cannot be left open, so it is asked again until it is answered; the empty
+    line leaves a value question to its default, or its blank. Returns False at
+    the end of the input."""
+    skipped: set[str] = set()
+    while True:
+        form = template.form(answers)
+        question = next(
+            (q for q in form.questions
+             if (answers.get(q.id) is None or form.problem(q.id)) and q.id not in skipped),
+            None,
+        )
+        if question is None:
+            return True
+        given = answers.get(question.id)
+        if given is not None:
+            say(f"The answer given to '{question.id}', {question.to_text(given)!r}, is not valid: "
+                f"{form.problem(question.id)}")
+        default = f" [{question.to_text(question.default)}]" if question.default is not None else ""
+        line = ask(f"{question.prompt or question.id} ({question.hint}){default}: ")
+        if line is None:
+            return False
+        try:
+            answer = question.from_text(line)
+        except ValueError as exc:
+            say(str(exc))
+            continue
+        if answer is not None:
+            answers[question.id] = answer
+        elif question in form.blocking:
+            say("An answer is needed.")
+        else:
+            answers.pop(question.id, None)  # an answer that is not valid does not stay: the default, or the blank
+            if question.default is not None:
+                say(f"  {question.id}: the default, {question.to_text(question.default)}")
+            skipped.add(question.id)
+
+
+def _missing_report(template: Template, answers: dict) -> str | None:
+    """What must still be answered before assembly, as text; None when nothing."""
+    form = template.form(answers)
+    if not form.blocking:
+        return None
+    lines = [f"error: {len(form.blocking)} question(s) must be answered before assembly:"]
+    lines += [f"  {q.id}: {q.prompt or q.id} (enter {q.hint})" for q in form.blocking]
+    lines.append("run in a terminal with -i to be asked, or give the answers with --answers")
+    return "\n".join(lines)
+
+
+def _save_answers(path: Path, answers: dict) -> str | None:
+    """*answers* to the YAML file at *path*; a failure as text. Money amounts stay
+    quoted strings, dates the dates they are."""
+    try:
+        text = yaml.safe_dump(answers, sort_keys=False, allow_unicode=True, default_flow_style=False)
+        text.encode("utf-8")
+        _write_atomically(path, text)
+    except (OSError, ValueError, RuntimeError, yaml.YAMLError) as exc:  # a UnicodeEncodeError is a ValueError; a link loop a RuntimeError
+        return f"cannot write the answers to {path}: {exc}"
+    return None
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    """Whether the two paths are one file: the same path, or a link, symbolic or hard, to it."""
+    try:
+        if first.resolve() == second.resolve():
+            return True
+        return os.path.samefile(first, second)
+    except (OSError, RuntimeError):  # one of them is not there, or a symbolic link loops
+        return False
 
 
 def _run_assemble(args: argparse.Namespace) -> int:
+    state: dict[str, Any] = {"answers": None}
+    code = EXIT_ERROR
+    try:
+        code = _assemble(args, state)
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+    finally:
+        # Also after an interruption or a failure: what was typed is not lost.
+        if args.save_answers and state["answers"] is not None:
+            if not state["answers"] and not args.answers:
+                # Nothing was read and nothing typed: an existing file is not replaced by an empty one.
+                print(f"no answers to save; {args.save_answers} was not written", file=sys.stderr)
+            else:
+                problem = _save_answers(Path(args.save_answers), state["answers"])
+                if problem:
+                    print(f"error: {problem}", file=sys.stderr)
+                    code = EXIT_ERROR if code == EXIT_OK else code
+    return code
+
+
+def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
     template_path = Path(args.template)
+    if args.save_answers and _same_file(Path(args.save_answers), template_path):
+        print("error: --save-answers names the template itself; it would be overwritten", file=sys.stderr)
+        return EXIT_ERROR
     answers, failure = _read_answers(Path(args.answers) if args.answers else None)
+    state["answers"] = answers
+    result = None
     if failure is None:
         try:
-            template = _read(template_path)
+            template = load_template(template_path)
+        except FrontmatterError as exc:
+            result = AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
         except (OSError, UnicodeDecodeError) as exc:
             failure = f"cannot read {template_path}: {exc}"
+        except Exception as exc:
+            # Not the template's fault: a bug in this validator, as in ``validate``.
+            failure = f"internal error while reading {template_path}: {type(exc).__name__}: {exc} (please report this)"
     if failure is not None:
         print(f"error: {failure}", file=sys.stderr)
         return EXIT_ERROR
 
-    base = template_path.parent
-
-    def load_file(relative: str) -> str | None:
-        target = _within(base, relative)
+    if result is None:
         try:
-            return _read(target) if target is not None and target.is_file() else None
-        except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
-            return None
-
-    result = assemble(template, answers, load_file=load_file)
+            answers = state["answers"] = template.coerce(answers)
+            if args.interactive and not template.problems:  # a template that cannot be assembled asks nothing
+                if sys.stdin.isatty():
+                    if not _interview(template, answers):
+                        _say("End of the input: the questions left are left to their defaults, or their blanks.")
+                else:
+                    report = _missing_report(template, answers)
+                    if report:
+                        print(report, file=sys.stderr)
+                        return EXIT_DIAGNOSTICS
+            result = template.form(answers).assemble()
+        except Exception as exc:
+            # Not the template's fault: a bug in this validator, as in ``validate``.
+            print(f"error: internal error while assembling {template_path}: {type(exc).__name__}: {exc} "
+                  f"(please report this)", file=sys.stderr)
+            return EXIT_ERROR
     for d in result.diagnostics:
         where = f"{template_path}:{d.line}" if d.line else f"{template_path}"
         print(f"{where}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
     if not result.ok:
+        if not args.interactive and any(d.rule == "answer-missing" for d in result.diagnostics):
+            print("run with -i in a terminal to be asked for them, or give them with --answers", file=sys.stderr)
         return EXIT_DIAGNOSTICS
 
     if args.output is None:
@@ -226,13 +390,12 @@ def _run_assemble(args: argparse.Namespace) -> int:
             )
             return EXIT_ERROR
         # Bytes, so that no platform translates the template's line breaks.
-        sys.stdout.flush()
-        stream = getattr(sys.stdout, "buffer", None)
-        if stream is not None:
-            stream.write(result.output.encode("utf-8"))
-            stream.flush()
-        else:
-            sys.stdout.write(result.output)
+        try:
+            _write_stdout(result.output)
+        except UnicodeEncodeError as exc:
+            print(f"error: the assembled template holds text that cannot be written as UTF-8 ({exc.reason}); "
+                  f"it was not written", file=sys.stderr)
+            return EXIT_ERROR
         return EXIT_OK
 
     out = Path(args.output)
@@ -242,7 +405,7 @@ def _run_assemble(args: argparse.Namespace) -> int:
     elif template_path.name in result.files:
         problem = f"{template_path.name} is both the template and a file it keeps"
     outputs = {template_path.name: result.output, **result.files}
-    targets = {relative: _within(out, relative) for relative in outputs}
+    targets = {relative: within(out, relative) for relative in outputs}
     for relative, target in targets.items():
         if problem is None and target is None:
             problem = f"{relative} leads out of the output directory"
@@ -254,9 +417,87 @@ def _run_assemble(args: argparse.Namespace) -> int:
     for relative, text in outputs.items():
         try:
             _write(targets[relative], text)  # an emptied file is written as zero bytes
-        except OSError as exc:
+        except (OSError, UnicodeEncodeError) as exc:
             print(f"error: cannot write {relative}: {exc}; the output is incomplete", file=sys.stderr)
             return EXIT_ERROR
+    return EXIT_OK
+
+
+def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict | None, list[dict], str | None]:
+    """The template and the answers for ``questions``: ``(template, answers, problems, failure)``."""
+    answers, failure = _read_answers(Path(args.answers) if args.answers else None)
+    if failure is not None:
+        return None, None, [], failure
+    path = Path(args.template)
+    try:
+        return load_template(path), answers, [], None
+    except FrontmatterError as exc:
+        diagnostic = frontmatter_diagnostic(exc)
+        return None, None, [{"rule": diagnostic.rule, "level": diagnostic.level,
+                             "message": diagnostic.message, "line": diagnostic.line}], None
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, None, [], f"cannot read {path}: {exc}"
+    except Exception as exc:
+        return None, None, [], f"internal error while reading {path}: {type(exc).__name__}: {exc} (please report this)"
+
+
+def _format_form(form: Form) -> str:
+    """The form as text: the questions reached, then what is wrong, then whether it is ready."""
+    data = form.as_dict()
+    lines = []
+    for question in data["questions"]:
+        if not question["reached"]:
+            continue
+        mark = "!" if question["blocking"] else "?" if question["state"] in ("unanswered", "invalid") else " "
+        if question["state"] == "answered":
+            detail = f"answered: {question['answer_text']}"
+        elif question["state"] == "default":
+            detail = f"default: {question['default_text']}"
+        elif question["state"] == "invalid":
+            detail = f"invalid: {question['problem']}"
+        else:
+            detail = f"enter {question['hint']}"
+        lines.append(f"{mark} {question['id']} ({question['type']}) {question['label']} — {detail}")
+    others = sum(1 for question in data["questions"] if not question["reached"])
+    if others:
+        lines.append(f"  ({others} more, not asked yet or not at all with these answers)")
+    for d in data["problems"]:
+        lines.append(f"problem: [{d['rule']}] {d['message']}")
+    for d in data["diagnostics"]:
+        lines.append(f"{d['level']}: [{d['rule']}] {d['message']}")
+    lines.append("complete" if data["complete"] else "ready, with blanks left" if data["ready"] else "not ready")
+    return "\n".join(lines) + "\n"
+
+
+def _run_questions(args: argparse.Namespace) -> int:
+    template, answers, problems, failure = _load_for_questions(args)
+    if failure is not None:
+        print(f"error: {failure}", file=sys.stderr)
+        return EXIT_ERROR
+    if template is None:  # frontmatter that cannot be read
+        if args.format == "json":
+            _write_stdout(json.dumps({"ready": False, "complete": False, "problems": problems,
+                                      "diagnostics": [], "questions": []}, indent=2, allow_nan=False) + "\n",
+                          errors="backslashreplace")
+        else:
+            for d in problems:
+                print(f"{args.template}: {d['level']}: [{d['rule']}] {d['message']}", file=sys.stderr)
+        return EXIT_DIAGNOSTICS
+    try:
+        form = template.form(template.coerce(answers))
+        if args.format == "json":
+            text = json.dumps(form.as_dict(), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        else:
+            text = _format_form(form)
+        ready, problems_found = form.ready, bool(template.problems)
+    except Exception as exc:
+        # Not the template's fault: a bug in this validator, as in ``validate``.
+        print(f"error: internal error while listing the questions of {args.template}: "
+              f"{type(exc).__name__}: {exc} (please report this)", file=sys.stderr)
+        return EXIT_ERROR
+    _write_stdout(text, errors="backslashreplace")
+    if problems_found or (args.check and not ready):
+        return EXIT_DIAGNOSTICS
     return EXIT_OK
 
 
@@ -336,7 +577,44 @@ def build_parser() -> argparse.ArgumentParser:
             "written to standard output."
         ),
     )
+    assemble_cmd.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help=(
+            "Ask, in the terminal, for the answers --answers does not give, as the "
+            "questions are reached (prompts go to standard error). Without a terminal "
+            "it lists what must still be answered and exits 1."
+        ),
+    )
+    assemble_cmd.add_argument(
+        "--save-answers",
+        metavar="FILE",
+        help="Write the answers used, with those typed, to FILE (YAML), also after an interruption.",
+    )
     assemble_cmd.set_defaults(func=_run_assemble)
+
+    questions_cmd = sub.add_parser(
+        "questions",
+        help="List what a template asks, given the answers so far (§15.7).",
+        description=(
+            "List the questions a template asks given the answers so far: those reached, "
+            "which are unanswered, which stop assembly, and what is wrong with the answers. "
+            "Exit status 0 unless the template has problems or cannot be read, or, with "
+            "--check, is not ready to assemble."
+        ),
+    )
+    questions_cmd.add_argument("template", help="The template file.")
+    questions_cmd.add_argument(
+        "--answers", metavar="FILE", help="YAML mapping of question ids to answers (§15.7.1)."
+    )
+    questions_cmd.add_argument(
+        "--format", choices=("text", "json"), default="text", help="Output format (default: text)."
+    )
+    questions_cmd.add_argument(
+        "--check", action="store_true", help="Exit non-zero when assembly cannot run with these answers."
+    )
+    questions_cmd.set_defaults(func=_run_questions)
     return parser
 
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from legaldown import Amends, document_from_dict, document_to_dict, item_text, serialize_document
-from legaldown.parser import parse_document
-from legaldown.validator import validate_document
+from legaldown.parser import parse
+from legaldown.validator import validate
 from legaldown.validator.templates import answer_problem
 
 _SIDES = """sides:
@@ -23,7 +23,7 @@ _SIDES = """sides:
 
 def _validate(frontmatter: str = "", body: str = "Text."):
     source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n# Terms {{#terms}}\n\n{body}\n"
-    return validate_document(parse_document(source, filename="t.lgd"))
+    return validate(parse(source, filename="t.lgd"))
 
 
 # ── Placeholders (§10.7) ──────────────────────────────────────────
@@ -93,8 +93,8 @@ def test_a_declared_value_question_gives_the_placeholder_its_type():
     takes currency without writing type=money."""
     result = _validate(_QUESTIONS, "Pay {{placeholder: fee, currency=EUR}} from {{placeholder: start}}.")
     assert "directive-unknown-param" not in result.rules()
-    assert ("fee", "money") in result.inline_placeholders
-    assert ("start", "date") in result.inline_placeholders
+    assert ("fee", "money") in result.index.values.placeholders
+    assert ("start", "date") in result.index.values.placeholders
 
 
 def test_inline_type_must_equal_the_declared_type():
@@ -204,8 +204,8 @@ def test_questions_and_conditional_attachments_round_trip():
         + "attachments:\n  - id: dpa\n    title: DPA\n    file: dpa.lgd\n    when: personal-data\n"
     )
     source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n# Terms {{#terms}}\n\nText.\n"
-    document = parse_document(source)
-    again = parse_document(serialize_document(document))
+    document = parse(source)
+    again = parse(serialize_document(document))
     assert again.metadata == document.metadata
     assert again.metadata.legaldown == "0.2"
     assert again.metadata.attachments[0].when == "personal-data"
@@ -269,18 +269,18 @@ def test_date_of_birth_placeholder_must_be_a_date():
         '        type: natural_person\n        date_of_birth: "{{placeholder: dob}}"\n'
         "  - name: clients",
     )
-    document = parse_document(f"---\ntitle: Fixture\n{source}---\n\n# Terms\n")
-    assert "date-of-birth-invalid" in validate_document(document).rules("error")
+    document = parse(f"---\ntitle: Fixture\n{source}---\n\n# Terms\n")
+    assert "date-of-birth-invalid" in validate(document).rules("error")
 
 
 def test_supersedes_object_form_is_modelled_and_its_title_required():
     result = _validate("supersedes:\n  file: old.pdf\n")
     assert "supersedes-title-empty" in result.rules("error")
-    document = parse_document(
+    document = parse(
         f"---\ntitle: Fixture\n{_SIDES}supersedes:\n  title: Old NDA\n  file: old.pdf\n---\n"
     )
     assert document.metadata.supersedes == Amends(title="Old NDA", file="old.pdf")
-    assert parse_document(serialize_document(document)).metadata == document.metadata
+    assert parse(serialize_document(document)).metadata == document.metadata
 
 
 # ── Include-only paragraphs (§12.2) ───────────────────────────────
@@ -322,9 +322,9 @@ def test_keys_yaml_reads_as_booleans_stay_distinct_and_as_written():
     assert len(messages) == 2
     assert any("'yes'" in message for message in messages)
     source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n"
-    document = parse_document(source)
+    document = parse(source)
     assert list(document.metadata.questions) == ["yes", "true"]
-    assert parse_document(serialize_document(document)).metadata == document.metadata
+    assert parse(serialize_document(document)).metadata == document.metadata
 
 
 def test_an_empty_attachments_key_in_a_template_is_line_editable():
@@ -336,7 +336,7 @@ def test_the_block_style_finding_describes_the_parsed_source_only():
     """A document rebuilt from a dict has no source; serialized, it is
     written in block style. A frontmatter key cannot set the finding."""
     source = f"---\ntitle: Fixture\n{_SIDES}questions: {{fee: {{type: text}}}}\n---\n"
-    parsed = parse_document(source)
+    parsed = parse(source)
     assert parsed.metadata.not_line_editable == ["questions"]
     rebuilt = document_from_dict(document_to_dict(parsed))
     assert rebuilt.metadata.not_line_editable == []
@@ -368,7 +368,7 @@ def test_yaml_merge_keys_still_merge():
         "---\ntitle: Fixture\nbase: &base\n  name: acme\n  type: legal_entity\n"
         "sides:\n  - name: providers\n    parties:\n      - <<: *base\n---\n"
     )
-    party = parse_document(source).metadata.sides[0].parties[0]
+    party = parse(source).metadata.sides[0].parties[0]
     assert (party.name, party.type) == ("acme", "legal_entity")
 
 
@@ -376,7 +376,7 @@ def test_an_unquoted_version_is_read_as_written():
     result = _validate("legaldown: 0.10\n")
     assert "legaldown-version-newer" in result.rules("warning")
     source = f"---\ntitle: Fixture\n{_SIDES}legaldown: 0.10\n---\n"
-    assert parse_document(source).metadata.legaldown == "0.10"
+    assert parse(source).metadata.legaldown == "0.10"
 
 
 @pytest.mark.parametrize("frontmatter", ["questions: {}\n", "attachments: []\nquestions: {}\n"])
@@ -432,9 +432,9 @@ def test_an_attachment_condition_is_read_as_written(when):
         f"---\ntitle: Fixture\n{_SIDES}attachments:\n"
         f"  - id: dpa\n    title: DPA\n    file: dpa.lgd\n    when: {when}\n---\n"
     )
-    document = parse_document(source)
+    document = parse(source)
     assert document.metadata.attachments[0].when == when
-    assert parse_document(serialize_document(document)).metadata == document.metadata
+    assert parse(serialize_document(document)).metadata == document.metadata
 
 
 def test_choice_labels_are_read_as_written():
@@ -484,7 +484,7 @@ def test_nested_aliases_are_walked_once():
     for depth in range(1, 25):
         levels.append(f"l{depth}: &l{depth} [{', '.join([f'*l{depth - 1}'] * 10)}]")
     source = "---\ntitle: Fixture\n" + "\n".join(levels) + "\n---\n"
-    assert parse_document(source).metadata.title == "Fixture"
+    assert parse(source).metadata.title == "Fixture"
 
 
 def test_an_attachment_entry_is_judged_as_written_not_as_merged():
@@ -522,9 +522,9 @@ def test_the_serializer_writes_shared_declarations_in_full():
     source = (
         f"---\ntitle: Fixture\n{_SIDES}questions:\n  q: &a\n    type: text\n  r: *a\n---\n"
     )
-    written = serialize_document(parse_document(source))
+    written = serialize_document(parse(source))
     assert "&" not in written and "*" not in written
-    assert parse_document(written).metadata.questions == {"q": {"type": "text"}, "r": {"type": "text"}}
+    assert parse(written).metadata.questions == {"q": {"type": "text"}, "r": {"type": "text"}}
 
 
 def test_an_invalid_type_on_a_declared_blank_is_one_error():
@@ -578,7 +578,7 @@ def test_a_choose_in_a_heading_or_frontmatter_is_invalid():
         'subtitle: "{{choose: vat, true=a, false=b}}"\n---\n\n'
         "# Fees {{choose: vat, true=a, false=b}}\n\nText.\n"
     )
-    result = validate_document(parse_document(source))
+    result = validate(parse(source))
     messages = [d.message for d in result.diagnostics if d.rule == "choose-invalid"]
     assert len(messages) == 2
 
@@ -746,17 +746,17 @@ def test_the_final_check_rejects_blanks_and_template_constructs():
         "{{attach: dpa}}.\n\n> [!DRAFTING]\n> Check the fee."
     )
     source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n# Terms {{#terms}}\n\n{body}\n"
-    document = parse_document(source)
-    assert not {"placeholder-unfilled", "template-construct-present"} & validate_document(document).rules()
-    final = [d.rule for d in validate_document(document, final=True).diagnostics]
+    document = parse(source)
+    assert not {"placeholder-unfilled", "template-construct-present"} & validate(document).rules()
+    final = [d.rule for d in validate(document, final=True).diagnostics]
     assert final.count("placeholder-unfilled") == 2
     # questions, the attachment condition, the choose, the drafting note
     assert final.count("template-construct-present") == 4
 
 
 def test_a_final_document_passes_the_final_check():
-    result = validate_document(
-        parse_document(f"---\ntitle: Fixture\n{_SIDES}---\n\n# Terms\n\nText.\n"), final=True
+    result = validate(
+        parse(f"---\ntitle: Fixture\n{_SIDES}---\n\n# Terms\n\nText.\n"), final=True
     )
     assert result.diagnostics == []
 
@@ -765,20 +765,20 @@ def test_a_final_document_passes_the_final_check():
 
 
 def test_a_lazy_line_continues_its_list_item():
-    document = parse_document("---\ntitle: T\n---\n\n# A\n\n- item\ncontinued {#item}\n")
+    document = parse("---\ntitle: T\n---\n\n# A\n\n- item\ncontinued {#item}\n")
     assert [[item_text(item) for item in b.items] for b in document.sections[0].blocks] == [["item\ncontinued {#item}"]]
-    result = validate_document(document)
+    result = validate(document)
     assert "anchor-misplaced" not in result.rules()
-    assert "item" in result.section_lookup
+    assert "item" in result.index.section_lookup
 
 
 def test_a_lazy_line_continues_its_quote():
-    document = parse_document("---\ntitle: T\n---\n\n# A\n\n> quoted\ncontinued\n\nAfter.\n")
+    document = parse("---\ntitle: T\n---\n\n# A\n\n> quoted\ncontinued\n\nAfter.\n")
     assert [(b.kind, b.text) for b in document.sections[0].blocks] == [
         ("quote", "quoted\ncontinued"),
         ("paragraph", "After."),
     ]
-    assert parse_document(serialize_document(document)).sections == document.sections
+    assert parse(serialize_document(document)).sections == document.sections
 
 
 @pytest.mark.parametrize(
@@ -792,15 +792,15 @@ def test_a_lazy_line_continues_its_quote():
     ],
 )
 def test_block_starts_are_not_lazy_lines(body, kinds):
-    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n{body}")
+    document = parse(f"---\ntitle: T\n---\n\n# A\n\n{body}")
     assert [b.kind for b in document.sections[0].blocks] == kinds
 
 
 def test_a_directive_in_a_leading_defined_term_stays_checked():
     body = '"{{placeholder: short}}" {{def: client}} means the Client. See {{term: client}}.'
-    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# Terms\n\n{body}\n")
+    document = parse(f"---\ntitle: T\n{_SIDES}---\n\n# Terms\n\n{body}\n")
     assert document.sections[0].blocks[0].kind != "definition"
-    assert "def-term-variable" in validate_document(document).rules("error")
+    assert "def-term-variable" in validate(document).rules("error")
 
 
 # ── Review follow-ups (PR B) ──────────────────────────────────────
@@ -808,7 +808,7 @@ def test_a_directive_in_a_leading_defined_term_stays_checked():
 
 @pytest.mark.parametrize("quoted", ["> ```\n> code\n", ">     code\n"])
 def test_a_line_after_quoted_code_is_not_lazy(quoted):
-    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n{quoted}plain text\n")
+    document = parse(f"---\ntitle: T\n---\n\n# A\n\n{quoted}plain text\n")
     assert [b.kind for b in document.sections[0].blocks] == ["quote", "paragraph"]
 
 
@@ -826,7 +826,7 @@ def test_def_term_variable_sees_through_quoted_values(paragraph):
 
 def test_the_final_check_covers_headings():
     source = f"---\ntitle: T\n{_SIDES}---\n\n# Lease of {{{{placeholder: premises}}}}\n\nText.\n"
-    result = validate_document(parse_document(source), final=True)
+    result = validate(parse(source), final=True)
     assert "placeholder-unfilled" in result.rules("error")
 
 
@@ -838,7 +838,7 @@ def test_the_final_check_covers_headings():
     ],
 )
 def test_lines_that_cannot_continue_a_paragraph_are_not_lazy(body, kinds):
-    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n{body}")
+    document = parse(f"---\ntitle: T\n---\n\n# A\n\n{body}")
     assert [b.kind for b in document.sections[0].blocks] == kinds
 
 
@@ -847,21 +847,21 @@ def test_a_drafting_note_in_a_list_item_is_recognized():
         '- item\n  > [!DRAFTING]\n  > "Fee" {{def: fee}} means the fee.\n'
         "- other\n  > [!DRAFT]\n  > guidance\n\nPay the {{term: fee}}."
     )
-    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
-    result = validate_document(document, final=True)
+    document = parse(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
+    result = validate(document, final=True)
     assert "drafting-note-def" in result.rules("error")
     assert "drafting-note-unrecognized" in result.rules("warning")
     assert "template-construct-present" in result.rules("error")
-    assert parse_document(serialize_document(document)).sections == document.sections
+    assert parse(serialize_document(document)).sections == document.sections
 
 
 def test_a_quote_whose_first_line_is_blank_is_not_a_drafting_note():
     body = '>\n> [!DRAFTING]\n> "Fee" {{def: fee}} means the fee.\n\nPay the {{term: fee}}.'
-    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
-    assert not {"drafting-note-def", "template-construct-present"} & validate_document(
+    document = parse(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
+    assert not {"drafting-note-def", "template-construct-present"} & validate(
         document, final=True
     ).rules()
-    assert parse_document(serialize_document(document)).sections == document.sections
+    assert parse(serialize_document(document)).sections == document.sections
 
 
 @pytest.mark.parametrize(
@@ -874,9 +874,9 @@ def test_comments_and_code_are_template_text_at_a_boundary(text):
 
 def test_a_lazy_line_after_a_quote_in_a_list_item_stays_in_the_quote():
     body = '- item\n  > [!DRAFTING]\n  > note\n"Fee" {{def: fee}} means the fee.\n\nPay the {{term: fee}}.'
-    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
-    assert "drafting-note-def" in validate_document(document).rules("error")
-    assert parse_document(serialize_document(document)).sections == document.sections
+    document = parse(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
+    assert "drafting-note-def" in validate(document).rules("error")
+    assert parse(serialize_document(document)).sections == document.sections
 
 
 # ── Quote extents, one scanner for every quote (second review) ────
@@ -900,15 +900,15 @@ _DEF_LINE = '"Fee" {{def: fee}} means money.'
     ],
 )
 def test_a_drafting_note_extends_as_its_quote_does(body, in_note):
-    document = parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n\nPay the {{{{term: fee}}}}.\n")
-    assert ("drafting-note-def" in validate_document(document).rules()) == in_note
-    assert parse_document(serialize_document(document)).sections == document.sections
+    document = parse(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n\nPay the {{{{term: fee}}}}.\n")
+    assert ("drafting-note-def" in validate(document).rules()) == in_note
+    assert parse(serialize_document(document)).sections == document.sections
 
 
 def test_quote_lines_in_an_items_code_are_code():
     body = "- Example:\n  ```\n  > [!NOTE]\n  > [!DRAFTING]\n  ```"
-    result = validate_document(
-        parse_document(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n"), final=True
+    result = validate(
+        parse(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n"), final=True
     )
     assert not {"drafting-note-unrecognized", "template-construct-present"} & result.rules()
 
@@ -924,9 +924,9 @@ def test_a_repeated_answer_is_choose_invalid():
 
 
 def test_an_empty_questions_key_is_a_template_construct():
-    document = parse_document(f"---\ntitle: T\n{_SIDES}questions:\n---\n\n# A\n\nText.\n")
+    document = parse(f"---\ntitle: T\n{_SIDES}questions:\n---\n\n# A\n\nText.\n")
     assert document.metadata.questions == {}
-    assert "template-construct-present" in validate_document(document, final=True).rules()
+    assert "template-construct-present" in validate(document, final=True).rules()
 
 
 # ── Third review ──────────────────────────────────────────────────
@@ -934,10 +934,10 @@ def test_an_empty_questions_key_is_a_template_construct():
 
 @pytest.mark.parametrize("first", ["> # T", ">", "> ---", "> <!-- c -->"])
 def test_an_items_text_after_a_closed_quote_is_not_quoted(first):
-    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n- {first}\n  text after quote\n")
+    document = parse(f"---\ntitle: T\n---\n\n# A\n\n- {first}\n  text after quote\n")
     item = document.sections[0].blocks[0].items[0]
     assert (item.blocks[-1].kind, item.blocks[-1].text) == ("paragraph", "text after quote")
-    assert parse_document(serialize_document(document)).sections == document.sections
+    assert parse(serialize_document(document)).sections == document.sections
 
 
 @pytest.mark.parametrize(
@@ -954,7 +954,7 @@ def test_only_a_link_reference_definition_itself_is_off_limits(text, flagged):
 
 def test_insertions_in_headings_are_checked():
     source = f"---\ntitle: T\n{_SIDES}---\n\n# Agreement {{{{placeholder: party}}}}(x)\n\nText.\n"
-    assert "insertion-boundary" in validate_document(parse_document(source)).rules("error")
+    assert "insertion-boundary" in validate(parse(source)).rules("error")
 
 
 @pytest.mark.parametrize(
@@ -967,7 +967,7 @@ def test_insertions_in_headings_are_checked():
 )
 def test_nested_quotes_are_checked(body, rule):
     source = f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n"
-    assert rule in validate_document(parse_document(source), final=True).rules()
+    assert rule in validate(parse(source), final=True).rules()
 
 
 def test_a_nested_drafting_note_holds_no_definition():
@@ -977,7 +977,7 @@ def test_a_nested_drafting_note_holds_no_definition():
 
 def test_a_setext_heading_may_follow_a_quote_with_no_open_paragraph():
     body = "> [!DRAFTING]\n> ```\n> code\n> ```\nClause heading\n--------------\n\nText.\n"
-    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n{body}")
+    document = parse(f"---\ntitle: T\n---\n\n# A\n\n{body}")
     assert [s.title for s in document.sections] == ["A", "Clause heading"]
 
 
@@ -990,7 +990,7 @@ def test_malformed_choices_draw_no_choose_errors():
 
 def test_a_malformed_choose_still_makes_a_template():
     source = f"---\ntitle: T\n{_SIDES}---\n\n# A\n\nPay {{{{choose: vat, true=x\n"
-    result = validate_document(parse_document(source), final=True)
+    result = validate(parse(source), final=True)
     assert {"directive-malformed", "template-construct-present"} <= result.rules("error")
 
 
@@ -1019,7 +1019,7 @@ def test_an_autolink_or_inline_tag_continues_a_drafting_note(continuation):
 
 @pytest.mark.parametrize("html", ["<div>", "<!-- note -->", "</table>"])
 def test_an_html_block_start_ends_a_quote(html):
-    document = parse_document(f"---\ntitle: T\n---\n\n# A\n\n> quote\n{html}\n")
+    document = parse(f"---\ntitle: T\n---\n\n# A\n\n> quote\n{html}\n")
     assert [b.kind for b in document.sections[0].blocks] == ["quote", "html"]
 
 
@@ -1060,7 +1060,7 @@ def test_question_default_rejects_datetime_and_unicode_line_breaks():
         "    default: 2026-10-01 12:00\n"
         "---\n\n# Terms {#terms}\n\nStart date: {{placeholder: start}}.\n"
     )
-    res_date = validate_document(parse_document(source_date, filename="t.lgd"))
+    res_date = validate(parse(source_date, filename="t.lgd"))
     assert "question-invalid" in res_date.rules("error")
     assert any(
         "must be an ISO 8601 date (YYYY-MM-DD)" in d.message for d in res_date.diagnostics
@@ -1076,7 +1076,7 @@ def test_question_default_rejects_datetime_and_unicode_line_breaks():
         "    default: \"Acme\\u2028Ltd\"\n"
         "---\n\n# Terms {#terms}\n\nCompany: {{placeholder: company}}.\n"
     )
-    res_text = validate_document(parse_document(source_text, filename="t.lgd"))
+    res_text = validate(parse(source_text, filename="t.lgd"))
     assert "question-invalid" in res_text.rules("error")
     assert any(
         "must not contain a line break" in d.message for d in res_text.diagnostics
@@ -1104,5 +1104,5 @@ def test_question_default_rejects_datetime_and_unicode_line_breaks():
 def test_is_template_decides_as_the_validator_does(frontmatter, body, template):
     from legaldown.validator.core import is_template
 
-    document = parse_document(f"---\ntitle: T\n{frontmatter}---\n\n{body}\n")
+    document = parse(f"---\ntitle: T\n{frontmatter}---\n\n{body}\n")
     assert is_template(document) is template

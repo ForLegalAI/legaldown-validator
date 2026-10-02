@@ -1,13 +1,14 @@
 """Core validation logic for LegalDown documents.
 
 Every diagnostic is recorded under the **stable rule id** the specification
-assigns to its check (§16.1) via ``ValidationResult.error/warning/info``,
+assigns to its check (§16.1) through the recorder's ``error/warning/info``,
 so tooling can filter, suppress, or escalate specific rules consistently
 across implementations (§16.9).
 """
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from functools import cache, partial
@@ -24,6 +25,7 @@ from ..directives import (
     lex,
     mask_directives,
 )
+from ..files import LoadFile, file_loader, relative_path, within
 from ..markdown import HTML_COMMENT_RE, INLINE_HTML_RE, is_comment_only
 from ..models import LIST_KINDS, Amends, Document
 from ..positions import Locator
@@ -47,7 +49,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Line, PlacedMarker, SectionIndexEntry, ValidationResult
+from .result import Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
@@ -198,7 +200,7 @@ def _frontmatter_fields(
 
 
 def _check_date_field(
-    label: str, value: str, questions: Any, rule: str, result: ValidationResult
+    label: str, value: str, questions: Any, rule: str, result: _Recorder
 ) -> None:
     """Report a frontmatter date field that is neither an ISO 8601 date nor a
     whole-value ``date`` placeholder (§3.10, §16.6)."""
@@ -215,7 +217,7 @@ def _check_date_field(
     result.error(rule, f"{label} '{value}' must be a valid ISO 8601 date (YYYY-MM-DD).{hint}")
 
 
-def _check_duration_unit(unit: str, result: ValidationResult) -> None:
+def _check_duration_unit(unit: str, result: _Recorder) -> None:
     """Report a duration ``unit`` that §10.5 does not define."""
     if not unit:
         result.error("duration-invalid-unit", "The duration unit is missing or empty.")
@@ -239,7 +241,7 @@ _MARKDOWN_RE = re.compile(r"\*\*|__|\+\+|`|(?<!\w)\*(?!\s)")
 
 
 def _check_directive_arguments(
-    directive: Directive, result: ValidationResult, *, effective_type: str | None = None
+    directive: Directive, result: _Recorder, *, effective_type: str | None = None
 ) -> bool:
     """Report the argument problems any directive can have; False if malformed.
 
@@ -291,7 +293,7 @@ def _check_directive_arguments(
 
 def _check_placeholder(
     directive: Directive,
-    result: ValidationResult,
+    result: _Recorder,
     blanks: dict[str, Blank],
     questions: Any,
     *,
@@ -312,7 +314,7 @@ def _check_placeholder(
     ptype = _placeholder_type(directive, declared)
     if not _check_directive_arguments(directive, result, effective_type=ptype):
         return
-    result.inline_placeholders.append((pid, ptype))
+    result.index.values.placeholders.append((pid, ptype))
     if not pid or not IDENTIFIER_RE.fullmatch(pid):
         result.error(
             "placeholder-id-malformed",
@@ -367,7 +369,7 @@ def _check_placeholder(
         _check_duration_unit(code, result)
 
 
-def _check_blank_codes(blanks: dict[str, Blank], result: ValidationResult) -> None:
+def _check_blank_codes(blanks: dict[str, Blank], result: _Recorder) -> None:
     """Report each blank whose occurrences fix two currencies or units: one
     blank cannot hold two (§10.7)."""
     for pid, blank in blanks.items():
@@ -390,7 +392,7 @@ def _check_final(
     notes: list[tuple[Quote, Line]],
     conditions: list[tuple[str, str, Line]],
     questions: Any,
-    result: ValidationResult,
+    result: _Recorder,
     questions_line: int | None,
 ) -> None:
     """The final check (§15.9): no blank and no template construct remains
@@ -471,12 +473,12 @@ def _inline_html(text: str, lexed: Lexed) -> str | None:
 
 
 def _check_raw_html(
-    document: Document, lex_fragment: Callable[[str], Lexed], result: ValidationResult, where: Locator
+    document: Document, lex_fragment: Callable[[str], Lexed], result: _Recorder, where: Locator
 ) -> None:
     """Warn about raw HTML other than comments (§8.7), which renderers leave
     out: once for each HTML block, in list items and quotes too, and once for
     each text — a paragraph, a table cell, a heading — holding inline HTML."""
-    from ..definitions import block_fragments, nested_blocks  # see the import note in validate_document
+    from ..definitions import block_fragments, nested_blocks  # see the import note in _validate
 
     def warn(what: str, source: str, line: int | None) -> None:
         shown = source.strip().split("\n", 1)[0]
@@ -509,7 +511,7 @@ def _check_never_true(
     markers: list[FoundMarker],
     units: Units,
     questions: Any,
-    result: ValidationResult,
+    result: _Recorder,
     where: Locator,
 ) -> None:
     """Report each conditional unit that can never appear: its own condition
@@ -546,8 +548,8 @@ def _check_never_true(
 def is_template(document: Document) -> bool:
     """True if *document* is a template (§15.1): it declares ``questions``,
     carries a condition — on a section, an attachment, or a placed marker —
-    or contains a ``{{choose:}}``, wherever it is. ``validate_document``
-    reports it too (``ValidationResult.is_template``)."""
+    or contains a ``{{choose:}}``, wherever it is. ``validate``
+    reports it too (``DocumentIndex.is_template``)."""
     return _is_template(document, None, lex)
 
 
@@ -558,7 +560,7 @@ def _is_template(
 ) -> bool:
     """``is_template``; *markers* are ``find_markers(document,
     lex_fragment)`` when the caller has them."""
-    from ..definitions import text_fragments  # see the import note in validate_document
+    from ..definitions import text_fragments  # see the import note in _validate
 
     meta = document.metadata
     if markers is None:
@@ -579,6 +581,43 @@ def _is_template(
     )
 
 
+def validate(
+    document: Document,
+    *,
+    final: bool = False,
+    resolve: LoadFile | None = None,
+    import_definitions: DefinitionsImporter | None = None,
+    import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
+) -> ValidationResult:
+    """Validate a LegalDown document and build lookup indices.
+
+    Parameters
+    ----------
+    document:
+        A ``Document``, from ``load`` or ``parse``.
+    final:
+        Apply the final check (§15.9): the document is meant for signature,
+        so a remaining blank or template construct is an Error.
+    resolve:
+        Reads a file the document refers to — the document it amends
+        (``amends.file``, §7.5) and its LegalDown attachment files (§12.4) —
+        for the definitions they declare: ``(relative_path) -> text | None``,
+        with ``None`` for a file that is not there or cannot be read. By
+        default the files are read from the directory of ``document.path``
+        (``file_loader``), as far as that is within it (§2.3); a document
+        without a ``path`` (from ``parse``) has none, so the checks that need
+        them are skipped, as they are with ``resolve=lambda path: None``, for
+        a loaded document that is to be validated without reading anything.
+        Only the referenced file's own definitions are read, not those it
+        refers to in turn.
+    import_definitions, import_attachment_definitions:
+        Deprecated since 0.4.0, removed in 0.5.0: use *resolve*. They give the
+        definitions themselves, which *resolve* leaves to the validator.
+    """
+    resolve = _resolver(document, resolve, import_definitions, import_attachment_definitions, stacklevel=3)
+    return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
+
+
 def validate_document(
     document: Document,
     *,
@@ -586,23 +625,80 @@ def validate_document(
     import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
     final: bool = False,
 ) -> ValidationResult:
-    """Validate a LegalDown document and build lookup indices.
+    """Deprecated since 0.4.0, removed in 0.5.0. Same as ``validate``, with the
+    same arguments."""
+    warnings.warn(
+        "legaldown.validate_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.validate()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    resolve = _resolver(document, None, import_definitions, import_attachment_definitions, stacklevel=3)
+    return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
 
-    Parameters
-    ----------
-    document:
-        A ``Document`` instance (from ``legaldown.models``).
-    import_definitions:
-        Optional callback ``(amends_file, current_filename) -> dict | None``
-        used to resolve definitions from an amended document.
-    import_attachment_definitions:
-        Optional callback ``(attachment_file) -> dict | None`` used to resolve
-        document-wide definitions declared inside an attachment file (§12.4).
-    final:
-        Apply the final check (§15.9): the document is meant for signature,
-        so a remaining blank or template construct is an Error.
-    """
-    result = ValidationResult()
+
+def _resolver(
+    document: Document,
+    resolve: LoadFile | None,
+    import_definitions: DefinitionsImporter | None,
+    import_attachment_definitions: AttachmentDefinitionsImporter | None,
+    *,
+    stacklevel: int,
+) -> LoadFile | None:
+    """How the validation reads the files *document* refers to: *resolve*, else
+    the directory of its path, else not at all.
+    Says the importers are deprecated when one is given, and then reads nothing
+    by itself: each importer answers for its own files, as it always did."""
+    if import_definitions is not None or import_attachment_definitions is not None:
+        warnings.warn(
+            "import_definitions and import_attachment_definitions are deprecated since 0.4.0 "
+            "and will be removed in 0.5.0; use validate(resolve=), which reads the files itself",
+            DeprecationWarning,
+            stacklevel=stacklevel,
+        )
+        return resolve
+    if resolve is None and document.path is not None:
+        resolve = file_loader(document.path.parent)
+
+    return resolve
+
+
+def _definitions_in(document: Document, resolve: LoadFile | None, path: str) -> dict[str, str] | None:
+    """The definitions the file at *path* declares (``{id: term}``), or None
+    when it cannot be read as a LegalDown document: not there, no *resolve*,
+    or frontmatter that cannot be read (that file's problem, not this
+    document's). Any other exception is the parser's fault, as it is anywhere."""
+    # Imported here for the reason given in ``_validate``.
+    from ..definitions import collect_definitions, definition_lookup
+    from ..parser import FrontmatterError, parse
+
+    # Asked for as assembly asks (§15.7): normalized, and only a path within
+    # the document's directory (§2.3).
+    relative = relative_path(path)
+    if resolve is None or relative is None:
+        return None
+    path = relative
+    # A document that names itself has nothing to add to itself.
+    if document.path is not None and within(document.path.parent, path) == document.path.resolve():
+        return None
+    text = resolve(path)
+    if text is None:
+        return None
+    try:
+        other = parse(text)
+    except FrontmatterError:
+        return None
+    return definition_lookup(collect_definitions(other))
+
+
+def _validate(
+    document: Document,
+    final: bool,
+    resolve: LoadFile | None,
+    import_definitions: DefinitionsImporter | None,
+    import_attachment_definitions: AttachmentDefinitionsImporter | None,
+) -> ValidationResult:
+    result = _Recorder()
     # Where each part is, for the line of each diagnostic (§16.9).
     where = Locator(document)
     # §3.2: a newer declared version draws a Warning, never a failure, and
@@ -733,7 +829,7 @@ def validate_document(
                 seen_side_names.add(side_name)
                 # §3.6 display derivation: label, else name with hyphens
                 # replaced by spaces and each word capitalized.
-                result.side_lookup[side_name] = (
+                result.index.side_lookup[side_name] = (
                     side.label or side_name.replace("-", " ").title()
                 )
 
@@ -777,7 +873,7 @@ def validate_document(
                         f"A representative of party '{party_name}' is missing the required name.",
                         line=where.key(*party_path, "representatives", rep_index, "name"),
                     )
-            result.party_lookup[party_name] = (
+            result.index.party_lookup[party_name] = (
                 party.label or party.legal_name or party_name
             )
 
@@ -845,7 +941,7 @@ def validate_document(
             result.error("attachment-id-duplicate", f"Duplicate attachment id '{att.id}'.", line=where.key(*att_path))
         else:
             attachment_presence.setdefault(att.id, []).append(presence)
-            result.attachment_lookup.setdefault(att.id, att.title or att.id)
+            result.index.attachment_lookup.setdefault(att.id, att.title or att.id)
         if not att.title:
             result.error(
                 "attachment-title-empty",
@@ -926,7 +1022,7 @@ def validate_document(
 
     for section_index, section in enumerate(document.sections):
         # An out-of-range level is an Error, but the section still gets an
-        # index entry: `result.sections` is positionally paired with
+        # index entry: `result.index.sections` is positionally paired with
         # `document.sections` by callers (renderers, the editor), so skipping
         # one here would shift every later section's number and drop the last
         # one from rendered output. Numbering clamps into the valid range.
@@ -1027,10 +1123,10 @@ def validate_document(
             level=level,
             number=number,
         )
-        result.sections.append(entry)
+        result.index.sections.append(entry)
         # Alternatives share an identifier: a reference resolves to
         # whichever is present after assembly; the index keeps the first.
-        result.section_lookup.setdefault(identifier, entry)
+        result.index.section_lookup.setdefault(identifier, entry)
         last_level = level
 
     # ── Markers in the body (§5.7, §12.2, §15.3) ──
@@ -1084,7 +1180,7 @@ def validate_document(
             )
         else:
             anchors.setdefault(anchor_id, []).append(presence)
-            result.section_lookup.setdefault(anchor_id, result.sections[found.section])
+            result.index.section_lookup.setdefault(anchor_id, result.index.sections[found.section])
 
     # ── Definitions (§7) ──
     # The mandatory, first-positioned Definitions section is gone (§7.2). A
@@ -1139,7 +1235,7 @@ def validate_document(
                 )
             continue
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
-        result.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
+        result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():
@@ -1182,48 +1278,52 @@ def validate_document(
             _amends_is_legaldown = True
             if import_definitions is not None:
                 imported = import_definitions(amends_file, document.filename)
-                if imported is not None:
-                    _amends_import_succeeded = True
-                    _imported_definitions = imported
-                    for def_id in result.definition_lookup:
-                        if def_id in _imported_definitions:
-                            result.warning(
-                                "amend-def-override",
-                                f"Amendment redefines '{def_id}' which exists in the original document.",
-                                line=next(
-                                    (definition_line(ref) for ref in definition_refs if ref.id == def_id), None
-                                ),
-                            )
-                    for def_id, term_text in _imported_definitions.items():
-                        result.definition_lookup.setdefault(def_id, term_text)
-                        # The original is always in force (§7.5), even where
-                        # the amendment redefines the term under a condition.
-                        declared_terms.setdefault(def_id, []).append((term_text, False, ALWAYS))
+            else:
+                imported = _definitions_in(document, resolve, amends_file)
+            if imported is not None:
+                _amends_import_succeeded = True
+                _imported_definitions = imported
+                for def_id in result.index.definition_lookup:
+                    if def_id in _imported_definitions:
+                        result.warning(
+                            "amend-def-override",
+                            f"Amendment redefines '{def_id}' which exists in the original document.",
+                            line=next(
+                                (definition_line(ref) for ref in definition_refs if ref.id == def_id), None
+                            ),
+                        )
+                for def_id, term_text in _imported_definitions.items():
+                    result.index.definition_lookup.setdefault(def_id, term_text)
+                    # The original is always in force (§7.5), even where
+                    # the amendment redefines the term under a condition.
+                    declared_terms.setdefault(def_id, []).append((term_text, False, ALWAYS))
 
     # ── Attachment definition import (§7, §12.4) ──
     # A {{def:}} inside an attachment file registers a document-wide term; ids
     # must remain unique across the combined document (§16.10).
-    if import_attachment_definitions is not None:
-        for att_index, att in enumerate(document.metadata.attachments):
-            if not att.file.endswith(LEGALDOWN_EXTENSIONS):
-                continue
+    for att_index, att in enumerate(document.metadata.attachments):
+        if not att.file.endswith(LEGALDOWN_EXTENSIONS):
+            continue
+        if import_attachment_definitions is not None:
             att_defs = import_attachment_definitions(att.file)
-            if not att_defs:
-                continue
-            # Its definitions are present when the attachment is (§15.3).
-            presence = own_presence(att.when, questions)
-            for def_id, term_text in att_defs.items():
-                earlier = [other for _term, _auto, other in declared_terms.get(def_id, [])]
-                if _clashes(presence, earlier, questions):
-                    result.error(
-                        "def-duplicate-id",
-                        f"Definition id '{def_id}' from attachment '{att.id}' collides with "
-                        f"another definition that can appear with it (§16.10, §15.4).",
-                        line=where.key("attachments", att_index),
-                    )
-                else:
-                    declared_terms.setdefault(def_id, []).append((term_text, False, presence))
-                    result.definition_lookup.setdefault(def_id, term_text)
+        else:
+            att_defs = _definitions_in(document, resolve, att.file)
+        if not att_defs:
+            continue
+        # Its definitions are present when the attachment is (§15.3).
+        presence = own_presence(att.when, questions)
+        for def_id, term_text in att_defs.items():
+            earlier = [other for _term, _auto, other in declared_terms.get(def_id, [])]
+            if _clashes(presence, earlier, questions):
+                result.error(
+                    "def-duplicate-id",
+                    f"Definition id '{def_id}' from attachment '{att.id}' collides with "
+                    f"another definition that can appear with it (§16.10, §15.4).",
+                    line=where.key("attachments", att_index),
+                )
+            else:
+                declared_terms.setdefault(def_id, []).append((term_text, False, presence))
+                result.index.definition_lookup.setdefault(def_id, term_text)
 
     # ── Inline directive validation ──
     blanks: dict[str, Blank] = {}
@@ -1329,7 +1429,7 @@ def validate_document(
                 elif name == "term":
                     term_targets.append((value, line))
                 elif name == "date":
-                    result.inline_dates.append(value)
+                    result.index.values.dates.append(value)
                     if not is_valid_iso_date(value):
                         result.error(
                             "date-invalid",
@@ -1337,7 +1437,7 @@ def validate_document(
                         )
                 elif name == "money":
                     currency = params.get("currency", "")
-                    result.inline_money.append((value, currency))
+                    result.index.values.money.append((value, currency))
                     if not is_valid_money_amount(value):
                         result.error(
                             "money-invalid-amount",
@@ -1356,7 +1456,7 @@ def validate_document(
                         )
                 elif name == "duration":
                     dur_unit = params.get("unit", "")
-                    result.inline_durations.append((value, dur_unit))
+                    result.index.values.durations.append((value, dur_unit))
                     if not is_positive_numeric(value):
                         result.error(
                             "duration-invalid-value",
@@ -1371,7 +1471,7 @@ def validate_document(
                             "party-name-malformed",
                             f"Party directive has invalid role value '{value}'. Must match [a-z][a-z0-9-]*.", line=line,
                         )
-                    elif value not in result.party_lookup:
+                    elif value not in result.index.party_lookup:
                         result.error(
                             "party-unknown",
                             f"Party directive references unknown party: '{value}'.", line=line,
@@ -1407,7 +1507,7 @@ def validate_document(
                             "field-type-undeclared",
                             f"Field type '{ftype}' is not declared in field_types.", line=line,
                         )
-                    result.inline_fields.append((value, ftype))
+                    result.index.values.fields.append((value, ftype))
                 elif name == "choose":
                     with result.at(line):
                         check_choose(directive, questions, result)
@@ -1419,7 +1519,7 @@ def validate_document(
                             f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.", line=line,
                         )
         for target, line in ref_targets:
-            if target in result.section_lookup:
+            if target in result.index.section_lookup:
                 continue
             if target in attachment_ids:
                 # §5.6: attachments live in the anchor namespace but are
@@ -1433,7 +1533,7 @@ def validate_document(
                 result.error("ref-broken", f"Broken section reference: '{target}'.", line=line)
         for target, line in term_targets:
             result.used_terms.add(target)
-            if target not in result.definition_lookup:
+            if target not in result.index.definition_lookup:
                 if document.metadata.amends:
                     if _amends_is_legaldown and _amends_import_succeeded:
                         result.error(
@@ -1563,7 +1663,7 @@ def validate_document(
     for ref in definition_refs:
         if ref.id in _warned_defs:
             continue
-        if ref.id in result.definition_lookup and ref.id not in result.used_terms:
+        if ref.id in result.index.definition_lookup and ref.id not in result.used_terms:
             _warned_defs.add(ref.id)
             result.warning(
                 "def-unreferenced",
@@ -1573,12 +1673,12 @@ def validate_document(
 
     # What a renderer builds from: the template decision and the markers
     # that apply, as every check above read them.
-    result.is_template = template
-    result.placed_markers = _placed_markers(document, markers, template, marker_line)
+    result.index.is_template = template
+    result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
 
     if document.filename:
         result.diagnostics = [replace(d, file=document.filename) for d in result.diagnostics]
-    return result
+    return result.result()
 
 
 def _placed_markers(
@@ -1588,7 +1688,7 @@ def _placed_markers(
     line: Callable[[FoundMarker], int | None],
 ) -> list[PlacedMarker]:
     """The markers of *markers* that apply (``PlacedMarker``)."""
-    from ..definitions import list_fragments  # see the import note in validate_document
+    from ..definitions import list_fragments  # see the import note in _validate
 
     placed = []
     lists: dict[tuple[int | None, int], list[tuple[str, bool, tuple[int, ...]]]] = {}  # each list walked once

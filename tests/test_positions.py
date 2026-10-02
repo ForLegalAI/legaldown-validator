@@ -6,11 +6,11 @@ import random
 
 import pytest
 
-from legaldown import document_from_dict, document_to_dict, parse_document
+from legaldown import document_from_dict, document_to_dict, parse
 from legaldown.cli import main
 from legaldown.models import Block
 from legaldown.parser import FrontmatterError
-from legaldown.validator import validate_document
+from legaldown.validator import validate
 
 _SIDES = """sides:
   - name: providers
@@ -29,7 +29,7 @@ _BODY = _HEAD.count("\n") + 1  # the body's first line after `# A` and a blank
 
 
 def _lines(source: str, rule: str) -> list[int | None]:
-    result = validate_document(parse_document(source, filename="t.lgd"))
+    result = validate(parse(source, filename="t.lgd"))
     return [d.line for d in result.diagnostics if d.rule == rule]
 
 
@@ -73,7 +73,7 @@ def test_a_merged_key_is_where_it_is_written():
         "title: T\nsides:\n  - &base\n    name: providers\n    parties:\n      - name: acme\n"
         "        type: legal_entity\n  - <<: *base\n    name: clients\n"
     )
-    document = parse_document(f"---\n{frontmatter}---\n\n# A\n")
+    document = parse(f"---\n{frontmatter}---\n\n# A\n")
     assert document.source_map.key("sides", 1, "parties", 0, "name") == 7
     assert document.source_map.key("sides", 1, "name") == 10
     assert _lines(f"---\n{frontmatter}---\n\n# A\n", "party-name-duplicate") == [7]
@@ -85,9 +85,9 @@ def test_many_directives_in_one_block_are_found_quickly():
 
     rows = "\n".join(f"| {{{{ref: bad-{n}}}}} | x |" for n in range(3000))
     source = _HEAD + "| a | b |\n|---|---|\n" + rows + "\n\n" + " ".join(f"{{{{ref: p-{n}}}}}" for n in range(3000))
-    document = parse_document(source)
+    document = parse(source)
     start = time.perf_counter()
-    lines = [d.line for d in validate_document(document).diagnostics if d.rule == "ref-broken"]
+    lines = [d.line for d in validate(document).diagnostics if d.rule == "ref-broken"]
     assert time.perf_counter() - start < 5
     assert lines[:3] == [_BODY + 2, _BODY + 3, _BODY + 4]
     assert lines[-1] == _BODY + 3003
@@ -95,10 +95,10 @@ def test_many_directives_in_one_block_are_found_quickly():
 
 def test_frontmatter_that_cannot_be_read_names_its_line():
     with pytest.raises(FrontmatterError) as raised:
-        parse_document("---\ntitle: Fixture\n  bad indent: [unclosed\n---\n\n# A\n")
+        parse("---\ntitle: Fixture\n  bad indent: [unclosed\n---\n\n# A\n")
     assert raised.value.line == 3
     with pytest.raises(FrontmatterError) as raised:
-        parse_document('---\ntitle: T\nsubtitle: "open\nlanguage: en\n---\n')
+        parse('---\ntitle: T\nsubtitle: "open\nlanguage: en\n---\n')
     assert raised.value.line == 3  # where the quote opens
 
 
@@ -162,7 +162,7 @@ def test_a_document_without_frontmatter_counts_from_its_first_line():
 
 
 def test_every_diagnostic_names_its_file():
-    result = validate_document(parse_document(_HEAD + "{{ref: nope}}\n", filename="contract.lgd"))
+    result = validate(parse(_HEAD + "{{ref: nope}}\n", filename="contract.lgd"))
     assert {d.file for d in result.diagnostics} == {"contract.lgd"}
 
 
@@ -170,22 +170,22 @@ def test_every_diagnostic_names_its_file():
 
 
 def test_a_document_from_a_dict_has_no_lines():
-    document = parse_document(_HEAD + "{{ref: nope}}\n")
+    document = parse(_HEAD + "{{ref: nope}}\n")
     rebuilt = document_from_dict(document_to_dict(document))
     assert rebuilt == document and rebuilt.source_map is None
     assert "source_map" not in document_to_dict(document)
-    assert [d.line for d in validate_document(rebuilt).diagnostics] == [None]
+    assert [d.line for d in validate(rebuilt).diagnostics] == [None]
 
 
 def test_a_document_changed_after_parsing_names_no_line():
     """Its source map describes the source as parsed: stale lines would point
     at the wrong text."""
-    document = parse_document(_HEAD + "{{ref: nope}}\n\nText.\n")
+    document = parse(_HEAD + "{{ref: nope}}\n\nText.\n")
     document.sections[0].blocks.insert(0, Block(kind="paragraph", text="New."))
-    assert [d.line for d in validate_document(document).diagnostics] == [None]
-    document = parse_document(_HEAD + "Text {{ref: nope}} and {{term: nope}}.\n")
+    assert [d.line for d in validate(document).diagnostics] == [None]
+    document = parse(_HEAD + "Text {{ref: nope}} and {{term: nope}}.\n")
     document.sections[0].blocks[0].suffix = " and {{term: other}}."
-    assert {d.line for d in validate_document(document).diagnostics} == {None}
+    assert {d.line for d in validate(document).diagnostics} == {None}
 
 
 # ── Output ─────────────────────────────────────────────────────────
@@ -245,7 +245,7 @@ def test_each_reference_is_reported_at_its_own_line(seed):
         body, refs = _piece(r, n)
         real += [(target, len(lines) + index + 1) for target, index in refs]
         lines += [*body, ""]
-    result = validate_document(parse_document("\n".join(lines)))
+    result = validate(parse("\n".join(lines)))
     got = sorted(
         (int(d.message.split("'")[1].split("-")[1]), d.line) for d in result.diagnostics if d.rule == "ref-broken"
     )

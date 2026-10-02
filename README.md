@@ -130,6 +130,14 @@ Directories are searched recursively for `*.lgd`, `*.legaldown`, and `*.legal.md
 **Exit codes:** `0` clean · `1` diagnostics found (errors, or any diagnostic under `--strict`) ·
 `2` a file could not be read.
 
+**Changed in 0.4.0:** a document that amends another (`amends.file`, §7.5) or declares LegalDown
+attachment files (§12.4) is now checked against the definitions those files declare, read from beside
+it (never from outside its directory). Before, `legaldown validate` never read them, so a term only the
+amended original defines was an Info (`amend-term-unresolvable`) and is now found, and an
+`amend-def-override` or `def-duplicate-id` can be reported that was not. A CI check on such documents
+can start to fail for that reason: it is the specification's result, and the files must be beside the
+document. A file that is not there, or cannot be read, is as if it had not been asked for.
+
 ### Assembling a template
 
 ```bash
@@ -137,11 +145,49 @@ legaldown assemble template.lgd --answers answers.yaml          # the document t
 legaldown assemble template.lgd --answers answers.yaml -o out/  # with its fragments and attachment files
 ```
 
-The answers set is a YAML mapping of question ids to answers (§15.7.1). Include fragments and
+```bash
+legaldown assemble template.lgd -i -o out/                         # asked in the terminal for what is missing
+legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/   # ... and remembered
+legaldown questions template.lgd --answers answers.yaml           # what is asked, given the answers so far
+legaldown questions template.lgd --answers answers.yaml --format json
+```
+
+`assemble -i` asks, in the terminal, for the answers `--answers` does not give, as the questions are
+reached — a decision opens or closes the questions under it. Each prompt shows the question, what to
+type (`yes or no`, `an amount and a currency, like 5000 EUR`) and the default in brackets, and each
+answer is checked as it is typed. A decision is asked again until it is answered; an empty line leaves
+a value question to its default, or its blank. The prompts go to standard error, so standard output
+(or `-o`) is still the assembled template. Without a terminal on standard input, `-i` lists what must
+still be answered and exits 1, or assembles if nothing must be. At the end of the input the interview
+stops and assembly goes on with what was answered (the questions left are left to their defaults or
+blanks, or refuse the assembly if they are decisions); Ctrl-C stops it (exit 2). A template that cannot be assembled asks nothing: its problems are
+reported first. `--save-answers FILE` writes the answers used, with those typed, as YAML — also
+after an interruption or a failure, so that typing is not lost — and the file is an answers set for
+the next run. It is written as a whole or not at all, beside the file and moved into place, so it may
+be the answers file that was read; but it is the answers, not the file's text, that are written,
+so comments in it are lost (with or without `-i`).
+
+`questions` lists the questions reached, which are unanswered, which stop assembly, and what is wrong
+with the answers; `--format json` is `Form.as_dict()` (below), for another program or an agent. It
+exits 0, whatever the answers, unless the template has problems or cannot be read; `--check` makes a
+form that cannot be assembled exit 1.
+
+The answers set is a YAML mapping of question ids to answers (§15.7.1); the shapes plain YAML gets
+wrong are put right for the template's questions (`5000 EUR`, `yes`, a number as an amount). Include fragments and
 LegalDown attachment files are read relative to the template, never from outside its directory;
 the ones assembly keeps are written under `-o` at their relative paths. Answer problems are
 reported as `answer-invalid`, `answer-missing` and `answer-unknown` (§16.12) on stderr, and
-nothing is written when there is an Error. Exit codes are as for `validate`.
+nothing is written when there is an Error. A template with Errors in the validator's template rules
+(questions, conditions, `{{choose:}}`, placeholders, insertions) is refused, with the rule ids, as
+§15.7.2 gives assembly a valid template. Exit codes are as for `validate`.
+
+**Changed in 0.4.0:** `legaldown assemble` refuses a template that has Errors in the validator's
+template rules (`question-invalid`, `condition-invalid`, `choose-invalid`, the `placeholder-*` rules,
+`insertion-boundary`, `def-term-variable`, `drafting-note-def`, `template-fragment-invalid`, ...),
+with exit 1 and the rule ids on stderr, where 0.3 assembled it. §15.7.2 gives assembly a template
+that validates; a gate that assembles templates in CI can start to fail on one that never did.
+`--save-answers` does not write when there was nothing to save (no answers file read, nothing typed),
+so that an answers file you meant to resume from is not replaced by an empty one.
 
 ### JSON output
 
@@ -151,7 +197,7 @@ integrations, and dashboards:
 ```json
 {
   "legaldown_spec": "0.2",
-  "validator_version": "0.3.0",
+  "validator_version": "0.4.0",
   "diagnostics": [
     {
       "file": "contract.lgd",
@@ -179,10 +225,10 @@ off.
 Three functions cover the common path:
 
 ```python
-from legaldown import parse_document, validate_document, serialize_document
+from legaldown import load, validate, serialize_document
 
-document = parse_document(open("contract.lgd").read(), filename="contract.lgd")
-result = validate_document(document)
+document = load("contract.lgd")
+result = validate(document)
 
 for diagnostic in result.diagnostics:
     print(diagnostic.level, diagnostic.rule, diagnostic.message)
@@ -191,9 +237,43 @@ if result.is_valid:                      # no Error-level diagnostics
     print(serialize_document(document))
 ```
 
-`parse_document` raises `FrontmatterError` (a `yaml.YAMLError` and a `ValueError`) when the
-frontmatter cannot be read — the `frontmatter-invalid-yaml` rule, which `validate_document`,
-given a parsed document, cannot report.
+`load(path)` takes a `str` or `os.PathLike`, reads the file as UTF-8 and returns the `Document`.
+It names the document for you: `document.filename` is the file's name and `document.path` its
+absolute path (symbolic links are not followed), which is where the files it refers to are to be
+looked for. For text that is not in a file (an editor buffer, an HTTP body, a test), use
+`parse(text)`, which `load` is built on; it takes an optional `filename=` to name the document in
+its diagnostics.
+
+`load` raises `FileNotFoundError` (or another `OSError`) when the file cannot be read and
+`UnicodeDecodeError` when it is not UTF-8. Both it and `parse` raise `FrontmatterError` (a
+`yaml.YAMLError` and a `ValueError`) when the frontmatter cannot be read — the
+`frontmatter-invalid-yaml` rule, which `validate`, given a parsed document, cannot report.
+
+`validate(document)` checks it and returns a `ValidationResult`; `validate(document, final=True)`
+is the signature-ready check (§15.9). A document that amends another (`amends.file`, §7.5) or
+declares LegalDown attachment files (§12.4) is checked against the definitions those files
+declare. They are read from beside the document — `document.path` is where `load` found it — and
+never from outside its directory (§2.3); only the definitions each file declares itself are read,
+not those it refers to in turn. A file that is not there, is not UTF-8, or has frontmatter that cannot be read is as
+if it had not been asked for: no diagnostic of its own. A document from `parse(text)` has no path,
+so there is nothing to read (`resolve=lambda path: None` does the same for a loaded one, to
+validate it without reading anything); give `validate` a `resolve=` function, from a relative path to the
+file's text (or `None`), to read them from elsewhere — a database, an upload. `file_loader(directory)`
+is the same function for files on disk, and the one `parse_template` takes as `resolve=` (`LoadFile`).
+
+> **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file),
+> `validate_document` is now `validate`, and the importer callbacks `import_definitions=` and
+> `import_attachment_definitions=` are replaced by `resolve=`. They still work and raise a
+> `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0.
+>
+> **Changed in 0.4.0:** `ValidationResult` is a plain value of two parts, `diagnostics` and `index`.
+> `errors`, `warnings` and `infos` are read-only lists taken from `diagnostics` (changing them
+> changes nothing; change `diagnostics`). What validating resolved, besides what it found, moved
+> to `result.index` (below): `result.sections` is now `result.index.sections`, `result.is_template`
+> is `result.index.is_template`, and so on, and the five `inline_*` lists are
+> `result.index.values.dates`, `.money`, `.durations`, `.fields` and `.placeholders`. The old names
+> are gone. So are the result's recording methods (`error`, `warning`, `info`, `at`) and
+> `used_terms`, which only the validator used.
 
 The public API is what the `legaldown` and `legaldown.validator` packages export (their
 `__all__`). Changes to it are listed in the notes of each
@@ -205,18 +285,23 @@ change in any release; constants still only there are to be made public
 ### Working with the result
 
 Validating a document builds the indices the checks need — section numbers, resolved definitions,
-party display text, every inline value found in the body. `ValidationResult` hands all of it back,
-so a renderer or a UI can reuse the work instead of re-deriving it:
+party display text, every inline value found in the body. `result.index`, a `DocumentIndex`, hands
+all of it back, so a renderer or a UI can reuse the work instead of re-deriving it. The result
+itself is what was found, kept nowhere but in `diagnostics`:
 
-| Attribute | Contents |
+| `result.…` | Contents |
 |---|---|
 | `diagnostics` | `Diagnostic(rule, level, message, line, file)` — the authoritative record |
 | `is_valid` | `True` when no Error-level diagnostic was reported |
-| `errors` / `warnings` / `infos` | Message strings by severity |
+| `errors` / `warnings` / `infos` | Message strings by severity, taken from `diagnostics` |
 | `rules(level=None)` | Set of rule ids present, optionally filtered by severity |
+| `index` | A `DocumentIndex`. Values and markers in it are as written: one that is invalid is reported in `diagnostics` too, so check `is_valid` before relying on them: |
+
+| `result.index.…` | Contents |
+|---|---|
 | `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
-| `inline_dates`, `inline_money`, `inline_durations`, `inline_fields`, `inline_placeholders` | Field-spec values found in the body |
+| `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
@@ -234,13 +319,13 @@ validator reads the document with.
 
 ### Reading and editing the document model
 
-`parse_document` returns a `Document` of plain dataclasses — `Metadata`, `Section`, `Block`,
+`load` and `parse` return a `Document` of plain dataclasses — `Metadata`, `Section`, `Block`,
 `Side`, `Party`, `Attachment` — that you can inspect, edit, and write back out:
 
 ```python
-from legaldown import parse_document, serialize_document
+from legaldown import load, serialize_document
 
-document = parse_document(source)
+document = load("contract.lgd")
 document.metadata.governing_law = "Czech Republic"
 
 with open("contract.lgd", "w", encoding="utf-8") as handle:
@@ -253,7 +338,7 @@ document's preamble (§4.4): it is unnumbered, so it lives in `document.preamble
 
 A `Section`'s `identifier` is the explicit `{#id}` written after its heading, or `""` when
 it has none. The identifiers the validator generates (§5.3, §5.5) are not written back into the
-model: read them from `ValidationResult.sections`.
+model: read them from `result.index.sections`.
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
 structures, except the fields that describe the parsed source rather than the document,
@@ -262,7 +347,7 @@ structures, except the fields that describe the parsed source rather than the do
 Each diagnostic names its `line` (from 1) and its `file` (the document's `filename`), as §16.9
 requires: the line of the directive, marker, heading or block it is about, or of the
 frontmatter key — for a missing key, the key that holds it, or the frontmatter's first. Lines
-come from the `source_map` that `parse_document` gives a document. A document built from a dict
+come from the `source_map` that `load` and `parse` give a document. A document built from a dict
 has none, and one changed after parsing no longer fits its map: their diagnostics have no line
 (`None`) rather than a stale one. `FrontmatterError.line` is the line of YAML that cannot be
 read. `render_block()` renders a single block when you are driving your own layout.
@@ -270,7 +355,7 @@ read. `render_block()` renders a single block when you are driving your own layo
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
 `definition_lookup(collect_definitions(document))` gives a document's definitions, id to term,
-without validating it: the same map as `ValidationResult.definition_lookup`, except for definitions
+without validating it: the same map as `result.index.definition_lookup`, except for definitions
 imported from an amended original or an attachment file. A term written empty (`"" {{def: x}}`)
 reads as its id (`id_term`), and an id that is not a valid identifier is left out.
 
@@ -368,27 +453,136 @@ Each check reports at the severity the specification assigns it — Error, Warni
 ## Assembly
 
 ```python
-from legaldown import assemble, needed_questions, template_questions
+from legaldown import load_template
 
-result = assemble(template_source, {"forum": "courts", "fee": {"amount": "5000", "currency": "EUR"}})
+template = load_template("nda.lgd")     # reads it, and the files it includes, once
+template.questions                      # every question, declared and implicit (§15.2)
+template.problems                       # why it cannot be assembled, if it cannot
+
+form = template.form({"forum": "courts", "fee": {"amount": "5000", "currency": "EUR"}})
+form.questions     # the questions reached so far, in order: ask these
+form.unanswered    # ... of them, with no valid answer and no default
+form.blocking      # ... of those, the decisions: assembly cannot run without them
+form.diagnostics   # what is wrong with the answers given
+form.ready         # assembly can run
+form.complete      # ... and nothing is left blank
+
+result = form.assemble()
 if result.ok:
     contract = result.output        # the assembled template file
     files = result.files            # assembled fragments and attachment files, by relative path
 for diagnostic in result.diagnostics:
     print(diagnostic.level, diagnostic.rule, diagnostic.message)
-
-template_questions(template_source)            # every question, declared and implicit (§15.2)
-needed_questions(template_source, answers)     # what to ask next, given the answers so far
 ```
+
+A template is read once; a form is a snapshot of the interview over it, so a front end asks for a
+new form after every answer — a decision opens or closes the questions under it. `parse_template(text)`
+is the same for source text. `load_template` raises `FrontmatterError` for frontmatter that cannot
+be read, as `parse` does.
+
+**What a form says.** `questions` are those the assembly reaches given the answers so far: a
+decision question when a condition or `{{choose:}}` using it lies in a present unit, a value
+question when one of its placeholders does. A question with a default is among them (the default
+answers it, and a front end can still offer it). `blocking` are the decision questions without an
+answer or default, that a condition or `{{choose:}}` depends on: an unanswered value question
+leaves its blank, which the specification allows, but an unanswered decision is not assembled. An answer that is not valid counts as no answer, and
+does not stand in for the default: it is reported in `diagnostics` (`answer-invalid`), and so is an
+answer to a question the template does not have (`answer-unknown`, a warning). `unused` lists the
+questions that have an answer but are not reached; it is advice, since one answer that changes can
+make many of them unused. `form.problem("fee")` says why one answer is not valid, and so does
+`question.problem(answer)`, before anything is assembled. A form never changes after it is made, and
+neither do the questions: a `Question` is a fixed value, a copy of the template's declaration, which
+every form of the template shares (treat its `default` and `choices` as read-only).
+
+**Asking a person.** A question can read what a person types, so a terminal, a web form or an agent
+need not know the shapes `assemble` takes (money is `{amount, currency}`, a boolean is a boolean):
+
+```python
+answers, skipped = {}, set()
+while True:
+    form = template.form(answers)
+    q = next((q for q in form.questions if answers.get(q.id) is None and q.id not in skipped), None)
+    if q is None:
+        break
+    try:
+        answer = q.from_text(input(f"{q.prompt or q.id} — enter {q.hint}: "))
+    except ValueError as exc:          # says what to enter
+        print(exc)
+    else:
+        if answer is not None:
+            answers[q.id] = answer
+        elif q in form.blocking:       # a decision cannot be left open
+            print("An answer is needed.")
+        else:                          # the default applies, or the blank stays
+            skipped.add(q.id)
+```
+
+`question.hint` is what to type — `yes or no`, `a date, YYYY-MM-DD`, `an amount and a currency, like
+5000 EUR`, `one of: courts (State courts), arbitration` — and `question.from_text(text)` turns the
+text into the answer, or raises `ValueError` saying what to enter; the empty text is `None`, no
+answer. What it returns always passes `question.problem`. It is strict and not locale-aware:
+`yes`, `no`, `true`, `false`, `y`, `n` for a boolean; a choice by key or label, in any case (a label
+two choices share is ambiguous, and a key comes before a label); `5000 EUR` for money and `30 D`
+for a duration, with the amount alone where every placeholder fixes the currency or the unit; no
+grouping separators, symbols or `5 000,50`.
+
+**Answers from a file.** `load_answers("answers.yaml")` reads the YAML mapping (`AnswersError` if it
+is not one; a date such as `2026-13-45` is not YAML). Plain YAML gets some shapes wrong for a
+template: `fee: 5000` is a number and not the string money wants, `forum: State courts` names a
+choice by its label, a `yes` is not what a form takes. `template.coerce(answers)` puts right what it
+can read without guessing — text as `question.from_text` reads it, a money amount given as a number —
+and leaves the rest, a float or an unknown id, for the form to report; it never raises. A form does
+not coerce by itself, so that its diagnostics stay the specification's; `legaldown assemble` and
+`legaldown questions` do.
+
+```python
+answers = template.coerce(load_answers("answers.yaml"))
+form = template.form(answers)
+```
+
+**The form as data.** `form.as_dict()` is the form as JSON-ready data for a web form, a service or an
+agent: `ready`, `complete`, the template's `problems`, the `diagnostics` about the answers (each with
+the `question` it is about), and `questions` — those reached first, in order, then the others — each with
+`id`, `type`, `label`, `prompt`, `reached`, `blocking`, `state` (`answered`, `default`, `invalid`,
+`unanswered`), `answer`, `default`, `problem`, `hint` in words and `accepts` as data: the words of a
+boolean, the choices, the currency or unit the placeholders fix, the units there are.
+`question.to_text(answer)` is what a person would type for an answer (`yes`, `5000 EUR`, `30 D`),
+to show a default or fill in an input; `answer_text` and `default_text` hold it in the data.
+
+**What stops a template.** `template.problems` are the reasons a template cannot be assembled
+whatever the answers: a file it includes that cannot be read, a placeholder written across lines, a
+translation group, and the Errors of the validator's template rules (`question-invalid`,
+`condition-invalid`, `choose-invalid`, the `placeholder-*` rules, `insertion-boundary`,
+`def-term-variable`, `drafting-note-def`, `template-fragment-invalid`; §15.7.2 gives assembly a
+template that validates, and `condition-reference-unsafe` counts too, for a template that includes
+no fragment: the validator cannot see which sections a fragment holds), and a placeholder, outside
+a drafting note, that would fill in a directive with a repeated parameter (`directive-duplicate-param`)
+or a duration unit §10.5 does not define (`duration-invalid-unit`).
+`template.validation` is the full `ValidationResult` of the template read alone, as advice: the
+validator does not read the fragments a template includes, so it cannot see a section or a
+definition that lives in one. `ready` is false while there are problems, and `form.assemble()` then
+returns them as its diagnostics.
 
 Assembly edits the template as written — "no other byte of the template changes" — so its
 output is identical to any other conforming implementation's. A template with include fragments
-or LegalDown attachment files needs `load_file=`, a function from a relative path to the file's
-text; without it such a template is refused rather than assembled partially (§17.6). The files it
+or LegalDown attachment files reads them from beside the file (`load_template`) or through
+`parse_template(text, resolve=...)`, a function from a relative path to the file's text; without
+one such a template is refused rather than assembled partially (§17.6). The files it
 reads are checked as the Full level checks them — no frontmatter, no level 1 heading, and in a
 template no includes, and no conditions or drafting notes in a fragment — and a template whose
 files fail is refused. [CONFORMANCE.md](CONFORMANCE.md#assembly-157-176) lists what assembly
 checks and what it does not.
+
+> **Deprecated:** `assemble(text, answers, load_file=)`, `template_questions` and `needed_questions`
+> are replaced by `Template` and `Form`. They still work, unchanged (but for `Question`, below, and
+> that a `load_file=` loader is never asked for a path that is absolute or leads out of the template's
+> directory, §2.3), and raise a `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
+> differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
+> (the functions ask them after the body), and it refuses a template that has Errors in the
+> validator's template rules (the functions assemble it). `legaldown assemble` follows the new API,
+> and puts the shapes of its answers file right (`template.coerce`): `5000 EUR` is accepted for a money
+> question (and `fee: 5000`, where its placeholders fix the currency), `no` for a boolean, and surrounding spaces of a text answer are
+> dropped, which were `answer-invalid` before. A `Question` is now a fixed value.
 
 ## Scope
 

@@ -6,10 +6,10 @@ or escalate individual checks. Only external dependency: PyYAML.
 
 Quick start::
 
-    from legaldown import parse_document, serialize_document, validate_document
+    from legaldown import load, serialize_document, validate
 
-    doc = parse_document(open("contract.lgd").read())
-    result = validate_document(doc)
+    doc = load("contract.lgd")
+    result = validate(doc)
     for diagnostic in result.diagnostics:
         print(diagnostic.level, diagnostic.rule, diagnostic.message)
     if result.is_valid:
@@ -21,7 +21,6 @@ from __future__ import annotations
 from .assembly import (
     AssemblyError,
     AssemblyResult,
-    LoadFile,
     Question,
     assemble,
     needed_questions,
@@ -51,6 +50,7 @@ from .directives import (
     iter_directives,
     lex,
 )
+from .files import LoadFile, file_loader
 from .models import (
     BLOCK_DEFAULTS,
     Amends,
@@ -77,27 +77,31 @@ from .models import (
 )
 
 # Parser & serializer
-from .parser import FrontmatterError, collect_source_directives, parse_document
+from .parser import FrontmatterError, collect_source_directives, load, parse, parse_document
 from .serializer import render_block, render_item, serialize_document
 
 # The LegalDown specification version this implementation targets.
 from .specification import SPEC_VERSION
+from .template import AnswersError, Form, Template, load_answers, load_template, parse_template
 
 # Validator
 from .validator import (
     AttachmentDefinitionsImporter,
     DefinitionsImporter,
     Diagnostic,
+    DocumentIndex,
+    InlineValues,
     PlacedMarker,
     SectionIndexEntry,
     ValidationResult,
     is_drafting_note,
     is_template,
     slugify_identifier,
+    validate,
     validate_document,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 #: Conformance level per specification §17. "core" — parse and validate a
 #: single document. Rendering and Full (multi-file: includes, attachments,
@@ -106,7 +110,7 @@ __version__ = "0.3.0"
 CONFORMANCE_LEVEL = "core"
 
 #: Named capabilities claimed besides the level (§17.6): template assembly,
-#: for single-file templates; a caller-supplied ``load_file`` also lets it
+#: for single-file templates; a caller-supplied ``resolve`` also lets it
 #: read include fragments and LegalDown attachment files.
 CAPABILITIES: frozenset[str] = frozenset({"assembly"})
 
@@ -117,18 +121,28 @@ __all__ = [
     "CONFORMANCE_LEVEL",
     "CAPABILITIES",
     # Core workflow
-    "parse_document",
+    "load",
+    "parse",
+    "parse_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``parse`` or ``load``
     "FrontmatterError",
     "serialize_document",
-    "validate_document",
+    "validate",
+    "validate_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate``
     # Assembly (§15.7, §17.6)
-    "assemble",
-    "template_questions",
-    "needed_questions",
+    "load_template",
+    "parse_template",
+    "load_answers",
+    "AnswersError",
+    "Template",
+    "Form",
+    "assemble",  # deprecated since 0.4.0, removed in 0.5.0
+    "template_questions",  # deprecated since 0.4.0, removed in 0.5.0
+    "needed_questions",  # deprecated since 0.4.0, removed in 0.5.0
     "AssemblyResult",
     "AssemblyError",
     "Question",
     "LoadFile",
+    "file_loader",
     # Definitions (§7)
     "collect_definitions",
     "definition_lookup",
@@ -151,13 +165,15 @@ __all__ = [
     "KNOWN_DIRECTIVES",
     "render_block",
     "render_item",
-    "AttachmentDefinitionsImporter",
+    "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0
     # Result types
     "ValidationResult",
+    "DocumentIndex",
+    "InlineValues",
     "SectionIndexEntry",
     "Diagnostic",
     "PlacedMarker",
-    # What validate_document decides, on its own (§15.1, §15.6)
+    # What validate decides, on its own (§15.1, §15.6)
     "is_template",
     "is_drafting_note",
     # Document model
@@ -187,5 +203,5 @@ __all__ = [
     # Utilities
     "collect_source_directives",
     "slugify_identifier",
-    "DefinitionsImporter",
+    "DefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate(resolve=)``
 ]

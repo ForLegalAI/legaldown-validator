@@ -25,7 +25,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Line, ValidationResult
+from .result import Line, _Recorder
 
 _CURRENCY_RE = re.compile(r"[A-Z]{3}")
 _LINE_BREAK_RE = re.compile(r"[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
@@ -191,7 +191,7 @@ def _choices_problem(choices: Any) -> str | None:
 def check_questions(
     questions: Any,
     blanks: dict[str, Blank],
-    result: ValidationResult,
+    result: _Recorder,
     *,
     template: bool,
     not_line_editable: list[str],
@@ -385,7 +385,7 @@ def insertion_boundary_problem(
 BRACE_STRAY = "'{{' does not begin a directive and is literal text; write '\\{{' if that is intended (§11.4)."
 
 
-def check_choose(directive: Directive, questions: Any, result: ValidationResult) -> None:
+def check_choose(directive: Directive, questions: Any, result: _Recorder) -> None:
     """Report a ``{{choose:}}`` that does not list exactly the answers of a
     declared decision question (choose-invalid, §15.5), and any ``{{`` in
     its phrases, which is literal text (brace-stray)."""
@@ -435,7 +435,7 @@ _INSERTIONS = ("placeholder", "choose")
 def check_template_body(
     document: Document,
     lex_fragment: Callable[[str], Lexed],
-    result: ValidationResult,
+    result: _Recorder,
     *,
     template: bool,
     where: Locator | None = None,
@@ -539,7 +539,7 @@ def _check_insertion(
     masked: str,
     insertion: Directive,
     directives: list[Directive],
-    result: ValidationResult,
+    result: _Recorder,
     line: Line = None,
 ) -> None:
     """Report *insertion*, at *line*, if it is not kept apart from template text."""
@@ -553,7 +553,7 @@ def _check_insertion(
 
 
 def _check_fragments(
-    document: Document, includes: list[tuple[str, Line]], result: ValidationResult, where: Locator | None
+    document: Document, includes: list[tuple[str, Line]], result: _Recorder, where: Locator | None
 ) -> None:
     """The Core parts of template-fragment-invalid (§15.3): each fragment is
     included once, and each LegalDown attachment file is declared by one

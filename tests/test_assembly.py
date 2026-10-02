@@ -22,14 +22,60 @@ from pathlib import Path
 import pytest
 import yaml
 
+import legaldown
 from legaldown import (
     AssemblyResult,
+    FrontmatterError,
+    Template,
     assemble,
     needed_questions,
-    parse_document,
+    parse,
+    parse_template,
     template_questions,
-    validate_document,
+    validate,
 )
+from legaldown.assembly import frontmatter_diagnostic
+
+# The functions this module tests are deprecated for ``Template`` (0.4.0); they are what it pins.
+pytestmark = pytest.mark.filterwarnings(
+    r"ignore:legaldown\.(assemble|needed_questions|template_questions)\(\) is deprecated:DeprecationWarning"
+)
+
+
+
+def _form_assemble(template, answers, *, load_file=None):
+    """``assemble`` by way of a ``Template`` and its ``Form``, without the template rules of the validator;
+    it must say what the function says: whether assembly can run, and what it writes."""
+    legacy = legaldown.assemble(template, answers, load_file=load_file)
+    try:
+        tpl = Template(template, resolve=load_file, check=False)
+    except FrontmatterError as exc:
+        return AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
+    form = tpl.form(answers)
+    result = form.assemble()
+    assert form.ready == result.ok == legacy.ok
+    assert (result.output, result.files) == (legacy.output, legacy.files)
+    assert sorted(d.rule for d in result.diagnostics) == sorted(d.rule for d in legacy.diagnostics)
+    return result
+
+
+def _form_needed(template, answers, *, load_file=None):
+    return list(parse_template(template, resolve=load_file).form(answers).questions)
+
+
+def _form_questions(template, *, load_file=None):
+    return list(parse_template(template, resolve=load_file).questions)
+
+
+@pytest.fixture(params=["functions", "template"], autouse=True)
+def _via(request, monkeypatch):
+    """Every test of this module runs twice: through the functions, and through ``Template`` and ``Form``,
+    which must assemble the same bytes and ask the same questions."""
+    if request.param == "template":
+        monkeypatch.setitem(globals(), "assemble", _form_assemble)
+        monkeypatch.setitem(globals(), "needed_questions", _form_needed)
+        monkeypatch.setitem(globals(), "template_questions", _form_questions)
+
 
 FIXTURES = Path(os.environ.get("LEGALDOWN_FIXTURES_DIR", "")) / "assembly"
 CASES = sorted(path.name for path in FIXTURES.iterdir() if path.is_dir()) if FIXTURES.is_dir() else []
@@ -109,9 +155,9 @@ def test_fixture_template_and_its_output_have_no_errors(name):
     """The fixtures' premise (a template without Errors) and the assembly
     guarantee (§15.7.4): its output has none either."""
     template = (FIXTURES / name / "template.lgd").read_text(encoding="utf-8")
-    assert validate_document(parse_document(template)).errors == []
+    assert validate(parse(template)).errors == []
     result = _assemble_case(name)
-    assert validate_document(parse_document(result.output)).errors == []
+    assert validate(parse(result.output)).errors == []
 
 
 # ── Helpers for the focused tests ────────────────────────────────
@@ -394,7 +440,7 @@ class TestDrafts:
             "{{placeholder: day, type=date}}.\n"
         )
         assert "questions" not in result.output
-        assert validate_document(parse_document(result.output)).errors == []
+        assert validate(parse(result.output)).errors == []
 
     def test_an_undeclared_or_already_typed_blank_is_left_as_written(self):
         template = _template("A {{placeholder: a}} and {{placeholder: b, type=date}}.\n")
@@ -1041,7 +1087,7 @@ class TestHeadingBlocks:
     def test_a_blank_in_a_heading_block_is_filled(self, body):
         result = assemble(_template(body, _TEXT), {"name": "Acme"})
         assert _body(result) == "\n" + body.replace("{{placeholder: name}}", "Acme")
-        assert "placeholder-unfilled" not in validate_document(parse_document(result.output)).rules()
+        assert "placeholder-unfilled" not in validate(parse(result.output)).rules()
 
     def test_a_marker_after_a_heading_block_is_no_condition(self):
         """An item's marker ends its first paragraph (§5.7): after a heading

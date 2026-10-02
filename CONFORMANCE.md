@@ -53,17 +53,21 @@ files other than the document itself.
 | Other | `frontmatter-invalid-yaml` (reported by the CLI and assembly, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means validating a set of files is out of scope: the validator does not resolve
-or cross-check includes, attachment file contents, or bilingual document sets. Single-document
+or cross-check includes, attachment file contents, or bilingual document sets. The one thing it
+reads from another file is the definitions the amended original (§7.5) and the LegalDown
+attachment files (§12.4) declare, from beside a document that has a path (`legaldown.load`; the
+CLI) or through `validate(resolve=)`; an unreadable file is as if it were not asked for. Single-document
 authoring, editing, and CI validation are fully covered. Assembly is the exception: it reads a
 template's include fragments and LegalDown attachment files, and reports the checks on them that
 its output depends on (see [Assembly](#assembly-157-176)); the validator still does not.
 
 The template constructs of specification 0.2 (§15) are validated within the document: questions,
 conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, insertion
-boundaries, and the final option (§15.9, `validate_document(final=True)` or
+boundaries, and the final option (§15.9, `validate(final=True)` or
 `legaldown validate --final`); assembly is described below. Two limits apply:
 
-- A template's include fragments and LegalDown attachment files are not read (Full, §17.4), so
+- A template's include fragments and LegalDown attachment files are not read (Full, §17.4) — the
+  attachment files only for the definitions they declare — so
   `question-unused` is not reported for a template that has either: a question may be used there.
 - A LegalDown attachment file or include fragment validated on its own is checked as a
   standalone document: conditions, placeholders, and terms that refer to its template's
@@ -162,7 +166,7 @@ failed to resolve. From assembly, which reads the file, it means the file could 
 and for one whose `---` block holds YAML that is a scalar or a list rather than a mapping of
 fields: that block is not frontmatter, its `---` lines are thematic breaks, and the whole document
 is validated as body. A block that cannot be read at all — YAML that is malformed, nested too
-deep, or a mapping of another kind (`!!set`) — is `frontmatter-invalid-yaml`: `parse_document`
+deep, or a mapping of another kind (`!!set`) — is `frontmatter-invalid-yaml`: `parse` (and `load`)
 raises `FrontmatterError` for it, which the CLI reports and assembly returns as a diagnostic, for
 the template or for a fragment or attachment file it reads. Any other exception while parsing is
 a fault of this implementation: the CLI reports it as an internal error (exit status 2), never as
@@ -201,18 +205,21 @@ CI runs this on every push and pull request.
 
 ## Assembly (§15.7, §17.6)
 
-`assemble(template, answers)` and `legaldown assemble` perform §15.7.2 byte for byte and report
+`Template.form(answers).assemble()` and `legaldown assemble` perform §15.7.2 byte for byte and report
 the answer rules of §16.12 (`answer-invalid`, `answer-missing`, `answer-unknown`). The block
 structure assembly edits is recorded by the parser's own walk, so assembly and validation read a
-template the same way. `template_questions` and `needed_questions` list the questions a template
-asks, all of them or those an answers set still leaves open.
+template the same way. `Template.questions` lists the questions a template asks; `Form.questions`
+those it reaches given an answers set, and `Form.unanswered` those still left open. §15.7.2 gives assembly a template that
+validates without Errors, which assembly itself does not check; a `Template` refuses one with Errors
+in the validator's template rules (`Template.problems`), and the deprecated `assemble` function does
+not.
 
 - A single-file template is assembled at Core, as §17.6 permits ("Core + Assembly").
 - A template with include fragments or LegalDown attachment files is assembled when the caller
-  passes `load_file`, which reads them; the CLI reads them relative to the template and refuses a
+  passes `resolve` (`load_file` of the deprecated function), which reads them; the CLI reads them relative to the template and refuses a
   path that leads out of its directory. Reading them is a Full capability (§17.4) that this
   implementation provides for assembly without claiming Full, as §17.1 allows. Without
-  `load_file`, such a template is refused with `include-file-missing` or
+  `resolve`, such a template is refused with `include-file-missing` or
   `attachment-file-missing`, never assembled partially (§17.6).
 - A file assembly reads is checked as the Full level checks it (§16.10–§16.12), and the template
   is refused if it fails: frontmatter (`include-has-frontmatter`, `attachment-has-frontmatter`), a
