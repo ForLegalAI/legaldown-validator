@@ -799,4 +799,9 @@ def test_a_symbolic_link_loop_as_the_file_to_save_to_is_an_error_not_a_traceback
     except OSError:
         pytest.skip("symbolic links are not available")
     code = main(["assemble", str(template), "--answers", str(answers), "--save-answers", str(loop)])
-    assert code == EXIT_ERROR and "cannot write the answers" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    if code == EXIT_ERROR:  # Python before 3.13 cannot resolve a link loop: said, not a traceback
+        assert "cannot write the answers" in err
+    else:  # Python 3.13 resolves it to itself, and the answers replace the loop
+        assert code == EXIT_OK and not loop.is_symlink()
+        assert yaml.safe_load(loop.read_text(encoding="utf-8")) == {"x": False, "who": "Ann"}
