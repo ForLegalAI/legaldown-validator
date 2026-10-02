@@ -53,14 +53,17 @@ files other than the document itself.
 | Other | `frontmatter-invalid-yaml` (reported by the CLI and assembly, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means validating a set of files is out of scope: the validator does not resolve
-or cross-check includes, attachment file contents, or bilingual document sets. Single-document
+or cross-check includes, attachment file contents, or bilingual document sets. The one thing it
+reads from another file is the definitions the amended original (§7.5) and the LegalDown
+attachment files (§12.4) declare, from beside a document that has a path (`legaldown.load`; the
+CLI) or through `validate(resolve=)`; an unreadable file is as if it were not asked for. Single-document
 authoring, editing, and CI validation are fully covered. Assembly is the exception: it reads a
 template's include fragments and LegalDown attachment files, and reports the checks on them that
 its output depends on (see [Assembly](#assembly-157-176)); the validator still does not.
 
 The template constructs of specification 0.2 (§15) are validated within the document: questions,
 conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, insertion
-boundaries, and the final option (§15.9, `validate_document(final=True)` or
+boundaries, and the final option (§15.9, `validate(final=True)` or
 `legaldown validate --final`); assembly is described below. Two limits apply:
 
 - A template's include fragments and LegalDown attachment files are not read (Full, §17.4), so

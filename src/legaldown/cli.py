@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import posixpath
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,8 +24,9 @@ import yaml
 
 from . import SPEC_VERSION, __version__
 from .assembly import assemble
+from .files import file_loader, within
 from .parser import FrontmatterError, load
-from .validator import validate_document
+from .validator import validate
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
 EXIT_OK = 0
@@ -60,7 +60,7 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
             f"(please report this)"
         )
 
-    result = validate_document(document, final=final)
+    result = validate(document, final=final)
     return [
         {
             "file": str(path),
@@ -156,19 +156,6 @@ def _write(path: Path, text: str) -> None:
         handle.write(text)
 
 
-def _within(base: Path, relative: str) -> Path | None:
-    """*relative* under directory *base*, or None when it is absolute, leads
-    out of it (§2.3), or is no path at all (a null byte, a symlink loop)."""
-    if not relative or posixpath.isabs(relative) or Path(relative).is_absolute():
-        return None
-    try:
-        root = base.resolve()
-        target = (root / relative).resolve()
-    except (OSError, ValueError, RuntimeError):
-        return None
-    return target if target.is_relative_to(root) else None
-
-
 def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]:
     """The answers set (§15.7.1): a YAML mapping, or empty without a file."""
     if path is None:
@@ -198,16 +185,7 @@ def _run_assemble(args: argparse.Namespace) -> int:
         print(f"error: {failure}", file=sys.stderr)
         return EXIT_ERROR
 
-    base = template_path.parent
-
-    def load_file(relative: str) -> str | None:
-        target = _within(base, relative)
-        try:
-            return _read(target) if target is not None and target.is_file() else None
-        except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
-            return None
-
-    result = assemble(template, answers, load_file=load_file)
+    result = assemble(template, answers, load_file=file_loader(template_path.parent))
     for d in result.diagnostics:
         where = f"{template_path}:{d.line}" if d.line else f"{template_path}"
         print(f"{where}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
@@ -239,7 +217,7 @@ def _run_assemble(args: argparse.Namespace) -> int:
     elif template_path.name in result.files:
         problem = f"{template_path.name} is both the template and a file it keeps"
     outputs = {template_path.name: result.output, **result.files}
-    targets = {relative: _within(out, relative) for relative in outputs}
+    targets = {relative: within(out, relative) for relative in outputs}
     for relative, target in targets.items():
         if problem is None and target is None:
             problem = f"{relative} leads out of the output directory"

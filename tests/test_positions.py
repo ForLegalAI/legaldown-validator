@@ -10,7 +10,7 @@ from legaldown import document_from_dict, document_to_dict, parse
 from legaldown.cli import main
 from legaldown.models import Block
 from legaldown.parser import FrontmatterError
-from legaldown.validator import validate_document
+from legaldown.validator import validate
 
 _SIDES = """sides:
   - name: providers
@@ -29,7 +29,7 @@ _BODY = _HEAD.count("\n") + 1  # the body's first line after `# A` and a blank
 
 
 def _lines(source: str, rule: str) -> list[int | None]:
-    result = validate_document(parse(source, filename="t.lgd"))
+    result = validate(parse(source, filename="t.lgd"))
     return [d.line for d in result.diagnostics if d.rule == rule]
 
 
@@ -87,7 +87,7 @@ def test_many_directives_in_one_block_are_found_quickly():
     source = _HEAD + "| a | b |\n|---|---|\n" + rows + "\n\n" + " ".join(f"{{{{ref: p-{n}}}}}" for n in range(3000))
     document = parse(source)
     start = time.perf_counter()
-    lines = [d.line for d in validate_document(document).diagnostics if d.rule == "ref-broken"]
+    lines = [d.line for d in validate(document).diagnostics if d.rule == "ref-broken"]
     assert time.perf_counter() - start < 5
     assert lines[:3] == [_BODY + 2, _BODY + 3, _BODY + 4]
     assert lines[-1] == _BODY + 3003
@@ -162,7 +162,7 @@ def test_a_document_without_frontmatter_counts_from_its_first_line():
 
 
 def test_every_diagnostic_names_its_file():
-    result = validate_document(parse(_HEAD + "{{ref: nope}}\n", filename="contract.lgd"))
+    result = validate(parse(_HEAD + "{{ref: nope}}\n", filename="contract.lgd"))
     assert {d.file for d in result.diagnostics} == {"contract.lgd"}
 
 
@@ -174,7 +174,7 @@ def test_a_document_from_a_dict_has_no_lines():
     rebuilt = document_from_dict(document_to_dict(document))
     assert rebuilt == document and rebuilt.source_map is None
     assert "source_map" not in document_to_dict(document)
-    assert [d.line for d in validate_document(rebuilt).diagnostics] == [None]
+    assert [d.line for d in validate(rebuilt).diagnostics] == [None]
 
 
 def test_a_document_changed_after_parsing_names_no_line():
@@ -182,10 +182,10 @@ def test_a_document_changed_after_parsing_names_no_line():
     at the wrong text."""
     document = parse(_HEAD + "{{ref: nope}}\n\nText.\n")
     document.sections[0].blocks.insert(0, Block(kind="paragraph", text="New."))
-    assert [d.line for d in validate_document(document).diagnostics] == [None]
+    assert [d.line for d in validate(document).diagnostics] == [None]
     document = parse(_HEAD + "Text {{ref: nope}} and {{term: nope}}.\n")
     document.sections[0].blocks[0].suffix = " and {{term: other}}."
-    assert {d.line for d in validate_document(document).diagnostics} == {None}
+    assert {d.line for d in validate(document).diagnostics} == {None}
 
 
 # ── Output ─────────────────────────────────────────────────────────
@@ -245,7 +245,7 @@ def test_each_reference_is_reported_at_its_own_line(seed):
         body, refs = _piece(r, n)
         real += [(target, len(lines) + index + 1) for target, index in refs]
         lines += [*body, ""]
-    result = validate_document(parse("\n".join(lines)))
+    result = validate(parse("\n".join(lines)))
     got = sorted(
         (int(d.message.split("'")[1].split("-")[1]), d.line) for d in result.diagnostics if d.rule == "ref-broken"
     )

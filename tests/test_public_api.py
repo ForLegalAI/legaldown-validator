@@ -1,4 +1,4 @@
-"""The public API (#26): what ``validate_document`` decides for a renderer —
+"""The public API (#26): what ``validate`` decides for a renderer —
 the template decision and the markers that apply — and the helpers a
 renderer builds with, importable from ``legaldown`` and ``legaldown.validator``."""
 from __future__ import annotations
@@ -16,12 +16,13 @@ from legaldown import (
     ValidationResult,
     block_fragments,
     document_from_dict,
+    file_loader,
     is_drafting_note,
     is_template,
     list_fragments,
     load,
     parse,
-    validate_document,
+    validate,
 )
 from legaldown.directives import lex
 from legaldown.validator.units import find_markers
@@ -30,7 +31,7 @@ _FRONTMATTER = "---\ntitle: T\n---\n\n"
 
 
 def _markers(body: str) -> list[PlacedMarker]:
-    return validate_document(parse(_FRONTMATTER + body)).placed_markers
+    return validate(parse(_FRONTMATTER + body)).placed_markers
 
 
 @pytest.mark.parametrize("module", [legaldown, legaldown.validator])
@@ -78,7 +79,7 @@ def test_an_include_only_paragraphs_identifier_does_not_apply():
 
 def test_a_preamble_condition_applies_only_in_a_template():
     assert _markers("Intro {when=a}\n\n# A\n\nText.\n") == []
-    result = validate_document(parse(_FRONTMATTER + "Intro {when=a}\n\n# A {when=b}\n\nText.\n"))
+    result = validate(parse(_FRONTMATTER + "Intro {when=a}\n\n# A {when=b}\n\nText.\n"))
     assert result.is_template
     assert [(m.section, m.condition) for m in result.placed_markers] == [(None, "a")]
 
@@ -101,7 +102,7 @@ def test_a_marker_out_of_place_is_not_placed(body):
 
 def test_a_document_built_in_code_has_no_lines():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": "Text {#t}"}]}]})
-    [marker] = validate_document(document).placed_markers
+    [marker] = validate(document).placed_markers
     assert (marker.identifier, marker.line) == ("t", None)
 
 
@@ -132,7 +133,7 @@ def test_the_decisions_are_the_validators_own(path: Path):
         document = parse(path.read_text(encoding="utf-8"))
     except legaldown.FrontmatterError:
         pytest.skip("unreadable frontmatter")
-    result = validate_document(document)
+    result = validate(document)
     assert result.is_template == is_template(document)
     found = [f for f in find_markers(document, lex) if f.marker is not None and f.placed(result.is_template)]
     assert [(m.section, m.block, m.fragment, m.offset, m.source) for m in result.placed_markers] == [
@@ -179,14 +180,14 @@ def test_a_list_is_walked_once(monkeypatch):
 def test_a_document_changed_since_parsing_has_no_lines():
     document = parse(_FRONTMATTER + "# A\n\nText {#t}\n\n- a {#b}\n")
     document.sections[0].blocks.insert(0, document.sections[0].blocks[0])
-    assert [m.line for m in validate_document(document).placed_markers] == [None, None, None]
+    assert [m.line for m in validate(document).placed_markers] == [None, None, None]
 
 
 def test_a_list_of_string_items_built_in_code():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a {#x}", "b\n\n  - c {#y}"]},
     ]}]})
-    assert [(m.identifier, m.item) for m in validate_document(document).placed_markers] == [("x", 0), ("y", 2)]
+    assert [(m.identifier, m.item) for m in validate(document).placed_markers] == [("x", 0), ("y", 2)]
 
 
 def test_two_lists_in_a_section_number_their_own_items():
@@ -258,7 +259,7 @@ def test_load_drops_a_byte_order_mark_and_keeps_utf8(tmp_path):
 def test_load_has_the_source_map_of_a_parsed_document(tmp_path):
     file = tmp_path / "x.lgd"
     file.write_text(_FRONTMATTER + "# A\n\nSee {{ref: nowhere}}.\n", encoding="utf-8")
-    [diagnostic] = [d for d in validate_document(load(file)).diagnostics if d.rule == "ref-broken"]
+    [diagnostic] = [d for d in validate(load(file)).diagnostics if d.rule == "ref-broken"]
     assert (diagnostic.line, diagnostic.file) == (7, "x.lgd")
 
 
@@ -319,3 +320,127 @@ def test_dot_dot_after_a_symbolic_link_goes_where_the_system_goes(tmp_path, monk
 def test_document_keeps_source_map_in_its_place():
     fields = [f.name for f in dataclasses.fields(legaldown.Document)]
     assert fields.index("source_map") == 4  # positional callers: unchanged by path
+
+
+# validate: what it reads, what it returns -------------------------------------
+
+_AMENDMENT = "---\ntitle: A\namends:\n  title: Original\n  file: {file}\n---\n\n# S\n\nUses {{{{term: services}}}}.\n"
+_ORIGINAL = '---\ntitle: O\n---\n\n# S\n\n"Services" {{def: services}} means x.\n'
+_EMPTY_ORIGINAL = "---\ntitle: O\n---\n\n# S\n\nText.\n"
+
+
+def _amendment(tmp_path, original: str | None, *, file: str = "original.lgd", name: str = "amendment.lgd"):
+    if original is not None:
+        (tmp_path / "original.lgd").write_text(original, encoding="utf-8")
+    path = tmp_path / name
+    path.write_text(_AMENDMENT.format(file=file), encoding="utf-8")
+    return load(path)
+
+
+def test_validate_reads_the_amended_original_from_beside_the_document(tmp_path):
+    assert "amend-term-undefined" not in validate(_amendment(tmp_path, _ORIGINAL)).rules()
+    assert "amend-term-undefined" in validate(_amendment(tmp_path, _EMPTY_ORIGINAL)).rules("error")
+
+
+def test_a_document_without_a_path_has_no_original_to_read():
+    result = validate(parse(_AMENDMENT.format(file="original.lgd")))
+    assert "amend-term-unresolvable" in result.rules()
+
+
+@pytest.mark.parametrize("original", [None, "---\ntitle: [unclosed\n---\n", b"\xff\xfe"])
+def test_an_original_that_cannot_be_read_is_not_a_finding_of_its_own(tmp_path, original):
+    unreadable = validate(parse(_AMENDMENT.format(file="original.lgd")))
+    if isinstance(original, bytes):
+        (tmp_path / "original.lgd").write_bytes(original)
+        document = _amendment(tmp_path, None)
+    else:
+        document = _amendment(tmp_path, original)
+    assert validate(document).rules() == unreadable.rules()
+
+
+def test_an_original_outside_the_documents_directory_is_not_read(tmp_path):
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    (tmp_path / "original.lgd").write_text(_ORIGINAL, encoding="utf-8")
+    document = _amendment(inner, None, file="../original.lgd")
+    assert "amend-term-unresolvable" in validate(document).rules()
+
+
+def test_only_the_originals_own_definitions_are_read(tmp_path):
+    (tmp_path / "base.lgd").write_text(_ORIGINAL, encoding="utf-8")
+    original = "---\ntitle: O\namends:\n  title: Base\n  file: base.lgd\n---\n\n# S\n\nText.\n"
+    assert "amend-term-undefined" in validate(_amendment(tmp_path, original)).rules("error")
+
+
+def test_resolve_stands_in_for_the_filesystem(tmp_path):
+    document = _amendment(tmp_path, _EMPTY_ORIGINAL)
+    asked: list[str] = []
+
+    def resolve(path: str) -> str:
+        asked.append(path)
+        return _ORIGINAL
+
+    assert "amend-term-undefined" not in validate(document, resolve=resolve).rules()
+    assert asked == ["original.lgd"]
+    assert "amend-term-undefined" not in validate(parse(_AMENDMENT.format(file="o.lgd")), resolve=resolve).rules()
+
+
+def test_the_importer_callbacks_still_work_and_say_they_are_deprecated():
+    document = parse(_AMENDMENT.format(file="original.lgd"))
+    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0"):
+        result = validate(document, import_definitions=lambda *_: {"services": "Services"})
+    assert "amend-term-undefined" not in result.rules() and "amend-term-unresolvable" not in result.rules()
+    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0"):
+        validate(document, import_attachment_definitions=lambda _file: {})
+
+
+def test_validate_document_is_a_deprecated_alias_of_validate():
+    document = parse(_SOURCE)
+    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0") as record:
+        result = legaldown.validate_document(document, final=True)
+    assert result == validate(document, final=True)
+    assert record[0].filename == __file__
+
+
+def test_the_messages_by_severity_are_the_diagnostics_own():
+    result = validate(parse(_FRONTMATTER + "# A\n\nSee {{ref: nowhere}}.\n"))
+    assert result.errors == [d.message for d in result.diagnostics if d.level == "error"] != []
+    assert result.warnings == [d.message for d in result.diagnostics if d.level == "warning"]
+    assert result.infos == [d.message for d in result.diagnostics if d.level == "info"]
+    assert not result.is_valid
+    result.diagnostics.clear()
+    assert (result.errors, result.is_valid) == ([], True)  # nothing kept apart from them
+
+
+def test_a_result_is_what_was_found_not_the_validators_recorder():
+    result = validate(parse(_SOURCE))
+    assert type(result) is ValidationResult
+    assert not any(hasattr(result, name) for name in ("error", "warning", "info", "at", "used_terms"))
+
+
+# file_loader -----------------------------------------------------------------
+
+
+def test_file_loader_reads_beside_and_below_the_base_as_written(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.lgd").write_bytes(b"one\r\ntwo\r\n")
+    (tmp_path / "sub" / "b.lgd").write_text("b", encoding="utf-8")
+    load_file = file_loader(tmp_path)
+    assert load_file("a.lgd") == "one\r\ntwo\r\n"  # no line-break translation
+    assert load_file("sub/b.lgd") == "b"
+    assert load_file("sub/../a.lgd") == "one\r\ntwo\r\n"
+
+
+def test_file_loader_reads_nothing_it_may_not(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (tmp_path / "outside.lgd").write_text("x", encoding="utf-8")
+    (base / "latin.lgd").write_bytes(b"caf\xe9")
+    load_file = file_loader(base)
+    assert load_file("../outside.lgd") is None
+    assert load_file(str(tmp_path / "outside.lgd")) is None
+    assert load_file("missing.lgd") is None
+    assert load_file("") is None
+    assert load_file(".") is None  # a directory
+    assert load_file("a\0b") is None
+    assert load_file("latin.lgd") is None  # not UTF-8

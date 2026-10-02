@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from legaldown.parser import parse
-from legaldown.validator import validate_document
+from legaldown.validator import validate
 from legaldown.validator.helpers import generate_identifier, slugify_identifier
 
 
@@ -57,7 +57,7 @@ def test_a_slug_is_lossy_when_a_letter_or_digit_is_dropped(text, lossy):
 
 def _rules(body: str) -> list[str]:
     document = parse(f"---\ntitle: Fixture\n---\n\n{body}\n")
-    return [d.rule for d in validate_document(document).diagnostics]
+    return [d.rule for d in validate(document).diagnostics]
 
 
 def test_a_heading_that_loses_letters_is_a_warning():

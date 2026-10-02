@@ -403,7 +403,7 @@ def id_term(def_id: str) -> str:
 
 def definition_lookup(refs: list[DefinitionRef]) -> dict[str, str]:
     """Build an ``{id: term}`` lookup from definition refs (first wins), as
-    ``validate_document`` builds its ``definition_lookup``: an empty term
+    ``validate`` builds its ``definition_lookup``: an empty term
     reads as its id (``id_term``), and an id that is not a valid identifier
     (anchor-format) is not registered."""
     lookup: dict[str, str] = {}

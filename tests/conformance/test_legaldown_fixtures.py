@@ -32,7 +32,7 @@ import yaml
 
 from legaldown import CAPABILITIES, assemble
 from legaldown.parser import parse
-from legaldown.validator import validate_document
+from legaldown.validator import validate
 
 FIXTURES_DIR = os.environ.get("LEGALDOWN_FIXTURES_DIR", "")
 
@@ -164,7 +164,7 @@ def _validate_file(path: Path, config: dict):
     if "answers" in config:
         return _assemble_case(path, path.parent / config["answers"])
     document = parse(path.read_text(encoding="utf-8"), filename=path.name)
-    return validate_document(document, final=bool(config.get("final")))
+    return validate(document, final=bool(config.get("final")))
 
 
 @pytest.mark.parametrize("case", list(_iter_valid_cases()))
@@ -253,7 +253,7 @@ def test_a_fixture_keeps_its_diagnostics_when_written_back(path: Path):
     assert replace(again.metadata, not_line_editable=[]) == replace(document.metadata, not_line_editable=[])
 
     def rules(document):
-        return Counter((d.rule, d.level) for d in validate_document(document).diagnostics)
+        return Counter((d.rule, d.level) for d in validate(document).diagnostics)
 
     assert rules(again) == rules(document)
 
@@ -305,4 +305,4 @@ def test_assembly_case_assembles_byte_for_byte(case: Path):
     assert result.ok, result.diagnostics
     assert {"template.lgd": result.output, **result.files} == _expected_tree(case)
     # The assembly guarantee (§15.7.4): the output has no Errors either.
-    assert not validate_document(parse(result.output)).errors
+    assert not validate(parse(result.output)).errors

@@ -6,10 +6,10 @@ or escalate individual checks. Only external dependency: PyYAML.
 
 Quick start::
 
-    from legaldown import load, serialize_document, validate_document
+    from legaldown import load, serialize_document, validate
 
     doc = load("contract.lgd")
-    result = validate_document(doc)
+    result = validate(doc)
     for diagnostic in result.diagnostics:
         print(diagnostic.level, diagnostic.rule, diagnostic.message)
     if result.is_valid:
@@ -21,7 +21,6 @@ from __future__ import annotations
 from .assembly import (
     AssemblyError,
     AssemblyResult,
-    LoadFile,
     Question,
     assemble,
     needed_questions,
@@ -51,6 +50,7 @@ from .directives import (
     iter_directives,
     lex,
 )
+from .files import LoadFile, file_loader
 from .models import (
     BLOCK_DEFAULTS,
     Amends,
@@ -94,6 +94,7 @@ from .validator import (
     is_drafting_note,
     is_template,
     slugify_identifier,
+    validate,
     validate_document,
 )
 
@@ -122,7 +123,8 @@ __all__ = [
     "parse_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``parse`` or ``load``
     "FrontmatterError",
     "serialize_document",
-    "validate_document",
+    "validate",
+    "validate_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate``
     # Assembly (§15.7, §17.6)
     "assemble",
     "template_questions",
@@ -131,6 +133,7 @@ __all__ = [
     "AssemblyError",
     "Question",
     "LoadFile",
+    "file_loader",
     # Definitions (§7)
     "collect_definitions",
     "definition_lookup",
@@ -159,7 +162,7 @@ __all__ = [
     "SectionIndexEntry",
     "Diagnostic",
     "PlacedMarker",
-    # What validate_document decides, on its own (§15.1, §15.6)
+    # What validate decides, on its own (§15.1, §15.6)
     "is_template",
     "is_drafting_note",
     # Document model

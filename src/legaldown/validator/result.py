@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Literal
 
 
@@ -45,7 +45,7 @@ class Diagnostic:
 @dataclass(slots=True, frozen=True, kw_only=True)
 class PlacedMarker:
     """A marker in body text that is in a marker position and applies in
-    its document (§5.7, §15.3), as ``validate_document`` places it — the
+    its document (§5.7, §15.3), as ``validate`` places it — the
     marker of a top-level paragraph or of a list item's first paragraph. A
     section's own marker is its ``Section.identifier`` and ``condition``.
 
@@ -87,23 +87,20 @@ Line = int | None | Callable[[], "int | None"]
 
 @dataclass(slots=True)
 class ValidationResult:
-    """Output of ``validate_document``: collected diagnostics and indices.
+    """Output of ``validate``: the diagnostics found, and the indices the
+    checks built.
 
     ``diagnostics`` is the authoritative record (rule id + severity +
-    message, §16.9). ``errors`` / ``warnings`` / ``infos`` remain as plain
-    message lists for existing callers and stay in sync with it.
+    message, §16.9); ``errors`` / ``warnings`` / ``infos`` are its messages by
+    severity.
     """
     diagnostics: list[Diagnostic] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    infos: list[str] = field(default_factory=list)
     sections: list[SectionIndexEntry] = field(default_factory=list)
     section_lookup: dict[str, SectionIndexEntry] = field(default_factory=dict)
     definition_lookup: dict[str, str] = field(default_factory=dict)
     party_lookup: dict[str, str] = field(default_factory=dict)
     side_lookup: dict[str, str] = field(default_factory=dict)
     attachment_lookup: dict[str, str] = field(default_factory=dict)
-    used_terms: set[str] = field(default_factory=set)
     inline_dates: list[str] = field(default_factory=list)
     inline_money: list[tuple[str, str]] = field(default_factory=list)
     inline_durations: list[tuple[str, str]] = field(default_factory=list)
@@ -115,6 +112,44 @@ class ValidationResult:
     #: The markers in body text that apply (``PlacedMarker``), in document
     #: order.
     placed_markers: list[PlacedMarker] = field(default_factory=list)
+
+    def _messages(self, level: str) -> list[str]:
+        return [d.message for d in self.diagnostics if d.level == level]
+
+    @property
+    def errors(self) -> list[str]:
+        """The messages of the Error-level diagnostics."""
+        return self._messages("error")
+
+    @property
+    def warnings(self) -> list[str]:
+        """The messages of the Warning-level diagnostics."""
+        return self._messages("warning")
+
+    @property
+    def infos(self) -> list[str]:
+        """The messages of the Info-level diagnostics."""
+        return self._messages("info")
+
+    def rules(self, level: str | None = None) -> set[str]:
+        """Rule ids present in the result, optionally filtered by *level*."""
+        return {
+            d.rule for d in self.diagnostics if level is None or d.level == level
+        }
+
+    @property
+    def is_valid(self) -> bool:
+        """True if no errors were found."""
+        return not any(d.level == "error" for d in self.diagnostics)
+
+
+@dataclass(slots=True)
+class _Recorder(ValidationResult):
+    """A ``ValidationResult`` as the validator builds it: it records the
+    diagnostics, and what only the checks need. ``result()`` is what the
+    caller gets."""
+    #: The ``{{term:}}`` targets met, for the unreferenced-definition check.
+    used_terms: set[str] = field(default_factory=set)
     #: The lines diagnostics are recorded at by default (``at``), innermost last.
     _lines: list[Line] = field(default_factory=list, repr=False, compare=False)
 
@@ -139,27 +174,17 @@ class ValidationResult:
         """Record an Error-level diagnostic under stable rule id *rule*, at
         *line* (``at``)."""
         self._record(rule, "error", message, line)
-        self.errors.append(message)
 
     def warning(self, rule: str, message: str, *, line: Line = None) -> None:
         """Record a Warning-level diagnostic under stable rule id *rule*, at
         *line* (``at``)."""
         self._record(rule, "warning", message, line)
-        self.warnings.append(message)
 
     def info(self, rule: str, message: str, *, line: Line = None) -> None:
         """Record an Info-level diagnostic under stable rule id *rule*, at
         *line* (``at``)."""
         self._record(rule, "info", message, line)
-        self.infos.append(message)
 
-    def rules(self, level: str | None = None) -> set[str]:
-        """Rule ids present in the result, optionally filtered by *level*."""
-        return {
-            d.rule for d in self.diagnostics if level is None or d.level == level
-        }
-
-    @property
-    def is_valid(self) -> bool:
-        """True if no errors were found."""
-        return len(self.errors) == 0
+    def result(self) -> ValidationResult:
+        """What was recorded, as the plain ``ValidationResult``."""
+        return ValidationResult(**{f.name: getattr(self, f.name) for f in fields(ValidationResult)})

@@ -179,10 +179,10 @@ off.
 Three functions cover the common path:
 
 ```python
-from legaldown import load, validate_document, serialize_document
+from legaldown import load, validate, serialize_document
 
 document = load("contract.lgd")
-result = validate_document(document)
+result = validate(document)
 
 for diagnostic in result.diagnostics:
     print(diagnostic.level, diagnostic.rule, diagnostic.message)
@@ -201,11 +201,23 @@ its diagnostics.
 `load` raises `FileNotFoundError` (or another `OSError`) when the file cannot be read and
 `UnicodeDecodeError` when it is not UTF-8. Both it and `parse` raise `FrontmatterError` (a
 `yaml.YAMLError` and a `ValueError`) when the frontmatter cannot be read — the
-`frontmatter-invalid-yaml` rule, which `validate_document`, given a parsed document, cannot report.
+`frontmatter-invalid-yaml` rule, which `validate`, given a parsed document, cannot report.
 
-> **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file). It
-> still works and raises a `DeprecationWarning`; it is deprecated since 0.4.0 and will be removed
-> in 0.5.0.
+`validate(document)` checks it and returns a `ValidationResult`; `validate(document, final=True)`
+is the signature-ready check (§15.9). A document that amends another (`amends.file`, §7.5) or
+declares LegalDown attachment files (§12.4) is checked against the definitions those files
+declare. They are read from beside the document — `document.path` is where `load` found it — and
+never from outside its directory (§2.3); only the definitions each file declares itself are read,
+not those it refers to in turn. A file that is not there, or cannot be read as a document, is as
+if it had not been asked for: no diagnostic of its own. A document from `parse(text)` has no path,
+so there is nothing to read; give `validate` a `resolve=` function, from a relative path to the
+file's text (or `None`), to read them from elsewhere — a database, an upload. `file_loader(directory)`
+is the same function for files on disk, and the one `assemble` takes as `load_file=` (`LoadFile`).
+
+> **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file),
+> `validate_document` is now `validate`, and the importer callbacks `import_definitions=` and
+> `import_attachment_definitions=` are replaced by `resolve=`. They still work and raise a
+> `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0.
 
 The public API is what the `legaldown` and `legaldown.validator` packages export (their
 `__all__`). Changes to it are listed in the notes of each
@@ -218,13 +230,14 @@ change in any release; constants still only there are to be made public
 
 Validating a document builds the indices the checks need — section numbers, resolved definitions,
 party display text, every inline value found in the body. `ValidationResult` hands all of it back,
-so a renderer or a UI can reuse the work instead of re-deriving it:
+so a renderer or a UI can reuse the work instead of re-deriving it. It is a plain value: what was
+found, kept nowhere but in `diagnostics`:
 
 | Attribute | Contents |
 |---|---|
 | `diagnostics` | `Diagnostic(rule, level, message, line, file)` — the authoritative record |
 | `is_valid` | `True` when no Error-level diagnostic was reported |
-| `errors` / `warnings` / `infos` | Message strings by severity |
+| `errors` / `warnings` / `infos` | Message strings by severity, taken from `diagnostics` |
 | `rules(level=None)` | Set of rule ids present, optionally filtered by severity |
 | `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |

@@ -267,3 +267,21 @@ def test_assemble_refuses_an_output_path_that_is_a_file(write, capsys, tmp_path)
     template.write_text(_VALID + "\n{{include: parts/a.lgd}}\n", encoding="utf-8")
     assert main(["assemble", str(template), "-o", str(tmp_path / "out")]) == EXIT_ERROR
     assert "the output is incomplete" in capsys.readouterr().err
+
+
+def test_validate_reads_the_amended_original_beside_the_document(tmp_path, capsys):
+    amendment = (
+        "---\ntitle: A\nsides:\n  - name: s\n    parties:\n      - name: p\n"
+        "        type: legal_entity\n        legal_name: P\n"
+        "amends:\n  title: Original\n  file: original.lgd\n---\n\n# S {#s}\n\nUses {{term: services}}.\n"
+    )
+    (tmp_path / "amendment.lgd").write_text(amendment, encoding="utf-8")
+    assert main(["validate", "--format", "json", str(tmp_path / "amendment.lgd")]) == EXIT_DIAGNOSTICS
+    rules = {d["rule"] for d in json.loads(capsys.readouterr().out)["diagnostics"]}
+    assert "amend-term-unresolvable" in rules  # no original beside it: as before
+    (tmp_path / "original.lgd").write_text(
+        '---\ntitle: O\n---\n\n# S {#s}\n\n"Services" {{def: services}} means x.\n', encoding="utf-8"
+    )
+    main(["validate", "--format", "json", str(tmp_path / "amendment.lgd")])
+    rules = {d["rule"] for d in json.loads(capsys.readouterr().out)["diagnostics"]}
+    assert not {"amend-term-unresolvable", "amend-term-undefined"} & rules

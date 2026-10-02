@@ -26,7 +26,7 @@ from legaldown.directives import format_value, lex
 from legaldown.markers import Marker, split_heading
 from legaldown.models import CustomField, empty_document, list_items
 from legaldown.parser import collect_source_directives, parse
-from legaldown.validator import validate_document
+from legaldown.validator import validate
 from legaldown.validator.helpers import generate_identifier
 
 _FRONTMATTER = """---
@@ -65,7 +65,7 @@ def _shape(block: Block):
 
 
 def _validate(body: str):
-    return validate_document(parse(_FRONTMATTER + body, filename="t.lgd"))
+    return validate(parse(_FRONTMATTER + body, filename="t.lgd"))
 
 
 # ── Faithful parsing ──────────────────────────────────────────────
@@ -108,7 +108,7 @@ Text.
     assert side.name == "Providing Party"           # preserved verbatim
     assert side.parties[0].type == "company"        # not mapped onto legal_entity
 
-    rules = validate_document(document).rules("error")
+    rules = validate(document).rules("error")
     assert "side-party-name-format" in rules        # the display name
     assert "party-type-invalid" in rules            # the unknown type
 
@@ -135,7 +135,7 @@ Text.
 """
     document = parse(source, filename="t.lgd")
     assert document.metadata.sides[0].parties[0].type == ""
-    assert "party-type-invalid" in validate_document(document).rules("error")
+    assert "party-type-invalid" in validate(document).rules("error")
 
 
 # ── §11.4 recognition contexts ────────────────────────────────────
@@ -264,7 +264,7 @@ def test_directive_in_code_span_is_not_lifted_or_checked():
     """§11.4: the parser must not lift a code-span {{ref:}} into a ref block."""
     document = parse(_FRONTMATTER + "Write `{{ref: nope}}` or `{{term: nope}}`.")
     assert document.sections[0].blocks[0].kind == "paragraph"
-    assert validate_document(document).diagnostics == []
+    assert validate(document).diagnostics == []
 
 
 def test_lifted_term_label_round_trips():
@@ -285,7 +285,7 @@ def test_frontmatter_placeholder_with_unknown_parameter_is_checked():
     source = _FRONTMATTER.replace(
         "title: Fixture", 'title: "{{placeholder: t, type=percentage, colour=red}}"'
     )
-    result = validate_document(parse(source + "Text.\n", filename="t.lgd"))
+    result = validate(parse(source + "Text.\n", filename="t.lgd"))
     assert "placeholder-type-invalid" in result.rules("error")
     assert "directive-unknown-param" in result.rules("warning")
 
@@ -326,7 +326,7 @@ def test_a_curly_quoted_reference_stays_paragraph_text():
     document = parse(_FRONTMATTER + "See {{ref: “terms”}}.\n")
     assert document.sections[0].blocks[0].kind == "paragraph"
     assert parse(serialize_document(document)).sections == document.sections
-    assert "value-curly-quote" in validate_document(document).rules("warning")
+    assert "value-curly-quote" in validate(document).rules("warning")
 
 
 @pytest.mark.parametrize(
@@ -337,12 +337,12 @@ def test_a_quoted_curly_value_stays_quoted_through_a_round_trip(text):
     document = parse(_FRONTMATTER + text + "\n")
     reparsed = parse(serialize_document(document))
     assert reparsed.sections == document.sections
-    assert "value-curly-quote" not in validate_document(reparsed).rules()
+    assert "value-curly-quote" not in validate(reparsed).rules()
 
 
 def test_a_curly_quote_in_a_frontmatter_placeholder_is_a_warning():
     source = _FRONTMATTER.replace("title: Fixture", "title: '{{placeholder: t, note=“x”}}'")
-    assert "value-curly-quote" in validate_document(parse(source + "Text.\n")).rules("warning")
+    assert "value-curly-quote" in validate(parse(source + "Text.\n")).rules("warning")
 
 
 def test_the_lexer_records_which_values_were_unquoted():
@@ -378,7 +378,6 @@ def test_missing_ref_and_term_targets_are_reported_as_missing():
     messages = {d.rule: d.message for d in result.diagnostics}
     assert "has no target" in messages["ref-broken"]
     assert "has no target" in messages["term-undefined"]
-    assert "" not in result.used_terms
 
 
 @pytest.mark.parametrize(
@@ -512,7 +511,7 @@ def test_escaped_placeholder_in_metadata_is_not_a_placeholder():
     source = _FRONTMATTER.replace(
         "title: Fixture", 'title: Fixture\neffective_date: "\\\\{{placeholder: d}} soon"'
     )
-    result = validate_document(parse(source + "Text.\n"))
+    result = validate(parse(source + "Text.\n"))
     assert "metadata-date-invalid" in result.rules("error")
 
 
@@ -629,7 +628,7 @@ def test_side_directive_resolves_and_reports_unknown():
 def test_duration_unit_m_is_rejected_with_hint():
     # Written directly in a directive the migration does not reach (already
     # canonical spelling context), the bare unit M is an error.
-    result = validate_document(
+    result = validate(
         parse(
             _FRONTMATTER + "Within {{duration: 5, unit=Q}}.", filename="t.lgd"
         )
@@ -649,7 +648,7 @@ def test_ref_to_attachment_id_suggests_attach():
         "document_type: contract\nattachments:\n"
         "  - id: schedule-a\n    title: Schedule A\n    file: schedule-a.pdf",
     )
-    result = validate_document(parse(source + body, filename="t.lgd"))
+    result = validate(parse(source + body, filename="t.lgd"))
     assert "ref-targets-attachment" in result.rules("error")
 
 
@@ -677,7 +676,7 @@ def _numbers(headings: str) -> list[str]:
     """The section numbers of a document with *headings*; one that opens
     below level 1 is also a heading-skip, numbered all the same."""
     source = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + headings
-    return [entry.number for entry in validate_document(parse(source)).sections]
+    return [entry.number for entry in validate(parse(source)).sections]
 
 
 @pytest.mark.parametrize(
@@ -697,7 +696,7 @@ def test_a_skipped_level_counts_as_its_first_so_numbers_stay_unique(headings, nu
 def test_a_fragment_starting_at_level_two_is_numbered_from_one():
     """An attachment or include file has neither frontmatter nor a # heading
     (§12, §13.8)."""
-    result = validate_document(parse("## A\n\n## B\n\n### B1\n\n## C\n"))
+    result = validate(parse("## A\n\n## B\n\n### B1\n\n## C\n"))
     assert [entry.number for entry in result.sections] == ["1", "2", "2.1", "3"]
     assert "heading-skip" not in result.rules()
 
@@ -709,7 +708,7 @@ def test_a_fragment_starting_at_level_two_is_numbered_from_one():
 def test_a_main_document_opening_below_level_one_skips_a_level(body, level):
     """§4.1: a document with frontmatter is a main document, whose first
     heading is at level 1."""
-    result = validate_document(parse(_BARE + body))
+    result = validate(parse(_BARE + body))
     assert [d.message for d in result.diagnostics if d.rule == "heading-skip"] == [
         f"Heading levels must not skip. 'A' is at level {level}, but the document has no level-1 heading before it."
     ]
@@ -725,7 +724,7 @@ def test_a_main_document_opening_below_level_one_skips_a_level(body, level):
     ],
 )
 def test_where_a_first_heading_below_level_one_is_a_skip(source, skips):
-    assert ("heading-skip" in validate_document(parse(source)).rules()) is skips
+    assert ("heading-skip" in validate(parse(source)).rules()) is skips
 
 
 def test_numbers_are_unique_and_unchanged_without_a_skip():
@@ -757,7 +756,7 @@ def test_out_of_range_heading_keeps_its_index_entry():
     body = "# One {#one}\n\nText.\n\n###### Deep {#deep}\n\nText.\n\n# Two {#two}\n\nText.\n"
     source = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + body
     document = parse(source, filename="t.lgd")
-    result = validate_document(document)
+    result = validate(document)
     assert "heading-depth" in result.rules("error")
     assert len(result.sections) == len(document.sections)
     assert [e.title for e in result.sections] == [s.title for s in document.sections]
@@ -770,7 +769,7 @@ def test_amend_term_is_an_error_when_original_defines_nothing():
         "document_type: contract\namends:\n  title: Original\n  file: original.lgd",
     ) + "Uses {{term: missing}}.\n"
     document = parse(source, filename="amendment.lgd")
-    result = validate_document(document, import_definitions=lambda *_: {})
+    result = validate(document, resolve=lambda path: "---\ntitle: Original\n---\n")
     assert "amend-term-undefined" in result.rules("error")
     assert "amend-term-unresolvable" not in result.rules()
 
@@ -819,7 +818,7 @@ attachments:
 
 def _validate_attachments(attachments: str, body: str = "Text."):
     source = _ATTACHMENT_FRONTMATTER.format(attachments=attachments, body=body)
-    return validate_document(parse(source, filename="t.lgd"))
+    return validate(parse(source, filename="t.lgd"))
 
 
 def test_duplicate_attachment_id_is_reported():
@@ -886,8 +885,9 @@ sides:
 The {{term: services}} are amended.
 """
     document = parse(source, filename="first-amendment.lgd")
-    result = validate_document(
-        document, import_definitions=lambda *_: {"services": "Services"}
+    result = validate(
+        document,
+        resolve=lambda path: '---\ntitle: Original\n---\n\n# A\n\n"Services" {{def: services}} means x.\n',
     )
     assert "amend-def-override" in result.rules("warning")
 
@@ -911,14 +911,14 @@ def test_preamble_is_kept_out_of_the_numbered_sections():
 
 
 def test_definition_in_the_preamble_is_document_wide():
-    result = validate_document(parse(_PREAMBLE_SOURCE))
+    result = validate(parse(_PREAMBLE_SOURCE))
     assert result.definition_lookup == {"agreement": "Agreement"}
     assert result.diagnostics == []
 
 
 def test_directives_in_the_preamble_are_checked():
     source = _PREAMBLE_SOURCE.replace("{{party: beta}}", "{{party: nobody}} on {{date: 2026-02-30}}")
-    assert {"party-unknown", "date-invalid"} <= validate_document(parse(source)).rules("error")
+    assert {"party-unknown", "date-invalid"} <= validate(parse(source)).rules("error")
 
 
 def test_preamble_round_trips():
@@ -932,7 +932,7 @@ def test_document_of_only_a_preamble():
     source = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + "By {{party: nobody}}.\n"
     document = parse(source)
     assert document.sections == [] and len(document.preamble) == 1
-    assert "party-unknown" in validate_document(document).rules("error")
+    assert "party-unknown" in validate(document).rules("error")
 
 
 @pytest.mark.parametrize("marker", ["{#intro}", "{#Bad_ID}"])
@@ -941,7 +941,7 @@ def test_preamble_paragraph_anchor_is_misplaced(marker):
     source = _PREAMBLE_SOURCE.replace("{{party: beta}}.", "{{party: beta}}. " + marker) + (
         "See {{ref: intro}}.\n"
     )
-    result = validate_document(parse(source))
+    result = validate(parse(source))
     assert "anchor-misplaced" in result.rules("warning")
     assert "ref-broken" in result.rules("error")
     assert "anchor-format" not in result.rules()
@@ -1044,14 +1044,14 @@ def _presence(source: str) -> tuple[bool, list[str], list[str], set[str]]:
         document.metadata.frontmatter_absent,
         [b.kind for b in document.preamble],
         [s.title for s in document.sections],
-        validate_document(document).rules(),
+        validate(document).rules(),
     )
 
 
 def test_a_document_without_frontmatter_draws_only_the_warning():
     """§16.6: not title-missing, not sides-absent."""
     assert _presence("# Scope {#scope}\n\nBody.\n") == (True, [], ["Scope"], {"frontmatter-absent"})
-    result = validate_document(parse("# Scope\n\nBody.\n"))
+    result = validate(parse("# Scope\n\nBody.\n"))
     assert [d.level for d in result.diagnostics] == ["warning"]
 
 
@@ -1116,7 +1116,7 @@ def test_a_document_without_frontmatter_is_written_without_it(source):
     written = serialize_document(document)
     assert not written.startswith("---")
     assert parse(written) == document
-    assert validate_document(parse(written)).rules() <= {"frontmatter-absent"}
+    assert validate(parse(written)).rules() <= {"frontmatter-absent"}
 
 
 def test_metadata_set_on_a_bare_document_is_written_as_frontmatter():
@@ -1129,7 +1129,7 @@ def test_frontmatter_absent_is_not_read_from_frontmatter_or_a_dict():
     document = parse("---\ntitle: T\nfrontmatter_absent: true\n---\n\n# A\n")
     assert document.metadata.frontmatter_absent is False
     assert document_from_dict(document_to_dict(parse("# A\n"))).metadata.frontmatter_absent is False
-    assert "frontmatter-absent" not in validate_document(document_from_dict({"sections": []})).rules()
+    assert "frontmatter-absent" not in validate(document_from_dict({"sections": []})).rules()
 
 
 def test_only_a_comment_may_follow_an_anchor():
@@ -1156,7 +1156,7 @@ _BARE = _FRONTMATTER.replace("# Terms {#terms}\n\n", "")
 
 def _outline(source: str) -> list[tuple[str, int, str]]:
     """Each heading's text, level, and identifier: explicit or generated."""
-    entries = validate_document(parse(source)).sections
+    entries = validate(parse(source)).sections
     return [(entry.title, entry.level, entry.identifier) for entry in entries]
 
 
@@ -1464,7 +1464,7 @@ def test_a_signature_block_heading_is_an_ordinary_section(hashes):
     )
     document = parse(source)
     assert [s.title for s in document.sections] == ["A", "Signature Block", "After"]
-    result = validate_document(document)
+    result = validate(document)
     assert [d.message for d in result.diagnostics if d.rule == "ref-broken"] == [
         "Broken section reference: 'nowhere'."
     ]
@@ -1475,7 +1475,7 @@ def test_a_signature_block_heading_is_an_ordinary_section(hashes):
 
 def test_a_second_signature_block_identifier_is_a_duplicate():
     source = _BARE + "# Signature Block {#signature-block}\n\nA.\n\n# Signature Block {#signature-block}\n\nB.\n"
-    assert "anchor-duplicate" in validate_document(parse(source)).rules()
+    assert "anchor-duplicate" in validate(parse(source)).rules()
 
 
 def test_setext_heading_round_trips_as_an_atx_heading():
@@ -1492,7 +1492,7 @@ def test_fenced_code_is_one_literal_block():
     document = parse(source)
     assert _outline(source) == [("Terms", 1, "terms"), ("Next", 1, "next")]
     assert [(b.kind, b.text) for b in document.sections[0].blocks] == [("code", fence)]
-    assert validate_document(document).diagnostics == []
+    assert validate(document).diagnostics == []
     assert fence in serialize_document(document)
 
 
@@ -1518,7 +1518,7 @@ def test_inline_triple_backticks_do_not_open_a_fence():
 def test_fence_interrupts_a_paragraph():
     document = parse(_FRONTMATTER + "Example:\n```\n{{ref: nope}}\n```\n")
     assert [b.kind for b in document.sections[0].blocks] == ["paragraph", "code"]
-    assert validate_document(document).diagnostics == []
+    assert validate(document).diagnostics == []
 
 
 def _kinds(source: str) -> list[str]:
@@ -1551,7 +1551,7 @@ def test_fence_inside_a_list_item_does_not_swallow_the_section():
     body = "- Example:\n  ```\n  code\n\n  code2\n  ```\n\nSee {{ref: nope}}.\n"
     document = parse(_FRONTMATTER + body)
     assert [b.kind for b in document.sections[0].blocks] == ["unordered_list", "ref"]
-    assert "ref-broken" in validate_document(document).rules("error")
+    assert "ref-broken" in validate(document).rules("error")
 
 
 def test_tab_indented_backticks_neither_open_nor_close_a_fence():
@@ -1579,13 +1579,13 @@ def test_fence_opening_on_a_list_marker_line_stays_in_the_item():
     document = parse(_FRONTMATTER + body)
     assert _outline(_FRONTMATTER + body) == [("Terms", 1, "terms"), ("Next", 1, "next")]
     assert _texts(document.sections[0].blocks[0]) == ["```\na\n\nb\n```"]
-    assert "ref-broken" in validate_document(document).rules("error")
+    assert "ref-broken" in validate(document).rules("error")
 
 
 def test_fence_in_a_list_item_is_literal_and_round_trips():
     body = "- Example:\n  ~~~\n  {{ref: nope}}\n\n  {#zz}\n  ~~~\n"
     document = parse(_FRONTMATTER + body)
-    assert validate_document(document).diagnostics == []
+    assert validate(document).diagnostics == []
     assert body.strip() in serialize_document(document)
 
 
@@ -1603,7 +1603,7 @@ def test_indented_dashes_are_code():
 def test_a_single_pipe_line_is_a_paragraph_not_dropped():
     document = parse(_FRONTMATTER + "| lone {{ref: nope}}\n")
     assert _kinds(_FRONTMATTER + "| lone {{ref: nope}}\n") == ["ref"]
-    assert "ref-broken" in validate_document(document).rules("error")
+    assert "ref-broken" in validate(document).rules("error")
 
 
 def test_fence_in_a_block_quote_is_literal():
@@ -1614,7 +1614,7 @@ def test_code_block_without_a_fence_is_checked_as_text():
     """Only a fenced block is literal; a hand-built one is not taken on trust."""
     document = parse(_FRONTMATTER + "Text.\n")
     document.sections[0].blocks.append(Block(kind="code", text="See {{ref: nope}}."))
-    assert "ref-broken" in validate_document(document).rules("error")
+    assert "ref-broken" in validate(document).rules("error")
 
 
 @pytest.mark.parametrize(
@@ -1636,7 +1636,7 @@ def test_list_or_quote_interrupts_a_paragraph(body, kinds):
 def test_item_text_after_its_closed_fence_is_checked():
     document = parse(_FRONTMATTER + "- ```\n  code\n  ```\n  more {{ref: nowhere}}\n")
     assert _texts(document.sections[0].blocks[0]) == ["```\ncode\n```\nmore {{ref: nowhere}}"]
-    assert "ref-broken" in validate_document(document).rules("error")
+    assert "ref-broken" in validate(document).rules("error")
     assert parse(serialize_document(document)).sections == document.sections
 
 
@@ -1667,7 +1667,7 @@ def test_rescan_after_a_directive_starts_at_its_line():
 def test_code_block_text_after_its_closing_fence_is_checked():
     document = parse(_FRONTMATTER + "Text.\n")
     document.sections[0].blocks.append(Block(kind="code", text="```\nx\n```\n{{ref: missing}}"))
-    assert "ref-broken" in validate_document(document).rules("error")
+    assert "ref-broken" in validate(document).rules("error")
 
 
 def test_serializer_closes_an_unclosed_fence():
@@ -1724,7 +1724,7 @@ def test_indentation_after_the_quote_marker_is_content():
     """Only one space after > is syntax; a fence line indented four columns
     inside quoted code is content, not a closing fence."""
     document = parse(_FRONTMATTER + "> ```\n>     ```\n> {{ref: missing}}\n> ```\n")
-    assert validate_document(document).diagnostics == []
+    assert validate(document).diagnostics == []
 
 
 @pytest.mark.parametrize(
@@ -1994,14 +1994,14 @@ def test_a_whole_line_after_a_comment_is_raw_html():
     """CommonMark: the line that ends a comment block belongs to it, so its
     text is not rendered and its directives are not recognized (§11.4)."""
     source = _FRONTMATTER + "<!-- TODO --> The Buyer pays {{money: 5}} under {{ref: nope}}.\n"
-    result = validate_document(parse(source))
+    result = validate(parse(source))
     # Raw HTML, not a comment: rendered nowhere, and warned about (§8.7).
     assert result.rules() == {"raw-html"} and result.inline_money == []
 
 
 def test_nothing_in_an_html_block_is_validated():
     source = _FRONTMATTER + '<div>{{ref: nope}} {{bogus: x}} {{ "Fee" {{def: fee}}\n{#anchor}</div>\n\nSee {{ref: anchor}}.\n'
-    assert validate_document(parse(source)).rules() == {"ref-broken", "raw-html"}
+    assert validate(parse(source)).rules() == {"ref-broken", "raw-html"}
 
 
 @pytest.mark.parametrize(
@@ -2065,7 +2065,7 @@ def _code_blocks(body: str) -> list[tuple[str, str]]:
 
 def test_directives_in_indented_code_are_literal():
     body = "Text.\n\n    {{ref: nope}} {#anchor} \"Fee\" {{def: fee}}\n    {{bogus: x}}\n\nSee {{ref: anchor}}.\n"
-    result = validate_document(parse(_FRONTMATTER + body))
+    result = validate(parse(_FRONTMATTER + body))
     assert result.rules() == {"ref-broken"}
     assert [d.message for d in result.diagnostics] == ["Broken section reference: 'anchor'."]
 
@@ -2124,7 +2124,7 @@ def test_every_indented_paragraph_after_a_list_is_the_items():
     unindented paragraph ends the item (and the list)."""
     body = "1. Clause.\n\n    Second.\n\n    Pay {{placeholder: fee}}.\n\nThird.\n\n    code {{ref: nope}}\n"
     assert [kind for kind, _text in _code_blocks(body)] == ["ordered_list", "paragraph", "code"]
-    result = validate_document(parse(_FRONTMATTER + body), final=True)
+    result = validate(parse(_FRONTMATTER + body), final=True)
     assert "placeholder-unfilled" in result.rules("error") and "ref-broken" not in result.rules()
 
 
@@ -2165,7 +2165,7 @@ def test_an_indented_header_row_after_another_block_is_code(before):
     is indented; elsewhere that row is indented code (CommonMark)."""
     document = parse(f"{_BARE}{before}\n    | {{{{ref: nope}}}} |\n|---|\n")
     assert "table" not in [b.kind for _s, _i, b in document.iter_blocks()]
-    assert "ref-broken" not in validate_document(document).rules()
+    assert "ref-broken" not in validate(document).rules()
 
 
 def test_code_directly_after_a_list_is_written_so_it_stays_code():
@@ -2179,7 +2179,7 @@ def test_code_directly_after_a_list_is_written_so_it_stays_code():
     assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [
         ("unordered_list", ""), ("paragraph", "<a\nhref='x'>"), ("code", "    code {{ref: nope}}")
     ]
-    assert "ref-broken" not in validate_document(reparsed).rules()
+    assert "ref-broken" not in validate(reparsed).rules()
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "code", "text": "    x"},
     ]}]})
@@ -2217,7 +2217,7 @@ def test_text_after_a_list_that_would_open_a_block_is_escaped():
 )
 def test_table_rows_are_indented_at_most_three_columns_and_have_cells(body, kinds):
     assert [kind for kind, _text in _code_blocks(body)] == kinds
-    assert "ref-broken" not in validate_document(parse(_FRONTMATTER + body)).rules()
+    assert "ref-broken" not in validate(parse(_FRONTMATTER + body)).rules()
 
 
 @pytest.mark.parametrize("tag", ["<pre/>", "<SCRIPT/>", "<style />", "<textarea/>"])
@@ -2235,7 +2235,7 @@ def test_a_pipe_paragraph_does_not_end_the_list_item(first):
     document = parse(_FRONTMATTER + body)
     assert parse(serialize_document(document)) == document
     assert [_shape(b) for b in document.sections[0].blocks] == [("unordered_list", [["a", first, ("heading", "foo")]])]
-    assert "ref-broken" not in validate_document(document).rules()
+    assert "ref-broken" not in validate(document).rules()
 
 
 def test_an_empty_named_value_is_written_unquoted():
@@ -2657,7 +2657,7 @@ def test_a_nested_item_after_a_later_paragraph_is_in_its_item():
     # Its presence includes the item's condition (§15.3).
     body = "- one {when=vat}\n  - a\n\n  more\n\n  - b {when=!vat}\n"
     frontmatter = _FRONTMATTER.replace("---\n\n# Terms", "questions:\n  vat:\n    type: boolean\n---\n\n# Terms")
-    assert "condition-never-true" in validate_document(parse(frontmatter + body)).rules()
+    assert "condition-never-true" in validate(parse(frontmatter + body)).rules()
 
 
 def test_a_chain_of_items_each_opening_with_the_next_is_written_quickly():
@@ -2749,9 +2749,9 @@ def test_a_quote_round_trips(body):
 def test_a_quote_built_with_a_tab_is_written_as_its_content_reads():
     document = parse(_FRONTMATTER + "Text.\n")
     document.sections[0].blocks = [Block(kind="quote", text="\t{{ref: nowhere}}")]
-    assert "ref-broken" not in validate_document(document).rules()  # four columns: code
+    assert "ref-broken" not in validate(document).rules()  # four columns: code
     written = parse(serialize_document(document))
-    assert "ref-broken" not in validate_document(written).rules()
+    assert "ref-broken" not in validate(written).rules()
 
 
 @pytest.mark.parametrize(("body", "outside"), [
@@ -2811,7 +2811,7 @@ def test_definition_lookup_matches_the_validators(body):
     from legaldown import collect_definitions, definition_lookup
 
     document = parse(_FRONTMATTER + body + "\n")
-    assert definition_lookup(collect_definitions(document)) == validate_document(document).definition_lookup
+    assert definition_lookup(collect_definitions(document)) == validate(document).definition_lookup
 
 
 def test_an_empty_term_reads_as_its_id():
@@ -3073,7 +3073,7 @@ def test_no_raw_html(body):
 
 def test_raw_html_in_a_heading():
     source = _FRONTMATTER.replace("# Terms {#terms}", "# Terms <b>x</b> {#terms}") + "Text.\n"
-    assert "raw-html" in validate_document(parse(source)).rules()
+    assert "raw-html" in validate(parse(source)).rules()
 
 
 def test_raw_html_is_found_in_linear_time():
@@ -3362,8 +3362,8 @@ def test_a_source_block_is_not_validated():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "source", "text": "See {{ref: nope}}."},
     ]}]})
-    assert "ref-broken" not in validate_document(document).rules()
-    assert "ref-broken" in validate_document(parse(serialize_document(document))).rules()
+    assert "ref-broken" not in validate(document).rules()
+    assert "ref-broken" in validate(parse(serialize_document(document))).rules()
 
 
 def test_a_source_block_in_a_list_item_is_its_content():
@@ -3540,8 +3540,8 @@ def test_an_entry_not_yet_complete_is_written_back(frontmatter, rule):
     document = parse(f"---\ntitle: T\n{frontmatter}---\n\n# A\n\nText.\n")
     again = parse(serialize_document(document))
     assert again.metadata == document.metadata
-    assert rule in validate_document(document).rules()
-    assert validate_document(again).rules() == validate_document(document).rules()
+    assert rule in validate(document).rules()
+    assert validate(again).rules() == validate(document).rules()
 
 
 def test_a_partys_custom_fields_are_its_other_keys():
@@ -3587,7 +3587,7 @@ def test_a_placeholder_in_a_custom_fields_name_is_reported():
         "      - name: x\n        type: legal_entity\n        legal_name: X\n        '{{placeholder: tid}}': v\n"
         + _SIDE_B + "---\n\n# A\n\nText.\n"
     )
-    [diagnostic] = [d for d in validate_document(parse(source)).diagnostics if d.rule == "placeholder-in-structural-field"]
+    [diagnostic] = [d for d in validate(parse(source)).diagnostics if d.rule == "placeholder-in-structural-field"]
     assert diagnostic.line == 13
 
 
@@ -3614,12 +3614,12 @@ def test_a_custom_field_in_the_list_form_is_reported_on_its_line():
         "        legal_name: X\n        address: Street 1\n        custom_fields:\n          - label: address\n"
         "            value: '{{placeholder: p, bogus=1}}'\n" + _SIDE_B + "---\n\n# A\n\nText.\n"
     )
-    [diagnostic] = [d for d in validate_document(parse(source)).diagnostics if d.rule == "directive-unknown-param"]
+    [diagnostic] = [d for d in validate(parse(source)).diagnostics if d.rule == "directive-unknown-param"]
     assert source.split("\n")[diagnostic.line - 1].strip().startswith("value:")
 
 
 def test_the_starter_document_holds_no_blank_representative():
-    assert "representative-name-empty" not in validate_document(empty_document()).rules()
+    assert "representative-name-empty" not in validate(empty_document()).rules()
 
 
 def test_a_custom_fields_value_is_checked_as_a_partys_other_values_are():
@@ -3629,7 +3629,7 @@ def test_a_custom_fields_value_is_checked_as_a_partys_other_values_are():
         "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
         "        legal_name: X\n        tax_id: '{{placeholder: tid, bogus=1}}'\n" + _SIDE_B + "---\n\n# A\n\nText.\n"
     )
-    [diagnostic] = [d for d in validate_document(parse(source)).diagnostics if d.rule == "directive-unknown-param"]
+    [diagnostic] = [d for d in validate(parse(source)).diagnostics if d.rule == "directive-unknown-param"]
     assert diagnostic.line == 9
 
 
@@ -3640,7 +3640,7 @@ def _custom_field_diagnostic_line(entry: str) -> tuple[int, str]:
         "---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        type: legal_entity\n"
         "        legal_name: X\n" + entry + _SIDE_B + "---\n\n# A\n\nText.\n"
     )
-    [diagnostic] = [d for d in validate_document(parse(source)).diagnostics if d.rule == "directive-unknown-param"]
+    [diagnostic] = [d for d in validate(parse(source)).diagnostics if d.rule == "directive-unknown-param"]
     return diagnostic.line, source.split("\n")[diagnostic.line - 1]
 
 
@@ -3670,7 +3670,7 @@ def test_a_padded_key_naming_a_party_field_is_no_custom_field_and_moves_no_line(
     )
     document = parse(source)
     assert document.metadata.sides[0].parties[0].custom_fields == []
-    assert "directive-unknown-param" not in validate_document(document).rules()
+    assert "directive-unknown-param" not in validate(document).rules()
 
 
 def test_custom_field_lines_are_unchanged_for_plain_keys_and_the_list_form():
@@ -3748,5 +3748,5 @@ def test_a_custom_field_merged_in_keeps_its_line_next_to_a_padded_key():
         "        legal_name: X\n        <<: {tax: '{{placeholder: p, bogus=1}}'}\n        ' tax ': ok\n"
         + _SIDE_B + "---\n\n# A\n\nText.\n"
     )
-    [diagnostic] = [d for d in validate_document(parse(source)).diagnostics if d.rule == "directive-unknown-param"]
+    [diagnostic] = [d for d in validate(parse(source)).diagnostics if d.rule == "directive-unknown-param"]
     assert source.split("\n")[diagnostic.line - 1].strip().startswith("<<:")
