@@ -288,3 +288,15 @@ def test_parse_document_is_a_deprecated_alias_of_parse():
         document = legaldown.parse_document(_SOURCE, filename="x.lgd")
     assert document == parse(_SOURCE, filename="x.lgd")
     assert record[0].filename == __file__  # the caller is named, not the shim
+
+
+def test_a_symbolic_link_is_named_as_it_was_given(tmp_path):
+    target = tmp_path / "v3-final.lgd"
+    target.write_text(_SOURCE, encoding="utf-8")
+    link = tmp_path / "current.lgd"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symbolic links are not available")
+    document = load(link)
+    assert (document.filename, document.path) == ("current.lgd", link)

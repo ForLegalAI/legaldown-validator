@@ -1373,20 +1373,21 @@ def load(path: str | os.PathLike[str]) -> Document:
     """Open the LegalDown file at *path* as a Document.
 
     The one call for a document that lives in a file: it reads the file as
-    UTF-8 (a byte-order mark is dropped) and parses it as ``parse`` does,
-    naming it in the result: ``Document.filename`` is the file's name and
-    ``Document.path`` its absolute path, the base that files it refers to
-    (``amends``, includes, attachments) resolve against.
+    UTF-8 and parses it as ``parse`` does, naming it in the result:
+    ``Document.filename`` is the name given to ``load`` and ``Document.path``
+    its absolute path, so a caller resolving files the document refers to
+    (``amends``, includes, attachments) knows where to look. Symbolic links
+    are not followed: the document is where it was named.
 
     Raises ``FileNotFoundError`` (or another ``OSError``) when the file cannot
     be read, ``UnicodeDecodeError`` when it is not UTF-8, and
     ``FrontmatterError`` when its frontmatter cannot be read.
     """
-    file = Path(path).resolve()
-    # Bytes, decoded once: line endings are the parser's to read (LF, CR and
-    # CRLF alike), so the text layer's own translation would only be a second,
-    # redundant pass over the file.
-    document = parse(file.read_bytes().decode("utf-8-sig"), filename=file.name)
+    file = Path(os.path.abspath(path))
+    # Bytes, decoded once: a byte-order mark and the line endings (LF, CR and
+    # CRLF alike) are the parser's to read, so the text layer's own
+    # translation would only be a second, redundant pass over the file.
+    document = parse(file.read_bytes().decode("utf-8"), filename=file.name)
     document.path = file
     return document
 
@@ -1442,7 +1443,8 @@ def parse(source: str, *, filename: str = "") -> Document:
 
 
 def parse_document(source: str, *, filename: str = "") -> Document:
-    """Deprecated alias of ``parse``; to be removed in 0.5.0."""
+    """Deprecated since 0.4.0, removed in 0.5.0. Same as ``parse``, with the same
+    arguments; ``load`` is the call for a file."""
     warnings.warn(
         "legaldown.parse_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
         "use legaldown.parse() for a string, or legaldown.load() for a file",

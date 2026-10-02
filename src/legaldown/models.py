@@ -190,8 +190,8 @@ class Document:
     sections: list[Section] = field(default_factory=list)
     filename: str = ""
     preamble: list[Block] = field(default_factory=list)
-    #: The file the document was loaded from, absolute (``load`` sets it): the
-    #: base that files it refers to resolve against. ``None`` for a document
+    #: The file the document was loaded from, absolute (``load`` sets it), for
+    #: resolving the files it refers to. ``None`` for a document
     #: parsed from a string or built in code. Not part of equality or of
     #: ``document_to_dict``: where a document lives is not what it says.
     path: Path | None = field(default=None, compare=False)

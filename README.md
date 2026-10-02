@@ -193,7 +193,8 @@ if result.is_valid:                      # no Error-level diagnostics
 
 `load(path)` takes a `str` or `os.PathLike`, reads the file as UTF-8 and returns the `Document`.
 It names the document for you: `document.filename` is the file's name and `document.path` its
-absolute path. For text that is not in a file (an editor buffer, an HTTP body, a test), use
+absolute path (symbolic links are not followed), which is where the files it refers to are to be
+looked for. For text that is not in a file (an editor buffer, an HTTP body, a test), use
 `parse(text)`, which `load` is built on; it takes an optional `filename=` to name the document in
 its diagnostics.
 
@@ -202,8 +203,9 @@ its diagnostics.
 `yaml.YAMLError` and a `ValueError`) when the frontmatter cannot be read — the
 `frontmatter-invalid-yaml` rule, which `validate_document`, given a parsed document, cannot report.
 
-> **Deprecated:** `parse_document` is now `parse` (string) or `load` (file). It still works and
-> raises a `DeprecationWarning`; it is deprecated since 0.4.0 and will be removed in 0.5.0.
+> **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file). It
+> still works and raises a `DeprecationWarning`; it is deprecated since 0.4.0 and will be removed
+> in 0.5.0.
 
 The public API is what the `legaldown` and `legaldown.validator` packages export (their
 `__all__`). Changes to it are listed in the notes of each
