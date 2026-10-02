@@ -444,3 +444,9 @@ def test_file_loader_reads_nothing_it_may_not(tmp_path):
     assert load_file(".") is None  # a directory
     assert load_file("a\0b") is None
     assert load_file("latin.lgd") is None  # not UTF-8
+
+
+def test_a_loaded_document_can_be_validated_without_reading_anything(tmp_path):
+    document = _amendment(tmp_path, _ORIGINAL)
+    assert "amend-term-undefined" not in validate(document).rules()
+    assert "amend-term-unresolvable" in validate(document, resolve=lambda path: None).rules()

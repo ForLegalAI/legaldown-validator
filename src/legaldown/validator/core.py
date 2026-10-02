@@ -606,21 +606,15 @@ def validate(
         default the files are read from the directory of ``document.path``
         (``file_loader``), as far as that is within it (§2.3); a document
         without a ``path`` (from ``parse``) has none, so the checks that need
-        them are skipped. Only the referenced file's own definitions are read,
-        not those it refers to in turn.
+        them are skipped, as they are with ``resolve=lambda path: None``, for
+        a loaded document that is to be validated without reading anything.
+        Only the referenced file's own definitions are read, not those it
+        refers to in turn.
     import_definitions, import_attachment_definitions:
         Deprecated since 0.4.0, removed in 0.5.0: use *resolve*. They give the
         definitions themselves, which *resolve* leaves to the validator.
     """
-    if import_definitions is not None or import_attachment_definitions is not None:
-        warnings.warn(
-            "import_definitions and import_attachment_definitions are deprecated since 0.4.0 "
-            "and will be removed in 0.5.0; use resolve=, which reads the files themselves",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    if resolve is None and document.path is not None:
-        resolve = file_loader(document.path.parent)
+    resolve = _resolver(document, resolve, import_definitions, import_attachment_definitions, stacklevel=3)
     return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
 
 
@@ -639,21 +633,38 @@ def validate_document(
         DeprecationWarning,
         stacklevel=2,
     )
+    resolve = _resolver(document, None, import_definitions, import_attachment_definitions, stacklevel=3)
+    return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
+
+
+def _resolver(
+    document: Document,
+    resolve: LoadFile | None,
+    import_definitions: DefinitionsImporter | None,
+    import_attachment_definitions: AttachmentDefinitionsImporter | None,
+    *,
+    stacklevel: int,
+) -> LoadFile | None:
+    """How the validation reads the files *document* refers to: *resolve*, else
+    the directory of its path, else not at all. Says the importers are
+    deprecated when one is given."""
     if import_definitions is not None or import_attachment_definitions is not None:
         warnings.warn(
             "import_definitions and import_attachment_definitions are deprecated since 0.4.0 "
             "and will be removed in 0.5.0; use validate(resolve=), which reads the files itself",
             DeprecationWarning,
-            stacklevel=2,
+            stacklevel=stacklevel,
         )
-    resolve = file_loader(document.path.parent) if document.path is not None else None
-    return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
+    if resolve is None and document.path is not None:
+        return file_loader(document.path.parent)
+    return resolve
 
 
 def _definitions_in(resolve: LoadFile | None, path: str) -> dict[str, str] | None:
     """The definitions the file at *path* declares (``{id: term}``), or None
     when it cannot be read as a LegalDown document: not there, no *resolve*,
-    or frontmatter that cannot be read (its own problem to report)."""
+    or frontmatter that cannot be read (that file's problem, not this
+    document's). Any other exception is the parser's fault, as it is anywhere."""
     # Imported here for the reason given in ``_validate``.
     from ..definitions import collect_definitions, definition_lookup
     from ..parser import FrontmatterError, parse
@@ -662,7 +673,7 @@ def _definitions_in(resolve: LoadFile | None, path: str) -> dict[str, str] | Non
     if text is None:
         return None
     try:
-        other = parse(text, filename=path)
+        other = parse(text)
     except FrontmatterError:
         return None
     return definition_lookup(collect_definitions(other))

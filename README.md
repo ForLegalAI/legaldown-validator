@@ -208,9 +208,10 @@ is the signature-ready check (§15.9). A document that amends another (`amends.f
 declares LegalDown attachment files (§12.4) is checked against the definitions those files
 declare. They are read from beside the document — `document.path` is where `load` found it — and
 never from outside its directory (§2.3); only the definitions each file declares itself are read,
-not those it refers to in turn. A file that is not there, or cannot be read as a document, is as
+not those it refers to in turn. A file that is not there, is not UTF-8, or has frontmatter that cannot be read is as
 if it had not been asked for: no diagnostic of its own. A document from `parse(text)` has no path,
-so there is nothing to read; give `validate` a `resolve=` function, from a relative path to the
+so there is nothing to read (`resolve=lambda path: None` does the same for a loaded one, to
+validate it without reading anything); give `validate` a `resolve=` function, from a relative path to the
 file's text (or `None`), to read them from elsewhere — a database, an upload. `file_loader(directory)`
 is the same function for files on disk, and the one `assemble` takes as `load_file=` (`LoadFile`).
 
@@ -218,6 +219,11 @@ is the same function for files on disk, and the one `assemble` takes as `load_fi
 > `validate_document` is now `validate`, and the importer callbacks `import_definitions=` and
 > `import_attachment_definitions=` are replaced by `resolve=`. They still work and raise a
 > `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0.
+>
+> **Changed in 0.4.0:** `ValidationResult` is a plain value. `errors`, `warnings` and `infos` are
+> read-only lists taken from `diagnostics` (changing them changes nothing; change `diagnostics`),
+> and its recording methods (`error`, `warning`, `info`, `at`) and `used_terms`, which only the
+> validator used, are gone.
 
 The public API is what the `legaldown` and `legaldown.validator` packages export (their
 `__all__`). Changes to it are listed in the notes of each

@@ -282,6 +282,7 @@ def test_validate_reads_the_amended_original_beside_the_document(tmp_path, capsy
     (tmp_path / "original.lgd").write_text(
         '---\ntitle: O\n---\n\n# S {#s}\n\n"Services" {{def: services}} means x.\n', encoding="utf-8"
     )
-    main(["validate", "--format", "json", str(tmp_path / "amendment.lgd")])
-    rules = {d["rule"] for d in json.loads(capsys.readouterr().out)["diagnostics"]}
-    assert not {"amend-term-unresolvable", "amend-term-undefined"} & rules
+    assert main(["validate", "--format", "json", str(tmp_path / "amendment.lgd")]) == EXIT_DIAGNOSTICS
+    diagnostics = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert diagnostics  # the document's own findings are still reported
+    assert not {"amend-term-unresolvable", "amend-term-undefined"} & {d["rule"] for d in diagnostics}
