@@ -1,9 +1,12 @@
 """CLI behavior: output formats, rule filtering, and exit codes."""
 from __future__ import annotations
 
+import io
 import json
+import sys
 
 import pytest
+import yaml
 
 from legaldown import load
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_ERROR, EXIT_OK, main
@@ -468,3 +471,154 @@ def test_a_fault_while_listing_the_questions_is_an_internal_error(write, capsys,
     monkeypatch.setattr(legaldown.template.Form, "as_dict", broken)
     template = write("t.lgd", _ASKING)
     assert _questions([str(template), "--format", "json"], capsys)[0] == EXIT_ERROR
+
+
+# ── legaldown assemble -i, --save-answers ─────────────────────────
+
+_INTERVIEW = _TEMPLATE.replace(
+    "    type: boolean\n", "    type: boolean\n    prompt: Keep the extras?\n", 1
+).replace("Hi {{placeholder: who}}.", "Hi {{placeholder: who}}. Fee {{placeholder: fee, type=money}}.")
+
+
+class _Terminal(io.StringIO):
+    """Standard input that is a terminal, typing *lines*."""
+
+    def isatty(self):
+        return True
+
+
+def _type(monkeypatch, *lines: str) -> None:
+    monkeypatch.setattr(sys, "stdin", _Terminal("".join(f"{line}\n" for line in lines)))
+
+
+def test_an_interview_asks_for_the_answers_and_writes_the_document_to_stdout(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW)
+    _type(monkeypatch, "no", "Ann", "250 eur")
+    assert main(["assemble", str(template), "-i"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert "Hi Ann. Fee {{money: 250, currency=EUR}}." in captured.out and "Extra." not in captured.out
+    assert "Keep the extras? (yes or no)" in captured.err and "who (text)" in captured.err  # prompts: stderr
+    assert "Keep the extras?" not in captured.out
+
+
+def test_a_decision_is_asked_again_until_it_is_answered(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW)
+    _type(monkeypatch, "", "maybe", "yes", "Ann", "", )
+    assert main(["assemble", str(template), "-i"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "An answer is needed." in err and "Enter yes or no." in err
+    assert err.count("Keep the extras?") == 3
+
+
+def test_a_value_question_may_be_left_to_its_blank(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW)
+    _type(monkeypatch, "yes", "", "", "")
+    assert main(["assemble", str(template), "-i"]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "{{placeholder: who}}" in out and "Extra." in out
+
+
+def test_an_interview_shows_the_default_and_the_questions_the_answers_file_gave_are_not_asked(write, capsys, monkeypatch):
+    template = write(
+        "t.lgd",
+        _INTERVIEW.replace("    prompt: Keep the extras?\n", "    prompt: Keep the extras?\n  fee:\n    type: money\n    default:\n      amount: '100'\n      currency: EUR\n", 1),
+    )
+    answers = write("a.yaml", "x: no\n")
+    _type(monkeypatch, "Ann", "")
+    assert main(["assemble", str(template), "--answers", str(answers), "-i"]) == EXIT_OK
+    err = capsys.readouterr().err
+    assert "[100 EUR]" in err and "Keep the extras?" not in err
+
+
+def test_an_answer_the_file_gave_that_is_not_valid_is_asked_again(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW)
+    answers = write("a.yaml", "x: maybe\nwho: Ann\n")
+    _type(monkeypatch, "no", "")
+    assert main(["assemble", str(template), "--answers", str(answers), "-i"]) == EXIT_OK
+    assert "is not valid" in capsys.readouterr().err
+
+
+def test_without_a_terminal_it_lists_what_must_be_answered(write, capsys):
+    template = write("t.lgd", _INTERVIEW)
+    assert main(["assemble", str(template), "-i"]) == EXIT_DIAGNOSTICS  # pytest's stdin is no terminal
+    captured = capsys.readouterr()
+    assert captured.out == "" and "x: Keep the extras? (enter yes or no)" in captured.err and "-i" in captured.err
+    answers = write("a.yaml", "x: no\n")
+    assert main(["assemble", str(template), "--answers", str(answers), "-i"]) == EXIT_OK  # nothing blocks: batch
+    assert "{{placeholder: who}}" in capsys.readouterr().out
+
+
+def test_without_i_a_missing_decision_says_how_to_be_asked(write, capsys):
+    template = write("t.lgd", _INTERVIEW)
+    assert main(["assemble", str(template)]) == EXIT_DIAGNOSTICS
+    err = capsys.readouterr().err
+    assert "[answer-missing]" in err and "-i" in err
+
+
+def test_the_end_of_the_input_ends_the_interview(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW)
+    _type(monkeypatch)  # nothing typed
+    assert main(["assemble", str(template), "-i"]) == EXIT_DIAGNOSTICS
+    captured = capsys.readouterr()
+    assert captured.out == "" and "[answer-missing]" in captured.err
+
+
+def test_an_interruption_saves_the_answers_and_assembles_nothing(write, capsys, monkeypatch, tmp_path):
+    template = write("t.lgd", _INTERVIEW)
+
+    class Typist(_Terminal):
+        def __init__(self):
+            super().__init__("no\n")
+
+        def readline(self, *args):
+            line = super().readline(*args)
+            if not line:
+                raise KeyboardInterrupt
+            return line
+
+    monkeypatch.setattr(sys, "stdin", Typist())
+    saved = tmp_path / "saved.yaml"
+    assert main(["assemble", str(template), "-i", "--save-answers", str(saved)]) == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.out == "" and "interrupted" in captured.err
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"x": False}
+
+
+def test_saved_answers_give_the_same_document_when_read_back(write, capsys, monkeypatch, tmp_path):
+    template = write("t.lgd", _INTERVIEW)
+    saved = tmp_path / "out" / "saved.yaml"
+    _type(monkeypatch, "no", "Ann Čech", "250 eur")
+    assert main(["assemble", str(template), "-i", "--save-answers", str(saved)]) == EXIT_OK
+    first = capsys.readouterr().out
+    text = saved.read_text(encoding="utf-8")
+    assert "Ann Čech" in text and "'250'" in text  # not escaped; an amount stays a quoted string
+    assert main(["assemble", str(template), "--answers", str(saved)]) == EXIT_OK
+    assert capsys.readouterr().out == first
+
+
+def test_answers_are_saved_even_when_nothing_could_be_assembled(write, capsys, tmp_path):
+    template = write("t.lgd", _INTERVIEW)
+    answers = write("a.yaml", "who: Ann\n")
+    saved = tmp_path / "saved.yaml"
+    assert main(["assemble", str(template), "--answers", str(answers), "--save-answers", str(saved)]) == EXIT_DIAGNOSTICS
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {"who": "Ann"}
+    broken = write("b.lgd", "---\ntitle: [unclosed\n---\n")
+    other = tmp_path / "other.yaml"
+    assert main(["assemble", str(broken), "--answers", str(answers), "--save-answers", str(other)]) == EXIT_DIAGNOSTICS
+    assert yaml.safe_load(other.read_text(encoding="utf-8")) == {"who": "Ann"}
+
+
+def test_answers_are_not_saved_when_the_answers_file_cannot_be_read(write, capsys, tmp_path):
+    template = write("t.lgd", _INTERVIEW)
+    saved = tmp_path / "saved.yaml"
+    assert main(["assemble", str(template), "--answers", str(tmp_path / "nope.yaml"), "--save-answers", str(saved)]) == EXIT_ERROR
+    assert not saved.exists()
+
+
+def test_a_failure_to_save_the_answers_is_an_error(write, capsys, tmp_path):
+    template = write("t.lgd", _INTERVIEW)
+    answers = write("a.yaml", "x: no\nwho: Ann\n")
+    blocked = tmp_path / "blocked"
+    blocked.write_text("a file, not a directory", encoding="utf-8")
+    code = main(["assemble", str(template), "--answers", str(answers), "--save-answers", str(blocked / "a.yaml")])
+    assert code == EXIT_ERROR and "cannot write the answers" in capsys.readouterr().err

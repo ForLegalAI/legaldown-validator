@@ -138,9 +138,22 @@ legaldown assemble template.lgd --answers answers.yaml -o out/  # with its fragm
 ```
 
 ```bash
+legaldown assemble template.lgd -i -o out/                         # asked in the terminal for what is missing
+legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/   # ... and remembered
 legaldown questions template.lgd --answers answers.yaml           # what is asked, given the answers so far
 legaldown questions template.lgd --answers answers.yaml --format json
 ```
+
+`assemble -i` asks, in the terminal, for the answers `--answers` does not give, as the questions are
+reached — a decision opens or closes the questions under it. Each prompt shows the question, what to
+type (`yes or no`, `an amount and a currency, like 5000 EUR`) and the default in brackets, and each
+answer is checked as it is typed. A decision is asked again until it is answered; an empty line leaves
+a value question to its default, or its blank. The prompts go to standard error, so standard output
+(or `-o`) is still the assembled template. Without a terminal on standard input, `-i` lists what must
+still be answered and exits 1, or assembles if nothing must be. At the end of the input the interview
+stops; Ctrl-C stops it and assembles nothing (exit 2). `--save-answers FILE` writes the answers used,
+with those typed, as YAML — also after an interruption or a failure, so that typing is not lost — and
+the file is an answers set for the next run.
 
 `questions` lists the questions reached, which are unanswered, which stop assembly, and what is wrong
 with the answers; `--format json` is `Form.as_dict()` (below), for another program or an agent. It

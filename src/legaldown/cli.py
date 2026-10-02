@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from . import SPEC_VERSION, __version__
 from .assembly import AssemblyResult, frontmatter_diagnostic
 from .files import within
@@ -186,9 +188,97 @@ def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]
         return None, str(exc)
 
 
+def _ask(prompt: str) -> str | None:
+    """A line from standard input, after *prompt* on standard error (standard output
+    is the assembled template); ``None`` at the end of the input."""
+    print(prompt, end="", file=sys.stderr, flush=True)
+    line = sys.stdin.readline()
+    return line.rstrip("\r\n") if line else None
+
+
+def _say(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def _interview(template: Template, answers: dict, ask=_ask, say=_say) -> bool:
+    """Ask for the answers that *answers* does not give, as the form grows, until
+    the form has nothing left to ask; *answers* gets what is typed. A decision
+    cannot be left open, so it is asked again until it is answered; the empty
+    line leaves a value question to its default, or its blank. Returns False at
+    the end of the input."""
+    skipped: set[str] = set()
+    while True:
+        form = template.form(answers)
+        question = next(
+            (q for q in form.questions
+             if (answers.get(q.id) is None or form.problem(q.id)) and q.id not in skipped),
+            None,
+        )
+        if question is None:
+            return True
+        given = answers.get(question.id)
+        if given is not None:
+            say(f"The answer given to '{question.id}', {question.to_text(given)!r}, is not valid: "
+                f"{form.problem(question.id)}")
+        default = f" [{question.to_text(question.default)}]" if question.default is not None else ""
+        line = ask(f"{question.prompt or question.id} ({question.hint}){default}: ")
+        if line is None:
+            return False
+        try:
+            answer = question.from_text(line)
+        except ValueError as exc:
+            say(str(exc))
+            continue
+        if answer is not None:
+            answers[question.id] = answer
+        elif question in form.blocking:
+            say("An answer is needed.")
+        else:
+            skipped.add(question.id)
+
+
+def _missing_report(template: Template, answers: dict) -> str | None:
+    """What must still be answered before assembly, as text; None when nothing."""
+    form = template.form(answers)
+    if not form.blocking:
+        return None
+    lines = [f"error: {len(form.blocking)} question(s) must be answered before assembly:"]
+    lines += [f"  {q.id}: {q.prompt or q.id} (enter {q.hint})" for q in form.blocking]
+    lines.append("run in a terminal with -i to be asked, or give the answers with --answers")
+    return "\n".join(lines)
+
+
+def _save_answers(path: Path, answers: dict) -> str | None:
+    """*answers* to the YAML file at *path*; a failure as text. Money amounts stay
+    quoted strings, dates the dates they are."""
+    try:
+        _write(path, yaml.safe_dump(answers, sort_keys=False, allow_unicode=True, default_flow_style=False))
+    except (OSError, yaml.YAMLError) as exc:
+        return f"cannot write the answers to {path}: {exc}"
+    return None
+
+
 def _run_assemble(args: argparse.Namespace) -> int:
+    state: dict[str, Any] = {"answers": None}
+    code = EXIT_ERROR
+    try:
+        code = _assemble(args, state)
+    except KeyboardInterrupt:
+        print("\ninterrupted; nothing was assembled", file=sys.stderr)
+    finally:
+        # Also after an interruption or a failure: what was typed is not lost.
+        if args.save_answers and state["answers"] is not None:
+            problem = _save_answers(Path(args.save_answers), state["answers"])
+            if problem:
+                print(f"error: {problem}", file=sys.stderr)
+                code = EXIT_ERROR if code == EXIT_OK else code
+    return code
+
+
+def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
     template_path = Path(args.template)
     answers, failure = _read_answers(Path(args.answers) if args.answers else None)
+    state["answers"] = answers
     result = None
     if failure is None:
         try:
@@ -206,7 +296,16 @@ def _run_assemble(args: argparse.Namespace) -> int:
 
     if result is None:
         try:
-            result = template.form(template.coerce(answers)).assemble()
+            answers = state["answers"] = template.coerce(answers)
+            if args.interactive:
+                if sys.stdin.isatty():
+                    _interview(template, answers)
+                else:
+                    report = _missing_report(template, answers)
+                    if report:
+                        print(report, file=sys.stderr)
+                        return EXIT_DIAGNOSTICS
+            result = template.form(answers).assemble()
         except Exception as exc:
             # Not the template's fault: a bug in this validator, as in ``validate``.
             print(f"error: internal error while assembling {template_path}: {type(exc).__name__}: {exc} "
@@ -216,6 +315,8 @@ def _run_assemble(args: argparse.Namespace) -> int:
         where = f"{template_path}:{d.line}" if d.line else f"{template_path}"
         print(f"{where}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
     if not result.ok:
+        if not args.interactive and any(d.rule == "answer-missing" for d in result.diagnostics):
+            print("run with -i in a terminal to be asked for them, or give them with --answers", file=sys.stderr)
         return EXIT_DIAGNOSTICS
 
     if args.output is None:
@@ -407,6 +508,21 @@ def build_parser() -> argparse.ArgumentParser:
             "keeps, under DIR at their relative paths. Without it the template is "
             "written to standard output."
         ),
+    )
+    assemble_cmd.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help=(
+            "Ask, in the terminal, for the answers --answers does not give, as the "
+            "questions are reached (prompts go to standard error). Without a terminal "
+            "it lists what must still be answered and exits 1."
+        ),
+    )
+    assemble_cmd.add_argument(
+        "--save-answers",
+        metavar="FILE",
+        help="Write the answers used, with those typed, to FILE (YAML), also after an interruption.",
     )
     assemble_cmd.set_defaults(func=_run_assemble)
 
