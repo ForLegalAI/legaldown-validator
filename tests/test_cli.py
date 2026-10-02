@@ -324,3 +324,14 @@ def test_a_fault_while_assembling_is_an_internal_error(write, capsys, monkeypatc
     template = write("t.lgd", _TEMPLATE)
     assert main(["assemble", str(template)]) == EXIT_ERROR
     assert "internal error while assembling" in capsys.readouterr().err
+
+
+def test_a_fault_while_reading_the_template_is_an_internal_error(write, capsys, monkeypatch):
+    import legaldown.cli
+
+    def broken(path):
+        raise legaldown.AssemblyError("boom")
+
+    monkeypatch.setattr(legaldown.cli, "load_template", broken)
+    assert main(["assemble", str(write("t.lgd", _TEMPLATE))]) == EXIT_ERROR
+    assert "internal error while reading" in capsys.readouterr().err

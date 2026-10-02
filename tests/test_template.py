@@ -440,3 +440,61 @@ def test_a_file_included_twice_is_read_as_its_last_include_says():
         inline = _decide(t, _Answers(answers, t.declared), inline=True)
         assert (inline.removed, inline.files) == (after.removed, after.files)
         assert set(inline.needed) == set(after.needed)
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "{{placeholder: fee, type=money, type=money}}",
+        "{{placeholder: term, type=duration, unit=XYZ}}",
+        "{{ref: scope, x=1, x=2}}",
+    ],
+)
+def test_a_directive_in_a_drafting_note_is_removed_with_it_and_is_no_problem(directive):
+    text = _FRONT + f"# Scope {{#scope}}\n\nText.\n\n> [!DRAFTING]\n> Use {directive}\n"
+    template = parse_template(text)
+    assert template.problems == ()
+    assert template.form({"extras": False}).assemble().ok
+    outside = _FRONT + f"# Scope {{#scope}}\n\nText {directive}.\n"
+    if directive.startswith("{{placeholder"):
+        assert parse_template(outside).problems  # the same, outside a note, is a problem
+
+
+def test_a_non_placeholder_directive_with_a_repeated_parameter_is_no_template_problem():
+    template = parse_template(_FRONT + "# Scope {#scope}\n\nSee {{ref: scope, x=1, x=2}}.\n")
+    assert template.problems == ()  # the validator says so (advice); it fills in nothing
+    assert any(d.rule == "directive-duplicate-param" for d in template.validation.diagnostics)
+
+
+def test_a_reference_the_conditions_make_unsafe_stops_a_template_with_an_attachment_file():
+    text = (
+        "---\ntitle: T\nquestions:\n  a:\n    type: boolean\nattachments:\n"
+        "  - id: s\n    title: S\n    file: s.lgd\n---\n\n"
+        "# One {#one}\n\nSee {{ref: local}} and {{attach: s}}.\n\n# Local {#local when=a}\n\nText.\n"
+    )
+    template = parse_template(text, resolve={"s.lgd": "Text.\n"}.get)
+    assert [d.rule for d in template.problems] == ["condition-reference-unsafe"]  # only fragments hide sections
+
+
+@pytest.mark.parametrize("make", ["cycle-dict", "cycle-list", "deep"])
+def test_an_answer_that_contains_itself_or_nests_too_deep_is_reported_and_does_not_crash_the_form(make):
+    answer: object
+    if make == "cycle-dict":
+        answer = {}
+        answer["self"] = answer
+    elif make == "cycle-list":
+        answer = []
+        answer.append(answer)
+    else:
+        answer = []
+        for _ in range(5000):
+            answer = [answer]
+    form = parse_template(_TEMPLATE).form({"extras": False, "who": "Ann", "fee": answer})
+    assert [d.rule for d in form.diagnostics] == ["answer-invalid"] and not form.ready
+
+
+def test_a_form_copies_the_nested_answers_it_is_given():
+    answers = {"extras": False, "who": "Ann", "fee": {"amount": "5", "currency": "EUR"}}
+    form = parse_template(_TEMPLATE).form(answers)
+    answers["fee"]["amount"] = "x"
+    assert form.ready and "{{money: 5, currency=EUR}}" in form.assemble().output

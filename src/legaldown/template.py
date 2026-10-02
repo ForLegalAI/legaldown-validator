@@ -24,14 +24,18 @@ from .assembly import (
     _answer_problem,
     _Answers,
     _decide,
+    _effective_type,
     _emit_result,
     _FormAnswers,
     _missing_diagnostic,
     _questions,
     _read,
+    _Template,
 )
+from .directives import PLACEHOLDER_TYPE_PARAMS
 from .files import LoadFile, file_loader
 from .validator import validate
+from .validator.patterns import VALID_DURATION_UNITS
 from .validator.result import Diagnostic, ValidationResult
 
 __all__ = ["Form", "Template", "load_template", "parse_template"]
@@ -55,15 +59,38 @@ TEMPLATE_RULES: frozenset[str] = frozenset({
     "def-term-variable",
     "drafting-note-def",
     "template-fragment-invalid",
-    # What a placeholder fills in is checked as the directive it becomes.
-    "duration-invalid-unit",
-    "directive-duplicate-param",
 })
 
-#: A rule of the validator that a template must satisfy, unless it reads other
-#: files: it then cannot tell a reference to a section of a fragment from one
-#: to a section its condition removes.
+#: A rule of the validator that a template must satisfy, unless it includes
+#: fragments: it then cannot tell a reference to a section of a fragment from
+#: one to a section its condition removes.
 _ALONE_ONLY: frozenset[str] = frozenset({"condition-reference-unsafe"})
+
+
+def _placeholder_problems(t: _Template) -> list[Diagnostic]:
+    """A placeholder that would fill in a directive the validator rejects: a
+    repeated parameter, or a duration unit that §10.5 does not define. Those
+    in drafting notes are removed with them, and are no problem."""
+    found = [(source.notes, occ) for source in (t.main, *t.subs.values()) for occ in source.occurrences]
+    found += [(set(), occ) for occ in (t.front.occurrences if t.front else [])]
+    problems = []
+    for notes, occ in found:
+        directive = occ.directive
+        if directive.name != "placeholder" or occ.line in notes:
+            continue
+        for param in dict.fromkeys(directive.duplicates):
+            problems.append(Diagnostic(
+                "directive-duplicate-param", "error",
+                f"'{directive.source}' repeats the parameter '{param}'; the template is not assembled.",
+            ))
+        unit = directive.params.get(PLACEHOLDER_TYPE_PARAMS["duration"])
+        if _effective_type(directive, t.declared) == "duration" and unit is not None and unit not in VALID_DURATION_UNITS:
+            problems.append(Diagnostic(
+                "duration-invalid-unit", "error",
+                f"'{directive.source}' fixes the duration unit '{unit}', which §10.5 does not define; "
+                f"the template is not assembled.",
+            ))
+    return problems
 
 
 def _snapshot(resolve: LoadFile | None) -> LoadFile | None:
@@ -119,10 +146,13 @@ class Template:
         it includes that cannot be read, a malformed placeholder, a translation
         group, and the template rules (``TEMPLATE_RULES``) the validator reports
         as Errors. Empty when it can."""
-        problems = list(self._t.problems)
+        t = self._t
+        problems = list(t.problems)
         if self._check:
-            rules = TEMPLATE_RULES if self._t.subs else TEMPLATE_RULES | _ALONE_ONLY
+            includes = any(include.path in t.subs for include in t.main.includes)
+            rules = TEMPLATE_RULES if includes else TEMPLATE_RULES | _ALONE_ONLY
             problems += [d for d in self.validation.diagnostics if d.level == "error" and d.rule in rules]
+            problems += _placeholder_problems(t)
         return tuple(problems)
 
     def form(self, answers: Mapping[str, Any] | None = None) -> Form:
@@ -185,20 +215,29 @@ class Form:
         return _emit_result(template._t, self._resolved, self._decision, list(self.diagnostics))
 
 
-def _copied(value: Any) -> Any:
+def _copied(value: Any, seen: dict[int, Any] | None = None) -> Any:
     """*value* with its containers copied, so that it does not change when the
     caller's does; anything else is kept as it is (an answer of no valid kind is
-    reported, not copied)."""
+    reported, not copied). A container met again is the copy already made."""
+    seen = {} if seen is None else seen
     if isinstance(value, dict):
-        return {key: _copied(item) for key, item in value.items()}
+        copy_: Any = seen.setdefault(id(value), {})
+        for key, item in value.items():
+            copy_[key] = seen[id(item)] if id(item) in seen else _copied(item, seen)
+        return copy_
     if isinstance(value, list):
-        return [_copied(item) for item in value]
+        copy_ = seen.setdefault(id(value), [])
+        copy_.extend(seen[id(item)] if id(item) in seen else _copied(item, seen) for item in value)
+        return copy_
     return value
 
 
 def _build_form(template: Template, answers: Mapping[str, Any]) -> Form:
     t = template._t
-    given = _copied(dict(answers))
+    try:
+        given = _copied(dict(answers))
+    except RecursionError:  # an answer nested too deep to copy is reported as invalid, as it is kept
+        given = dict(answers)
     resolved = _FormAnswers(given, t)
     decision = _decide(t, resolved, inline=True)
     by_id = {question.id: question for question in template.questions}

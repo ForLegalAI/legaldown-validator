@@ -454,10 +454,11 @@ every form of the template shares (treat its `default` and `choices` as read-onl
 whatever the answers: a file it includes that cannot be read, a placeholder written across lines, a
 translation group, and the Errors of the validator's template rules (`question-invalid`,
 `condition-invalid`, `choose-invalid`, the `placeholder-*` rules, `insertion-boundary`,
-`def-term-variable`, `drafting-note-def`, `template-fragment-invalid`, and a placeholder that would
-fill in a directive with an invalid unit or a repeated parameter; §15.7.2 gives assembly a template
-that validates, and `condition-reference-unsafe` counts too, for a template that includes nothing:
-the validator cannot see which sections a fragment holds).
+`def-term-variable`, `drafting-note-def`, `template-fragment-invalid`; §15.7.2 gives assembly a
+template that validates, and `condition-reference-unsafe` counts too, for a template that includes
+no fragment: the validator cannot see which sections a fragment holds), and a placeholder, outside
+a drafting note, that would fill in a directive with a repeated parameter (`directive-duplicate-param`)
+or a duration unit §10.5 does not define (`duration-invalid-unit`).
 `template.validation` is the full `ValidationResult` of the template read alone, as advice: the
 validator does not read the fragments a template includes, so it cannot see a section or a
 definition that lives in one. `ready` is false while there are problems, and `form.assemble()` then

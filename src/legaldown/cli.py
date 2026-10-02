@@ -192,6 +192,9 @@ def _run_assemble(args: argparse.Namespace) -> int:
             result = AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
         except (OSError, UnicodeDecodeError) as exc:
             failure = f"cannot read {template_path}: {exc}"
+        except Exception as exc:
+            # Not the template's fault: a bug in this validator, as in ``validate``.
+            failure = f"internal error while reading {template_path}: {type(exc).__name__}: {exc} (please report this)"
     if failure is not None:
         print(f"error: {failure}", file=sys.stderr)
         return EXIT_ERROR
