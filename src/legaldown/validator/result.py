@@ -87,8 +87,10 @@ Line = int | None | Callable[[], "int | None"]
 
 @dataclass(slots=True)
 class InlineValues:
-    """The field-spec values found in the body, as written, in document order:
-    ``dates`` are the date values alone, the others ``(value, qualifier)``."""
+    """The field-spec values the checks met, as written, in document order:
+    ``dates`` are the date values alone, the others ``(value, qualifier)``.
+    Placeholders of the frontmatter are among them, and a placeholder whose
+    arguments are malformed is not."""
     dates: list[str] = field(default_factory=list)
     #: ``(amount, currency)``
     money: list[tuple[str, str]] = field(default_factory=list)

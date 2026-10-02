@@ -255,7 +255,7 @@ itself is what was found, kept nowhere but in `diagnostics`:
 |---|---|
 | `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
-| `values` | The field-spec values found in the body, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` |
+| `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 

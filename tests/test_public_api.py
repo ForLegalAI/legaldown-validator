@@ -496,19 +496,13 @@ def test_the_analysis_is_in_the_index_and_the_result_holds_findings_and_index():
 
 
 @pytest.mark.parametrize(
-    ("old", "new"),
-    [("sections", "sections"), ("section_lookup", "section_lookup"), ("definition_lookup", "definition_lookup"),
-     ("party_lookup", "party_lookup"), ("side_lookup", "side_lookup"), ("attachment_lookup", "attachment_lookup"),
-     ("inline_dates", "values.dates"), ("inline_money", "values.money"), ("inline_durations", "values.durations"),
-     ("inline_fields", "values.fields"), ("inline_placeholders", "values.placeholders"),
-     ("is_template", "is_template"), ("placed_markers", "placed_markers")],
+    "old",
+    ["sections", "section_lookup", "definition_lookup", "party_lookup", "side_lookup", "attachment_lookup",
+     "inline_dates", "inline_money", "inline_durations", "inline_fields", "inline_placeholders",
+     "is_template", "placed_markers"],
 )
-def test_the_analysis_moved_from_the_result_to_the_index(old, new):
-    result = validate(parse(_SOURCE))
-    assert not hasattr(result, old)
-    target = result.index
-    for part in new.split("."):
-        target = getattr(target, part)  # it is there
+def test_the_analysis_is_not_on_the_result_any_more(old):
+    assert not hasattr(validate(parse(_SOURCE)), old)
 
 
 def test_each_validation_has_an_index_of_its_own():
