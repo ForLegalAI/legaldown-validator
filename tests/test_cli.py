@@ -786,3 +786,17 @@ def test_the_template_is_not_overwritten_through_a_hard_link_either(write, tmp_p
     before = template.read_text(encoding="utf-8")
     assert main(["assemble", str(template), "--save-answers", str(link)]) == EXIT_ERROR
     assert template.read_text(encoding="utf-8") == before
+
+
+def test_a_symbolic_link_loop_as_the_file_to_save_to_is_an_error_not_a_traceback(write, capsys, tmp_path):
+    import os
+
+    template = write("t.lgd", _INTERVIEW)
+    answers = write("a.yaml", "x: no\nwho: Ann\n")
+    loop = tmp_path / "loop.yaml"
+    try:
+        os.symlink(loop, loop)
+    except OSError:
+        pytest.skip("symbolic links are not available")
+    code = main(["assemble", str(template), "--answers", str(answers), "--save-answers", str(loop)])
+    assert code == EXIT_ERROR and "cannot write the answers" in capsys.readouterr().err

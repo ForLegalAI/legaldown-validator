@@ -297,18 +297,18 @@ def _save_answers(path: Path, answers: dict) -> str | None:
         text = yaml.safe_dump(answers, sort_keys=False, allow_unicode=True, default_flow_style=False)
         text.encode("utf-8")
         _write_atomically(path, text)
-    except (OSError, ValueError, yaml.YAMLError) as exc:  # UnicodeEncodeError is a ValueError
+    except (OSError, ValueError, RuntimeError, yaml.YAMLError) as exc:  # a UnicodeEncodeError is a ValueError; a link loop a RuntimeError
         return f"cannot write the answers to {path}: {exc}"
     return None
 
 
 def _same_file(first: Path, second: Path) -> bool:
     """Whether the two paths are one file: the same path, or a link, symbolic or hard, to it."""
-    if first.resolve() == second.resolve():
-        return True
     try:
+        if first.resolve() == second.resolve():
+            return True
         return os.path.samefile(first, second)
-    except OSError:  # one of them is not there
+    except (OSError, RuntimeError):  # one of them is not there, or a symbolic link loops
         return False
 
 
