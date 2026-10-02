@@ -515,3 +515,54 @@ def test_a_result_is_built_by_keyword_so_an_old_positional_call_fails_loudly():
     with pytest.raises(TypeError):
         ValidationResult([], [])
     assert ValidationResult(diagnostics=[], index=legaldown.DocumentIndex()).is_valid
+
+
+# relative_path and the paths a loader is asked for -----------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "relative"),
+    [
+        ("a.lgd", "a.lgd"), ("./a.lgd", "a.lgd"), ("sub/../a.lgd", "a.lgd"), ("sub//b.lgd", "sub/b.lgd"),
+        ("../a.lgd", None), ("sub/../../a.lgd", None), ("..", None), (".", None), ("", None),
+        ("/etc/passwd", None), ("C:/x.lgd", None), ("C:x.lgd", None), ("c:\\x.lgd", None),
+        ("..\\secret.lgd", None), ("sub\\a.lgd", None), ("a\0b.lgd", None),
+    ],
+)
+def test_a_path_a_document_names_is_within_its_directory_or_none(path, relative):
+    from legaldown.files import relative_path
+
+    assert relative_path(path) == relative
+
+
+@pytest.mark.parametrize("hostile", ["../../secret.lgd", "/etc/passwd.lgd", "..\\secret.lgd", "C:/x.lgd", "C:x.lgd"])
+def test_a_loader_is_never_asked_for_a_path_outside_the_directory(hostile):
+    asked: list[str] = []
+
+    def resolve(path: str) -> str | None:
+        asked.append(path)
+        return None
+
+    validate(parse(_AMENDMENT.format(file=hostile)), resolve=resolve)
+    text = f"---\ntitle: T\n---\n\n# A {{#a}}\n\n{{{{include: {hostile}}}}}\n"
+    template = legaldown.parse_template(text, resolve=resolve)
+    assert "include-file-missing" in [d.rule for d in template.problems]
+    with pytest.warns(DeprecationWarning):
+        assert not legaldown.assemble(text, {}, load_file=resolve).ok
+    assert asked == []
+
+
+def test_a_symbolic_link_inside_the_directory_to_a_file_outside_it_is_not_read(tmp_path):
+    base = tmp_path / "base"
+    base.mkdir()
+    (tmp_path / "outside.lgd").write_text("secret", encoding="utf-8")
+    try:
+        (base / "link.lgd").symlink_to(tmp_path / "outside.lgd")
+        (base / "dirlink").symlink_to(tmp_path)
+    except OSError:
+        pytest.skip("symbolic links are not available")
+    load_file = file_loader(base)
+    assert load_file("link.lgd") is None and load_file("dirlink/outside.lgd") is None
+    (base / "inside.lgd").write_text("fine", encoding="utf-8")
+    (base / "alias.lgd").symlink_to(base / "inside.lgd")
+    assert load_file("alias.lgd") == "fine"  # a link that stays within is read

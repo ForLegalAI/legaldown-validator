@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from legaldown import CAPABILITIES, Template, assemble
+from legaldown import CAPABILITIES, Template, assemble, parse_template
 from legaldown.parser import parse
 from legaldown.validator import validate
 
@@ -318,3 +318,8 @@ def test_assembly_case_assembles_byte_for_byte(case: Path):
     # And a ``Template`` with its ``Form`` assembles the same bytes, and says assembly can run.
     form, through_a_form = _assemble_case_with_a_form(case / "template.lgd", case / "answers.yaml")
     assert form.ready and (through_a_form.output, through_a_form.files) == (result.output, result.files)
+    # ... and so does the public door, with the validator's template rules on: the fixtures are valid templates.
+    loaded = yaml.safe_load(_read(case / "answers.yaml")) or {}
+    public = parse_template(_read(case / "template.lgd"), resolve=_loader(case)).form(loaded)
+    assert public.ready, (public.diagnostics, public._template.problems)
+    assert (public.assemble().output, public.assemble().files) == (result.output, result.files)

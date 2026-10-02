@@ -130,6 +130,14 @@ Directories are searched recursively for `*.lgd`, `*.legaldown`, and `*.legal.md
 **Exit codes:** `0` clean · `1` diagnostics found (errors, or any diagnostic under `--strict`) ·
 `2` a file could not be read.
 
+**Changed in 0.4.0:** a document that amends another (`amends.file`, §7.5) or declares LegalDown
+attachment files (§12.4) is now checked against the definitions those files declare, read from beside
+it (never from outside its directory). Before, `legaldown validate` never read them, so a term only the
+amended original defines was an Info (`amend-term-unresolvable`) and is now found, and an
+`amend-def-override` or `def-duplicate-id` can be reported that was not. A CI check on such documents
+can start to fail for that reason: it is the specification's result, and the files must be beside the
+document. A file that is not there, or cannot be read, is as if it had not been asked for.
+
 ### Assembling a template
 
 ```bash
@@ -151,7 +159,8 @@ answer is checked as it is typed. A decision is asked again until it is answered
 a value question to its default, or its blank. The prompts go to standard error, so standard output
 (or `-o`) is still the assembled template. Without a terminal on standard input, `-i` lists what must
 still be answered and exits 1, or assembles if nothing must be. At the end of the input the interview
-stops; Ctrl-C stops it (exit 2). A template that cannot be assembled asks nothing: its problems are
+stops and assembly goes on with what was answered (the questions left are left to their defaults or
+blanks, or refuse the assembly if they are decisions); Ctrl-C stops it (exit 2). A template that cannot be assembled asks nothing: its problems are
 reported first. `--save-answers FILE` writes the answers used, with those typed, as YAML — also
 after an interruption or a failure, so that typing is not lost — and the file is an answers set for
 the next run. It is written as a whole or not at all, beside the file and moved into place, so it may
@@ -562,8 +571,8 @@ checks and what it does not.
 > differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
 > (the functions ask them after the body), and it refuses a template that has Errors in the
 > validator's template rules (the functions assemble it). `legaldown assemble` follows the new API,
-> and puts the shapes of its answers file right (`template.coerce`): `fee: 5000` and `5000 EUR` are
-> accepted for a money question, `no` for a boolean, and surrounding spaces of a text answer are
+> and puts the shapes of its answers file right (`template.coerce`): `5000 EUR` is accepted for a money
+> question (and `fee: 5000`, where its placeholders fix the currency), `no` for a boolean, and surrounding spaces of a text answer are
 > dropped, which were `answer-invalid` before. A `Question` is now a fixed value.
 
 ## Scope

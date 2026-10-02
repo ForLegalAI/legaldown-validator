@@ -842,10 +842,23 @@ def test_accepts_says_what_a_question_takes_as_data():
     assert parse_template("---\ntitle: '{{placeholder: name}}'\n---\n").questions[0].accepts["frontmatter"] is True
 
 
-def test_the_hint_and_from_text_follow_the_recorded_placeholders_over_a_changed_currency():
+def test_a_copied_question_with_another_currency_agrees_with_itself():
     price = _asking()["price"]
-    changed = dataclasses.replace(price, currency="USD")
-    assert changed.hint == price.hint and changed.from_text("5") == "5"  # the placeholders fix EUR, not USD
+    changed = dataclasses.replace(price, currency="USD")  # the placeholders' record is not part of the value
+    assert changed.hint == "an amount, like 5000 (in USD)" and changed.from_text("5") == "5"
+    assert changed.problem("5") is None and changed.problem({"amount": "5", "currency": "EUR"}) is not None
+
+
+def test_a_question_as_data_is_plain_data():
+    template = parse_template(_ASKING)
+    for question in template.questions:
+        data = dataclasses.asdict(question)
+        assert "_blank" not in data and "_info" not in data
+        assert [f.name for f in dataclasses.fields(question)] == [
+            "id", "type", "prompt", "default", "choices", "currency", "unit", "declared"
+        ]
+        json.dumps(data, default=str)  # no set, no private object in it
+    assert json.dumps([dataclasses.asdict(q) for q in template.questions])
 
 
 # ── The form as data ─────────────────────────────────────────────
@@ -943,9 +956,22 @@ def test_a_set_or_map_holding_an_integer_too_long_to_write_is_still_data():
 
 
 @pytest.mark.parametrize("text", ["a\x1bb", "a\x00b", "a\x7fb", "a\x08b", "a\x01"])
-def test_text_with_a_control_character_is_not_an_answer(text):
+def test_text_with_a_control_character_is_not_what_a_person_may_type(text):
     who = _asking()["who"]
-    assert who.problem(text) is not None
     with pytest.raises(ValueError, match="control character"):
         who.from_text(text)
-    assert who.problem("a\tb") is None  # a tab inside text is text
+    assert who.from_text("a\tb") == "a\tb"  # a tab inside text is text
+
+
+def test_what_the_specification_accepts_as_a_text_answer_is_still_accepted():
+    """§15.7.1: a text answer is a non-empty string with no line break, and no space or tab at either end.
+    The check of an answer is exactly that; only what is typed is held to more."""
+    who = _asking()["who"]
+    for answer in ("Acme\x07Corp", "Bell\x1bX", "a\x00b", "caf\u00e9", "tab\tinside", "\udcff"):
+        assert who.problem(answer) is None, answer
+    for answer in ("", " x", "x ", "x\t", "a\nb", "a\rb", "a\u2028b", 5, None):
+        assert who.problem(answer) is not None, answer
+    # a template whose default holds a control character is as valid as it was
+    text = "---\ntitle: T\nquestions:\n  who:\n    type: text\n    default: \"Acme\\aCorp\"\n---\n\nHi {{placeholder: who}}.\n"
+    template = parse_template(text)
+    assert template.problems == () and template.form({}).ready

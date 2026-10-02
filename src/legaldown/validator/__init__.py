@@ -29,7 +29,7 @@ __all__ = [
     "is_template",
     "is_drafting_note",
     "DefinitionsImporter",
-    "AttachmentDefinitionsImporter",
+    "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0
     # Result types
     "ValidationResult",
     "DocumentIndex",

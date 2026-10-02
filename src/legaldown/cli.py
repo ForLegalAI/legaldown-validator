@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -161,13 +162,15 @@ def _read(path: Path) -> str:
         return handle.read()
 
 
-def _write_stdout(text: str) -> None:
+def _write_stdout(text: str, errors: str = "strict") -> None:
     """*text* to standard output as UTF-8 bytes, whatever the terminal's encoding
-    and line-break translation."""
+    and line-break translation. A character UTF-8 cannot hold (a lone surrogate) is
+    an error, unless *errors* says to write it escaped."""
+    data = text.encode("utf-8", errors=errors)  # before anything is written
     sys.stdout.flush()
     stream = getattr(sys.stdout, "buffer", None)
     if stream is not None:
-        stream.write(text.encode("utf-8"))
+        stream.write(data)
         stream.flush()
     else:
         sys.stdout.write(text)
@@ -175,13 +178,23 @@ def _write_stdout(text: str) -> None:
 
 def _write_atomically(path: Path, text: str) -> None:
     """*text* to *path*: all of it, or the file as it was — written beside it and
-    moved into place, since the file may be the answers a person typed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    moved into place, since the file may be the answers a person typed. A symbolic
+    link is written through, and the file keeps its permissions (a new one gets
+    those a file made now would have)."""
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        mode = stat.S_IMODE(target.stat().st_mode)
+    else:
+        mask = os.umask(0)
+        os.umask(mask)
+        mode = 0o666 & ~mask
+    descriptor, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
-        os.replace(name, path)
+        os.chmod(name, mode)
+        os.replace(name, target)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(name)
@@ -308,6 +321,9 @@ def _run_assemble(args: argparse.Namespace) -> int:
 
 def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
     template_path = Path(args.template)
+    if args.save_answers and Path(args.save_answers).resolve() == template_path.resolve():
+        print("error: --save-answers names the template itself; it would be overwritten", file=sys.stderr)
+        return EXIT_ERROR
     answers, failure = _read_answers(Path(args.answers) if args.answers else None)
     state["answers"] = answers
     result = None
@@ -330,7 +346,8 @@ def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
             answers = state["answers"] = template.coerce(answers)
             if args.interactive and not template.problems:  # a template that cannot be assembled asks nothing
                 if sys.stdin.isatty():
-                    _interview(template, answers)
+                    if not _interview(template, answers):
+                        _say("End of the input: the questions left are left to their defaults, or their blanks.")
                 else:
                     report = _missing_report(template, answers)
                     if report:
@@ -359,7 +376,12 @@ def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
             )
             return EXIT_ERROR
         # Bytes, so that no platform translates the template's line breaks.
-        _write_stdout(result.output)
+        try:
+            _write_stdout(result.output)
+        except UnicodeEncodeError as exc:
+            print(f"error: the assembled template holds text that cannot be written as UTF-8 ({exc.reason}); "
+                  f"it was not written", file=sys.stderr)
+            return EXIT_ERROR
         return EXIT_OK
 
     out = Path(args.output)
@@ -381,7 +403,7 @@ def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
     for relative, text in outputs.items():
         try:
             _write(targets[relative], text)  # an emptied file is written as zero bytes
-        except OSError as exc:
+        except (OSError, UnicodeEncodeError) as exc:
             print(f"error: cannot write {relative}: {exc}; the output is incomplete", file=sys.stderr)
             return EXIT_ERROR
     return EXIT_OK
@@ -441,7 +463,8 @@ def _run_questions(args: argparse.Namespace) -> int:
     if template is None:  # frontmatter that cannot be read
         if args.format == "json":
             _write_stdout(json.dumps({"ready": False, "complete": False, "problems": problems,
-                                      "diagnostics": [], "questions": []}, indent=2, allow_nan=False) + "\n")
+                                      "diagnostics": [], "questions": []}, indent=2, allow_nan=False) + "\n",
+                          errors="backslashreplace")
         else:
             for d in problems:
                 print(f"{args.template}: {d['level']}: [{d['rule']}] {d['message']}", file=sys.stderr)
@@ -458,7 +481,7 @@ def _run_questions(args: argparse.Namespace) -> int:
         print(f"error: internal error while listing the questions of {args.template}: "
               f"{type(exc).__name__}: {exc} (please report this)", file=sys.stderr)
         return EXIT_ERROR
-    _write_stdout(text)
+    _write_stdout(text, errors="backslashreplace")
     if problems_found or (args.check and not ready):
         return EXIT_DIAGNOSTICS
     return EXIT_OK

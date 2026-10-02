@@ -7,7 +7,6 @@ across implementations (§16.9).
 """
 from __future__ import annotations
 
-import posixpath
 import re
 import warnings
 from collections.abc import Callable, Iterator
@@ -26,7 +25,7 @@ from ..directives import (
     lex,
     mask_directives,
 )
-from ..files import LoadFile, file_loader, within
+from ..files import LoadFile, file_loader, relative_path, within
 from ..markdown import HTML_COMMENT_RE, INLINE_HTML_RE, is_comment_only
 from ..models import LIST_KINDS, Amends, Document
 from ..positions import Locator
@@ -675,9 +674,10 @@ def _definitions_in(document: Document, resolve: LoadFile | None, path: str) -> 
 
     # Asked for as assembly asks (§15.7): normalized, and only a path within
     # the document's directory (§2.3).
-    path = posixpath.normpath(path) if path else path
-    if resolve is None or not path or posixpath.isabs(path) or path == ".." or path.startswith("../"):
+    relative = relative_path(path)
+    if resolve is None or relative is None:
         return None
+    path = relative
     # A document that names itself has nothing to add to itself.
     if document.path is not None and within(document.path.parent, path) == document.path.resolve():
         return None

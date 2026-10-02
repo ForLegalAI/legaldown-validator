@@ -17,6 +17,19 @@ from pathlib import Path
 LoadFile = Callable[[str], "str | None"]
 
 
+def relative_path(path: str) -> str | None:
+    """*path*, as a document names a file it refers to, normalized — ``/``-separated,
+    within the directory of the document (§2.3) — or None when it is not such a path:
+    empty, absolute, with a drive letter or a backslash or a null byte, or leading out
+    of the directory. A ``LoadFile`` is asked for these paths and no others."""
+    if not path or "\\" in path or "\0" in path or posixpath.isabs(path) or (len(path) > 1 and path[0].isalpha() and path[1] == ":"):
+        return None
+    normalized = posixpath.normpath(path)
+    if normalized in (".", "..") or normalized.startswith("../"):
+        return None
+    return normalized
+
+
 def file_loader(base: str | os.PathLike[str]) -> LoadFile:
     """A ``LoadFile`` reading from directory *base* on disk.
 

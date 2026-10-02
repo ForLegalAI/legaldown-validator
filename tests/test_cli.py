@@ -685,3 +685,63 @@ def test_keys_typed_as_escape_sequences_are_not_an_answer(write, capsys, monkeyp
     assert main(["assemble", str(template), "-i"]) == EXIT_OK
     captured = capsys.readouterr()
     assert "Hi Ann." in captured.out and "\x1b" not in captured.out and "control character" in captured.err
+
+
+# ── --save-answers keeps what it replaces ─────────────────────────
+
+
+def test_saving_the_answers_keeps_the_permissions_of_the_file_it_replaces(write, tmp_path):
+    import os
+    import stat
+
+    from legaldown.cli import _save_answers
+
+    saved = tmp_path / "a.yaml"
+    saved.write_text("who: Old\n", encoding="utf-8")
+    os.chmod(saved, 0o640)
+    assert _save_answers(saved, {"who": "New"}) is None
+    assert stat.S_IMODE(saved.stat().st_mode) == 0o640
+    fresh = tmp_path / "new" / "b.yaml"
+    assert _save_answers(fresh, {"who": "New"}) is None
+    mask = os.umask(0)
+    os.umask(mask)
+    assert stat.S_IMODE(fresh.stat().st_mode) == 0o666 & ~mask  # not the 0600 of a temporary file
+
+
+def test_saving_the_answers_writes_through_a_symbolic_link(tmp_path):
+    from legaldown.cli import _save_answers
+
+    real = tmp_path / "real.yaml"
+    real.write_text("who: Old\n", encoding="utf-8")
+    link = tmp_path / "link.yaml"
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("symbolic links are not available")
+    assert _save_answers(link, {"who": "New"}) is None
+    assert link.is_symlink() and yaml.safe_load(real.read_text(encoding="utf-8")) == {"who": "New"}
+
+
+def test_the_answers_are_never_saved_over_the_template(write, capsys):
+    template = write("t.lgd", _INTERVIEW)
+    before = template.read_text(encoding="utf-8")
+    assert main(["assemble", str(template), "--save-answers", str(template)]) == EXIT_ERROR
+    assert "names the template itself" in capsys.readouterr().err
+    assert template.read_text(encoding="utf-8") == before
+
+
+def test_an_answer_that_cannot_be_written_as_utf8_is_an_error_not_a_traceback(write, capsys):
+    template = write("t.lgd", _INTERVIEW)
+    answers = write("a.yaml", 'x: no\nwho: "\\uDCFF"\n')
+    assert main(["assemble", str(template), "--answers", str(answers)]) == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert captured.out == "" and "cannot be written as UTF-8" in captured.err
+    code = main(["questions", str(template), "--answers", str(answers), "--format", "json"])
+    assert code == EXIT_OK and "\\udcff" in capsys.readouterr().out  # described, escaped
+
+
+def test_the_end_of_the_input_is_said(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW)
+    _type(monkeypatch, "no")  # who is not answered: the input ends
+    assert main(["assemble", str(template), "-i"]) == EXIT_OK
+    assert "End of the input" in capsys.readouterr().err

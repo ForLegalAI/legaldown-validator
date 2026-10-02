@@ -34,14 +34,14 @@ import re
 import reprlib
 import warnings
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from datetime import date
 from functools import cache
 from typing import Any
 
 from .definitions import list_fragments
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
-from .files import LoadFile
+from .files import LoadFile, relative_path
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
@@ -122,7 +122,7 @@ class AssemblyResult:
         return not any(d.level == "error" for d in self.diagnostics)
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(frozen=True)
 class Question:
     """One question the person filling a template is asked (§15.2): declared
     in ``questions``, or implicit — an undeclared placeholder, with no prompt
@@ -144,14 +144,16 @@ class Question:
     unit: str | None = None
     declared: bool = True
     #: What the placeholders of the question fix (``Blank``): every code, and
-    #: whether one is in frontmatter, which ``problem`` needs. A question made
-    #: without it behaves as if its placeholders fix the ``currency`` or ``unit``
-    #: it names, if any, and none is in frontmatter.
-    _blank: Blank | None = field(default=None, compare=False, repr=False)
+    #: whether one is in frontmatter, which ``problem`` needs. Not a field: it is
+    #: not part of the value (``asdict``, ``replace`` and equality leave it out). A
+    #: question made without it behaves as if its placeholders fix the ``currency``
+    #: or ``unit`` it names, if any, and none is in frontmatter.
+    _blank: InitVar[Blank | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _blank: Blank | None) -> None:
         object.__setattr__(self, "choices", dict(self.choices or {}))
         object.__setattr__(self, "default", copy.deepcopy(self.default))
+        object.__setattr__(self, "_info", _blank)
 
     @property
     def is_decision(self) -> bool:
@@ -166,8 +168,8 @@ class Question:
 
     def _placeholders(self) -> Blank | None:
         """What the placeholders fix: as recorded, else as ``currency``/``unit`` name."""
-        if self._blank is not None:
-            return self._blank
+        if self._info is not None:
+            return self._info
         fixed = self.currency if self.type == "money" else self.unit if self.type == "duration" else None
         return Blank(type=self.type, codes={fixed}) if fixed else None
 
@@ -204,7 +206,7 @@ class Question:
             if self._fixed:
                 return f"a number, like 30 (in {self._fixed})"
             return f"a number and a unit, like 30 D (units: {', '.join(DURATION_UNITS)})"
-        if self._blank is not None and self._blank.in_frontmatter:
+        if self._info is not None and self._info.in_frontmatter:
             return "text, without '{{'"
         return "text"
 
@@ -225,7 +227,7 @@ class Question:
             return {"kind": "money", "currency": self._fixed}
         if self.type == "duration":
             return {"kind": "duration", "unit": self._fixed, "units": list(DURATION_UNITS)}
-        return {"kind": "text", "frontmatter": bool(self._blank is not None and self._blank.in_frontmatter)}
+        return {"kind": "text", "frontmatter": bool(self._info is not None and self._info.in_frontmatter)}
 
     def to_text(self, answer: Any) -> str:
         """*answer* as a person would type it — the inverse of :meth:`from_text`:
@@ -272,6 +274,15 @@ class Question:
         if not text:
             return None
         value = self._answer_from(text)
+        if self.type not in ("boolean", "choice", "date", "money", "duration"):
+            # What a person types is held to more than the specification asks of an
+            # answer (§15.7.1): no key's escape sequence, no byte that is no UTF-8.
+            if _CONTROL_RE.search(value):
+                raise ValueError(f"Enter {self.hint}. (it must not contain a control character)")
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(f"Enter {self.hint}. (it must be text that can be written as UTF-8)") from None
         problem = self.problem(value)
         if problem:
             # Said as the question is, where what is wrong is not the shape of what was typed.
@@ -319,6 +330,11 @@ class Question:
             names = ("amount", "currency") if self.type == "money" else ("value", "unit")
             return {names[0]: amount, names[1]: code}
         return text
+
+
+#: C0 controls but the tab (line breaks are refused by ``problem``), and DEL: what a terminal's
+#: keys and escape sequences say, not text.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 def _describer() -> reprlib.Repr:
@@ -898,7 +914,9 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     for path, kind in wanted:
         if path in subs:
             continue
-        text = load_file(path) if load_file is not None else None
+        # Only a path within the template's directory (§2.3) is asked for: a loader is
+        # not handed ``../x``, an absolute path or a drive letter to open.
+        text = load_file(path) if load_file is not None and relative_path(path) is not None else None
         if text is None:
             reason = "cannot be read" if load_file else "needs the Full level (§17.6)"
             message = f"'{path}' {reason}; the template is not assembled."

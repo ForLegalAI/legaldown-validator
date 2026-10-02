@@ -110,7 +110,7 @@ __version__ = "0.4.0"
 CONFORMANCE_LEVEL = "core"
 
 #: Named capabilities claimed besides the level (§17.6): template assembly,
-#: for single-file templates; a caller-supplied ``load_file`` also lets it
+#: for single-file templates; a caller-supplied ``resolve`` also lets it
 #: read include fragments and LegalDown attachment files.
 CAPABILITIES: frozenset[str] = frozenset({"assembly"})
 
@@ -165,7 +165,7 @@ __all__ = [
     "KNOWN_DIRECTIVES",
     "render_block",
     "render_item",
-    "AttachmentDefinitionsImporter",
+    "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0
     # Result types
     "ValidationResult",
     "DocumentIndex",
@@ -203,5 +203,5 @@ __all__ = [
     # Utilities
     "collect_source_directives",
     "slugify_identifier",
-    "DefinitionsImporter",
+    "DefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate(resolve=)``
 ]
