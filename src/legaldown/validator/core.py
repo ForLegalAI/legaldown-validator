@@ -7,6 +7,7 @@ across implementations (§16.9).
 """
 from __future__ import annotations
 
+import posixpath
 import re
 import warnings
 from collections.abc import Callable, Iterator
@@ -659,11 +660,10 @@ def _resolver(
         return resolve
     if resolve is None and document.path is not None:
         read = file_loader(document.path.parent)
-        own = document.path.resolve()
 
         def resolve(relative: str) -> str | None:
             # A document that names itself has nothing to add to itself.
-            return None if within(document.path.parent, relative) == own else read(relative)
+            return None if within(document.path.parent, relative) == document.path.resolve() else read(relative)
 
     return resolve
 
@@ -677,7 +677,12 @@ def _definitions_in(resolve: LoadFile | None, path: str) -> dict[str, str] | Non
     from ..definitions import collect_definitions, definition_lookup
     from ..parser import FrontmatterError, parse
 
-    text = resolve(path) if resolve is not None else None
+    # Asked for as assembly asks (§15.7): normalized, and only a path within
+    # the document's directory (§2.3).
+    path = posixpath.normpath(path) if path else path
+    if resolve is None or not path or posixpath.isabs(path) or path == ".." or path.startswith("../"):
+        return None
+    text = resolve(path)
     if text is None:
         return None
     try:

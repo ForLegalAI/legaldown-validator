@@ -286,3 +286,21 @@ def test_validate_reads_the_amended_original_beside_the_document(tmp_path, capsy
     diagnostics = json.loads(capsys.readouterr().out)["diagnostics"]
     assert diagnostics  # the document's own findings are still reported
     assert not {"amend-term-unresolvable", "amend-term-undefined"} & {d["rule"] for d in diagnostics}
+
+
+def test_a_fault_while_validating_is_an_internal_error_and_the_others_are_still_validated(write, capsys, monkeypatch):
+    import legaldown.cli
+
+    real = legaldown.cli.validate
+
+    def broken(document, **options):
+        if document.filename == "a.lgd":
+            raise AttributeError("boom")
+        return real(document, **options)
+
+    monkeypatch.setattr(legaldown.cli, "validate", broken)
+    first, second = write("a.lgd", _VALID), write("b.lgd", _BROKEN)
+    assert main(["validate", "--format", "json", str(first), str(second)]) == EXIT_ERROR
+    captured = capsys.readouterr()
+    assert "ref-broken" in [d["rule"] for d in json.loads(captured.out)["diagnostics"]]  # b.lgd
+    assert "internal error while validating" in captured.err and "AttributeError" in captured.err

@@ -60,7 +60,14 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
             f"(please report this)"
         )
 
-    result = validate(document, final=final)
+    try:
+        result = validate(document, final=final)
+    except Exception as exc:
+        # As above: validating reads the files the document refers to, too.
+        return [], (
+            f"internal error while validating {path}: {type(exc).__name__}: {exc} "
+            f"(please report this)"
+        )
     return [
         {
             "file": str(path),

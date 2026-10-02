@@ -469,3 +469,15 @@ def test_one_importer_does_not_start_reading_the_other_files_from_disk(tmp_path)
         # An importer for the attachments only: the amended original is still not read, as it never was.
         result = validate(document, import_attachment_definitions=lambda _file: {})
     assert "amend-term-unresolvable" in result.rules()
+
+
+@pytest.mark.parametrize(
+    ("written", "asked"),
+    [("original.lgd", ["original.lgd"]), ("./sub/../original.lgd", ["original.lgd"]),
+     ("../original.lgd", []), ("/original.lgd", []), ("sub/../../original.lgd", [])],
+)
+def test_a_resolver_is_asked_for_a_normalized_path_within_the_directory(written, asked):
+    document = parse(_AMENDMENT.format(file=written))
+    seen: list[str] = []
+    validate(document, resolve=lambda path: seen.append(path))
+    assert seen == asked
