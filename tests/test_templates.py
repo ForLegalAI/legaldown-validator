@@ -93,8 +93,8 @@ def test_a_declared_value_question_gives_the_placeholder_its_type():
     takes currency without writing type=money."""
     result = _validate(_QUESTIONS, "Pay {{placeholder: fee, currency=EUR}} from {{placeholder: start}}.")
     assert "directive-unknown-param" not in result.rules()
-    assert ("fee", "money") in result.inline_placeholders
-    assert ("start", "date") in result.inline_placeholders
+    assert ("fee", "money") in result.index.values.placeholders
+    assert ("start", "date") in result.index.values.placeholders
 
 
 def test_inline_type_must_equal_the_declared_type():
@@ -769,7 +769,7 @@ def test_a_lazy_line_continues_its_list_item():
     assert [[item_text(item) for item in b.items] for b in document.sections[0].blocks] == [["item\ncontinued {#item}"]]
     result = validate(document)
     assert "anchor-misplaced" not in result.rules()
-    assert "item" in result.section_lookup
+    assert "item" in result.index.section_lookup
 
 
 def test_a_lazy_line_continues_its_quote():

@@ -88,6 +88,8 @@ from .validator import (
     AttachmentDefinitionsImporter,
     DefinitionsImporter,
     Diagnostic,
+    DocumentIndex,
+    InlineValues,
     PlacedMarker,
     SectionIndexEntry,
     ValidationResult,
@@ -159,6 +161,8 @@ __all__ = [
     "AttachmentDefinitionsImporter",
     # Result types
     "ValidationResult",
+    "DocumentIndex",
+    "InlineValues",
     "SectionIndexEntry",
     "Diagnostic",
     "PlacedMarker",

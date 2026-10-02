@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -86,32 +86,56 @@ Line = int | None | Callable[[], "int | None"]
 
 
 @dataclass(slots=True)
-class ValidationResult:
-    """Output of ``validate``: the diagnostics found, and the indices the
-    checks built.
+class InlineValues:
+    """The field-spec values found in the body: each ``(value, qualifier)``
+    pair, in document order. ``dates`` are the ISO dates alone."""
+    dates: list[str] = field(default_factory=list)
+    #: ``(amount, currency)``
+    money: list[tuple[str, str]] = field(default_factory=list)
+    #: ``(amount, unit)``
+    durations: list[tuple[str, str]] = field(default_factory=list)
+    #: ``(value, field type)``
+    fields: list[tuple[str, str]] = field(default_factory=list)
+    #: ``(placeholder id, type)``
+    placeholders: list[tuple[str, str]] = field(default_factory=list)
 
-    ``diagnostics`` is the authoritative record (rule id + severity +
-    message, §16.9); ``errors`` / ``warnings`` / ``infos`` are its messages by
-    severity.
-    """
-    diagnostics: list[Diagnostic] = field(default_factory=list)
+
+@dataclass(slots=True)
+class DocumentIndex:
+    """What validating a document resolved, besides what it found: the numbered
+    sections, the display text the references resolve to, the values in the
+    body, and the template facts. A renderer or a UI reuses it instead of
+    deriving it again. Built from the document as far as it is valid: an
+    invalid identifier, say, is reported in the diagnostics and not indexed."""
+    #: The numbered section index, in document order (positionally paired with
+    #: ``Document.sections``).
     sections: list[SectionIndexEntry] = field(default_factory=list)
+    #: The sections by the identifier or path a ``{{ref:}}`` names.
     section_lookup: dict[str, SectionIndexEntry] = field(default_factory=dict)
+    #: Display text, by definition id, party name, side name, attachment id.
     definition_lookup: dict[str, str] = field(default_factory=dict)
     party_lookup: dict[str, str] = field(default_factory=dict)
     side_lookup: dict[str, str] = field(default_factory=dict)
     attachment_lookup: dict[str, str] = field(default_factory=dict)
-    inline_dates: list[str] = field(default_factory=list)
-    inline_money: list[tuple[str, str]] = field(default_factory=list)
-    inline_durations: list[tuple[str, str]] = field(default_factory=list)
-    inline_fields: list[tuple[str, str]] = field(default_factory=list)
-    inline_placeholders: list[tuple[str, str]] = field(default_factory=list)
+    values: InlineValues = field(default_factory=InlineValues)
     #: Whether the document is a template (§15.1): it declares questions,
     #: carries a condition, or holds a ``{{choose:}}``.
     is_template: bool = False
     #: The markers in body text that apply (``PlacedMarker``), in document
     #: order.
     placed_markers: list[PlacedMarker] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ValidationResult:
+    """Output of ``validate``: the diagnostics found, and the index built.
+
+    ``diagnostics`` is the authoritative record (rule id + severity +
+    message, §16.9); ``errors`` / ``warnings`` / ``infos`` are its messages by
+    severity. ``index`` is everything else validating resolved (``DocumentIndex``).
+    """
+    diagnostics: list[Diagnostic] = field(default_factory=list)
+    index: DocumentIndex = field(default_factory=DocumentIndex)
 
     def _messages(self, level: str) -> list[str]:
         return [d.message for d in self.diagnostics if d.level == level]
@@ -187,4 +211,4 @@ class _Recorder(ValidationResult):
 
     def result(self) -> ValidationResult:
         """What was recorded, as the plain ``ValidationResult``."""
-        return ValidationResult(**{f.name: getattr(self, f.name) for f in fields(ValidationResult)})
+        return ValidationResult(diagnostics=self.diagnostics, index=self.index)

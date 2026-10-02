@@ -31,7 +31,7 @@ _FRONTMATTER = "---\ntitle: T\n---\n\n"
 
 
 def _markers(body: str) -> list[PlacedMarker]:
-    return validate(parse(_FRONTMATTER + body)).placed_markers
+    return validate(parse(_FRONTMATTER + body)).index.placed_markers
 
 
 @pytest.mark.parametrize("module", [legaldown, legaldown.validator])
@@ -51,7 +51,7 @@ def test_the_renderers_names_are_public():
 
 def test_a_result_built_directly_has_neither_decision():
     result = ValidationResult()
-    assert (result.is_template, result.placed_markers) == (False, [])
+    assert (result.index.is_template, result.index.placed_markers) == (False, [])
 
 
 def test_a_marker_ending_a_paragraph_over_lines():
@@ -80,8 +80,8 @@ def test_an_include_only_paragraphs_identifier_does_not_apply():
 def test_a_preamble_condition_applies_only_in_a_template():
     assert _markers("Intro {when=a}\n\n# A\n\nText.\n") == []
     result = validate(parse(_FRONTMATTER + "Intro {when=a}\n\n# A {when=b}\n\nText.\n"))
-    assert result.is_template
-    assert [(m.section, m.condition) for m in result.placed_markers] == [(None, "a")]
+    assert result.index.is_template
+    assert [(m.section, m.condition) for m in result.index.placed_markers] == [(None, "a")]
 
 
 def test_the_offset_is_the_markers_not_a_copy_in_a_comment():
@@ -102,7 +102,7 @@ def test_a_marker_out_of_place_is_not_placed(body):
 
 def test_a_document_built_in_code_has_no_lines():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": "Text {#t}"}]}]})
-    [marker] = validate(document).placed_markers
+    [marker] = validate(document).index.placed_markers
     assert (marker.identifier, marker.line) == ("t", None)
 
 
@@ -134,15 +134,15 @@ def test_the_decisions_are_the_validators_own(path: Path):
     except legaldown.FrontmatterError:
         pytest.skip("unreadable frontmatter")
     result = validate(document)
-    assert result.is_template == is_template(document)
-    found = [f for f in find_markers(document, lex) if f.marker is not None and f.placed(result.is_template)]
-    assert [(m.section, m.block, m.fragment, m.offset, m.source) for m in result.placed_markers] == [
+    assert result.index.is_template == is_template(document)
+    found = [f for f in find_markers(document, lex) if f.marker is not None and f.placed(result.index.is_template)]
+    assert [(m.section, m.block, m.fragment, m.offset, m.source) for m in result.index.placed_markers] == [
         (f.section, f.block, f.fragment, f.offset, f.source) for f in found
     ]
-    places = [(m.section, m.block, m.fragment) for m in result.placed_markers]
+    places = [(m.section, m.block, m.fragment) for m in result.index.placed_markers]
     assert len(places) == len(set(places))
     lines = path.read_text(encoding="utf-8").split("\n")
-    for marker in result.placed_markers:
+    for marker in result.index.placed_markers:
         blocks = document.preamble if marker.section is None else document.sections[marker.section].blocks
         text = block_fragments(blocks[marker.block])[marker.fragment][0]
         assert text[marker.offset:marker.offset + len(marker.source)] == marker.source
@@ -180,14 +180,14 @@ def test_a_list_is_walked_once(monkeypatch):
 def test_a_document_changed_since_parsing_has_no_lines():
     document = parse(_FRONTMATTER + "# A\n\nText {#t}\n\n- a {#b}\n")
     document.sections[0].blocks.insert(0, document.sections[0].blocks[0])
-    assert [m.line for m in validate(document).placed_markers] == [None, None, None]
+    assert [m.line for m in validate(document).index.placed_markers] == [None, None, None]
 
 
 def test_a_list_of_string_items_built_in_code():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a {#x}", "b\n\n  - c {#y}"]},
     ]}]})
-    assert [(m.identifier, m.item) for m in validate(document).placed_markers] == [("x", 0), ("y", 2)]
+    assert [(m.identifier, m.item) for m in validate(document).index.placed_markers] == [("x", 0), ("y", 2)]
 
 
 def test_two_lists_in_a_section_number_their_own_items():
@@ -481,3 +481,37 @@ def test_a_resolver_is_asked_for_a_normalized_path_within_the_directory(written,
     seen: list[str] = []
     validate(document, resolve=lambda path: seen.append(path))
     assert seen == asked
+
+
+# DocumentIndex ---------------------------------------------------------------
+
+
+def test_the_analysis_is_in_the_index_and_the_result_holds_findings_and_index():
+    result = validate(parse(_FRONTMATTER + "# A {#a}\n\nSee {{ref: a}}. {{date: 2026-06-01}} {{money: 5, currency=EUR}}\n"))
+    assert [f.name for f in dataclasses.fields(result)] == ["diagnostics", "index"]
+    assert isinstance(result.index, legaldown.DocumentIndex) and isinstance(result.index.values, legaldown.InlineValues)
+    assert [e.identifier for e in result.index.sections] == ["a"] and "a" in result.index.section_lookup
+    assert (result.index.values.dates, result.index.values.money) == (["2026-06-01"], [("5", "EUR")])
+    assert result.index.is_template is False and result.index.placed_markers == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [("sections", "sections"), ("section_lookup", "section_lookup"), ("definition_lookup", "definition_lookup"),
+     ("party_lookup", "party_lookup"), ("side_lookup", "side_lookup"), ("attachment_lookup", "attachment_lookup"),
+     ("inline_dates", "values.dates"), ("inline_money", "values.money"), ("inline_durations", "values.durations"),
+     ("inline_fields", "values.fields"), ("inline_placeholders", "values.placeholders"),
+     ("is_template", "is_template"), ("placed_markers", "placed_markers")],
+)
+def test_the_analysis_moved_from_the_result_to_the_index(old, new):
+    result = validate(parse(_SOURCE))
+    assert not hasattr(result, old)
+    target = result.index
+    for part in new.split("."):
+        target = getattr(target, part)  # it is there
+
+
+def test_each_validation_has_an_index_of_its_own():
+    first, second = validate(parse(_SOURCE)), validate(parse(_SOURCE))
+    assert first.index == second.index and first.index is not second.index
+    assert first.index.values is not second.index.values

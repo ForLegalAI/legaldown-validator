@@ -19,7 +19,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Diagnostic, PlacedMarker, SectionIndexEntry, ValidationResult
+from .result import Diagnostic, DocumentIndex, InlineValues, PlacedMarker, SectionIndexEntry, ValidationResult
 from .templates import is_drafting_note
 
 __all__ = [
@@ -32,6 +32,8 @@ __all__ = [
     "AttachmentDefinitionsImporter",
     # Result types
     "ValidationResult",
+    "DocumentIndex",
+    "InlineValues",
     "SectionIndexEntry",
     "Diagnostic",
     "PlacedMarker",

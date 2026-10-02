@@ -315,7 +315,7 @@ def _check_placeholder(
     ptype = _placeholder_type(directive, declared)
     if not _check_directive_arguments(directive, result, effective_type=ptype):
         return
-    result.inline_placeholders.append((pid, ptype))
+    result.index.values.placeholders.append((pid, ptype))
     if not pid or not IDENTIFIER_RE.fullmatch(pid):
         result.error(
             "placeholder-id-malformed",
@@ -550,7 +550,7 @@ def is_template(document: Document) -> bool:
     """True if *document* is a template (§15.1): it declares ``questions``,
     carries a condition — on a section, an attachment, or a placed marker —
     or contains a ``{{choose:}}``, wherever it is. ``validate``
-    reports it too (``ValidationResult.is_template``)."""
+    reports it too (``DocumentIndex.is_template``)."""
     return _is_template(document, None, lex)
 
 
@@ -829,7 +829,7 @@ def _validate(
                 seen_side_names.add(side_name)
                 # §3.6 display derivation: label, else name with hyphens
                 # replaced by spaces and each word capitalized.
-                result.side_lookup[side_name] = (
+                result.index.side_lookup[side_name] = (
                     side.label or side_name.replace("-", " ").title()
                 )
 
@@ -873,7 +873,7 @@ def _validate(
                         f"A representative of party '{party_name}' is missing the required name.",
                         line=where.key(*party_path, "representatives", rep_index, "name"),
                     )
-            result.party_lookup[party_name] = (
+            result.index.party_lookup[party_name] = (
                 party.label or party.legal_name or party_name
             )
 
@@ -941,7 +941,7 @@ def _validate(
             result.error("attachment-id-duplicate", f"Duplicate attachment id '{att.id}'.", line=where.key(*att_path))
         else:
             attachment_presence.setdefault(att.id, []).append(presence)
-            result.attachment_lookup.setdefault(att.id, att.title or att.id)
+            result.index.attachment_lookup.setdefault(att.id, att.title or att.id)
         if not att.title:
             result.error(
                 "attachment-title-empty",
@@ -1022,7 +1022,7 @@ def _validate(
 
     for section_index, section in enumerate(document.sections):
         # An out-of-range level is an Error, but the section still gets an
-        # index entry: `result.sections` is positionally paired with
+        # index entry: `result.index.sections` is positionally paired with
         # `document.sections` by callers (renderers, the editor), so skipping
         # one here would shift every later section's number and drop the last
         # one from rendered output. Numbering clamps into the valid range.
@@ -1123,10 +1123,10 @@ def _validate(
             level=level,
             number=number,
         )
-        result.sections.append(entry)
+        result.index.sections.append(entry)
         # Alternatives share an identifier: a reference resolves to
         # whichever is present after assembly; the index keeps the first.
-        result.section_lookup.setdefault(identifier, entry)
+        result.index.section_lookup.setdefault(identifier, entry)
         last_level = level
 
     # ── Markers in the body (§5.7, §12.2, §15.3) ──
@@ -1180,7 +1180,7 @@ def _validate(
             )
         else:
             anchors.setdefault(anchor_id, []).append(presence)
-            result.section_lookup.setdefault(anchor_id, result.sections[found.section])
+            result.index.section_lookup.setdefault(anchor_id, result.index.sections[found.section])
 
     # ── Definitions (§7) ──
     # The mandatory, first-positioned Definitions section is gone (§7.2). A
@@ -1235,7 +1235,7 @@ def _validate(
                 )
             continue
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
-        result.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
+        result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():
@@ -1283,7 +1283,7 @@ def _validate(
             if imported is not None:
                 _amends_import_succeeded = True
                 _imported_definitions = imported
-                for def_id in result.definition_lookup:
+                for def_id in result.index.definition_lookup:
                     if def_id in _imported_definitions:
                         result.warning(
                             "amend-def-override",
@@ -1293,7 +1293,7 @@ def _validate(
                             ),
                         )
                 for def_id, term_text in _imported_definitions.items():
-                    result.definition_lookup.setdefault(def_id, term_text)
+                    result.index.definition_lookup.setdefault(def_id, term_text)
                     # The original is always in force (§7.5), even where
                     # the amendment redefines the term under a condition.
                     declared_terms.setdefault(def_id, []).append((term_text, False, ALWAYS))
@@ -1323,7 +1323,7 @@ def _validate(
                 )
             else:
                 declared_terms.setdefault(def_id, []).append((term_text, False, presence))
-                result.definition_lookup.setdefault(def_id, term_text)
+                result.index.definition_lookup.setdefault(def_id, term_text)
 
     # ── Inline directive validation ──
     blanks: dict[str, Blank] = {}
@@ -1429,7 +1429,7 @@ def _validate(
                 elif name == "term":
                     term_targets.append((value, line))
                 elif name == "date":
-                    result.inline_dates.append(value)
+                    result.index.values.dates.append(value)
                     if not is_valid_iso_date(value):
                         result.error(
                             "date-invalid",
@@ -1437,7 +1437,7 @@ def _validate(
                         )
                 elif name == "money":
                     currency = params.get("currency", "")
-                    result.inline_money.append((value, currency))
+                    result.index.values.money.append((value, currency))
                     if not is_valid_money_amount(value):
                         result.error(
                             "money-invalid-amount",
@@ -1456,7 +1456,7 @@ def _validate(
                         )
                 elif name == "duration":
                     dur_unit = params.get("unit", "")
-                    result.inline_durations.append((value, dur_unit))
+                    result.index.values.durations.append((value, dur_unit))
                     if not is_positive_numeric(value):
                         result.error(
                             "duration-invalid-value",
@@ -1471,7 +1471,7 @@ def _validate(
                             "party-name-malformed",
                             f"Party directive has invalid role value '{value}'. Must match [a-z][a-z0-9-]*.", line=line,
                         )
-                    elif value not in result.party_lookup:
+                    elif value not in result.index.party_lookup:
                         result.error(
                             "party-unknown",
                             f"Party directive references unknown party: '{value}'.", line=line,
@@ -1507,7 +1507,7 @@ def _validate(
                             "field-type-undeclared",
                             f"Field type '{ftype}' is not declared in field_types.", line=line,
                         )
-                    result.inline_fields.append((value, ftype))
+                    result.index.values.fields.append((value, ftype))
                 elif name == "choose":
                     with result.at(line):
                         check_choose(directive, questions, result)
@@ -1519,7 +1519,7 @@ def _validate(
                             f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.", line=line,
                         )
         for target, line in ref_targets:
-            if target in result.section_lookup:
+            if target in result.index.section_lookup:
                 continue
             if target in attachment_ids:
                 # §5.6: attachments live in the anchor namespace but are
@@ -1533,7 +1533,7 @@ def _validate(
                 result.error("ref-broken", f"Broken section reference: '{target}'.", line=line)
         for target, line in term_targets:
             result.used_terms.add(target)
-            if target not in result.definition_lookup:
+            if target not in result.index.definition_lookup:
                 if document.metadata.amends:
                     if _amends_is_legaldown and _amends_import_succeeded:
                         result.error(
@@ -1663,7 +1663,7 @@ def _validate(
     for ref in definition_refs:
         if ref.id in _warned_defs:
             continue
-        if ref.id in result.definition_lookup and ref.id not in result.used_terms:
+        if ref.id in result.index.definition_lookup and ref.id not in result.used_terms:
             _warned_defs.add(ref.id)
             result.warning(
                 "def-unreferenced",
@@ -1673,8 +1673,8 @@ def _validate(
 
     # What a renderer builds from: the template decision and the markers
     # that apply, as every check above read them.
-    result.is_template = template
-    result.placed_markers = _placed_markers(document, markers, template, marker_line)
+    result.index.is_template = template
+    result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
 
     if document.filename:
         result.diagnostics = [replace(d, file=document.filename) for d in result.diagnostics]

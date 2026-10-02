@@ -79,7 +79,7 @@ def test_a_conditional_heading_round_trips_and_its_identifier_is_generated():
     assert (section.title, section.identifier, section.condition) == ("Services", "", "vat")
     assert "\n# Services {when=vat}\n" in serialize_document(document)
     result = validate(document)
-    assert result.sections[0].identifier == "services"
+    assert result.index.sections[0].identifier == "services"
     assert document.sections[0].identifier == ""  # validation leaves the document as it was
 
 
@@ -198,20 +198,20 @@ def test_alternative_attachments_may_share_an_id():
 def test_headings_that_never_appear_together_do_not_collide():
     body = "# Services {when=vat}\n\nA.\n\n# Services {when=!vat}\n\nB."
     result = validate(_parse(body))
-    assert [entry.identifier for entry in result.sections] == ["services", "services"]
+    assert [entry.identifier for entry in result.index.sections] == ["services", "services"]
     assert "anchor-autogen-collision" not in result.rules()
 
 
 def test_an_explicit_identifier_always_wins_even_later():
     body = "# Scope\n\nA.\n\n# Other {#scope}\n\nB."
     result = validate(_parse(body, ""))
-    assert [entry.identifier for entry in result.sections] == ["scope-2", "scope"]
+    assert [entry.identifier for entry in result.index.sections] == ["scope-2", "scope"]
     assert "anchor-autogen-collision" in result.rules("warning")
 
 
 def test_two_generated_identifiers_collide_as_a_warning():
     result = validate(_parse("# Scope\n\nA.\n\n# Scope\n\nB.", ""))
-    assert [entry.identifier for entry in result.sections] == ["scope", "scope-2"]
+    assert [entry.identifier for entry in result.index.sections] == ["scope", "scope-2"]
     assert result.rules() == {"anchor-autogen-collision"}
 
 
@@ -398,7 +398,7 @@ def test_a_dotted_path_is_not_a_reference():
 
 def test_a_comment_in_a_heading_is_not_part_of_its_identifier():
     result = validate(_parse("# Title {when=vat} <!-- internal note -->\n\nSee {{ref: title}}."))
-    assert result.sections[0].identifier == "title"
+    assert result.index.sections[0].identifier == "title"
     assert "ref-broken" not in result.rules()
 
 
@@ -412,7 +412,7 @@ def test_alternatives_share_a_number():
         "# Disputes {#disputes when=forum:arbitration}\n\n## Seat\n\nText.\n\n# Notices\n\nText."
     )
     result = validate(_parse(body))
-    assert [s.number for s in result.sections] == ["1", "1.1", "1", "1.1", "2"]
+    assert [s.number for s in result.index.sections] == ["1", "1.1", "1", "1.1", "2"]
 
 
 def test_what_alternatives_contain_shares_numbers_after_a_skip():
@@ -423,7 +423,7 @@ def test_what_alternatives_contain_shares_numbers_after_a_skip():
         "## Choice {#choice when=forum:arbitration}\n\n##### Deep Two\n\n## After\n"
     )
     result = validate(_parse(body))
-    assert [s.number for s in result.sections] == ["1", "1.1", "1.1.1", "1.1.1.1.1", "1.1", "1.1.1.1.1", "1.2"]
+    assert [s.number for s in result.index.sections] == ["1", "1.1", "1.1.1", "1.1.1.1.1", "1.1", "1.1.1.1.1", "1.2"]
 
 
 @pytest.mark.parametrize(

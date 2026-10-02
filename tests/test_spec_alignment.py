@@ -180,7 +180,7 @@ def test_unknown_parameter_is_a_warning_and_does_not_suppress_checks(body, rule)
 def test_unknown_parameter_alone_leaves_the_document_valid():
     result = _validate("On {{date: 2026-01-01, colour=red}}.")
     assert result.is_valid
-    assert result.inline_dates == ["2026-01-01"]
+    assert result.index.values.dates == ["2026-01-01"]
 
 
 @pytest.mark.parametrize(
@@ -205,8 +205,8 @@ def test_parameters_in_any_order_are_valid():
         "under {{field: A-1, note=Ref, type=case-id}}."
     )
     assert result.diagnostics == []
-    assert ("5", "USD") in result.inline_money
-    assert ("A-1", "case-id") in result.inline_fields
+    assert ("5", "USD") in result.index.values.money
+    assert ("A-1", "case-id") in result.index.values.fields
 
 
 def test_quoted_values_are_decoded():
@@ -217,9 +217,9 @@ def test_quoted_values_are_decoded():
         'and {{field: "a}}b", type=code}}.'
     )
     assert result.diagnostics == []
-    assert ("Smith, Jones v. Doe", "case-name") in result.inline_fields
-    assert ("a}}b", "code") in result.inline_fields
-    assert ("5", "USD") in result.inline_money
+    assert ("Smith, Jones v. Doe", "case-name") in result.index.values.fields
+    assert ("a}}b", "code") in result.index.values.fields
+    assert ("5", "USD") in result.index.values.money
 
 
 def test_quoted_values_are_still_checked():
@@ -256,7 +256,7 @@ def test_parameters_on_ref_and_def_are_reported():
     )
     result = _validate(source)
     assert [d.rule for d in result.diagnostics] == ["directive-unknown-param"] * 2
-    assert result.definition_lookup["foo"] == "Foo"
+    assert result.index.definition_lookup["foo"] == "Foo"
     assert "{{ref: terms, format=long}}" in serialize_document(parse(_FRONTMATTER + source))
 
 
@@ -414,20 +414,20 @@ def test_definition_in_code_span_or_comment_is_not_registered():
 def test_def_opener_with_inner_whitespace_is_not_a_definition():
     """§11.2: no whitespace between {{ and the directive name."""
     result = _validate('"Foo" {{ def: foo}} means x. Use {{term: foo}}.')
-    assert "foo" not in result.definition_lookup
+    assert "foo" not in result.index.definition_lookup
 
 
 def test_defined_term_is_the_nearest_quoted_span():
     """§7.2: scan back from the closing mark to the nearest opening mark."""
     result = _validate('Between "A" and "B" {{def: b}} use {{term: b}}.')
-    assert result.definition_lookup["b"] == "B"
+    assert result.index.definition_lookup["b"] == "B"
 
 
 def test_quoted_value_may_contain_backticks():
     """§11.3: once a directive opens, its value is lexed as written."""
     result = _validate('Case {{field: "a`b", type=code}} and `c` here.')
     assert result.diagnostics == []
-    assert ("a`b", "code") in result.inline_fields
+    assert ("a`b", "code") in result.index.values.fields
 
 
 def test_lifted_values_are_kept_as_written():
@@ -619,7 +619,7 @@ def test_format_value_is_the_inverse_of_the_lexer(value):
 def test_side_directive_resolves_and_reports_unknown():
     ok = _validate("The {{side: clients}} shall pay.")
     assert "side-unknown" not in ok.rules()
-    assert ok.side_lookup["clients"] == "Clients"
+    assert ok.index.side_lookup["clients"] == "Clients"
 
     bad = _validate("The {{side: nobody}} shall pay.")
     assert "side-unknown" in bad.rules("error")
@@ -676,7 +676,7 @@ def _numbers(headings: str) -> list[str]:
     """The section numbers of a document with *headings*; one that opens
     below level 1 is also a heading-skip, numbered all the same."""
     source = _FRONTMATTER.replace("# Terms {#terms}\n\n", "") + headings
-    return [entry.number for entry in validate(parse(source)).sections]
+    return [entry.number for entry in validate(parse(source)).index.sections]
 
 
 @pytest.mark.parametrize(
@@ -697,7 +697,7 @@ def test_a_fragment_starting_at_level_two_is_numbered_from_one():
     """An attachment or include file has neither frontmatter nor a # heading
     (§12, §13.8)."""
     result = validate(parse("## A\n\n## B\n\n### B1\n\n## C\n"))
-    assert [entry.number for entry in result.sections] == ["1", "2", "2.1", "3"]
+    assert [entry.number for entry in result.index.sections] == ["1", "2", "2.1", "3"]
     assert "heading-skip" not in result.rules()
 
 
@@ -748,7 +748,7 @@ def test_numbers_are_unique_and_unchanged_without_a_skip():
 
 
 def test_out_of_range_heading_keeps_its_index_entry():
-    """result.sections stays positionally paired with document.sections.
+    """result.index.sections stays positionally paired with document.sections.
 
     Consumers zip the two; dropping an entry for an invalid heading level
     shifts every later section's number and loses the last one entirely.
@@ -758,8 +758,8 @@ def test_out_of_range_heading_keeps_its_index_entry():
     document = parse(source, filename="t.lgd")
     result = validate(document)
     assert "heading-depth" in result.rules("error")
-    assert len(result.sections) == len(document.sections)
-    assert [e.title for e in result.sections] == [s.title for s in document.sections]
+    assert len(result.index.sections) == len(document.sections)
+    assert [e.title for e in result.index.sections] == [s.title for s in document.sections]
 
 
 def test_amend_term_is_an_error_when_original_defines_nothing():
@@ -783,10 +783,10 @@ def test_inline_value_indices_collect_field_spec_values():
         "Rate {{field: 1.5%, type=percentage}} over {{duration: 30, unit=MIN}} "
         "from {{date: 2026-06-01}} for {{money: 5000, currency=EUR}}."
     )
-    assert ("1.5%", "percentage") in result.inline_fields
-    assert ("30", "MIN") in result.inline_durations
-    assert "2026-06-01" in result.inline_dates
-    assert ("5000", "EUR") in result.inline_money
+    assert ("1.5%", "percentage") in result.index.values.fields
+    assert ("30", "MIN") in result.index.values.durations
+    assert "2026-06-01" in result.index.values.dates
+    assert ("5000", "EUR") in result.index.values.money
 
 
 # ── Attachments (§16.10) ──────────────────────────────────────────
@@ -912,7 +912,7 @@ def test_preamble_is_kept_out_of_the_numbered_sections():
 
 def test_definition_in_the_preamble_is_document_wide():
     result = validate(parse(_PREAMBLE_SOURCE))
-    assert result.definition_lookup == {"agreement": "Agreement"}
+    assert result.index.definition_lookup == {"agreement": "Agreement"}
     assert result.diagnostics == []
 
 
@@ -1140,7 +1140,7 @@ def test_only_a_comment_may_follow_an_anchor():
         "Per {{ref: delivery}}."
     )
     assert [d.rule for d in result.diagnostics] == ["anchor-misplaced"]
-    assert "delivery" in result.section_lookup
+    assert "delivery" in result.index.section_lookup
 
 
 def test_marker_after_a_malformed_directive_is_still_an_anchor():
@@ -1156,7 +1156,7 @@ _BARE = _FRONTMATTER.replace("# Terms {#terms}\n\n", "")
 
 def _outline(source: str) -> list[tuple[str, int, str]]:
     """Each heading's text, level, and identifier: explicit or generated."""
-    entries = validate(parse(source)).sections
+    entries = validate(parse(source)).index.sections
     return [(entry.title, entry.level, entry.identifier) for entry in entries]
 
 
@@ -1996,7 +1996,7 @@ def test_a_whole_line_after_a_comment_is_raw_html():
     source = _FRONTMATTER + "<!-- TODO --> The Buyer pays {{money: 5}} under {{ref: nope}}.\n"
     result = validate(parse(source))
     # Raw HTML, not a comment: rendered nowhere, and warned about (§8.7).
-    assert result.rules() == {"raw-html"} and result.inline_money == []
+    assert result.rules() == {"raw-html"} and result.index.values.money == []
 
 
 def test_nothing_in_an_html_block_is_validated():
@@ -2811,7 +2811,7 @@ def test_definition_lookup_matches_the_validators(body):
     from legaldown import collect_definitions, definition_lookup
 
     document = parse(_FRONTMATTER + body + "\n")
-    assert definition_lookup(collect_definitions(document)) == validate(document).definition_lookup
+    assert definition_lookup(collect_definitions(document)) == validate(document).index.definition_lookup
 
 
 def test_an_empty_term_reads_as_its_id():
@@ -3442,7 +3442,7 @@ def test_a_definition_over_lines_is_lifted_with_its_lines():
 
 
 def test_a_marker_ends_a_paragraph_over_lines_only_at_its_end():
-    assert "t" in _validate("Text\nmore. {#t}\n").section_lookup
+    assert "t" in _validate("Text\nmore. {#t}\n").index.section_lookup
     assert "anchor-misplaced" in _validate("Text {#t}\nmore.\n").rules()
     assert "anchor-misplaced" in _validate("- a {#t}\n  b\n").rules()
     assert "anchor-misplaced" not in _validate("- a\n  b {#t}\n").rules()

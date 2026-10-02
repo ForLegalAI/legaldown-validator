@@ -220,10 +220,14 @@ is the same function for files on disk, and the one `assemble` takes as `load_fi
 > `import_attachment_definitions=` are replaced by `resolve=`. They still work and raise a
 > `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0.
 >
-> **Changed in 0.4.0:** `ValidationResult` is a plain value. `errors`, `warnings` and `infos` are
-> read-only lists taken from `diagnostics` (changing them changes nothing; change `diagnostics`),
-> and its recording methods (`error`, `warning`, `info`, `at`) and `used_terms`, which only the
-> validator used, are gone.
+> **Changed in 0.4.0:** `ValidationResult` is a plain value of two parts, `diagnostics` and `index`.
+> `errors`, `warnings` and `infos` are read-only lists taken from `diagnostics` (changing them
+> changes nothing; change `diagnostics`). What validating resolved, besides what it found, moved
+> to `result.index` (below): `result.sections` is now `result.index.sections`, `result.is_template`
+> is `result.index.is_template`, and so on, and the five `inline_*` lists are
+> `result.index.values.dates`, `.money`, `.durations`, `.fields` and `.placeholders`. The old names
+> are gone. So are the result's recording methods (`error`, `warning`, `info`, `at`) and
+> `used_terms`, which only the validator used.
 
 The public API is what the `legaldown` and `legaldown.validator` packages export (their
 `__all__`). Changes to it are listed in the notes of each
@@ -235,19 +239,23 @@ change in any release; constants still only there are to be made public
 ### Working with the result
 
 Validating a document builds the indices the checks need — section numbers, resolved definitions,
-party display text, every inline value found in the body. `ValidationResult` hands all of it back,
-so a renderer or a UI can reuse the work instead of re-deriving it. It is a plain value: what was
-found, kept nowhere but in `diagnostics`:
+party display text, every inline value found in the body. `result.index`, a `DocumentIndex`, hands
+all of it back, so a renderer or a UI can reuse the work instead of re-deriving it. The result
+itself is what was found, kept nowhere but in `diagnostics`:
 
-| Attribute | Contents |
+| `result.…` | Contents |
 |---|---|
 | `diagnostics` | `Diagnostic(rule, level, message, line, file)` — the authoritative record |
 | `is_valid` | `True` when no Error-level diagnostic was reported |
 | `errors` / `warnings` / `infos` | Message strings by severity, taken from `diagnostics` |
 | `rules(level=None)` | Set of rule ids present, optionally filtered by severity |
+| `index` | A `DocumentIndex`, built from the document as far as it is valid (an invalid identifier is reported, not indexed): |
+
+| `result.index.…` | Contents |
+|---|---|
 | `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
-| `inline_dates`, `inline_money`, `inline_durations`, `inline_fields`, `inline_placeholders` | Field-spec values found in the body |
+| `values` | The field-spec values found in the body, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
@@ -284,7 +292,7 @@ document's preamble (§4.4): it is unnumbered, so it lives in `document.preamble
 
 A `Section`'s `identifier` is the explicit `{#id}` written after its heading, or `""` when
 it has none. The identifiers the validator generates (§5.3, §5.5) are not written back into the
-model: read them from `ValidationResult.sections`.
+model: read them from `result.index.sections`.
 
 `document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
 structures, except the fields that describe the parsed source rather than the document,
@@ -301,7 +309,7 @@ read. `render_block()` renders a single block when you are driving your own layo
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
 `definition_lookup(collect_definitions(document))` gives a document's definitions, id to term,
-without validating it: the same map as `ValidationResult.definition_lookup`, except for definitions
+without validating it: the same map as `result.index.definition_lookup`, except for definitions
 imported from an amended original or an attachment file. A term written empty (`"" {{def: x}}`)
 reads as its id (`id_term`), and an id that is not a valid identifier is left out.
 
