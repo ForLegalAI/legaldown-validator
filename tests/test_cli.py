@@ -304,3 +304,23 @@ def test_a_fault_while_validating_is_an_internal_error_and_the_others_are_still_
     captured = capsys.readouterr()
     assert "ref-broken" in [d["rule"] for d in json.loads(captured.out)["diagnostics"]]  # b.lgd
     assert "internal error while validating" in captured.err and "AttributeError" in captured.err
+
+
+def test_assemble_refuses_a_template_with_an_error_in_the_template_rules(write, capsys):
+    template = write("t.lgd", _TEMPLATE.replace("Hi {{placeholder: who}}.", 'Hi {{choose: x, true="only one phrase"}}.'))
+    answers = write("a.yaml", "x: true\n")
+    assert main(["assemble", str(template), "--answers", str(answers)]) == EXIT_DIAGNOSTICS
+    captured = capsys.readouterr()
+    assert captured.out == "" and "[choose-invalid]" in captured.err
+
+
+def test_a_fault_while_assembling_is_an_internal_error(write, capsys, monkeypatch):
+    import legaldown.template
+
+    def broken(self, answers=None):
+        raise AttributeError("boom")
+
+    monkeypatch.setattr(legaldown.template.Template, "form", broken)
+    template = write("t.lgd", _TEMPLATE)
+    assert main(["assemble", str(template)]) == EXIT_ERROR
+    assert "internal error while assembling" in capsys.readouterr().err

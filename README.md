@@ -440,19 +440,24 @@ be read, as `parse` does.
 decision question when a condition or `{{choose:}}` using it lies in a present unit, a value
 question when one of its placeholders does. A question with a default is among them (the default
 answers it, and a front end can still offer it). `blocking` are the decision questions without an
-answer or default: an unanswered value question leaves its blank, which the specification allows,
-but an unanswered decision is not assembled. An answer that is not valid counts as no answer, and
+answer or default, that a condition or `{{choose:}}` depends on: an unanswered value question
+leaves its blank, which the specification allows, but an unanswered decision is not assembled. An answer that is not valid counts as no answer, and
 does not stand in for the default: it is reported in `diagnostics` (`answer-invalid`), and so is an
 answer to a question the template does not have (`answer-unknown`, a warning). `unused` lists the
 questions that have an answer but are not reached; it is advice, since one answer that changes can
 make many of them unused. `form.problem("fee")` says why one answer is not valid, and so does
 `question.problem(answer)`, before anything is assembled. A form never changes after it is made, and
-neither do the questions: a `Question` is a fixed value, and `default` and `choices` are read-only.
+neither do the questions: a `Question` is a fixed value, a copy of the template's declaration, which
+every form of the template shares (treat its `default` and `choices` as read-only).
 
 **What stops a template.** `template.problems` are the reasons a template cannot be assembled
 whatever the answers: a file it includes that cannot be read, a placeholder written across lines, a
-translation group, and the Errors of the validator's template rules (questions, conditions,
-`{{choose:}}`, placeholders and insertions, §15.7.2 gives assembly a template that validates).
+translation group, and the Errors of the validator's template rules (`question-invalid`,
+`condition-invalid`, `choose-invalid`, the `placeholder-*` rules, `insertion-boundary`,
+`def-term-variable`, `drafting-note-def`, `template-fragment-invalid`, and a placeholder that would
+fill in a directive with an invalid unit or a repeated parameter; §15.7.2 gives assembly a template
+that validates, and `condition-reference-unsafe` counts too, for a template that includes nothing:
+the validator cannot see which sections a fragment holds).
 `template.validation` is the full `ValidationResult` of the template read alone, as advice: the
 validator does not read the fragments a template includes, so it cannot see a section or a
 definition that lives in one. `ready` is false while there are problems, and `form.assemble()` then
@@ -469,8 +474,8 @@ files fail is refused. [CONFORMANCE.md](CONFORMANCE.md#assembly-157-176) lists w
 checks and what it does not.
 
 > **Deprecated:** `assemble(text, answers, load_file=)`, `template_questions` and `needed_questions`
-> are replaced by `Template` and `Form`. They still work, unchanged, and raise a
-> `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
+> are replaced by `Template` and `Form`. They still work, unchanged (but for `Question`, below), and
+> raise a `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
 > differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
 > (the functions ask them after the body), and it refuses a template that has Errors in the
 > validator's template rules (the functions assemble it). `legaldown assemble` follows the new API.

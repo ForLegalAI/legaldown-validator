@@ -22,9 +22,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+import legaldown
 from legaldown import (
     AssemblyResult,
     FrontmatterError,
+    Template,
     assemble,
     needed_questions,
     parse,
@@ -42,15 +44,18 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 def _form_assemble(template, answers, *, load_file=None):
-    """``assemble`` by way of a ``Template`` and its ``Form``, without the template rules of the validator."""
+    """``assemble`` by way of a ``Template`` and its ``Form``, without the template rules of the validator;
+    it must say what the function says: whether assembly can run, and what it writes."""
+    legacy = legaldown.assemble(template, answers, load_file=load_file)
     try:
-        tpl = parse_template(template, resolve=load_file)
+        tpl = Template(template, resolve=load_file, check=False)
     except FrontmatterError as exc:
         return AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
-    tpl._check = False
     form = tpl.form(answers)
     result = form.assemble()
-    assert form.ready == result.ok  # the form says whether assembly can run
+    assert form.ready == result.ok == legacy.ok
+    assert (result.output, result.files) == (legacy.output, legacy.files)
+    assert sorted(d.rule for d in result.diagnostics) == sorted(d.rule for d in legacy.diagnostics)
     return result
 
 

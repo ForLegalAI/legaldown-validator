@@ -36,7 +36,6 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from functools import cache
-from types import MappingProxyType
 from typing import Any
 
 from .definitions import list_fragments
@@ -81,6 +80,7 @@ from .validator.templates import (
 from .validator.units import find_markers, is_include_only, own_presence
 
 __all__ = [
+    "frontmatter_diagnostic",
     "AssemblyError",
     "AssemblyResult",
     "LoadFile",
@@ -128,15 +128,16 @@ class Question:
     set when every placeholder for the question fixes the same one, which is
     when the bare amount or value is an acceptable answer (§15.7.1).
 
-    A question is a fixed value: ``choices`` and a map-valued ``default`` (a
-    money or duration default) are read-only mappings, copied from the
-    template's declaration."""
+    A question is a fixed value, copied from the template's declaration: it
+    cannot be reassigned, and ``choices`` and a map-valued ``default`` (a money
+    or duration default) are copies of the declaration's. Treat them as
+    read-only: the question is shared by every form of its template."""
 
     id: str
     type: str
     prompt: str = ""
     default: Any = None
-    choices: Mapping[str, str] = field(default_factory=dict)
+    choices: dict[str, str] = field(default_factory=dict)
     currency: str | None = None
     unit: str | None = None
     declared: bool = True
@@ -147,10 +148,8 @@ class Question:
     _blank: Blank | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "choices", MappingProxyType(dict(self.choices)))
-        default = self.default
-        if isinstance(default, dict):
-            object.__setattr__(self, "default", MappingProxyType(copy.deepcopy(default)))
+        object.__setattr__(self, "choices", dict(self.choices or {}))
+        object.__setattr__(self, "default", copy.deepcopy(self.default))
 
     @property
     def is_decision(self) -> bool:
@@ -160,7 +159,7 @@ class Question:
         """Why *answer* is not a valid answer to this question (§15.7.1), or
         None when it is."""
         return answer_problem(
-            self.type, answer, choices=dict(self.choices) if self.type == "choice" else None, blank=self._blank
+            self.type, answer, choices=self.choices if self.type == "choice" else None, blank=self._blank
         )
 
 
@@ -966,7 +965,8 @@ def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decisi
     under an unanswered condition is not reached *yet*. With *inline*, an
     include fragment is read where its ``{{include:}}`` is, so that the
     questions are in the order they are reached; otherwise after the body.
-    Which lines are removed, and which files, is the same either way."""
+    Which lines are removed, and which files, is the same either way (a file
+    included twice is read at its last include, which decides it)."""
     decision = _Decision()
 
     def holds(test: Condition | None) -> bool | None:
@@ -1000,9 +1000,12 @@ def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decisi
             use(occ)
     walked: set[str] = set()
 
+    # A file included twice is kept or removed as its last include says.
+    last = {include.path: include for include in t.main.includes}
+
     def enter(include: _Include) -> None:
         source = t.subs.get(include.path)
-        if source is not None and include.path not in walked:
+        if source is not None and last[include.path] is include and include.path not in walked:
             walked.add(include.path)
             decision.removed[include.path], _pending = _walk(source, holds, use)
 

@@ -9,7 +9,6 @@ It is a plain value: change the answers, ask for a new form.
 """
 from __future__ import annotations
 
-import copy
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -46,7 +45,6 @@ __all__ = ["Form", "Template", "load_template", "parse_template"]
 TEMPLATE_RULES: frozenset[str] = frozenset({
     "question-invalid",
     "condition-invalid",
-    "condition-reference-unsafe",
     "choose-invalid",
     "placeholder-id-malformed",
     "placeholder-in-structural-field",
@@ -57,7 +55,15 @@ TEMPLATE_RULES: frozenset[str] = frozenset({
     "def-term-variable",
     "drafting-note-def",
     "template-fragment-invalid",
+    # What a placeholder fills in is checked as the directive it becomes.
+    "duration-invalid-unit",
+    "directive-duplicate-param",
 })
+
+#: A rule of the validator that a template must satisfy, unless it reads other
+#: files: it then cannot tell a reference to a section of a fragment from one
+#: to a section its condition removes.
+_ALONE_ONLY: frozenset[str] = frozenset({"condition-reference-unsafe"})
 
 
 def _snapshot(resolve: LoadFile | None) -> LoadFile | None:
@@ -81,14 +87,19 @@ class Template:
     as often as needed. A template is a snapshot: files that change on disk
     afterwards are not seen — load it again.
 
+    *check* is whether ``problems`` include the validator's template rules
+    (``TEMPLATE_RULES``); ``load_template`` and ``parse_template`` always do.
+
     Raises ``FrontmatterError`` when the template's frontmatter cannot be read.
     """
 
-    def __init__(self, text: str, *, resolve: LoadFile | None = None, path: Path | None = None) -> None:
+    def __init__(
+        self, text: str, *, resolve: LoadFile | None = None, path: Path | None = None, check: bool = True
+    ) -> None:
         self.path = path
         self._resolve = _snapshot(resolve)
         self._t = _read(text, self._resolve)
-        self._check = True  # whether problems include the validator's template rules
+        self._check = check
 
     @cached_property
     def questions(self) -> tuple[Question, ...]:
@@ -110,11 +121,8 @@ class Template:
         as Errors. Empty when it can."""
         problems = list(self._t.problems)
         if self._check:
-            seen = {(d.rule, d.message) for d in problems}
-            problems += [
-                d for d in self.validation.diagnostics
-                if d.level == "error" and d.rule in TEMPLATE_RULES and (d.rule, d.message) not in seen
-            ]
+            rules = TEMPLATE_RULES if self._t.subs else TEMPLATE_RULES | _ALONE_ONLY
+            problems += [d for d in self.validation.diagnostics if d.level == "error" and d.rule in rules]
         return tuple(problems)
 
     def form(self, answers: Mapping[str, Any] | None = None) -> Form:
@@ -177,9 +185,20 @@ class Form:
         return _emit_result(template._t, self._resolved, self._decision, list(self.diagnostics))
 
 
+def _copied(value: Any) -> Any:
+    """*value* with its containers copied, so that it does not change when the
+    caller's does; anything else is kept as it is (an answer of no valid kind is
+    reported, not copied)."""
+    if isinstance(value, dict):
+        return {key: _copied(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copied(item) for item in value]
+    return value
+
+
 def _build_form(template: Template, answers: Mapping[str, Any]) -> Form:
     t = template._t
-    given = copy.deepcopy(dict(answers))
+    given = _copied(dict(answers))
     resolved = _FormAnswers(given, t)
     decision = _decide(t, resolved, inline=True)
     by_id = {question.id: question for question in template.questions}

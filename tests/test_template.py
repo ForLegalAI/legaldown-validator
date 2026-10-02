@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-from types import MappingProxyType
+import pickle
+import threading
 
 import pytest
 
@@ -188,12 +189,15 @@ def test_a_template_rule_error_stops_assembly_of_the_form_but_not_of_the_functio
 def test_a_reference_to_an_included_section_is_no_problem_of_the_template():
     text = (
         "---\ntitle: T\ndocument_type: contract\nquestions:\n  name:\n    type: text\n---\n\n"
-        "# Intro {#intro}\n\n{{include: frag.lgd}}\n\nSee {{ref: #frag}}. The {{term: Services}} are for {{placeholder: name}}.\n"
+        "# Intro {#intro}\n\n{{include: frag.lgd}}\n\nSee {{ref: frag}}. The {{term: services}} are for {{placeholder: name}}.\n"
     )
-    template = parse_template(text, resolve={"frag.lgd": "## Frag {#frag}\n\n{{def: Services}} means consulting.\n"}.get)
+    template = parse_template(text, resolve={"frag.lgd": '## Frag {#frag}\n\n"Services" {{def: services}} means consulting.\n'}.get)
     assert {d.rule for d in template.validation.diagnostics if d.level == "error"} >= {"ref-broken", "term-undefined"}
     assert template.problems == ()  # the validator reads the template alone, so these are only advice
     assert template.form({"name": "Ann"}).assemble().ok
+    # the same text, in the template itself, is no error to the validator
+    inline = text.replace("{{include: frag.lgd}}", '## Frag {#frag}\n\n"Services" {{def: services}} means consulting.')
+    assert not [d for d in parse_template(inline).validation.diagnostics if d.level == "error"]
 
 
 def test_a_file_that_cannot_be_read_is_a_problem():
@@ -239,16 +243,37 @@ def test_what_a_template_hands_out_cannot_change_it():
     refused = template.form({}).assemble()
     refused.diagnostics.append(None)
     assert None not in template.problems and len(template.problems) == 1
-    first = parse_template(_TEMPLATE)
-    (fee,) = (q for q in first.questions if q.id == "fee")
+    (fee,) = (q for q in parse_template(_TEMPLATE).questions if q.id == "fee")
     with pytest.raises(dataclasses.FrozenInstanceError):
         fee.prompt = "x"
-    with pytest.raises(TypeError):
-        fee.default["amount"] = "1"
-    forum = next(q for q in first.questions if q.id == "forum")
-    with pytest.raises(TypeError):
-        forum.choices["x"] = "y"
-    assert isinstance(forum.choices, MappingProxyType)
+
+
+def test_a_questions_default_and_choices_are_the_kinds_an_answer_and_a_declaration_are():
+    template = parse_template(_TEMPLATE)
+    by_id = {q.id: q for q in template.questions}
+    fee, forum = by_id["fee"], by_id["forum"]
+    assert fee.default == {"amount": "100", "currency": "EUR"} and isinstance(fee.default, dict)
+    assert isinstance(forum.choices, dict) and list(forum.choices) == ["courts", "arbitration"]
+    # the interview pattern: show the default, accept it
+    assert fee.problem(fee.default) is None
+    assert template.form({"extras": False, "who": "Ann", "fee": fee.default}).ready
+    for question in template.questions:  # a question can be copied, pickled and sent
+        assert copy.deepcopy(question) == question and pickle.loads(pickle.dumps(question)) == question
+        assert dataclasses.asdict(question)["id"] == question.id
+    assert Question("x", "text", choices=None).choices == {}
+
+
+def test_a_question_does_not_share_its_default_with_the_template():
+    template = parse_template(_TEMPLATE)
+    (fee,) = (q for q in template.questions if q.id == "fee")
+    fee.default["amount"] = "999"  # a caller that ignores "read-only" harms only the question it holds
+    form = template.form({"extras": False, "who": "Ann"})
+    assert "100" in form.assemble().output
+
+
+def test_an_answer_that_cannot_be_copied_is_reported_and_does_not_crash_the_form():
+    form = parse_template(_TEMPLATE).form({"extras": False, "who": threading.Lock()})
+    assert [d.rule for d in form.diagnostics] == ["answer-invalid"] and not form.ready
 
 
 def test_a_question_is_a_copy_of_the_declaration():
@@ -371,3 +396,47 @@ def test_the_new_names_are_public():
     for name in ("Template", "Form", "load_template", "parse_template"):
         assert name in legaldown.__all__ and hasattr(legaldown, name)
     assert copy.copy(parse_template(_TEMPLATE).questions)
+
+
+# ── Which rules stop a template ──────────────────────────────────
+
+_UNSAFE = (
+    "---\ntitle: T\nquestions:\n  a:\n    type: boolean\n---\n\n"
+    "# One {#one}\n\nSee {{ref: local}}.\n\n{{include: frag.lgd}} {when=!a}\n\n# Local {#local when=a}\n\nText.\n"
+)
+
+
+def test_a_reference_to_a_section_a_condition_removes_stops_a_template_read_alone_only():
+    # alone, the validator sees every section: the reference is unsafe
+    assert [d.rule for d in parse_template(_UNSAFE.replace("{{include: frag.lgd}} {when=!a}\n\n", "")).problems] == [
+        "condition-reference-unsafe"
+    ]
+    # with a fragment it cannot tell the fragment's `local` from the removable one: advice, not a problem
+    template = parse_template(_UNSAFE, resolve={"frag.lgd": "## Other {#local}\n\nText.\n"}.get)
+    assert template.problems == ()
+    assert any(d.rule == "condition-reference-unsafe" for d in template.validation.diagnostics)
+    assert all(template.form({"a": value}).assemble().ok for value in (True, False))
+
+
+@pytest.mark.parametrize(
+    ("directive", "rule"),
+    [
+        ("{{placeholder: term, type=duration, unit=XYZ}}", "duration-invalid-unit"),
+        ("{{placeholder: term, type=text, type=text}}", "directive-duplicate-param"),
+    ],
+)
+def test_a_placeholder_that_would_fill_in_an_invalid_directive_stops_a_template(directive, rule):
+    template = parse_template(_FRONT + f"Term {directive}.\n")
+    assert rule in [d.rule for d in template.problems]
+    assert not template.form({"term": "5"}).ready
+
+
+def test_a_file_included_twice_is_read_as_its_last_include_says():
+    text = _FRONT + "# A\n\n{{include: frag.lgd}}\n\nMore. {when=extras}\n\n{{include: frag.lgd}} {when=extras}\n"
+    files = {"frag.lgd": "## Part {#part}\n\nFor {{placeholder: client}}.\n"}.get
+    for answers in ({"extras": True}, {"extras": False}, {}):
+        t = _read(text, files)
+        after = _decide(t, _Answers(answers, t.declared))
+        inline = _decide(t, _Answers(answers, t.declared), inline=True)
+        assert (inline.removed, inline.files) == (after.removed, after.files)
+        assert set(inline.needed) == set(after.needed)

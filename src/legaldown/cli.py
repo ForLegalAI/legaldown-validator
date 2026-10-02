@@ -197,7 +197,13 @@ def _run_assemble(args: argparse.Namespace) -> int:
         return EXIT_ERROR
 
     if result is None:
-        result = template.form(answers).assemble()
+        try:
+            result = template.form(answers).assemble()
+        except Exception as exc:
+            # Not the template's fault: a bug in this validator, as in ``validate``.
+            print(f"error: internal error while assembling {template_path}: {type(exc).__name__}: {exc} "
+                  f"(please report this)", file=sys.stderr)
+            return EXIT_ERROR
     for d in result.diagnostics:
         where = f"{template_path}:{d.line}" if d.line else f"{template_path}"
         print(f"{where}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
