@@ -242,11 +242,11 @@ class Question:
             keys = ("amount", "currency") if self.type == "money" else ("value", "unit")
             if self.type in ("money", "duration") and set(answer) == set(keys):
                 return f"{answer[keys[0]]} {answer[keys[1]]}"
-        if isinstance(answer, (dict, list, tuple, set, frozenset)):
-            return _DESCRIBE.repr(answer)[:200]  # not an answer it knows: described, within bounds
         try:
+            if isinstance(answer, (dict, list, tuple, set, frozenset)):
+                return _DESCRIBE.repr(answer)[:200]  # not an answer it knows: described, within bounds
             return str(answer)
-        except ValueError:  # an integer too long for Python to write as text
+        except (ValueError, RecursionError):  # an integer too long for Python to write as text
             return ""
 
     def from_text(self, text: str) -> Any:
