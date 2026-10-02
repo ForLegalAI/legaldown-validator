@@ -1374,8 +1374,8 @@ def load(path: str | os.PathLike[str]) -> Document:
 
     The one call for a document that lives in a file: it reads the file as
     UTF-8 and parses it as ``parse`` does, naming it in the result:
-    ``Document.filename`` is the name given to ``load`` and ``Document.path``
-    its absolute path, so a caller resolving files the document refers to
+    ``Document.filename`` is the file's name (without its directory) and
+    ``Document.path`` its absolute path, so a caller resolving files the document refers to
     (``amends``, includes, attachments) knows where to look. Symbolic links
     are not followed: the document is where it was named.
 
@@ -1383,12 +1383,15 @@ def load(path: str | os.PathLike[str]) -> Document:
     be read, ``UnicodeDecodeError`` when it is not UTF-8, and
     ``FrontmatterError`` when its frontmatter cannot be read.
     """
-    file = Path(os.path.abspath(path))
+    # The path as given is what is read: ``..`` after a symbolic link leads
+    # where the operating system takes it, which tidying the text of the path
+    # first could not tell. ``absolute`` makes it absolute and nothing more.
+    file = Path(path)
     # Bytes, decoded once: a byte-order mark and the line endings (LF, CR and
     # CRLF alike) are the parser's to read, so the text layer's own
     # translation would only be a second, redundant pass over the file.
     document = parse(file.read_bytes().decode("utf-8"), filename=file.name)
-    document.path = file
+    document.path = file.absolute()
     return document
 
 

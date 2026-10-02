@@ -3,6 +3,7 @@ the template decision and the markers that apply — and the helpers a
 renderer builds with, importable from ``legaldown`` and ``legaldown.validator``."""
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 
@@ -300,3 +301,21 @@ def test_a_symbolic_link_is_named_as_it_was_given(tmp_path):
         pytest.skip("symbolic links are not available")
     document = load(link)
     assert (document.filename, document.path) == ("current.lgd", link)
+
+
+def test_dot_dot_after_a_symbolic_link_goes_where_the_system_goes(tmp_path, monkeypatch):
+    sub = tmp_path / "data" / "sub"
+    sub.mkdir(parents=True)
+    (tmp_path / "data" / "contract.lgd").write_text(_FRONTMATTER + "# Real\n", encoding="utf-8")
+    (tmp_path / "contract.lgd").write_text(_FRONTMATTER + "# Wrong\n", encoding="utf-8")
+    try:
+        (tmp_path / "link").symlink_to(sub)
+    except OSError:
+        pytest.skip("symbolic links are not available")
+    monkeypatch.chdir(tmp_path)
+    assert load("link/../contract.lgd").sections[0].title == "Real"
+
+
+def test_document_keeps_source_map_in_its_place():
+    fields = [f.name for f in dataclasses.fields(legaldown.Document)]
+    assert fields.index("source_map") == 4  # positional callers: unchanged by path
