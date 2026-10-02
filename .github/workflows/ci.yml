@@ -1,11 +1,16 @@
 name: CI
 
-# On demand only: Actions → CI → Run workflow (pick the branch). One job on one
-# Python, the one the release is built with, so a run costs one runner's setup
-# rather than six: lint, the tests (with the specification fixtures corpus
-# unless switched off), and the build with its metadata check.
+# On demand only, in either of two ways:
+#   - Actions → CI → Run workflow, on the branch you pick;
+#   - the `ci` label on a pull request: adding it runs CI, and CI then runs again
+#     on each push to that pull request until the label is removed.
+# One job on one Python, the one the release is built with, so a run costs one
+# runner's setup rather than six: lint, the tests (with the specification fixtures
+# corpus unless switched off), and the build with its metadata check.
 
 on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
   workflow_dispatch:
     inputs:
       conformance:
@@ -23,13 +28,21 @@ concurrency:
 jobs:
   check:
     name: Lint, test, build
+    # A push or a reopening of a pull request runs it only while the pull request has
+    # the `ci` label; adding some other label does not.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'ci'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
+      # The corpus is checked out and run for a pull request, and for a manual run
+      # unless its `conformance` input is off.
       - name: Check out the LegalDown specification (fixtures corpus only)
-        if: inputs.conformance
+        if: github.event_name != 'workflow_dispatch' || inputs.conformance
         uses: actions/checkout@v4
         with:
           repository: ForLegalAI/LegalDown
@@ -52,7 +65,7 @@ jobs:
       - run: ruff check .
 
       - name: Tests and specification conformance
-        if: inputs.conformance
+        if: github.event_name != 'workflow_dispatch' || inputs.conformance
         env:
           LEGALDOWN_FIXTURES_DIR: .legaldown-spec/fixtures
         # Cases for unimplemented rules are skipped and named, so a failure in
@@ -60,7 +73,7 @@ jobs:
         run: pytest -q
 
       - name: Tests
-        if: ${{ !inputs.conformance }}
+        if: github.event_name == 'workflow_dispatch' && !inputs.conformance
         run: pytest -q
 
       - run: python -m build

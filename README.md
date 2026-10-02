@@ -608,11 +608,12 @@ ruff check .
 pytest
 ```
 
-**CI** runs on demand only — *Actions → CI → Run workflow*, on the branch you pick — as one job on
-Python 3.12 (the version releases are built with): lint, the tests with the specification fixtures
-corpus (switch it off with the `conformance` input for a quicker run), and the build with its
-metadata check. Nothing runs on a push or a pull request, so run it before merging and before a
-release.
+**CI** runs on demand only, as one job on Python 3.12 (the version releases are built with): lint,
+the tests with the specification fixtures corpus, and the build with its metadata check. Start it
+with *Actions → CI → Run workflow* on the branch you pick (the `conformance` input switches the
+corpus off for a quicker run), or by adding the **`ci` label** to a pull request: it then runs again
+on each push to that pull request until the label is removed. Nothing else triggers it, so run it
+before merging and before a release.
 
 ### Conformance suite
 

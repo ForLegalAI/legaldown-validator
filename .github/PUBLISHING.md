@@ -44,7 +44,7 @@ version number can never be reused once published.
 
 1. Bump `__version__` in [`src/legaldown/__init__.py`](../src/legaldown/__init__.py) — it is the single
    source of truth; `pyproject.toml` reads it via `[tool.hatch.version]`.
-2. Commit and run **CI** on it (*Actions → CI → Run workflow*; it runs only on demand), then publish a
+2. Commit and run **CI** on it (*Actions → CI → Run workflow*; it runs only on demand, or with the `ci` label on a pull request), then publish a
    GitHub Release with the tag `vX.Y.Z`. Its notes are where this
    project records what changed in a release.
 
