@@ -6,9 +6,9 @@ or escalate individual checks. Only external dependency: PyYAML.
 
 Quick start::
 
-    from legaldown import parse_document, serialize_document, validate_document
+    from legaldown import load, serialize_document, validate_document
 
-    doc = parse_document(open("contract.lgd").read())
+    doc = load("contract.lgd")
     result = validate_document(doc)
     for diagnostic in result.diagnostics:
         print(diagnostic.level, diagnostic.rule, diagnostic.message)
@@ -77,7 +77,7 @@ from .models import (
 )
 
 # Parser & serializer
-from .parser import FrontmatterError, collect_source_directives, parse_document
+from .parser import FrontmatterError, collect_source_directives, load, parse, parse_document
 from .serializer import render_block, render_item, serialize_document
 
 # The LegalDown specification version this implementation targets.
@@ -117,7 +117,9 @@ __all__ = [
     "CONFORMANCE_LEVEL",
     "CAPABILITIES",
     # Core workflow
-    "parse_document",
+    "load",
+    "parse",
+    "parse_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``parse`` or ``load``
     "FrontmatterError",
     "serialize_document",
     "validate_document",

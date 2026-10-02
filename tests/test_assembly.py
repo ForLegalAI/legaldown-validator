@@ -26,7 +26,7 @@ from legaldown import (
     AssemblyResult,
     assemble,
     needed_questions,
-    parse_document,
+    parse,
     template_questions,
     validate_document,
 )
@@ -109,9 +109,9 @@ def test_fixture_template_and_its_output_have_no_errors(name):
     """The fixtures' premise (a template without Errors) and the assembly
     guarantee (§15.7.4): its output has none either."""
     template = (FIXTURES / name / "template.lgd").read_text(encoding="utf-8")
-    assert validate_document(parse_document(template)).errors == []
+    assert validate_document(parse(template)).errors == []
     result = _assemble_case(name)
-    assert validate_document(parse_document(result.output)).errors == []
+    assert validate_document(parse(result.output)).errors == []
 
 
 # ── Helpers for the focused tests ────────────────────────────────
@@ -394,7 +394,7 @@ class TestDrafts:
             "{{placeholder: day, type=date}}.\n"
         )
         assert "questions" not in result.output
-        assert validate_document(parse_document(result.output)).errors == []
+        assert validate_document(parse(result.output)).errors == []
 
     def test_an_undeclared_or_already_typed_blank_is_left_as_written(self):
         template = _template("A {{placeholder: a}} and {{placeholder: b, type=date}}.\n")
@@ -1041,7 +1041,7 @@ class TestHeadingBlocks:
     def test_a_blank_in_a_heading_block_is_filled(self, body):
         result = assemble(_template(body, _TEXT), {"name": "Acme"})
         assert _body(result) == "\n" + body.replace("{{placeholder: name}}", "Acme")
-        assert "placeholder-unfilled" not in validate_document(parse_document(result.output)).rules()
+        assert "placeholder-unfilled" not in validate_document(parse(result.output)).rules()
 
     def test_a_marker_after_a_heading_block_is_no_condition(self):
         """An item's marker ends its first paragraph (§5.7): after a heading

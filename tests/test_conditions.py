@@ -6,7 +6,7 @@ import pytest
 
 from legaldown import serialize_document
 from legaldown.markers import Marker, parse_marker, split_heading
-from legaldown.parser import parse_document
+from legaldown.parser import parse
 from legaldown.validator import validate_document
 
 _SIDES = """sides:
@@ -31,7 +31,7 @@ _QUESTIONS = """questions:
 
 
 def _parse(body: str, frontmatter: str = _QUESTIONS):
-    return parse_document(f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n{body}\n")
+    return parse(f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n{body}\n")
 
 
 def _rules(body: str, frontmatter: str = _QUESTIONS, **options) -> set[str]:
@@ -383,7 +383,7 @@ def test_a_comment_may_follow_a_heading_marker():
     document = _parse("# Termination {when=vat} <!-- optional -->\n\nText.")
     [section] = document.sections
     assert (section.title, section.condition) == ("Termination <!-- optional -->", "vat")
-    assert parse_document(serialize_document(document)).sections[0].condition == "vat"
+    assert parse(serialize_document(document)).sections[0].condition == "vat"
 
 
 def test_a_dotted_path_is_not_a_reference():

@@ -31,7 +31,7 @@ class Diagnostic:
     part of a diagnostic that is stable across implementations and spec
     revisions (§16.9) — plus the severity level and human-readable message,
     and where it is (§16.9): the file, and the line (from 1) of what it
-    reports, which a document parsed from source has (``parse_document``)
+    reports, which a document parsed from source has (``parse``)
     and one built from a dict has not (None). Compare diagnostics by their
     fields, not with one built without a line.
     """

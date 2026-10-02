@@ -179,9 +179,9 @@ off.
 Three functions cover the common path:
 
 ```python
-from legaldown import parse_document, validate_document, serialize_document
+from legaldown import load, validate_document, serialize_document
 
-document = parse_document(open("contract.lgd").read(), filename="contract.lgd")
+document = load("contract.lgd")
 result = validate_document(document)
 
 for diagnostic in result.diagnostics:
@@ -191,9 +191,19 @@ if result.is_valid:                      # no Error-level diagnostics
     print(serialize_document(document))
 ```
 
-`parse_document` raises `FrontmatterError` (a `yaml.YAMLError` and a `ValueError`) when the
-frontmatter cannot be read — the `frontmatter-invalid-yaml` rule, which `validate_document`,
-given a parsed document, cannot report.
+`load(path)` takes a `str` or `os.PathLike`, reads the file as UTF-8 and returns the `Document`.
+It names the document for you: `document.filename` is the file's name and `document.path` its
+absolute path. For text that is not in a file (an editor buffer, an HTTP body, a test), use
+`parse(text)`, which `load` is built on; it takes an optional `filename=` to name the document in
+its diagnostics.
+
+`load` raises `FileNotFoundError` (or another `OSError`) when the file cannot be read and
+`UnicodeDecodeError` when it is not UTF-8. Both it and `parse` raise `FrontmatterError` (a
+`yaml.YAMLError` and a `ValueError`) when the frontmatter cannot be read — the
+`frontmatter-invalid-yaml` rule, which `validate_document`, given a parsed document, cannot report.
+
+> **Deprecated:** `parse_document` is now `parse` (string) or `load` (file). It still works and
+> raises a `DeprecationWarning`; it is deprecated since 0.4.0 and will be removed in 0.5.0.
 
 The public API is what the `legaldown` and `legaldown.validator` packages export (their
 `__all__`). Changes to it are listed in the notes of each
@@ -234,13 +244,13 @@ validator reads the document with.
 
 ### Reading and editing the document model
 
-`parse_document` returns a `Document` of plain dataclasses — `Metadata`, `Section`, `Block`,
+`load` and `parse` return a `Document` of plain dataclasses — `Metadata`, `Section`, `Block`,
 `Side`, `Party`, `Attachment` — that you can inspect, edit, and write back out:
 
 ```python
-from legaldown import parse_document, serialize_document
+from legaldown import load, serialize_document
 
-document = parse_document(source)
+document = load("contract.lgd")
 document.metadata.governing_law = "Czech Republic"
 
 with open("contract.lgd", "w", encoding="utf-8") as handle:
@@ -262,7 +272,7 @@ structures, except the fields that describe the parsed source rather than the do
 Each diagnostic names its `line` (from 1) and its `file` (the document's `filename`), as §16.9
 requires: the line of the directive, marker, heading or block it is about, or of the
 frontmatter key — for a missing key, the key that holds it, or the frontmatter's first. Lines
-come from the `source_map` that `parse_document` gives a document. A document built from a dict
+come from the `source_map` that `load` and `parse` give a document. A document built from a dict
 has none, and one changed after parsing no longer fits its map: their diagnostics have no line
 (`None`) rather than a stale one. `FrontmatterError.line` is the line of YAML that cannot be
 read. `render_block()` renders a single block when you are driving your own layout.

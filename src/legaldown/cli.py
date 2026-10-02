@@ -25,7 +25,7 @@ import yaml
 
 from . import SPEC_VERSION, __version__
 from .assembly import assemble
-from .parser import FrontmatterError, parse_document
+from .parser import FrontmatterError, load
 from .validator import validate_document
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
@@ -39,12 +39,9 @@ _LEVEL_ORDER = {"error": 0, "warning": 1, "info": 2}
 def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str | None]:
     """Validate one file; return (diagnostics, read/parse failure message)."""
     try:
-        source = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        document = load(path)
+    except (OSError, UnicodeDecodeError) as exc:
         return [], f"cannot read {path}: {exc}"
-
-    try:
-        document = parse_document(source, filename=path.name)
     except FrontmatterError as exc:
         return [
             {

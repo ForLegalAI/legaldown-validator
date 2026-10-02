@@ -162,7 +162,7 @@ failed to resolve. From assembly, which reads the file, it means the file could 
 and for one whose `---` block holds YAML that is a scalar or a list rather than a mapping of
 fields: that block is not frontmatter, its `---` lines are thematic breaks, and the whole document
 is validated as body. A block that cannot be read at all — YAML that is malformed, nested too
-deep, or a mapping of another kind (`!!set`) — is `frontmatter-invalid-yaml`: `parse_document`
+deep, or a mapping of another kind (`!!set`) — is `frontmatter-invalid-yaml`: `parse` (and `load`)
 raises `FrontmatterError` for it, which the CLI reports and assembly returns as a diagnostic, for
 the template or for a fragment or attachment file it reads. Any other exception while parsing is
 a fault of this implementation: the CLI reports it as an internal error (exit status 2), never as

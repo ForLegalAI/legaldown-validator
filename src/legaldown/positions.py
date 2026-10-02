@@ -1,7 +1,7 @@
 """Where a parsed document's parts lie in its source, for diagnostics that
 name their line (§16.9).
 
-``parse_document`` gives each document a ``SourceMap``; a document built from
+``parse`` gives each document a ``SourceMap``; a document built from
 a dict has none, and its diagnostics carry no line.
 """
 from __future__ import annotations

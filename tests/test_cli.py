@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from legaldown import parse_document
+from legaldown import load
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_ERROR, EXIT_OK, main
 
 _VALID = """---
@@ -94,6 +94,13 @@ def test_missing_file_exits_two(tmp_path, capsys):
     assert "cannot read" in capsys.readouterr().err
 
 
+def test_a_file_that_is_not_utf8_is_unreadable_not_a_crash(tmp_path, capsys):
+    path = tmp_path / "latin.lgd"
+    path.write_bytes(b"---\ntitle: caf\xe9\n---\n")
+    assert main(["validate", str(path)]) == EXIT_ERROR
+    assert "cannot read" in capsys.readouterr().err
+
+
 def test_malformed_frontmatter_is_reported_not_raised(write, capsys):
     path = write("bad.lgd", "---\ntitle: [unclosed\n---\n\n# Scope {#scope}\n")
     assert main(["validate", "--format", "json", str(path)]) == EXIT_DIAGNOSTICS
@@ -122,12 +129,12 @@ def test_a_parser_fault_is_an_internal_error_not_a_diagnostic(write, capsys, mon
     # failure to report, and the other files are still validated.
     import legaldown.cli
 
-    def broken(source, *, filename=""):
-        if filename == "a.lgd":
+    def broken(path):
+        if path.name == "a.lgd":
             raise AttributeError("'set' object has no attribute 'get'")
-        return parse_document(source, filename=filename)
+        return load(path)
 
-    monkeypatch.setattr(legaldown.cli, "parse_document", broken)
+    monkeypatch.setattr(legaldown.cli, "load", broken)
     first, second = write("a.lgd", _VALID), write("b.lgd", _BROKEN)
     assert main(["validate", "--format", "json", str(first), str(second)]) == EXIT_ERROR
     captured = capsys.readouterr()
