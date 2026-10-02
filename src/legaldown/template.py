@@ -215,20 +215,25 @@ class Form:
         return _emit_result(template._t, self._resolved, self._decision, list(self.diagnostics))
 
 
-def _copied(value: Any, seen: dict[int, Any] | None = None) -> Any:
+def _copied(value: Any, seen: dict[int, tuple[Any, Any]] | None = None) -> Any:
     """*value* with its containers copied, so that it does not change when the
     caller's does; anything else is kept as it is (an answer of no valid kind is
-    reported, not copied). A container met again is the copy already made."""
+    reported, not copied). A container met again is the copy already made; the
+    memo keeps each original alive, so that its id cannot be taken by another."""
     seen = {} if seen is None else seen
-    if isinstance(value, dict):
-        copy_: Any = seen.setdefault(id(value), {})
-        for key, item in value.items():
-            copy_[key] = seen[id(item)] if id(item) in seen else _copied(item, seen)
-        return copy_
-    if isinstance(value, list):
-        copy_ = seen.setdefault(id(value), [])
-        copy_.extend(seen[id(item)] if id(item) in seen else _copied(item, seen) for item in value)
-        return copy_
+    if isinstance(value, (dict, list)):
+        if id(value) in seen:
+            return seen[id(value)][1]
+        if isinstance(value, dict):
+            made: Any = {}
+            seen[id(value)] = (value, made)
+            for key, item in value.items():
+                made[key] = _copied(item, seen)
+        else:
+            made = []
+            seen[id(value)] = (value, made)
+            made.extend(_copied(item, seen) for item in value)
+        return made
     return value
 
 
