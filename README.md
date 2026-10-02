@@ -455,16 +455,22 @@ need not know the shapes `assemble` takes (money is `{amount, currency}`, a bool
 
 ```python
 answers, skipped = {}, set()
-while q := next((q for q in template.form(answers).questions
-                 if answers.get(q.id) is None and q.id not in skipped), None):
-    text = input(f"{q.prompt or q.id} — enter {q.hint}: ")
-    if not text:                       # no answer: the default applies, or the blank stays
-        skipped.add(q.id)
-        continue
+while True:
+    form = template.form(answers)
+    q = next((q for q in form.questions if answers.get(q.id) is None and q.id not in skipped), None)
+    if q is None:
+        break
     try:
-        answers[q.id] = q.from_text(text)
+        answer = q.from_text(input(f"{q.prompt or q.id} — enter {q.hint}: "))
     except ValueError as exc:          # says what to enter
         print(exc)
+    else:
+        if answer is not None:
+            answers[q.id] = answer
+        elif q in form.blocking:       # a decision cannot be left open
+            print("An answer is needed.")
+        else:                          # the default applies, or the blank stays
+            skipped.add(q.id)
 ```
 
 `question.hint` is what to type — `yes or no`, `a date, YYYY-MM-DD`, `an amount and a currency, like

@@ -577,7 +577,8 @@ def test_text_that_is_no_answer_says_what_to_enter(qid, text):
     question = _asking()[qid]
     with pytest.raises(ValueError, match="Enter|is not|label") as error:
         question.from_text(text)
-    assert question.hint.split(",")[0].split(":")[0] in str(error.value) or "label" in str(error.value)
+    assert str(error.value).startswith("Enter ") or "is not" in str(error.value) or "label" in str(error.value)
+    assert question.hint in str(error.value)
 
 
 def test_a_label_two_choices_share_is_ambiguous_and_a_key_comes_first():
@@ -652,3 +653,64 @@ def test_a_typed_answer_goes_into_the_form_and_assembles():
         answers[pending[0].id] = pending[0].from_text(typed[pending[0].id])
     form = template.form(answers)
     assert form.ready and "Hi Ann Smith." in form.assemble().output and "250" in form.assemble().output
+
+
+def test_a_text_that_is_no_answer_to_a_text_question_says_why():
+    who = _asking()["who"]
+    for text in ("one\ntwo", "one\u2028two"):
+        with pytest.raises(ValueError, match="line break"):
+            who.from_text(text)
+
+
+def test_a_hand_built_question_agrees_with_its_hint_where_it_names_a_fixed_code():
+    money, duration = Question("m", "money", currency="EUR"), Question("d", "duration", unit="D")
+    assert money.from_text("5000") == "5000" and money.problem("5000") is None
+    assert duration.from_text("30") == "30" and duration.problem("30") is None
+    assert money.from_text("5000 EUR") == {"amount": "5000", "currency": "EUR"}
+    with pytest.raises(ValueError, match="in EUR"):
+        money.from_text("5000 USD")
+    bare = Question("m", "money")
+    with pytest.raises(ValueError) as error:
+        bare.from_text("5000")
+    assert "must be a map" not in str(error.value) and str(error.value) == f"Enter {bare.hint}."
+
+
+def test_a_key_is_matched_exactly_before_in_any_case():
+    odd = Question("c", "choice", choices={"a": "x", "A": "y"})
+    assert odd.from_text("A") == "A" and odd.from_text("a") == "a"
+    assert Question("c", "choice", choices={"ab": "AB"}).hint == "one of: ab"
+    assert Question("c", "choice").hint == "an answer (the question declares no choices)"
+
+
+def test_a_long_amount_is_not_echoed_whole():
+    with pytest.raises(ValueError) as error:
+        _asking()["fee"].from_text("1" * 5000 + ",5 EUR")
+    assert len(str(error.value)) < 300
+
+
+def test_the_loop_in_the_readme_never_leaves_a_decision_open():
+    template = parse_template(_TEMPLATE)
+    script = iter(["", "  ", "", "maybe", "no"])  # who and fee skipped; extras: empty, bad, then a real answer
+    answers: dict = {}
+    skipped: set[str] = set()
+    asked: list[str] = []
+    for _ in range(40):
+        form = template.form(answers)
+        q = next((q for q in form.questions if answers.get(q.id) is None and q.id not in skipped), None)
+        if q is None:
+            break
+        asked.append(q.id)
+        try:
+            answer = q.from_text(next(script))
+        except ValueError:
+            continue
+        if answer is not None:
+            answers[q.id] = answer
+        elif q in form.blocking:
+            continue
+        else:
+            skipped.add(q.id)
+    final = template.form(answers)
+    assert final.blocking == () and final.ready
+    assert answers == {"extras": False} and skipped == {"who", "fee"}  # a decision was asked until answered
+    assert asked == ["who", "fee", "extras", "extras", "extras"]

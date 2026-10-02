@@ -144,8 +144,8 @@ class Question:
     declared: bool = True
     #: What the placeholders of the question fix (``Blank``): every code, and
     #: whether one is in frontmatter, which ``problem`` needs. A question made
-    #: without it behaves as if no placeholder fixes a code and none is in
-    #: frontmatter.
+    #: without it behaves as if its placeholders fix the ``currency`` or ``unit``
+    #: it names, if any, and none is in frontmatter.
     _blank: Blank | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -160,8 +160,15 @@ class Question:
         """Why *answer* is not a valid answer to this question (§15.7.1), or
         None when it is."""
         return answer_problem(
-            self.type, answer, choices=self.choices if self.type == "choice" else None, blank=self._blank
+            self.type, answer, choices=self.choices if self.type == "choice" else None, blank=self._placeholders()
         )
+
+    def _placeholders(self) -> Blank | None:
+        """What the placeholders fix: as recorded, else as ``currency``/``unit`` name."""
+        if self._blank is not None:
+            return self._blank
+        fixed = self.currency if self.type == "money" else self.unit if self.type == "duration" else None
+        return Blank(type=self.type, codes={fixed}) if fixed else None
 
     @property
     def hint(self) -> str:
@@ -173,8 +180,11 @@ class Question:
         if self.type == "date":
             return "a date, YYYY-MM-DD"
         if self.type == "choice":
+            if not self.choices:
+                return "an answer (the question declares no choices)"
             return "one of: " + ", ".join(
-                f"{key} ({label})" if label and label != key else key for key, label in self.choices.items()
+                f"{key} ({label})" if label and label.casefold() != key.casefold() else key
+                for key, label in self.choices.items()
             )
         if self.type == "money":
             if self.currency:
@@ -202,7 +212,8 @@ class Question:
           placeholders fix a currency. ``duration``: ``30 D``, and the number
           alone where they fix a unit. No grouping separators or symbols.
 
-        Raises ``ValueError``, saying what to enter, for text that is no answer.
+        Raises ``ValueError``, saying what to enter, for text that is no answer,
+        and ``TypeError`` for what is not text.
         """
         if not isinstance(text, str):
             raise TypeError(f"the text of an answer is a string, not {type(text).__name__}")
@@ -213,25 +224,27 @@ class Question:
         problem = self.problem(value)
         if problem:
             # Said as the question is, where what is wrong is not the shape of what was typed.
-            detail = f" ({problem})" if self.type in ("money", "duration") else ""
+            detail = "" if self.type in ("boolean", "choice", "date") else f" ({problem})"
             raise ValueError(f"Enter {self.hint}.{detail}")
         return value
 
     def _answer_from(self, text: str) -> Any:
         shape = ValueError(f"Enter {self.hint}.")
         if self.type == "boolean":
-            word = text.lower()
+            word = text.casefold()
             if word in ("yes", "y", "true"):
                 return True
             if word in ("no", "n", "false"):
                 return False
             raise shape
         if self.type == "choice":
-            word = text.lower()
-            keys = [key for key in self.choices if key.lower() == word]
+            if text in self.choices:
+                return text
+            word = text.casefold()
+            keys = [key for key in self.choices if key.casefold() == word]
             if keys:
                 return keys[0]
-            labels = [key for key, label in self.choices.items() if label.lower() == word]
+            labels = [key for key, label in self.choices.items() if label.casefold() == word]
             if len(labels) == 1:
                 return labels[0]
             if labels:
@@ -245,7 +258,8 @@ class Question:
             amount, code = found.group(1), (found.group(2) or "").upper()
             if not (is_valid_money_amount(amount) if self.type == "money" else is_positive_numeric(amount)):
                 what = "an amount" if self.type == "money" else "a positive number"
-                raise ValueError(f"'{amount}' is not {what}: digits and at most one decimal point, with no "
+                shown = amount if len(amount) <= 40 else amount[:37] + "..."
+                raise ValueError(f"'{shown}' is not {what}: digits and at most one decimal point, with no "
                                  f"separators or symbols. Enter {self.hint}.")
             fixed = self.currency if self.type == "money" else self.unit
             if not code:
