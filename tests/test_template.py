@@ -934,3 +934,9 @@ def test_load_answers_reports_what_is_nested_too_deep(tmp_path):
     path.write_text("a: " + "[" * 3000 + "]" * 3000 + "\n", encoding="utf-8")
     with pytest.raises(AnswersError):
         load_answers(path)
+
+
+def test_a_set_or_map_holding_an_integer_too_long_to_write_is_still_data():
+    template = parse_template(_TEMPLATE)
+    data = template.form({"who": {10**5000, 1}, "fee": {10**5000: "x"}}).as_dict()
+    json.dumps(data, allow_nan=False)

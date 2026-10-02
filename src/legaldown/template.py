@@ -117,6 +117,14 @@ def load_answers(path: str | os.PathLike[str]) -> dict[str, Any]:
     return answers
 
 
+def _text(value: Any) -> str:
+    """``str(value)``, where an integer too long for Python to write is a note."""
+    try:
+        return str(value)
+    except ValueError:
+        return "<an integer too long to write>"
+
+
 _JSON_NODES = 10_000
 _JSON_DEPTH = 40
 
@@ -134,22 +142,19 @@ def _jsonable(value: Any, budget: list[int] | None = None, depth: int = 0) -> An
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, dict):
-        return {str(key): _jsonable(item, budget, depth + 1) for key, item in value.items()}
+        return {_text(key): _jsonable(item, budget, depth + 1) for key, item in value.items()}
     if isinstance(value, (set, frozenset)):
-        return [_jsonable(item, budget, depth + 1) for item in sorted(value, key=str)]
+        return [_jsonable(item, budget, depth + 1) for item in sorted(value, key=_text)]
     if isinstance(value, (list, tuple)):
         return [_jsonable(item, budget, depth + 1) for item in value]
     if isinstance(value, float):
         return value if math.isfinite(value) else str(value)
     if isinstance(value, int) and not isinstance(value, bool):
-        try:
-            str(value)
-        except ValueError:
-            return "<an integer too long to write>"
-        return value
+        text = _text(value)
+        return text if text.startswith("<") else value
     if value is None or isinstance(value, (str, bool)):
         return value
-    return str(value)
+    return _text(value)
 
 
 def _diagnostic_dict(diagnostic: Diagnostic) -> dict[str, Any]:
