@@ -566,8 +566,9 @@ files fail is refused. [CONFORMANCE.md](CONFORMANCE.md#assembly-157-176) lists w
 checks and what it does not.
 
 > **Deprecated:** `assemble(text, answers, load_file=)`, `template_questions` and `needed_questions`
-> are replaced by `Template` and `Form`. They still work, unchanged (but for `Question`, below), and
-> raise a `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
+> are replaced by `Template` and `Form`. They still work, unchanged (but for `Question`, below, and
+> that a `load_file=` loader is never asked for a path that is absolute or leads out of the template's
+> directory, §2.3), and raise a `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
 > differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
 > (the functions ask them after the body), and it refuses a template that has Errors in the
 > validator's template rules (the functions assemble it). `legaldown assemble` follows the new API,
