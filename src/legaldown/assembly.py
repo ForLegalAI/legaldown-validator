@@ -171,6 +171,15 @@ class Question:
         return Blank(type=self.type, codes={fixed}) if fixed else None
 
     @property
+    def _fixed(self) -> str | None:
+        """The currency (money) or unit (duration) every placeholder fixes, if one:
+        what ``problem`` goes by, so that the hint and ``from_text`` never differ from it."""
+        blank = self._placeholders()
+        if blank is None or self.type not in ("money", "duration"):
+            return None
+        return next(iter(blank.codes)) if len(blank.codes) == 1 and "" not in blank.codes else None
+
+    @property
     def hint(self) -> str:
         """What to type to answer it, as a phrase to follow "Enter": ``yes or
         no``, ``an amount and a currency, like 5000 EUR``, ``one of: courts
@@ -187,16 +196,52 @@ class Question:
                 for key, label in self.choices.items()
             )
         if self.type == "money":
-            if self.currency:
-                return f"an amount, like 5000 (in {self.currency})"
+            if self._fixed:
+                return f"an amount, like 5000 (in {self._fixed})"
             return "an amount and a currency, like 5000 EUR"
         if self.type == "duration":
-            if self.unit:
-                return f"a number, like 30 (in {self.unit})"
+            if self._fixed:
+                return f"a number, like 30 (in {self._fixed})"
             return f"a number and a unit, like 30 D (units: {', '.join(DURATION_UNITS)})"
         if self._blank is not None and self._blank.in_frontmatter:
             return "text, without '{{'"
         return "text"
+
+    @property
+    def accepts(self) -> dict[str, Any]:
+        """What the question accepts, for a form or an agent to build its input
+        from: ``kind`` (the type), and what that kind needs — the words of a
+        boolean, the choices, the currency or unit the placeholders fix and the
+        units there are, whether the text fills frontmatter. ``hint`` says it in
+        words."""
+        if self.type == "boolean":
+            return {"kind": "boolean", "words": {"true": ["yes", "y", "true"], "false": ["no", "n", "false"]}}
+        if self.type == "date":
+            return {"kind": "date", "format": "YYYY-MM-DD"}
+        if self.type == "choice":
+            return {"kind": "choice", "choices": [{"key": key, "label": label} for key, label in self.choices.items()]}
+        if self.type == "money":
+            return {"kind": "money", "currency": self._fixed}
+        if self.type == "duration":
+            return {"kind": "duration", "unit": self._fixed, "units": list(DURATION_UNITS)}
+        return {"kind": "text", "frontmatter": bool(self._blank is not None and self._blank.in_frontmatter)}
+
+    def to_text(self, answer: Any) -> str:
+        """*answer* as a person would type it — the inverse of :meth:`from_text`:
+        to show a default or a saved answer, or to fill in an input. ``yes`` or
+        ``no`` for a boolean, ``5000 EUR`` for money, ``30 D`` for a duration, an
+        ISO date; the empty text for no answer. Anything else as ``str`` has it."""
+        if answer is None:
+            return ""
+        if isinstance(answer, bool):
+            return "yes" if answer else "no"
+        if isinstance(answer, date):
+            return answer.isoformat()
+        if isinstance(answer, dict):
+            keys = ("amount", "currency") if self.type == "money" else ("value", "unit")
+            if self.type in ("money", "duration") and set(answer) == set(keys):
+                return f"{answer[keys[0]]} {answer[keys[1]]}"
+        return str(answer)
 
     def from_text(self, text: str) -> Any:
         """The answer that *text*, as a person types it, gives to this question:
@@ -261,9 +306,8 @@ class Question:
                 shown = amount if len(amount) <= 40 else amount[:37] + "..."
                 raise ValueError(f"'{shown}' is not {what}: digits and at most one decimal point, with no "
                                  f"separators or symbols. Enter {self.hint}.")
-            fixed = self.currency if self.type == "money" else self.unit
             if not code:
-                if not fixed:
+                if not self._fixed:
                     raise shape
                 return amount
             names = ("amount", "currency") if self.type == "money" else ("value", "unit")

@@ -20,13 +20,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from . import SPEC_VERSION, __version__
 from .assembly import AssemblyResult, frontmatter_diagnostic
 from .files import within
 from .parser import FrontmatterError, load
-from .template import load_template
+from .template import AnswersError, Form, Template, load_answers, load_template
 from .validator import validate
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
@@ -169,16 +167,11 @@ def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]
     if path is None:
         return {}, None
     try:
-        answers = yaml.safe_load(_read(path))
+        return load_answers(path), None
     except OSError as exc:
         return None, f"cannot read {path}: {exc}"
-    except (yaml.YAMLError, ValueError) as exc:  # a date such as 2026-13-45 raises ValueError
-        return None, f"cannot read the answers in {path}: {exc}"
-    if answers is None:
-        return {}, None
-    if not isinstance(answers, dict):
-        return None, f"the answers in {path} must be a YAML mapping of question ids to answers"
-    return answers, None
+    except AnswersError as exc:
+        return None, str(exc)
 
 
 def _run_assemble(args: argparse.Namespace) -> int:
@@ -201,7 +194,7 @@ def _run_assemble(args: argparse.Namespace) -> int:
 
     if result is None:
         try:
-            result = template.form(answers).assemble()
+            result = template.form(template.coerce(answers)).assemble()
         except Exception as exc:
             # Not the template's fault: a bug in this validator, as in ``validate``.
             print(f"error: internal error while assembling {template_path}: {type(exc).__name__}: {exc} "
@@ -253,6 +246,75 @@ def _run_assemble(args: argparse.Namespace) -> int:
         except OSError as exc:
             print(f"error: cannot write {relative}: {exc}; the output is incomplete", file=sys.stderr)
             return EXIT_ERROR
+    return EXIT_OK
+
+
+def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict | None, list[dict], str | None]:
+    """The template and the answers for ``questions``: ``(template, answers, problems, failure)``."""
+    answers, failure = _read_answers(Path(args.answers) if args.answers else None)
+    if failure is not None:
+        return None, None, [], failure
+    path = Path(args.template)
+    try:
+        return load_template(path), answers, [], None
+    except FrontmatterError as exc:
+        diagnostic = frontmatter_diagnostic(exc)
+        return None, None, [{"rule": diagnostic.rule, "level": diagnostic.level,
+                             "message": diagnostic.message, "line": diagnostic.line}], None
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, None, [], f"cannot read {path}: {exc}"
+    except Exception as exc:
+        return None, None, [], f"internal error while reading {path}: {type(exc).__name__}: {exc} (please report this)"
+
+
+def _format_form(form: Form) -> str:
+    """The form as text: the questions reached, then what is wrong, then whether it is ready."""
+    data = form.as_dict()
+    lines = []
+    for question in data["questions"]:
+        if not question["reached"]:
+            continue
+        mark = "!" if question["blocking"] else "?" if question["state"] in ("unanswered", "invalid") else " "
+        if question["state"] == "answered":
+            detail = f"answered: {question['answer_text']}"
+        elif question["state"] == "default":
+            detail = f"default: {question['default_text']}"
+        elif question["state"] == "invalid":
+            detail = f"invalid: {question['problem']}"
+        else:
+            detail = f"enter {question['hint']}"
+        lines.append(f"{mark} {question['id']} ({question['type']}) {question['label']} — {detail}")
+    others = sum(1 for question in data["questions"] if not question["reached"])
+    if others:
+        lines.append(f"  ({others} more, not asked yet or not at all with these answers)")
+    for d in data["problems"]:
+        lines.append(f"problem: [{d['rule']}] {d['message']}")
+    for d in data["diagnostics"]:
+        lines.append(f"{d['level']}: [{d['rule']}] {d['message']}")
+    lines.append("complete" if data["complete"] else "ready, with blanks left" if data["ready"] else "not ready")
+    return "\n".join(lines) + "\n"
+
+
+def _run_questions(args: argparse.Namespace) -> int:
+    template, answers, problems, failure = _load_for_questions(args)
+    if failure is not None:
+        print(f"error: {failure}", file=sys.stderr)
+        return EXIT_ERROR
+    if template is None:  # frontmatter that cannot be read
+        if args.format == "json":
+            print(json.dumps({"ready": False, "complete": False, "problems": problems,
+                              "diagnostics": [], "questions": []}, indent=2))
+        else:
+            for d in problems:
+                print(f"{args.template}: {d['level']}: [{d['rule']}] {d['message']}", file=sys.stderr)
+        return EXIT_DIAGNOSTICS
+    form = template.form(template.coerce(answers))
+    if args.format == "json":
+        print(json.dumps(form.as_dict(), indent=2, ensure_ascii=False))
+    else:
+        sys.stdout.write(_format_form(form))
+    if template.problems or (args.check and not form.ready):
+        return EXIT_DIAGNOSTICS
     return EXIT_OK
 
 
@@ -333,6 +395,28 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     assemble_cmd.set_defaults(func=_run_assemble)
+
+    questions_cmd = sub.add_parser(
+        "questions",
+        help="List what a template asks, given the answers so far (§15.7).",
+        description=(
+            "List the questions a template asks given the answers so far: those reached, "
+            "which are unanswered, which stop assembly, and what is wrong with the answers. "
+            "Exit status 0 unless the template has problems or cannot be read, or, with "
+            "--check, is not ready to assemble."
+        ),
+    )
+    questions_cmd.add_argument("template", help="The template file.")
+    questions_cmd.add_argument(
+        "--answers", metavar="FILE", help="YAML mapping of question ids to answers (§15.7.1)."
+    )
+    questions_cmd.add_argument(
+        "--format", choices=("text", "json"), default="text", help="Output format (default: text)."
+    )
+    questions_cmd.add_argument(
+        "--check", action="store_true", help="Exit non-zero when assembly cannot run with these answers."
+    )
+    questions_cmd.set_defaults(func=_run_questions)
     return parser
 
 

@@ -12,9 +12,12 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from functools import cached_property
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from .assembly import (
     _MISSING,
@@ -38,7 +41,7 @@ from .validator import validate
 from .validator.patterns import VALID_DURATION_UNITS
 from .validator.result import Diagnostic, ValidationResult
 
-__all__ = ["Form", "Template", "load_template", "parse_template"]
+__all__ = ["AnswersError", "Form", "Template", "load_answers", "load_template", "parse_template"]
 
 #: The rules of the validator that a template must satisfy for assembly
 #: (§15.7.2 gives assembly a template that validates without Errors): those of
@@ -65,6 +68,66 @@ TEMPLATE_RULES: frozenset[str] = frozenset({
 #: fragments: it then cannot tell a reference to a section of a fragment from
 #: one to a section its condition removes.
 _ALONE_ONLY: frozenset[str] = frozenset({"condition-reference-unsafe"})
+
+
+def _coerced(question: Question, value: Any) -> Any:
+    """*value* as an answer to *question*, if it can be read as one without guessing."""
+    if isinstance(value, str):
+        if not value:
+            return value
+        try:
+            answer = question.from_text(value)
+        except ValueError:
+            return value
+        return value if answer is None else answer
+    if question.type == "money":
+        if type(value) is int:
+            return str(value)
+        if isinstance(value, dict) and set(value) == {"amount", "currency"} and type(value["amount"]) is int:
+            return {**value, "amount": str(value["amount"])}
+    return value
+
+
+class AnswersError(ValueError):
+    """An answers file that is not an answers set (§15.7.1): not YAML, or not a
+    mapping of question ids to answers."""
+
+
+def load_answers(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """The answers set (§15.7.1) in the YAML file at *path*: a mapping of question
+    ids to answers, empty for an empty file. Plain YAML: ``Template.coerce``
+    puts right what it gets wrong for the template's questions.
+
+    Raises ``OSError`` when the file cannot be read, and ``AnswersError`` when it
+    is not UTF-8, not YAML (a date such as ``2026-13-45`` is not one), or not a
+    mapping."""
+    file = Path(path)
+    try:
+        answers = yaml.safe_load(file.read_bytes().decode("utf-8-sig"))
+    except (yaml.YAMLError, ValueError) as exc:  # UnicodeDecodeError is a ValueError
+        raise AnswersError(f"cannot read the answers in {file}: {exc}") from exc
+    if answers is None:
+        return {}
+    if not isinstance(answers, dict):
+        raise AnswersError(f"the answers in {file} must be a YAML mapping of question ids to answers")
+    return answers
+
+
+def _jsonable(value: Any) -> Any:
+    """*value* as JSON holds it: a date as its ISO text, a map with text keys."""
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _diagnostic_dict(diagnostic: Diagnostic) -> dict[str, Any]:
+    return {"rule": diagnostic.rule, "level": diagnostic.level, "message": diagnostic.message, "line": diagnostic.line}
 
 
 def _placeholder_problems(t: _Template) -> list[Diagnostic]:
@@ -160,6 +223,28 @@ class Template:
         change when they do)."""
         return _build_form(self, {} if answers is None else answers)
 
+    def coerce(self, answers: Mapping[str, Any]) -> dict[str, Any]:
+        """*answers* with the shapes that plain YAML or JSON get wrong put right,
+        as a new mapping; *answers* is not changed, and nothing is raised.
+
+        For a question of the template: text is read as ``Question.from_text``
+        reads it (``yes`` for a boolean, ``5000 EUR`` for money, a choice by its
+        label, surrounding spaces dropped), except the empty text, which stays;
+        a money amount written as a number (``fee: 5000``, bare or in the
+        ``amount`` of a map) becomes the string the specification wants.
+        Anything it cannot put right — a float, a ``yes`` that YAML made ``True``
+        for a text question, an unknown id — is left as it is, for ``form`` to
+        report. A form does not do this by itself: its diagnostics are the
+        specification's. A front end that takes answers from a person or a file
+        calls it first. Anything but a mapping is returned unchanged."""
+        if not isinstance(answers, Mapping):
+            return answers  # type: ignore[return-value]
+        by_id = {question.id: question for question in self.questions}
+        return {
+            key: _coerced(by_id[key], value) if isinstance(key, str) and key in by_id else value
+            for key, value in answers.items()
+        }
+
 
 @dataclass(slots=True, frozen=True)
 class Form:
@@ -196,6 +281,7 @@ class Form:
     _answers: dict = field(repr=False, compare=False)
     _resolved: _FormAnswers = field(repr=False, compare=False)
     _decision: Any = field(repr=False, compare=False)
+    _pairs: tuple = field(repr=False, compare=False)
 
     def problem(self, qid: str) -> str | None:
         """Why the answer to question *qid* — the answer given, else its
@@ -204,6 +290,63 @@ class Form:
         if answer is _MISSING:
             return None
         return _answer_problem(self._template._t, qid, answer)
+
+    def as_dict(self) -> dict[str, Any]:
+        """The form as plain data — JSON-ready — for a front end, a service or an
+        agent: ``ready``, ``complete``, the template's ``problems``, the
+        ``diagnostics`` about the answers (each with the ``question`` it is about,
+        ``""`` for none), and ``questions``: those reached first, in order, then
+        the others, each with
+
+        - ``id``, ``type``, ``label`` (its prompt, else its id), ``prompt``,
+          ``declared``, ``choices``, ``currency``, ``unit``;
+        - ``reached`` and ``blocking`` (a decision that stops assembly);
+        - ``state``: ``answered`` (a valid answer), ``default`` (the default
+          applies), ``invalid`` (an answer that is not valid; it counts as none)
+          or ``unanswered``; ``answer`` (the answer given, else null), ``default``,
+          and ``answer_text``, ``default_text`` as a person would type them;
+        - ``problem``: why the answer is not valid, else null;
+        - ``hint``, in words, and ``accepts``, as data (``Question.accepts``).
+        """
+        t = self._template._t
+        reached = {question.id for question in self.questions}
+        blocking = {question.id for question in self.blocking}
+        order = [*self.questions, *(q for q in self._template.questions if q.id not in reached)]
+        questions = []
+        for question in order:
+            given = self._answers.get(question.id)
+            problem = self.problem(question.id)
+            if given is not None:
+                state = "invalid" if _answer_problem(t, question.id, given) else "answered"
+            else:
+                state = "default" if question.default is not None else "unanswered"
+            questions.append({
+                "id": question.id,
+                "type": question.type,
+                "label": question.prompt or question.id,
+                "prompt": question.prompt,
+                "declared": question.declared,
+                "reached": question.id in reached,
+                "blocking": question.id in blocking,
+                "state": state,
+                "answer": _jsonable(given),
+                "answer_text": question.to_text(given),
+                "default": _jsonable(question.default),
+                "default_text": question.to_text(question.default),
+                "choices": dict(question.choices),
+                "currency": question.currency,
+                "unit": question.unit,
+                "problem": problem,
+                "hint": question.hint,
+                "accepts": question.accepts,
+            })
+        return {
+            "ready": self.ready,
+            "complete": self.complete,
+            "problems": [_diagnostic_dict(d) for d in self._template.problems],
+            "diagnostics": [{**_diagnostic_dict(d), "question": qid} for qid, d in self._pairs],
+            "questions": questions,
+        }
 
     def assemble(self) -> AssemblyResult:
         """Assemble the template with these answers (§15.7.2). Nothing is
@@ -267,6 +410,7 @@ def _build_form(template: Template, answers: Mapping[str, Any]) -> Form:
         _answers=given,
         _resolved=resolved,
         _decision=decision,
+        _pairs=tuple(pairs),
     )
 
 

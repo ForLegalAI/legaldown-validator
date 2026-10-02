@@ -82,7 +82,7 @@ from .serializer import render_block, render_item, serialize_document
 
 # The LegalDown specification version this implementation targets.
 from .specification import SPEC_VERSION
-from .template import Form, Template, load_template, parse_template
+from .template import AnswersError, Form, Template, load_answers, load_template, parse_template
 
 # Validator
 from .validator import (
@@ -131,6 +131,8 @@ __all__ = [
     # Assembly (§15.7, §17.6)
     "load_template",
     "parse_template",
+    "load_answers",
+    "AnswersError",
     "Template",
     "Form",
     "assemble",  # deprecated since 0.4.0, removed in 0.5.0

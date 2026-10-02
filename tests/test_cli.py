@@ -335,3 +335,92 @@ def test_a_fault_while_reading_the_template_is_an_internal_error(write, capsys, 
     monkeypatch.setattr(legaldown.cli, "load_template", broken)
     assert main(["assemble", str(write("t.lgd", _TEMPLATE))]) == EXIT_ERROR
     assert "internal error while reading" in capsys.readouterr().err
+
+
+# ── legaldown questions ──────────────────────────────────────────
+
+_ASKING = _TEMPLATE.replace("questions:\n  x:\n    type: boolean\n", "questions:\n  x:\n    type: boolean\n    prompt: Keep the extras?\n")
+
+
+def _questions(args, capsys):
+    code = main(["questions", *args])
+    return code, capsys.readouterr()
+
+
+def test_questions_lists_what_is_asked_as_json(write, capsys):
+    template = write("t.lgd", _ASKING)
+    code, captured = _questions([str(template), "--format", "json"], capsys)
+    assert code == EXIT_OK
+    data = json.loads(captured.out)
+    assert (data["ready"], data["complete"], data["problems"]) == (False, False, [])
+    assert [q["id"] for q in data["questions"] if q["reached"]] == ["x", "who"]
+    by_id = {q["id"]: q for q in data["questions"]}
+    assert by_id["x"]["blocking"] and by_id["x"]["state"] == "unanswered" and by_id["x"]["label"] == "Keep the extras?"
+    assert by_id["who"]["hint"] == "text" and by_id["x"]["accepts"]["kind"] == "boolean"
+    assert [d["rule"] for d in data["diagnostics"]] == ["answer-missing"]
+    assert data["diagnostics"][0]["question"] == "x"
+
+
+def test_questions_reads_the_answers_and_puts_their_shapes_right(write, capsys):
+    template = write("t.lgd", _ASKING)
+    answers = write("a.yaml", "x: no\nwho: Ann\n")
+    code, captured = _questions([str(template), "--answers", str(answers), "--format", "json"], capsys)
+    data = json.loads(captured.out)
+    assert code == EXIT_OK and data["ready"] and data["complete"]
+    assert {q["id"]: q["answer"] for q in data["questions"] if q["reached"]} == {"x": False, "who": "Ann"}
+
+
+def test_questions_as_text(write, capsys):
+    template = write("t.lgd", _ASKING)
+    code, captured = _questions([str(template)], capsys)
+    assert code == EXIT_OK and captured.err == ""
+    lines = captured.out.splitlines()
+    assert lines[0].startswith("! x (boolean) Keep the extras?") and "enter yes or no" in lines[0]
+    assert lines[1].startswith("? who (text)") and "enter text" in lines[1]
+    assert "[answer-missing]" in captured.out and lines[-1] == "not ready"
+    answers = write("a.yaml", "x: true\nwho: Ann\n")
+    code, captured = _questions([str(template), "--answers", str(answers)], capsys)
+    assert captured.out.splitlines()[-1] == "complete" and "answered: Ann" in captured.out and "answered: yes" in captured.out
+
+
+def test_questions_check_makes_not_ready_an_exit_status(write, capsys):
+    template = write("t.lgd", _ASKING)
+    assert _questions([str(template), "--check"], capsys)[0] == EXIT_DIAGNOSTICS
+    answers = write("a.yaml", "x: true\n")
+    assert _questions([str(template), "--answers", str(answers), "--check"], capsys)[0] == EXIT_OK  # ready, with blanks
+
+
+def test_questions_reports_a_template_with_problems(write, capsys):
+    template = write("t.lgd", _TEMPLATE.replace("Hi {{placeholder: who}}.", 'Hi {{choose: x, true="only one phrase"}}.'))
+    code, captured = _questions([str(template), "--format", "json"], capsys)
+    data = json.loads(captured.out)
+    assert code == EXIT_DIAGNOSTICS and [p["rule"] for p in data["problems"]] == ["choose-invalid"]
+    code, captured = _questions([str(template)], capsys)
+    assert code == EXIT_DIAGNOSTICS and "problem: [choose-invalid]" in captured.out
+
+
+def test_questions_reports_unreadable_frontmatter_as_a_diagnostic(write, capsys):
+    template = write("t.lgd", "---\ntitle: [unclosed\n---\n")
+    code, captured = _questions([str(template), "--format", "json"], capsys)
+    data = json.loads(captured.out)
+    assert code == EXIT_DIAGNOSTICS and data["problems"][0]["rule"] == "frontmatter-invalid-yaml" and data["questions"] == []
+    code, captured = _questions([str(template)], capsys)
+    assert code == EXIT_DIAGNOSTICS and "[frontmatter-invalid-yaml]" in captured.err
+
+
+@pytest.mark.parametrize("answers", ["x: [unclosed\n", "- a\n- b\n"])
+def test_questions_with_an_unreadable_answers_file_or_template_is_an_error(write, capsys, tmp_path, answers):
+    template = write("t.lgd", _ASKING)
+    assert _questions([str(template), "--answers", str(write("a.yaml", answers))], capsys)[0] == EXIT_ERROR
+    assert _questions([str(tmp_path / "nope.lgd")], capsys)[0] == EXIT_ERROR
+    assert _questions([str(template), "--answers", str(tmp_path / "nope.yaml")], capsys)[0] == EXIT_ERROR
+
+
+def test_assemble_puts_the_shapes_of_the_answers_file_right(write, capsys):
+    template = write("t.lgd", _ASKING.replace("Hi {{placeholder: who}}.", "Fee {{placeholder: fee, type=money}}."))
+    answers = write("a.yaml", "x: no\nfee: 5000 eur\n")  # not the shape of a money answer
+    assert main(["assemble", str(template), "--answers", str(answers)]) == EXIT_OK
+    assert "{{money: 5000, currency=EUR}}" in capsys.readouterr().out
+    integers = write("b.yaml", "x: no\nfee:\n  amount: 5000\n  currency: EUR\n")  # a number as the amount
+    assert main(["assemble", str(template), "--answers", str(integers)]) == EXIT_OK
+    assert "{{money: 5000, currency=EUR}}" in capsys.readouterr().out

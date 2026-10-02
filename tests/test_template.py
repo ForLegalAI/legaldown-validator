@@ -9,13 +9,24 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import datetime as dt
+import json
 import pickle
 import threading
 
 import pytest
 
 import legaldown
-from legaldown import Form, FrontmatterError, Question, Template, load_template, parse_template
+from legaldown import (
+    AnswersError,
+    Form,
+    FrontmatterError,
+    Question,
+    Template,
+    load_answers,
+    load_template,
+    parse_template,
+)
 from legaldown.assembly import _Answers, _decide, _read
 
 _FRONT = """---
@@ -714,3 +725,167 @@ def test_the_loop_in_the_readme_never_leaves_a_decision_open():
     assert final.blocking == () and final.ready
     assert answers == {"extras": False} and skipped == {"who", "fee"}  # a decision was asked until answered
     assert asked == ["who", "fee", "extras", "extras", "extras"]
+
+
+# ── Answers from a file, put right ───────────────────────────────
+
+
+def test_coerce_puts_right_what_plain_yaml_gets_wrong_and_leaves_the_rest():
+    template = parse_template(_TEMPLATE)
+    given = {"extras": "yes", "who": " Ann ", "fee": 5000, "forum": "State courts", "nope": 1}
+    coerced = template.coerce(given)
+    assert coerced == {"extras": True, "who": "Ann", "fee": "5000", "forum": "courts", "nope": 1}
+    assert given["fee"] == 5000 and given["extras"] == "yes"  # the argument is not changed
+    assert template.coerce({"fee": {"amount": 5000, "currency": "EUR"}}) == {"fee": {"amount": "5000", "currency": "EUR"}}
+    assert template.coerce({"fee": "5000 eur"}) == {"fee": {"amount": "5000", "currency": "EUR"}}
+
+
+@pytest.mark.parametrize(
+    "value", [True, 5000.5, 1.0, None, "", "   ", "maybe", [1], {"amount": 5.5, "currency": "EUR"}, dt.date(2026, 1, 1)]
+)
+def test_coerce_never_guesses_and_never_raises(value):
+    template = parse_template(_TEMPLATE)
+    for qid in ("extras", "fee", "forum", "who"):
+        coerced = template.coerce({qid: value})
+        assert set(coerced) == {qid}  # an answer it cannot read as one stays, for the form to report
+        if not isinstance(value, str):
+            assert coerced[qid] == value
+    assert template.coerce({"fee": 5.5}) == {"fee": 5.5}  # a float's digits may change: it is not made a string
+    assert template.coerce({"who": ""}) == {"who": ""}  # an explicit empty text stays, to be reported
+    assert template.coerce({"extras": "maybe"}) == {"extras": "maybe"}
+
+
+def test_coerce_returns_what_is_no_mapping_unchanged():
+    template = parse_template(_TEMPLATE)
+    for odd in (None, 5, ["a"], "x: 1"):
+        assert template.coerce(odd) is odd
+
+
+def test_coerced_answers_are_what_a_form_accepts():
+    template = parse_template(_TEMPLATE)
+    given = {"extras": "no", "who": "Ann", "fee": {"amount": 250, "currency": "EUR"}}
+    assert not template.form(given).ready  # plain answers: the specification's shapes are strict
+    assert template.form(template.coerce(given)).ready
+
+
+def test_a_template_without_the_question_keeps_the_answer():
+    template = parse_template(_TEMPLATE)
+    assert template.coerce({1: "x", "nope": "y"}) == {1: "x", "nope": "y"}
+
+
+# ── load_answers ─────────────────────────────────────────────────
+
+
+def test_load_answers_reads_a_yaml_mapping(tmp_path):
+    path = tmp_path / "a.yaml"
+    path.write_text("extras: false\nwho: Ann\nwhen: 2026-06-01\n", encoding="utf-8")
+    assert load_answers(path) == {"extras": False, "who": "Ann", "when": dt.date(2026, 6, 1)}
+    path.write_bytes(b"\xef\xbb\xbfwho: Ann\n")
+    assert load_answers(path) == {"who": "Ann"}  # a byte-order mark is not part of the first key
+    path.write_text("", encoding="utf-8")
+    assert load_answers(path) == {}
+    path.write_text("# only a comment\n", encoding="utf-8")
+    assert load_answers(path) == {}
+
+
+@pytest.mark.parametrize("text", ["x: [unclosed\n", "when: 2026-13-45\n", "- a\n- b\n", "just text\n"])
+def test_load_answers_says_when_it_is_no_answers_set(tmp_path, text):
+    path = tmp_path / "a.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(AnswersError, match="answers"):
+        load_answers(path)
+    path.write_bytes(b"who: caf\xe9\n")
+    with pytest.raises(AnswersError):
+        load_answers(path)
+
+
+def test_load_answers_raises_an_oserror_for_a_file_that_is_not_there(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_answers(tmp_path / "nope.yaml")
+
+
+# ── To text and back ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("qid", "answer", "text"),
+    [
+        ("extras", True, "yes"), ("extras", False, "no"),
+        ("due", "2026-06-01", "2026-06-01"), ("due", dt.date(2026, 6, 1), "2026-06-01"),
+        ("forum", "courts", "courts"),
+        ("fee", {"amount": "5000", "currency": "EUR"}, "5000 EUR"),
+        ("price", "5000", "5000"),
+        ("term", {"value": "30", "unit": "D"}, "30 D"), ("term", {"value": 30, "unit": "D"}, "30 D"),
+        ("who", "Ann Smith", "Ann Smith"), ("who", None, ""),
+    ],
+)
+def test_to_text_is_what_a_person_would_type_and_from_text_reads_it_back(qid, answer, text):
+    question = _asking()[qid]
+    assert question.to_text(answer) == text
+    back = question.from_text(text)
+    if answer is not None:
+        assert question.problem(back) is None and question.to_text(back) == text
+    else:
+        assert back is None
+
+
+def test_accepts_says_what_a_question_takes_as_data():
+    asking = _asking()
+    assert asking["extras"].accepts == {"kind": "boolean", "words": {"true": ["yes", "y", "true"], "false": ["no", "n", "false"]}}
+    assert asking["due"].accepts == {"kind": "date", "format": "YYYY-MM-DD"}
+    assert asking["forum"].accepts["choices"][0] == {"key": "courts", "label": "State courts"}
+    assert asking["fee"].accepts == {"kind": "money", "currency": None}
+    assert asking["price"].accepts == {"kind": "money", "currency": "EUR"}
+    assert asking["term"].accepts["units"] == ["S", "MIN", "H", "D", "W", "MO", "Y"] and asking["term"].accepts["unit"] is None
+    assert asking["wait"].accepts["unit"] == "D"
+    assert asking["who"].accepts == {"kind": "text", "frontmatter": False}
+    assert parse_template("---\ntitle: '{{placeholder: name}}'\n---\n").questions[0].accepts["frontmatter"] is True
+
+
+def test_the_hint_and_from_text_follow_the_recorded_placeholders_over_a_changed_currency():
+    price = _asking()["price"]
+    changed = dataclasses.replace(price, currency="USD")
+    assert changed.hint == price.hint and changed.from_text("5") == "5"  # the placeholders fix EUR, not USD
+
+
+# ── The form as data ─────────────────────────────────────────────
+
+
+def test_a_form_as_data_is_json_and_says_what_each_question_is():
+    template = parse_template(_TEMPLATE)
+    form = template.form({"extras": True, "who": "Ann", "fee": {"amount": "5", "currency": "EUR"}, "forum": "nowhere"})
+    data = form.as_dict()
+    assert json.loads(json.dumps(data)) == data
+    assert [k for k in data] == ["ready", "complete", "problems", "diagnostics", "questions"]
+    assert (data["ready"], data["complete"]) == (False, False)
+    by_id = {q["id"]: q for q in data["questions"]}
+    assert [q["id"] for q in data["questions"]][:5] == ["who", "fee", "extras", "client", "forum"]  # reached, in order
+    assert by_id["who"]["state"] == "answered" and by_id["who"]["answer"] == "Ann"
+    assert by_id["fee"]["state"] == "answered" and by_id["fee"]["answer_text"] == "5 EUR"
+    assert by_id["forum"]["state"] == "invalid" and by_id["forum"]["problem"] and by_id["forum"]["blocking"]
+    assert by_id["client"]["state"] == "unanswered" and by_id["client"]["hint"] == "text"
+    assert by_id["extras"]["reached"] and by_id["extras"]["label"] == "Include the extras?"
+    assert [d["question"] for d in data["diagnostics"]] == ["forum"]
+    assert all(set(d) == {"rule", "level", "message", "line", "question"} for d in data["diagnostics"])
+
+
+def test_a_default_is_a_state_and_dates_are_text_in_the_data():
+    template = parse_template(_TEMPLATE)
+    by_id = {q["id"]: q for q in template.form({"extras": False}).as_dict()["questions"]}
+    assert by_id["fee"]["state"] == "default" and by_id["fee"]["default_text"] == "100 EUR"
+    assert by_id["fee"]["default"] == {"amount": "100", "currency": "EUR"}
+    asking = parse_template(_ASKING).form({"due": dt.date(2026, 6, 1)}).as_dict()
+    due = next(q for q in asking["questions"] if q["id"] == "due")
+    assert due["answer"] == "2026-06-01" and json.dumps(asking)
+
+
+def test_the_questions_not_reached_follow_the_ones_reached_in_the_data():
+    data = parse_template(_TEMPLATE).form({"extras": False}).as_dict()
+    reached = [q["id"] for q in data["questions"] if q["reached"]]
+    assert reached == ["who", "fee", "extras"]
+    assert [q["id"] for q in data["questions"]] == ["who", "fee", "extras", "forum", "client"]
+
+
+def test_template_problems_are_in_the_data():
+    data = parse_template(_BROKEN).form({}).as_dict()
+    assert [p["rule"] for p in data["problems"]] == ["choose-invalid"] and not data["ready"]

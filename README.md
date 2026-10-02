@@ -137,7 +137,18 @@ legaldown assemble template.lgd --answers answers.yaml          # the document t
 legaldown assemble template.lgd --answers answers.yaml -o out/  # with its fragments and attachment files
 ```
 
-The answers set is a YAML mapping of question ids to answers (§15.7.1). Include fragments and
+```bash
+legaldown questions template.lgd --answers answers.yaml           # what is asked, given the answers so far
+legaldown questions template.lgd --answers answers.yaml --format json
+```
+
+`questions` lists the questions reached, which are unanswered, which stop assembly, and what is wrong
+with the answers; `--format json` is `Form.as_dict()` (below), for another program or an agent. It
+exits 0, whatever the answers, unless the template has problems or cannot be read; `--check` makes a
+form that cannot be assembled exit 1.
+
+The answers set is a YAML mapping of question ids to answers (§15.7.1); the shapes plain YAML gets
+wrong are put right for the template's questions (`5000 EUR`, `yes`, a number as an amount). Include fragments and
 LegalDown attachment files are read relative to the template, never from outside its directory;
 the ones assembly keeps are written under `-o` at their relative paths. Answer problems are
 reported as `answer-invalid`, `answer-missing` and `answer-unknown` (§16.12) on stderr, and
@@ -481,6 +492,29 @@ answer. What it returns always passes `question.problem`. It is strict and not l
 two choices share is ambiguous, and a key comes before a label); `5000 EUR` for money and `30 D`
 for a duration, with the amount alone where every placeholder fixes the currency or the unit; no
 grouping separators, symbols or `5 000,50`.
+
+**Answers from a file.** `load_answers("answers.yaml")` reads the YAML mapping (`AnswersError` if it
+is not one; a date such as `2026-13-45` is not YAML). Plain YAML gets some shapes wrong for a
+template: `fee: 5000` is a number and not the string money wants, `forum: State courts` names a
+choice by its label, a `yes` is not what a form takes. `template.coerce(answers)` puts right what it
+can read without guessing — text as `question.from_text` reads it, a money amount given as a number —
+and leaves the rest, a float or an unknown id, for the form to report; it never raises. A form does
+not coerce by itself, so that its diagnostics stay the specification's; `legaldown assemble` and
+`legaldown questions` do.
+
+```python
+answers = template.coerce(load_answers("answers.yaml"))
+form = template.form(answers)
+```
+
+**The form as data.** `form.as_dict()` is the form as JSON-ready data for a web form, a service or an
+agent: `ready`, `complete`, the template's `problems`, the `diagnostics` about the answers (each with
+the `question` it is about), and `questions` — those reached first, in order, then the others — each with
+`id`, `type`, `label`, `prompt`, `reached`, `blocking`, `state` (`answered`, `default`, `invalid`,
+`unanswered`), `answer`, `default`, `problem`, `hint` in words and `accepts` as data: the words of a
+boolean, the choices, the currency or unit the placeholders fix, the units there are.
+`question.to_text(answer)` is what a person would type for an answer (`yes`, `5000 EUR`, `30 D`),
+to show a default or fill in an input; `answer_text` and `default_text` hold it in the data.
 
 **What stops a template.** `template.problems` are the reasons a template cannot be assembled
 whatever the answers: a file it includes that cannot be read, a placeholder written across lines, a
