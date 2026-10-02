@@ -29,6 +29,8 @@ from .result import Line, _Recorder
 
 _CURRENCY_RE = re.compile(r"[A-Z]{3}")
 _LINE_BREAK_RE = re.compile(r"[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
+#: C0 controls but the tab (and the line breaks, refused above), and DEL: what a terminal's keys, an escape sequence say, not text.
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 #: Questions filled through ``{{placeholder:}}`` (§15.2): the placeholder
 #: types (§10.7).
@@ -89,6 +91,8 @@ def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank
             return "must not contain a line break"
         if answer != answer.strip(" \t"):
             return "must not begin or end with a space or tab"
+        if _CONTROL_RE.search(answer):
+            return "must not contain a control character"
         try:
             answer.encode("utf-8")
         except UnicodeEncodeError:

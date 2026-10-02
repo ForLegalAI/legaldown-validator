@@ -940,3 +940,12 @@ def test_a_set_or_map_holding_an_integer_too_long_to_write_is_still_data():
     template = parse_template(_TEMPLATE)
     data = template.form({"who": {10**5000, 1}, "fee": {10**5000: "x"}}).as_dict()
     json.dumps(data, allow_nan=False)
+
+
+@pytest.mark.parametrize("text", ["a\x1bb", "a\x00b", "a\x7fb", "a\x08b", "a\x01"])
+def test_text_with_a_control_character_is_not_an_answer(text):
+    who = _asking()["who"]
+    assert who.problem(text) is not None
+    with pytest.raises(ValueError, match="control character"):
+        who.from_text(text)
+    assert who.problem("a\tb") is None  # a tab inside text is text

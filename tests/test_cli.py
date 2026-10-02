@@ -677,3 +677,11 @@ def test_the_default_that_is_accepted_is_echoed(write, capsys, monkeypatch):
     _type(monkeypatch, "no", "Ann", "")
     assert main(["assemble", str(template), "-i"]) == EXIT_OK
     assert "the default, 100 EUR" in capsys.readouterr().err
+
+
+def test_keys_typed_as_escape_sequences_are_not_an_answer(write, capsys, monkeypatch):
+    template = write("t.lgd", _INTERVIEW)
+    _type(monkeypatch, "no", "abc\x1b[D\x1b[DX", "Ann", "")  # the arrow keys of a terminal without line editing
+    assert main(["assemble", str(template), "-i"]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert "Hi Ann." in captured.out and "\x1b" not in captured.out and "control character" in captured.err

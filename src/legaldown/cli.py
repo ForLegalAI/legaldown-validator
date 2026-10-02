@@ -207,20 +207,19 @@ def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]
 
 
 def _ask(prompt: str) -> str | None:
-    """A line typed after *prompt*, on standard error (standard output is the
-    assembled template), with the editing and history of the terminal; ``None``
-    at the end of the input. A line that is not text the terminal's encoding
-    reads is asked for again."""
-    with contextlib.suppress(ImportError):
-        import readline  # noqa: F401  (its presence gives input() line editing)
+    """A line from standard input, after *prompt* on standard error (standard output
+    is the assembled template); ``None`` at the end of the input. A line that is not
+    text in the terminal's encoding is asked for again. It reads the line as it is:
+    no editing or history, which Python gives only where standard output is the
+    terminal."""
     while True:
+        print(prompt, end="", file=sys.stderr, flush=True)
         try:
-            with contextlib.redirect_stdout(sys.stderr):
-                return input(prompt)
-        except EOFError:
-            return None
+            line = sys.stdin.readline()
         except UnicodeDecodeError:
             print("That is not text in this terminal's encoding; type it again.", file=sys.stderr, flush=True)
+            continue
+        return line.rstrip("\r\n") if line else None
 
 
 def _say(message: str) -> None:
