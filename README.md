@@ -604,8 +604,15 @@ checks it does not perform, so those are listed in
 git clone https://github.com/ForLegalAI/legaldown-validator
 cd legaldown-validator
 pip install -e ".[dev]"
+ruff check .
 pytest
 ```
+
+**CI** runs on demand only — *Actions → CI → Run workflow*, on the branch you pick — as one job on
+Python 3.12 (the version releases are built with): lint, the tests with the specification fixtures
+corpus (switch it off with the `conformance` input for a quicker run), and the build with its
+metadata check. Nothing runs on a push or a pull request, so run it before merging and before a
+release.
 
 ### Conformance suite
 
@@ -618,7 +625,7 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 
 Cases for rules outside Core are skipped and named, so the run doubles as the coverage ledger in
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md),
-which accounts for every skip. CI runs it on every push and pull request.
+which accounts for every skip. CI runs it with the rest of the checks, on demand (below).
 
 Bug reports and pull requests are welcome in
 [Issues](https://github.com/ForLegalAI/legaldown-validator/issues); questions about the format
