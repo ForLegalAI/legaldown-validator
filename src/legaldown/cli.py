@@ -156,6 +156,18 @@ def _read(path: Path) -> str:
         return handle.read()
 
 
+def _write_stdout(text: str) -> None:
+    """*text* to standard output as UTF-8 bytes, whatever the terminal's encoding
+    and line-break translation."""
+    sys.stdout.flush()
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is not None:
+        stream.write(text.encode("utf-8"))
+        stream.flush()
+    else:
+        sys.stdout.write(text)
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -215,13 +227,7 @@ def _run_assemble(args: argparse.Namespace) -> int:
             )
             return EXIT_ERROR
         # Bytes, so that no platform translates the template's line breaks.
-        sys.stdout.flush()
-        stream = getattr(sys.stdout, "buffer", None)
-        if stream is not None:
-            stream.write(result.output.encode("utf-8"))
-            stream.flush()
-        else:
-            sys.stdout.write(result.output)
+        _write_stdout(result.output)
         return EXIT_OK
 
     out = Path(args.output)
@@ -302,18 +308,26 @@ def _run_questions(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     if template is None:  # frontmatter that cannot be read
         if args.format == "json":
-            print(json.dumps({"ready": False, "complete": False, "problems": problems,
-                              "diagnostics": [], "questions": []}, indent=2))
+            _write_stdout(json.dumps({"ready": False, "complete": False, "problems": problems,
+                                      "diagnostics": [], "questions": []}, indent=2, allow_nan=False) + "\n")
         else:
             for d in problems:
                 print(f"{args.template}: {d['level']}: [{d['rule']}] {d['message']}", file=sys.stderr)
         return EXIT_DIAGNOSTICS
-    form = template.form(template.coerce(answers))
-    if args.format == "json":
-        print(json.dumps(form.as_dict(), indent=2, ensure_ascii=False))
-    else:
-        sys.stdout.write(_format_form(form))
-    if template.problems or (args.check and not form.ready):
+    try:
+        form = template.form(template.coerce(answers))
+        if args.format == "json":
+            text = json.dumps(form.as_dict(), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+        else:
+            text = _format_form(form)
+        ready, problems_found = form.ready, bool(template.problems)
+    except Exception as exc:
+        # Not the template's fault: a bug in this validator, as in ``validate``.
+        print(f"error: internal error while listing the questions of {args.template}: "
+              f"{type(exc).__name__}: {exc} (please report this)", file=sys.stderr)
+        return EXIT_ERROR
+    _write_stdout(text)
+    if problems_found or (args.check and not ready):
         return EXIT_DIAGNOSTICS
     return EXIT_OK
 

@@ -31,6 +31,7 @@ import bisect
 import copy
 import posixpath
 import re
+import reprlib
 import warnings
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -241,7 +242,12 @@ class Question:
             keys = ("amount", "currency") if self.type == "money" else ("value", "unit")
             if self.type in ("money", "duration") and set(answer) == set(keys):
                 return f"{answer[keys[0]]} {answer[keys[1]]}"
-        return str(answer)
+        if isinstance(answer, (dict, list, tuple, set, frozenset)):
+            return _DESCRIBE.repr(answer)[:200]  # not an answer it knows: described, within bounds
+        try:
+            return str(answer)
+        except ValueError:  # an integer too long for Python to write as text
+            return ""
 
     def from_text(self, text: str) -> Any:
         """The answer that *text*, as a person types it, gives to this question:
@@ -314,6 +320,18 @@ class Question:
             return {names[0]: amount, names[1]: code}
         return text
 
+
+def _describer() -> reprlib.Repr:
+    describer = reprlib.Repr()
+    describer.maxlevel = 3
+    describer.maxlist = describer.maxtuple = describer.maxdict = describer.maxset = describer.maxfrozenset = 4
+    describer.maxstring = 40
+    describer.maxother = 80
+    return describer
+
+
+#: How an answer of no known shape is described (``Question.to_text``): shallow and short.
+_DESCRIBE = _describer()
 
 # ── Where the parser's blocks lie in the source ──────────────────
 

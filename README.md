@@ -545,8 +545,10 @@ checks and what it does not.
 > raise a `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
 > differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
 > (the functions ask them after the body), and it refuses a template that has Errors in the
-> validator's template rules (the functions assemble it). `legaldown assemble` follows the new API.
-> A `Question` is now a fixed value.
+> validator's template rules (the functions assemble it). `legaldown assemble` follows the new API,
+> and puts the shapes of its answers file right (`template.coerce`): `fee: 5000` and `5000 EUR` are
+> accepted for a money question, `no` for a boolean, and surrounding spaces of a text answer are
+> dropped, which were `answer-invalid` before. A `Question` is now a fixed value.
 
 ## Scope
 

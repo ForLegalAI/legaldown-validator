@@ -424,3 +424,47 @@ def test_assemble_puts_the_shapes_of_the_answers_file_right(write, capsys):
     integers = write("b.yaml", "x: no\nfee:\n  amount: 5000\n  currency: EUR\n")  # a number as the amount
     assert main(["assemble", str(template), "--answers", str(integers)]) == EXIT_OK
     assert "{{money: 5000, currency=EUR}}" in capsys.readouterr().out
+
+
+def test_questions_writes_utf8_whatever_the_terminal_encoding(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    template = tmp_path / "t.lgd"
+    template.write_text(_TEMPLATE.replace("prompt: x", "x").replace("    type: boolean\n", "    type: boolean\n    prompt: Jméno — ano?\n", 1), encoding="utf-8")
+    src = os.path.join(os.path.dirname(__file__), "..", "src")
+    env = {**os.environ, "PYTHONIOENCODING": "ascii", "PYTHONPATH": src}
+    for fmt in ("text", "json"):
+        done = subprocess.run(
+            [sys.executable, "-m", "legaldown.cli", "questions", str(template), "--format", fmt],
+            capture_output=True, env=env, check=False,
+        )
+        assert done.returncode == 0, done.stderr
+        assert "Jméno — ano?".encode() in done.stdout
+
+
+def test_questions_json_is_strict_json_for_not_a_number_answers(write, capsys):
+    template = write("t.lgd", _ASKING)
+    answers = write("a.yaml", "x: true\nwho: .nan\n")
+    code, captured = _questions([str(template), "--answers", str(answers), "--format", "json"], capsys)
+    assert code == EXIT_OK
+    json.loads(captured.out, parse_constant=lambda name: pytest.fail(f"{name} is not JSON"))
+
+
+def test_questions_with_answers_nested_too_deep_is_an_error(write, capsys):
+    template = write("t.lgd", _ASKING)
+    answers = write("a.yaml", "x: " + "[" * 3000 + "]" * 3000 + "\n")
+    code, captured = _questions([str(template), "--answers", str(answers)], capsys)
+    assert code == EXIT_ERROR and "cannot read the answers" in captured.err
+
+
+def test_a_fault_while_listing_the_questions_is_an_internal_error(write, capsys, monkeypatch):
+    import legaldown.template
+
+    def broken(self):
+        raise AttributeError("boom")
+
+    monkeypatch.setattr(legaldown.template.Form, "as_dict", broken)
+    template = write("t.lgd", _ASKING)
+    assert _questions([str(template), "--format", "json"], capsys)[0] == EXIT_ERROR

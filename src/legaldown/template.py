@@ -9,6 +9,7 @@ It is a plain value: change the answers, ask for a new form.
 """
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -81,10 +82,13 @@ def _coerced(question: Question, value: Any) -> Any:
             return value
         return value if answer is None else answer
     if question.type == "money":
-        if type(value) is int:
-            return str(value)
-        if isinstance(value, dict) and set(value) == {"amount", "currency"} and type(value["amount"]) is int:
-            return {**value, "amount": str(value["amount"])}
+        try:
+            if type(value) is int:
+                return str(value)
+            if isinstance(value, dict) and set(value) == {"amount", "currency"} and type(value["amount"]) is int:
+                return {**value, "amount": str(value["amount"])}
+        except ValueError:  # an integer too long for Python to write as text
+            pass
     return value
 
 
@@ -104,7 +108,7 @@ def load_answers(path: str | os.PathLike[str]) -> dict[str, Any]:
     file = Path(path)
     try:
         answers = yaml.safe_load(file.read_bytes().decode("utf-8-sig"))
-    except (yaml.YAMLError, ValueError) as exc:  # UnicodeDecodeError is a ValueError
+    except (yaml.YAMLError, ValueError, RecursionError) as exc:  # UnicodeDecodeError is a ValueError
         raise AnswersError(f"cannot read the answers in {file}: {exc}") from exc
     if answers is None:
         return {}
@@ -113,15 +117,37 @@ def load_answers(path: str | os.PathLike[str]) -> dict[str, Any]:
     return answers
 
 
-def _jsonable(value: Any) -> Any:
-    """*value* as JSON holds it: a date as its ISO text, a map with text keys."""
+_JSON_NODES = 10_000
+_JSON_DEPTH = 40
+
+
+def _jsonable(value: Any, budget: list[int] | None = None, depth: int = 0) -> Any:
+    """*value* as strict JSON holds it: a date as its ISO text, a map with text
+    keys, a number that is not finite (or too long to write) as text. An answer
+    is data a person or a file gave: what is nested too deep, or runs past a
+    budget of nodes (an alias bomb in a YAML file), is cut short, so that
+    describing it stays cheap."""
+    budget = [_JSON_NODES] if budget is None else budget
+    budget[0] -= 1
+    if budget[0] < 0 or depth > _JSON_DEPTH:
+        return "..."
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
+        return {str(key): _jsonable(item, budget, depth + 1) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        return [_jsonable(item, budget, depth + 1) for item in sorted(value, key=str)]
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item, budget, depth + 1) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            str(value)
+        except ValueError:
+            return "<an integer too long to write>"
+        return value
+    if value is None or isinstance(value, (str, bool)):
         return value
     return str(value)
 
@@ -334,8 +360,8 @@ class Form:
                 "default": _jsonable(question.default),
                 "default_text": question.to_text(question.default),
                 "choices": dict(question.choices),
-                "currency": question.currency,
-                "unit": question.unit,
+                "currency": question.accepts.get("currency"),
+                "unit": question.accepts.get("unit"),
                 "problem": problem,
                 "hint": question.hint,
                 "accepts": question.accepts,

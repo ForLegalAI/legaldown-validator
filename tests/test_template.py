@@ -889,3 +889,48 @@ def test_the_questions_not_reached_follow_the_ones_reached_in_the_data():
 def test_template_problems_are_in_the_data():
     data = parse_template(_BROKEN).form({}).as_dict()
     assert [p["rule"] for p in data["problems"]] == ["choose-invalid"] and not data["ready"]
+
+
+# ── Hostile answers ──────────────────────────────────────────────
+
+
+def test_the_form_as_data_is_strict_json_whatever_the_answers():
+    template = parse_template(_TEMPLATE)
+    odd = {
+        "who": float("nan"), "fee": float("inf"), "extras": {1: "a", 2: {3, 1, 2}},
+        "forum": b"bytes", "x": 10**5000, "y": dt.datetime(2026, 6, 1, 12, 0),
+    }
+    data = template.form(odd).as_dict()
+    json.dumps(data, allow_nan=False)  # raises on NaN, Infinity, or anything not strict JSON
+    by_id = {q["id"]: q for q in data["questions"]}
+    assert by_id["who"]["answer"] == "nan" and by_id["fee"]["answer"] == "inf"
+    assert by_id["extras"]["answer"] == {"1": "a", "2": [1, 2, 3]}
+
+
+def test_a_huge_or_deep_or_exploding_answer_is_described_within_bounds():
+    template = parse_template(_TEMPLATE)
+    deep: list = []
+    for _ in range(3000):
+        deep = [deep]
+    shared = ["x"] * 1000
+    bomb = shared
+    for _ in range(4):
+        bomb = [bomb] * 1000  # a billion leaves, written as a few shared lists
+    for answer in (deep, bomb, 10**5000):
+        data = template.form({"who": answer}).as_dict()
+        assert len(json.dumps(data, allow_nan=False)) < 200_000
+        by_id = {q["id"]: q for q in data["questions"]}
+        assert by_id["who"]["state"] == "invalid" and len(by_id["who"]["answer_text"]) < 500
+
+
+def test_coerce_does_not_raise_for_an_integer_too_long_to_write():
+    template = parse_template(_TEMPLATE)
+    assert template.coerce({"fee": 10**5000}) == {"fee": 10**5000}
+    assert template.coerce({"fee": {"amount": 10**5000, "currency": "EUR"}})["fee"]["amount"] == 10**5000
+
+
+def test_load_answers_reports_what_is_nested_too_deep(tmp_path):
+    path = tmp_path / "a.yaml"
+    path.write_text("a: " + "[" * 3000 + "]" * 3000 + "\n", encoding="utf-8")
+    with pytest.raises(AnswersError):
+        load_answers(path)
