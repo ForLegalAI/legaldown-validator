@@ -101,7 +101,7 @@ from .validator import (
     validate_document,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 #: Conformance level per specification §17. "core" — parse and validate a
 #: single document. Rendering and Full (multi-file: includes, attachments,
