@@ -647,7 +647,7 @@ def _resolver(
     stacklevel: int,
 ) -> LoadFile | None:
     """How the validation reads the files *document* refers to: *resolve*, else
-    the directory of its path (never the document itself), else not at all.
+    the directory of its path, else not at all.
     Says the importers are deprecated when one is given, and then reads nothing
     by itself: each importer answers for its own files, as it always did."""
     if import_definitions is not None or import_attachment_definitions is not None:
@@ -659,16 +659,12 @@ def _resolver(
         )
         return resolve
     if resolve is None and document.path is not None:
-        read = file_loader(document.path.parent)
-
-        def resolve(relative: str) -> str | None:
-            # A document that names itself has nothing to add to itself.
-            return None if within(document.path.parent, relative) == document.path.resolve() else read(relative)
+        resolve = file_loader(document.path.parent)
 
     return resolve
 
 
-def _definitions_in(resolve: LoadFile | None, path: str) -> dict[str, str] | None:
+def _definitions_in(document: Document, resolve: LoadFile | None, path: str) -> dict[str, str] | None:
     """The definitions the file at *path* declares (``{id: term}``), or None
     when it cannot be read as a LegalDown document: not there, no *resolve*,
     or frontmatter that cannot be read (that file's problem, not this
@@ -681,6 +677,9 @@ def _definitions_in(resolve: LoadFile | None, path: str) -> dict[str, str] | Non
     # the document's directory (§2.3).
     path = posixpath.normpath(path) if path else path
     if resolve is None or not path or posixpath.isabs(path) or path == ".." or path.startswith("../"):
+        return None
+    # A document that names itself has nothing to add to itself.
+    if document.path is not None and within(document.path.parent, path) == document.path.resolve():
         return None
     text = resolve(path)
     if text is None:
@@ -1280,7 +1279,7 @@ def _validate(
             if import_definitions is not None:
                 imported = import_definitions(amends_file, document.filename)
             else:
-                imported = _definitions_in(resolve, amends_file)
+                imported = _definitions_in(document, resolve, amends_file)
             if imported is not None:
                 _amends_import_succeeded = True
                 _imported_definitions = imported
@@ -1308,7 +1307,7 @@ def _validate(
         if import_attachment_definitions is not None:
             att_defs = import_attachment_definitions(att.file)
         else:
-            att_defs = _definitions_in(resolve, att.file)
+            att_defs = _definitions_in(document, resolve, att.file)
         if not att_defs:
             continue
         # Its definitions are present when the attachment is (§15.3).

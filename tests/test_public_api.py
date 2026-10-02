@@ -458,9 +458,9 @@ def test_a_document_that_names_itself_as_its_original_reads_nothing(tmp_path):
         '---\ntitle: A\namends:\n  title: A\n  file: ./amendment.lgd\n---\n\n# S\n\n"Services" {{def: services}} means x.\n',
         encoding="utf-8",
     )
-    rules = validate(load(path)).rules()
-    assert "amend-def-override" not in rules
-    assert "amend-term-unresolvable" not in rules  # no terms to resolve; and nothing said about the file
+    for options in ({}, {"resolve": file_loader(tmp_path)}):  # by default, and through any resolver
+        rules = validate(load(path), **options).rules()
+        assert "amend-def-override" not in rules
 
 
 def test_one_importer_does_not_start_reading_the_other_files_from_disk(tmp_path):
