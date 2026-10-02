@@ -205,18 +205,21 @@ CI runs this on every push and pull request.
 
 ## Assembly (§15.7, §17.6)
 
-`assemble(template, answers)` and `legaldown assemble` perform §15.7.2 byte for byte and report
+`Template.form(answers).assemble()` and `legaldown assemble` perform §15.7.2 byte for byte and report
 the answer rules of §16.12 (`answer-invalid`, `answer-missing`, `answer-unknown`). The block
 structure assembly edits is recorded by the parser's own walk, so assembly and validation read a
-template the same way. `template_questions` and `needed_questions` list the questions a template
-asks, all of them or those an answers set still leaves open.
+template the same way. `Template.questions` and `Form.questions` list the questions a template
+asks, all of them or those an answers set still leaves open. §15.7.2 gives assembly a template that
+validates without Errors, which assembly itself does not check; a `Template` refuses one with Errors
+in the validator's template rules (`Template.problems`), and the deprecated `assemble` function does
+not.
 
 - A single-file template is assembled at Core, as §17.6 permits ("Core + Assembly").
 - A template with include fragments or LegalDown attachment files is assembled when the caller
-  passes `load_file`, which reads them; the CLI reads them relative to the template and refuses a
+  passes `resolve` (`load_file` of the deprecated function), which reads them; the CLI reads them relative to the template and refuses a
   path that leads out of its directory. Reading them is a Full capability (§17.4) that this
   implementation provides for assembly without claiming Full, as §17.1 allows. Without
-  `load_file`, such a template is refused with `include-file-missing` or
+  `resolve`, such a template is refused with `include-file-missing` or
   `attachment-file-missing`, never assembled partially (§17.6).
 - A file assembly reads is checked as the Full level checks it (§16.10–§16.12), and the template
   is refused if it fails: frontmatter (`include-has-frontmatter`, `attachment-has-frontmatter`), a

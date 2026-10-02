@@ -28,12 +28,15 @@ whose linked templates are assembled with it (§15.7.2).
 from __future__ import annotations
 
 import bisect
+import copy
 import posixpath
 import re
+import warnings
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from functools import cache
+from types import MappingProxyType
 from typing import Any
 
 from .definitions import list_fragments
@@ -117,26 +120,48 @@ class AssemblyResult:
         return not any(d.level == "error" for d in self.diagnostics)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class Question:
     """One question the person filling a template is asked (§15.2): declared
     in ``questions``, or implicit — an undeclared placeholder, with no prompt
     and no default. ``type`` is the effective type; ``currency``/``unit`` is
     set when every placeholder for the question fixes the same one, which is
-    when the bare amount or value is an acceptable answer (§15.7.1)."""
+    when the bare amount or value is an acceptable answer (§15.7.1).
+
+    A question is a fixed value: ``choices`` and a map-valued ``default`` (a
+    money or duration default) are read-only mappings, copied from the
+    template's declaration."""
 
     id: str
     type: str
     prompt: str = ""
     default: Any = None
-    choices: dict[str, str] = field(default_factory=dict)
+    choices: Mapping[str, str] = field(default_factory=dict)
     currency: str | None = None
     unit: str | None = None
     declared: bool = True
+    #: What the placeholders of the question fix (``Blank``): every code, and
+    #: whether one is in frontmatter, which ``problem`` needs. A question made
+    #: without it behaves as if no placeholder fixes a code and none is in
+    #: frontmatter.
+    _blank: Blank | None = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "choices", MappingProxyType(dict(self.choices)))
+        default = self.default
+        if isinstance(default, dict):
+            object.__setattr__(self, "default", MappingProxyType(copy.deepcopy(default)))
 
     @property
     def is_decision(self) -> bool:
         return self.type in DECISION_QUESTION_TYPES
+
+    def problem(self, answer: Any) -> str | None:
+        """Why *answer* is not a valid answer to this question (§15.7.1), or
+        None when it is."""
+        return answer_problem(
+            self.type, answer, choices=dict(self.choices) if self.type == "choice" else None, blank=self._blank
+        )
 
 
 # ── Where the parser's blocks lie in the source ──────────────────
@@ -653,6 +678,10 @@ class _Template:
     types: dict[str, str]  # every question's effective type: declared, then implicit
     bom: str
     problems: list[Diagnostic]
+    document: Document
+    #: The template's own heading identifiers (step 7), worked out when an
+    #: assembly first needs them, then kept: they do not depend on the answers.
+    identifiers: dict | None = None
 
 
 def _read(template: str, load_file: LoadFile | None) -> _Template:
@@ -684,7 +713,7 @@ def _read(template: str, load_file: LoadFile | None) -> _Template:
     types = {qid: qtype for qid in declared if (qtype := question_type(declared, qid))}
     for pid, blank in blanks.items():
         types.setdefault(pid, blank.type or "text")
-    return _Template(front, main, subs, declared, blanks, types, bom, problems)
+    return _Template(front, main, subs, declared, blanks, types, bom, problems, document)
 
 
 def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
@@ -834,6 +863,7 @@ def _questions(t: _Template) -> list[Question]:
             currency=fixed if qtype == "money" else None,
             unit=fixed if qtype == "duration" else None,
             declared=qid in t.declared,
+            _blank=t.blanks.get(qid),
         ))
     return questions
 
@@ -856,27 +886,67 @@ class _Answers:
         return _MISSING if value is None else value
 
 
-def _answer_diagnostics(t: _Template, answers: Mapping[str, Any]) -> list[Diagnostic]:
-    diagnostics = [
-        Diagnostic("answer-unknown", "warning",
-                   f"'{key}' is neither a question nor a placeholder of the template; its answer "
-                   f"is ignored (§15.7.1).")
-        for key in answers
-        if not isinstance(key, str) or (key not in t.types and key not in t.declared)
-    ]
+def _answer_problem(t: _Template, qid: str, answer: Any) -> str | None:
+    """Why *answer* is not a valid answer to question *qid* of *t*, or None."""
+    qtype = t.types.get(qid)
+    if qtype is None:
+        return None
+    declaration = t.declared.get(qid)
+    choices = declaration.get("choices") if isinstance(declaration, dict) else None
+    return answer_problem(qtype, answer, choices=choices, blank=t.blanks.get(qid))
+
+
+def _answer_pairs(t: _Template, answers: Mapping[str, Any]) -> Iterator[tuple[str, Diagnostic]]:
+    """What is wrong with *answers*, as ``(question id, diagnostic)``: a key
+    that is no question (its own id), and every answer that is not valid (the
+    answer to a question not reached included)."""
+    for key in answers:
+        if not isinstance(key, str) or (key not in t.types and key not in t.declared):
+            yield str(key), Diagnostic(
+                "answer-unknown", "warning",
+                f"'{key}' is neither a question nor a placeholder of the template; its answer "
+                f"is ignored (§15.7.1).")
     resolved = _Answers(answers, t.declared)
-    for qid, qtype in t.types.items():
+    for qid in t.types:
         answer = resolved.get(qid)
         if answer is _MISSING:
             continue
-        declaration = t.declared.get(qid)
-        choices = declaration.get("choices") if isinstance(declaration, dict) else None
-        problem = answer_problem(qtype, answer, choices=choices, blank=t.blanks.get(qid))
+        problem = _answer_problem(t, qid, answer)
         if problem:
             whose = "answer to" if answers.get(qid) is not None else "default of"
-            diagnostics.append(Diagnostic("answer-invalid", "error",
-                                          f"The {whose} '{qid}' {problem} (§15.7.1)."))
-    return diagnostics
+            yield qid, Diagnostic("answer-invalid", "error",
+                                  f"The {whose} '{qid}' {problem} (§15.7.1).")
+
+
+def _missing_diagnostic(qid: str) -> Diagnostic:
+    return Diagnostic("answer-missing", "error",
+                      f"'{qid}' decides what the assembled document holds, and has neither an "
+                      f"answer nor a default (§15.7.2 step 1).")
+
+
+class _FormAnswers(_Answers):
+    """The answers of a form: as ``_Answers``, except that an answer that is
+    not valid counts as no answer — it does not steer which units are present,
+    and the default does not stand in for it. It is reported on its own
+    (``answer-invalid``)."""
+
+    def __init__(self, answers: Mapping[str, Any], t: _Template) -> None:
+        super().__init__(answers, t.declared)
+        self._t = t
+        self._valid: dict[str, bool] = {}
+
+    def get(self, qid: str) -> Any:
+        explicit = self._answers.get(qid)
+        if explicit is not None:
+            if qid not in self._valid:
+                self._valid[qid] = _answer_problem(self._t, qid, explicit) is None
+            if not self._valid[qid]:
+                return _MISSING
+        return super().get(qid)
+
+
+def _answer_diagnostics(t: _Template, answers: Mapping[str, Any]) -> list[Diagnostic]:
+    return [diagnostic for _qid, diagnostic in _answer_pairs(t, answers)]
 
 
 @dataclass(slots=True)
@@ -890,10 +960,13 @@ class _Decision:
     missing: dict[str, None] = field(default_factory=dict)
 
 
-def _decide(t: _Template, answers: _Answers) -> _Decision:
+def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decision:
     """Evaluate every condition that is reached (§15.7.2 steps 1–2). A unit
     inside a removed one is never reached, so its question is not needed; one
-    under an unanswered condition is not reached *yet*."""
+    under an unanswered condition is not reached *yet*. With *inline*, an
+    include fragment is read where its ``{{include:}}`` is, so that the
+    questions are in the order they are reached; otherwise after the body.
+    Which lines are removed, and which files, is the same either way."""
     decision = _Decision()
 
     def holds(test: Condition | None) -> bool | None:
@@ -925,7 +998,15 @@ def _decide(t: _Template, answers: _Answers) -> _Decision:
     for occ in front.occurrences if front else []:
         if occ.line not in dropped:  # a blank in a removed attachment's title
             use(occ)
-    decision.removed[""], pending = _walk(t.main, holds, use)
+    walked: set[str] = set()
+
+    def enter(include: _Include) -> None:
+        source = t.subs.get(include.path)
+        if source is not None and include.path not in walked:
+            walked.add(include.path)
+            decision.removed[include.path], _pending = _walk(source, holds, use)
+
+    decision.removed[""], pending = _walk(t.main, holds, use, enter if inline else None)
     for include in t.main.includes:
         if include.start in decision.removed[""]:
             decision.files[include.path] = False
@@ -935,23 +1016,30 @@ def _decide(t: _Template, answers: _Answers) -> _Decision:
         if item.file:
             decision.files[item.file] = kept
     for path, source in t.subs.items():
-        if decision.files.get(path):
+        if decision.files.get(path) and path not in walked:
             decision.removed[path], _pending = _walk(source, holds, use)
     return decision
 
 
-def _walk(source: _Source, holds: Callable, use: Callable) -> tuple[set[int], set[int]]:
+def _walk(
+    source: _Source, holds: Callable, use: Callable, enter: Callable | None = None
+) -> tuple[set[int], set[int]]:
     """The lines of *source* assembly removes — drafting notes first, then
     absent units — and those waiting on an unanswered question. Units and
     insertions are visited in source order, so an enclosing unit is decided
-    before anything inside it."""
+    before anything inside it. *enter*, when given, is called with each include
+    that is present, after the units that start on its line."""
     removed, pending = set(source.notes), set()
     events = sorted(
         [(unit.start, 0, k) for k, unit in enumerate(source.units)]
         + [(occ.line, 1, k) for k, occ in enumerate(source.occurrences)]
+        + ([(include.start, 2, k) for k, include in enumerate(source.includes)] if enter else [])
     )
     for line, kind, k in events:
         if line in removed or line in pending:
+            continue
+        if kind == 2:
+            enter(source.includes[k])
             continue
         if kind == 1:
             use(source.occurrences[k])
@@ -1402,6 +1490,12 @@ def _identifiers(head: str, rows: list[_Row]) -> dict[_Key, tuple[str, bool]]:
 
 
 def _template_identifiers(t: _Template) -> dict[_Key, tuple[str, bool]]:
+    if t.identifiers is None:
+        t.identifiers = _compute_template_identifiers(t)
+    return t.identifiers
+
+
+def _compute_template_identifiers(t: _Template) -> dict[_Key, tuple[str, bool]]:
     front = t.front
     files = [(item.file, t.subs[item.file].lines, str(item.test) if item.test else "")
              for item in (front.items if front else []) if item.file in t.subs]
@@ -1489,28 +1583,45 @@ def assemble(
 ) -> AssemblyResult:
     """Assemble *template* with *answers* (§15.7.2).
 
+    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(text,
+    resolve=...).form(answers).assemble()``, which reads the template once.
+
     A draft or an ordinary document goes through the same steps: its drafting
     notes are removed, its answered blanks filled and its blank lines
     collapsed. *load_file* reads the include fragments and LegalDown
     attachment files; the assembled ones are returned in ``files``.
     """
+    warnings.warn(
+        "legaldown.assemble() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.load_template() or parse_template(), then .form(answers).assemble()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     try:
         t = _read(template, load_file)
     except FrontmatterError as exc:
-        return AssemblyResult(diagnostics=[Diagnostic(
-            "frontmatter-invalid-yaml", "error",
-            f"The template's frontmatter cannot be read, so it is not assembled: {exc}",
-        )])
+        return AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
     if t.problems:
-        return AssemblyResult(diagnostics=t.problems)
+        return AssemblyResult(diagnostics=list(t.problems))
     resolved = _Answers(answers, t.declared)
     decision = _decide(t, resolved)
-    diagnostics = _answer_diagnostics(t, answers) + [
-        Diagnostic("answer-missing", "error",
-                   f"'{qid}' decides what the assembled document holds, and has neither an "
-                   f"answer nor a default (§15.7.2 step 1).")
-        for qid in decision.missing
-    ]
+    diagnostics = _answer_diagnostics(t, answers) + [_missing_diagnostic(qid) for qid in decision.missing]
+    return _emit_result(t, resolved, decision, diagnostics)
+
+
+def frontmatter_diagnostic(exc: FrontmatterError) -> Diagnostic:
+    """The error assembly reports for frontmatter that cannot be read."""
+    return Diagnostic(
+        "frontmatter-invalid-yaml", "error",
+        f"The template's frontmatter cannot be read, so it is not assembled: {exc}",
+    )
+
+
+def _emit_result(
+    t: _Template, resolved: _Answers, decision: _Decision, diagnostics: list[Diagnostic]
+) -> AssemblyResult:
+    """Steps 3–8 on a template whose answers have been decided; nothing is
+    emitted while *diagnostics* hold an Error (§15.7.2 step 1)."""
     if any(d.level == "error" for d in diagnostics):
         return AssemblyResult(diagnostics=diagnostics)
     head = _emit_frontmatter(t.front, decision, resolved) if t.front is not None else ""
@@ -1537,7 +1648,15 @@ def template_questions(
     """Every question of *template* (§15.2): the declared ones in declaration
     order, then each undeclared placeholder, in the order first written.
     Raises ``FrontmatterError`` when the template's frontmatter cannot be
-    read."""
+    read.
+
+    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(...).questions``."""
+    warnings.warn(
+        "legaldown.template_questions() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.load_template() or parse_template(), then .questions",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _questions(_read(template, load_file))
 
 
@@ -1553,7 +1672,15 @@ def needed_questions(
     a value question when one of its placeholders does. A unit under a
     condition whose question is still unanswered is not reached yet, so the
     form grows as decisions are made. Raises ``FrontmatterError`` when the
-    template's frontmatter cannot be read."""
+    template's frontmatter cannot be read.
+
+    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(...).form(answers).questions``."""
+    warnings.warn(
+        "legaldown.needed_questions() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.load_template() or parse_template(), then .form(answers).questions",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     t = _read(template, load_file)
     decision = _decide(t, _Answers(answers, t.declared))
     by_id = {question.id: question for question in _questions(t)}

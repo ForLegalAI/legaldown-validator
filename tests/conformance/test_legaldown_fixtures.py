@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from legaldown import CAPABILITIES, assemble
+from legaldown import CAPABILITIES, assemble, parse_template
 from legaldown.parser import parse
 from legaldown.validator import validate
 
@@ -155,7 +155,19 @@ def _loader(case: Path):
 
 def _assemble_case(template: Path, answers: Path):
     loaded = yaml.safe_load(_read(answers)) or {}
-    return assemble(_read(template), loaded, load_file=_loader(template.parent))
+    with pytest.warns(DeprecationWarning):  # assemble is deprecated for Template (0.4.0); it is still pinned
+        return assemble(_read(template), loaded, load_file=_loader(template.parent))
+
+
+def _assemble_case_with_a_form(template: Path, answers: Path):
+    """The same by way of ``Template`` and ``Form``, without the validator's template rules."""
+    loaded = yaml.safe_load(_read(answers)) or {}
+    parsed = parse_template(_read(template), resolve=_loader(template.parent))
+    parsed._check = False
+    form = parsed.form(loaded)
+    result = form.assemble()
+    assert form.ready == result.ok
+    return result
 
 
 def _validate_file(path: Path, config: dict):
@@ -306,3 +318,6 @@ def test_assembly_case_assembles_byte_for_byte(case: Path):
     assert {"template.lgd": result.output, **result.files} == _expected_tree(case)
     # The assembly guarantee (§15.7.4): the output has no Errors either.
     assert not validate(parse(result.output)).errors
+    # And a ``Template`` with its ``Form`` assembles the same bytes.
+    through_a_form = _assemble_case_with_a_form(case / "template.lgd", case / "answers.yaml")
+    assert (through_a_form.output, through_a_form.files) == (result.output, result.files)

@@ -141,7 +141,9 @@ The answers set is a YAML mapping of question ids to answers (§15.7.1). Include
 LegalDown attachment files are read relative to the template, never from outside its directory;
 the ones assembly keeps are written under `-o` at their relative paths. Answer problems are
 reported as `answer-invalid`, `answer-missing` and `answer-unknown` (§16.12) on stderr, and
-nothing is written when there is an Error. Exit codes are as for `validate`.
+nothing is written when there is an Error. A template with Errors in the validator's template rules
+(questions, conditions, `{{choose:}}`, placeholders, insertions) is refused, with the rule ids, as
+§15.7.2 gives assembly a valid template. Exit codes are as for `validate`.
 
 ### JSON output
 
@@ -213,7 +215,7 @@ if it had not been asked for: no diagnostic of its own. A document from `parse(t
 so there is nothing to read (`resolve=lambda path: None` does the same for a loaded one, to
 validate it without reading anything); give `validate` a `resolve=` function, from a relative path to the
 file's text (or `None`), to read them from elsewhere — a database, an upload. `file_loader(directory)`
-is the same function for files on disk, and the one `assemble` takes as `load_file=` (`LoadFile`).
+is the same function for files on disk, and the one `parse_template` takes as `resolve=` (`LoadFile`).
 
 > **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file),
 > `validate_document` is now `validate`, and the importer callbacks `import_definitions=` and
@@ -407,27 +409,72 @@ Each check reports at the severity the specification assigns it — Error, Warni
 ## Assembly
 
 ```python
-from legaldown import assemble, needed_questions, template_questions
+from legaldown import load_template
 
-result = assemble(template_source, {"forum": "courts", "fee": {"amount": "5000", "currency": "EUR"}})
+template = load_template("nda.lgd")     # reads it, and the files it includes, once
+template.questions                      # every question, declared and implicit (§15.2)
+template.problems                       # why it cannot be assembled, if it cannot
+
+form = template.form({"forum": "courts", "fee": {"amount": "5000", "currency": "EUR"}})
+form.questions     # the questions reached so far, in order: ask these
+form.unanswered    # ... of them, with no valid answer and no default
+form.blocking      # ... of those, the decisions: assembly cannot run without them
+form.diagnostics   # what is wrong with the answers given
+form.ready         # assembly can run
+form.complete      # ... and nothing is left blank
+
+result = form.assemble()
 if result.ok:
     contract = result.output        # the assembled template file
     files = result.files            # assembled fragments and attachment files, by relative path
 for diagnostic in result.diagnostics:
     print(diagnostic.level, diagnostic.rule, diagnostic.message)
-
-template_questions(template_source)            # every question, declared and implicit (§15.2)
-needed_questions(template_source, answers)     # what to ask next, given the answers so far
 ```
+
+A template is read once; a form is a snapshot of the interview over it, so a front end asks for a
+new form after every answer — a decision opens or closes the questions under it. `parse_template(text)`
+is the same for source text. `load_template` raises `FrontmatterError` for frontmatter that cannot
+be read, as `parse` does.
+
+**What a form says.** `questions` are those the assembly reaches given the answers so far: a
+decision question when a condition or `{{choose:}}` using it lies in a present unit, a value
+question when one of its placeholders does. A question with a default is among them (the default
+answers it, and a front end can still offer it). `blocking` are the decision questions without an
+answer or default: an unanswered value question leaves its blank, which the specification allows,
+but an unanswered decision is not assembled. An answer that is not valid counts as no answer, and
+does not stand in for the default: it is reported in `diagnostics` (`answer-invalid`), and so is an
+answer to a question the template does not have (`answer-unknown`, a warning). `unused` lists the
+questions that have an answer but are not reached; it is advice, since one answer that changes can
+make many of them unused. `form.problem("fee")` says why one answer is not valid, and so does
+`question.problem(answer)`, before anything is assembled. A form never changes after it is made, and
+neither do the questions: a `Question` is a fixed value, and `default` and `choices` are read-only.
+
+**What stops a template.** `template.problems` are the reasons a template cannot be assembled
+whatever the answers: a file it includes that cannot be read, a placeholder written across lines, a
+translation group, and the Errors of the validator's template rules (questions, conditions,
+`{{choose:}}`, placeholders and insertions, §15.7.2 gives assembly a template that validates).
+`template.validation` is the full `ValidationResult` of the template read alone, as advice: the
+validator does not read the fragments a template includes, so it cannot see a section or a
+definition that lives in one. `ready` is false while there are problems, and `form.assemble()` then
+returns them as its diagnostics.
 
 Assembly edits the template as written — "no other byte of the template changes" — so its
 output is identical to any other conforming implementation's. A template with include fragments
-or LegalDown attachment files needs `load_file=`, a function from a relative path to the file's
-text; without it such a template is refused rather than assembled partially (§17.6). The files it
+or LegalDown attachment files reads them from beside the file (`load_template`) or through
+`parse_template(text, resolve=...)`, a function from a relative path to the file's text; without
+one such a template is refused rather than assembled partially (§17.6). The files it
 reads are checked as the Full level checks them — no frontmatter, no level 1 heading, and in a
 template no includes, and no conditions or drafting notes in a fragment — and a template whose
 files fail is refused. [CONFORMANCE.md](CONFORMANCE.md#assembly-157-176) lists what assembly
 checks and what it does not.
+
+> **Deprecated:** `assemble(text, answers, load_file=)`, `template_questions` and `needed_questions`
+> are replaced by `Template` and `Form`. They still work, unchanged, and raise a
+> `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
+> differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
+> (the functions ask them after the body), and it refuses a template that has Errors in the
+> validator's template rules (the functions assemble it). `legaldown assemble` follows the new API.
+> A `Question` is now a fixed value.
 
 ## Scope
 

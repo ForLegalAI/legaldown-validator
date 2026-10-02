@@ -24,12 +24,53 @@ import yaml
 
 from legaldown import (
     AssemblyResult,
+    FrontmatterError,
     assemble,
     needed_questions,
     parse,
+    parse_template,
     template_questions,
     validate,
 )
+from legaldown.assembly import frontmatter_diagnostic
+
+# The functions this module tests are deprecated for ``Template`` (0.4.0); they are what it pins.
+pytestmark = pytest.mark.filterwarnings(
+    r"ignore:legaldown\.(assemble|needed_questions|template_questions)\(\) is deprecated:DeprecationWarning"
+)
+
+
+
+def _form_assemble(template, answers, *, load_file=None):
+    """``assemble`` by way of a ``Template`` and its ``Form``, without the template rules of the validator."""
+    try:
+        tpl = parse_template(template, resolve=load_file)
+    except FrontmatterError as exc:
+        return AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
+    tpl._check = False
+    form = tpl.form(answers)
+    result = form.assemble()
+    assert form.ready == result.ok  # the form says whether assembly can run
+    return result
+
+
+def _form_needed(template, answers, *, load_file=None):
+    return list(parse_template(template, resolve=load_file).form(answers).questions)
+
+
+def _form_questions(template, *, load_file=None):
+    return list(parse_template(template, resolve=load_file).questions)
+
+
+@pytest.fixture(params=["functions", "template"], autouse=True)
+def _via(request, monkeypatch):
+    """Every test of this module runs twice: through the functions, and through ``Template`` and ``Form``,
+    which must assemble the same bytes and ask the same questions."""
+    if request.param == "template":
+        monkeypatch.setitem(globals(), "assemble", _form_assemble)
+        monkeypatch.setitem(globals(), "needed_questions", _form_needed)
+        monkeypatch.setitem(globals(), "template_questions", _form_questions)
+
 
 FIXTURES = Path(os.environ.get("LEGALDOWN_FIXTURES_DIR", "")) / "assembly"
 CASES = sorted(path.name for path in FIXTURES.iterdir() if path.is_dir()) if FIXTURES.is_dir() else []

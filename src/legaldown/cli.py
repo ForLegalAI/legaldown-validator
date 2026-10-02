@@ -23,9 +23,10 @@ from typing import Any
 import yaml
 
 from . import SPEC_VERSION, __version__
-from .assembly import assemble
-from .files import file_loader, within
+from .assembly import AssemblyResult, frontmatter_diagnostic
+from .files import within
 from .parser import FrontmatterError, load
+from .template import load_template
 from .validator import validate
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
@@ -183,16 +184,20 @@ def _read_answers(path: Path | None) -> tuple[dict[str, Any] | None, str | None]
 def _run_assemble(args: argparse.Namespace) -> int:
     template_path = Path(args.template)
     answers, failure = _read_answers(Path(args.answers) if args.answers else None)
+    result = None
     if failure is None:
         try:
-            template = _read(template_path)
+            template = load_template(template_path)
+        except FrontmatterError as exc:
+            result = AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
         except (OSError, UnicodeDecodeError) as exc:
             failure = f"cannot read {template_path}: {exc}"
     if failure is not None:
         print(f"error: {failure}", file=sys.stderr)
         return EXIT_ERROR
 
-    result = assemble(template, answers, load_file=file_loader(template_path.parent))
+    if result is None:
+        result = template.form(answers).assemble()
     for d in result.diagnostics:
         where = f"{template_path}:{d.line}" if d.line else f"{template_path}"
         print(f"{where}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
