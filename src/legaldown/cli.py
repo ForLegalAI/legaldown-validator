@@ -302,6 +302,16 @@ def _save_answers(path: Path, answers: dict) -> str | None:
     return None
 
 
+def _same_file(first: Path, second: Path) -> bool:
+    """Whether the two paths are one file: the same path, or a link, symbolic or hard, to it."""
+    if first.resolve() == second.resolve():
+        return True
+    try:
+        return os.path.samefile(first, second)
+    except OSError:  # one of them is not there
+        return False
+
+
 def _run_assemble(args: argparse.Namespace) -> int:
     state: dict[str, Any] = {"answers": None}
     code = EXIT_ERROR
@@ -312,16 +322,20 @@ def _run_assemble(args: argparse.Namespace) -> int:
     finally:
         # Also after an interruption or a failure: what was typed is not lost.
         if args.save_answers and state["answers"] is not None:
-            problem = _save_answers(Path(args.save_answers), state["answers"])
-            if problem:
-                print(f"error: {problem}", file=sys.stderr)
-                code = EXIT_ERROR if code == EXIT_OK else code
+            if not state["answers"] and not args.answers:
+                # Nothing was read and nothing typed: an existing file is not replaced by an empty one.
+                print(f"no answers to save; {args.save_answers} was not written", file=sys.stderr)
+            else:
+                problem = _save_answers(Path(args.save_answers), state["answers"])
+                if problem:
+                    print(f"error: {problem}", file=sys.stderr)
+                    code = EXIT_ERROR if code == EXIT_OK else code
     return code
 
 
 def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
     template_path = Path(args.template)
-    if args.save_answers and Path(args.save_answers).resolve() == template_path.resolve():
+    if args.save_answers and _same_file(Path(args.save_answers), template_path):
         print("error: --save-answers names the template itself; it would be overwritten", file=sys.stderr)
         return EXIT_ERROR
     answers, failure = _read_answers(Path(args.answers) if args.answers else None)

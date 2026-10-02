@@ -28,7 +28,7 @@ __all__ = [
     "validate_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate``
     "is_template",
     "is_drafting_note",
-    "DefinitionsImporter",
+    "DefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0
     "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0
     # Result types
     "ValidationResult",

@@ -181,6 +181,14 @@ nothing is written when there is an Error. A template with Errors in the validat
 (questions, conditions, `{{choose:}}`, placeholders, insertions) is refused, with the rule ids, as
 §15.7.2 gives assembly a valid template. Exit codes are as for `validate`.
 
+**Changed in 0.4.0:** `legaldown assemble` refuses a template that has Errors in the validator's
+template rules (`question-invalid`, `condition-invalid`, `choose-invalid`, the `placeholder-*` rules,
+`insertion-boundary`, `def-term-variable`, `drafting-note-def`, `template-fragment-invalid`, ...),
+with exit 1 and the rule ids on stderr, where 0.3 assembled it. §15.7.2 gives assembly a template
+that validates; a gate that assembles templates in CI can start to fail on one that never did.
+`--save-answers` does not write when there was nothing to save (no answers file read, nothing typed),
+so that an answers file you meant to resume from is not replaced by an empty one.
+
 ### JSON output
 
 `--format json` emits the structured shape described in §16.9 — ideal for CI annotations, editor

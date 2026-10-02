@@ -745,3 +745,44 @@ def test_the_end_of_the_input_is_said(write, capsys, monkeypatch):
     _type(monkeypatch, "no")  # who is not answered: the input ends
     assert main(["assemble", str(template), "-i"]) == EXIT_OK
     assert "End of the input" in capsys.readouterr().err
+
+
+def test_nothing_read_and_nothing_typed_does_not_replace_the_file_to_save_to(write, capsys, monkeypatch, tmp_path):
+    keep = write("keep.yaml", "# mine\nwho: Ann\nx: false\n")
+    before = keep.read_text(encoding="utf-8")
+    # a template that cannot be read (a typo in its name)
+    assert main(["assemble", str(tmp_path / "typo.lgd"), "--save-answers", str(keep)]) == EXIT_ERROR
+    # an interview with no terminal and nothing typed
+    template = write("t.lgd", _INTERVIEW)
+    assert main(["assemble", str(template), "-i", "--save-answers", str(keep)]) == EXIT_DIAGNOSTICS
+    assert "was not written" in capsys.readouterr().err
+    # an interview interrupted before the first answer
+    class Interrupted(_Terminal):
+        def readline(self, *args):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(sys, "stdin", Interrupted())
+    assert main(["assemble", str(template), "-i", "--save-answers", str(keep)]) == EXIT_ERROR
+    assert keep.read_text(encoding="utf-8") == before
+
+
+def test_an_answers_file_that_was_read_is_saved_even_when_it_is_empty_of_answers(write, tmp_path):
+    answers = write("a.yaml", "")
+    template = write("t.lgd", _INTERVIEW)
+    saved = tmp_path / "saved.yaml"
+    assert main(["assemble", str(template), "--answers", str(answers), "--save-answers", str(saved)]) == EXIT_DIAGNOSTICS
+    assert yaml.safe_load(saved.read_text(encoding="utf-8")) == {}
+
+
+def test_the_template_is_not_overwritten_through_a_hard_link_either(write, tmp_path):
+    import os
+
+    template = write("t.lgd", _INTERVIEW)
+    link = tmp_path / "hard.lgd"
+    try:
+        os.link(template, link)
+    except OSError:
+        pytest.skip("hard links are not available")
+    before = template.read_text(encoding="utf-8")
+    assert main(["assemble", str(template), "--save-answers", str(link)]) == EXIT_ERROR
+    assert template.read_text(encoding="utf-8") == before

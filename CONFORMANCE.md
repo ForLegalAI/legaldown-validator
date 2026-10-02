@@ -208,8 +208,8 @@ CI runs this on every push and pull request.
 `Template.form(answers).assemble()` and `legaldown assemble` perform §15.7.2 byte for byte and report
 the answer rules of §16.12 (`answer-invalid`, `answer-missing`, `answer-unknown`). The block
 structure assembly edits is recorded by the parser's own walk, so assembly and validation read a
-template the same way. `Template.questions` and `Form.questions` list the questions a template
-asks, all of them or those an answers set still leaves open. §15.7.2 gives assembly a template that
+template the same way. `Template.questions` lists the questions a template asks; `Form.questions`
+those it reaches given an answers set, and `Form.unanswered` those still left open. §15.7.2 gives assembly a template that
 validates without Errors, which assembly itself does not check; a `Template` refuses one with Errors
 in the validator's template rules (`Template.problems`), and the deprecated `assemble` function does
 not.
