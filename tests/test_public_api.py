@@ -515,3 +515,9 @@ def test_each_validation_has_an_index_of_its_own():
     first, second = validate(parse(_SOURCE)), validate(parse(_SOURCE))
     assert first.index == second.index and first.index is not second.index
     assert first.index.values is not second.index.values
+
+
+def test_a_result_is_built_by_keyword_so_an_old_positional_call_fails_loudly():
+    with pytest.raises(TypeError):
+        ValidationResult([], [])
+    assert ValidationResult(diagnostics=[], index=legaldown.DocumentIndex()).is_valid

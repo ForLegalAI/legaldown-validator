@@ -87,8 +87,8 @@ Line = int | None | Callable[[], "int | None"]
 
 @dataclass(slots=True)
 class InlineValues:
-    """The field-spec values found in the body: each ``(value, qualifier)``
-    pair, in document order. ``dates`` are the ISO dates alone."""
+    """The field-spec values found in the body, as written, in document order:
+    ``dates`` are the date values alone, the others ``(value, qualifier)``."""
     dates: list[str] = field(default_factory=list)
     #: ``(amount, currency)``
     money: list[tuple[str, str]] = field(default_factory=list)
@@ -105,8 +105,9 @@ class DocumentIndex:
     """What validating a document resolved, besides what it found: the numbered
     sections, the display text the references resolve to, the values in the
     body, and the template facts. A renderer or a UI reuses it instead of
-    deriving it again. Built from the document as far as it is valid: an
-    invalid identifier, say, is reported in the diagnostics and not indexed."""
+    deriving it again. Values and markers are as written: one that is invalid
+    is reported in the diagnostics too, so check ``ValidationResult.is_valid``
+    before relying on them."""
     #: The numbered section index, in document order (positionally paired with
     #: ``Document.sections``).
     sections: list[SectionIndexEntry] = field(default_factory=list)
@@ -126,7 +127,7 @@ class DocumentIndex:
     placed_markers: list[PlacedMarker] = field(default_factory=list)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, kw_only=True)
 class ValidationResult:
     """Output of ``validate``: the diagnostics found, and the index built.
 

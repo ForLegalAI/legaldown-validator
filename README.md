@@ -249,7 +249,7 @@ itself is what was found, kept nowhere but in `diagnostics`:
 | `is_valid` | `True` when no Error-level diagnostic was reported |
 | `errors` / `warnings` / `infos` | Message strings by severity, taken from `diagnostics` |
 | `rules(level=None)` | Set of rule ids present, optionally filtered by severity |
-| `index` | A `DocumentIndex`, built from the document as far as it is valid (an invalid identifier is reported, not indexed): |
+| `index` | A `DocumentIndex`. Values and markers in it are as written: one that is invalid is reported in `diagnostics` too, so check `is_valid` before relying on them: |
 
 | `result.index.…` | Contents |
 |---|---|
