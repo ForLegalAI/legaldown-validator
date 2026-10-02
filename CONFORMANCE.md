@@ -201,7 +201,7 @@ and 38 skipped: eight of the other skips are the implemented rules named above, 
 case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py` assembles it with
 a loader instead. Cases that need the final option run with it; cases that need an answers set
 are assembled with it, and each assembly case is compared byte for byte with its expected output.
-CI runs this on every push and pull request.
+CI runs this on demand (Actions → CI → Run workflow with the `conformance` input on, or the `ci` label on a pull request).
 
 ## Assembly (§15.7, §17.6)
 
