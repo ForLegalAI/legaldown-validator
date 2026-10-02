@@ -498,3 +498,157 @@ def test_a_form_copies_the_nested_answers_it_is_given():
     form = parse_template(_TEMPLATE).form(answers)
     answers["fee"]["amount"] = "x"
     assert form.ready and "{{money: 5, currency=EUR}}" in form.assemble().output
+
+
+# ── Questions read what a person types ───────────────────────────
+
+_ASKING = """---
+title: T
+questions:
+  extras:
+    type: boolean
+  fee:
+    type: money
+  forum:
+    type: choice
+    choices:
+      courts: State courts
+      arbitration: ICC arbitration
+      both: Either
+      other: Either
+      third: courts
+  term:
+    type: duration
+---
+
+# A {#a}
+
+{{placeholder: who}} {{placeholder: price, type=money, currency=EUR}} {{placeholder: due, type=date}}
+{{placeholder: wait, type=duration, unit=D}} {{placeholder: mixed, type=money, currency=EUR}}
+{{placeholder: mixed, type=money}}
+"""
+
+
+def _asking() -> dict[str, Question]:
+    return {q.id: q for q in parse_template(_ASKING).questions}
+
+
+@pytest.mark.parametrize(
+    ("qid", "text", "answer"),
+    [
+        ("who", "  Ann Smith  ", "Ann Smith"),
+        ("who", "", None),
+        ("who", "   ", None),
+        ("extras", "yes", True), ("extras", "Y", True), ("extras", "TRUE", True),
+        ("extras", "no", False), ("extras", "n", False), ("extras", " False ", False),
+        ("due", "2026-06-01", "2026-06-01"),
+        ("forum", "courts", "courts"), ("forum", "COURTS", "courts"), ("forum", "ICC Arbitration", "arbitration"),
+        ("fee", "5000 EUR", {"amount": "5000", "currency": "EUR"}),
+        ("fee", "5000eur", {"amount": "5000", "currency": "EUR"}),
+        ("fee", "5000.50   usd", {"amount": "5000.50", "currency": "USD"}),
+        ("price", "5000", "5000"),
+        ("price", "5000 EUR", {"amount": "5000", "currency": "EUR"}),
+        ("term", "30 D", {"value": "30", "unit": "D"}),
+        ("term", "2 min", {"value": "2", "unit": "MIN"}),
+        ("term", "1.5 y", {"value": "1.5", "unit": "Y"}),
+        ("wait", "7", "7"),
+    ],
+)
+def test_text_a_person_types_becomes_the_answer_that_assembly_takes(qid, text, answer):
+    question = _asking()[qid]
+    assert question.from_text(text) == answer
+    assert question.problem(answer) is None or answer is None
+
+
+@pytest.mark.parametrize(
+    ("qid", "text"),
+    [
+        ("extras", "maybe"), ("extras", "1"),
+        ("due", "2026-13-01"), ("due", "June 1"), ("due", "2026/06/01"),
+        ("forum", "nowhere"),
+        ("fee", "5000"), ("fee", "EUR 5000"), ("fee", "5,000 EUR"), ("fee", "€5000"), ("fee", "-5 EUR"),
+        ("fee", "5000 EURO"), ("fee", "5000 EU"), ("fee", "abc"), ("fee", "5000 EUR USD"),
+        ("price", "5000 USD"), ("mixed", "5"),
+        ("term", "30"), ("term", "30 M"), ("term", "0 D"), ("term", "-3 D"), ("term", "30 years"),
+        ("wait", "7 W"), ("wait", "x"),
+    ],
+)
+def test_text_that_is_no_answer_says_what_to_enter(qid, text):
+    question = _asking()[qid]
+    with pytest.raises(ValueError, match="Enter|is not|label") as error:
+        question.from_text(text)
+    assert question.hint.split(",")[0].split(":")[0] in str(error.value) or "label" in str(error.value)
+
+
+def test_a_label_two_choices_share_is_ambiguous_and_a_key_comes_first():
+    forum = _asking()["forum"]
+    with pytest.raises(ValueError, match="more than one choice"):
+        forum.from_text("either")  # the label of `both` and of `other`
+    assert forum.from_text("courts") == "courts"  # the key of one choice, and the label of `third`: the key wins
+    assert forum.from_text("State Courts") == "courts" and forum.from_text("THIRD") == "third"
+
+
+def test_hints_say_what_to_type():
+    asking = _asking()
+    assert asking["extras"].hint == "yes or no"
+    assert asking["due"].hint == "a date, YYYY-MM-DD"
+    assert asking["forum"].hint.startswith("one of: courts (State courts), arbitration (ICC arbitration)")
+    assert asking["fee"].hint == "an amount and a currency, like 5000 EUR"
+    assert asking["price"].hint == "an amount, like 5000 (in EUR)"
+    assert asking["term"].hint.startswith("a number and a unit, like 30 D") and "MIN" in asking["term"].hint
+    assert asking["wait"].hint == "a number, like 30 (in D)"
+    assert asking["who"].hint == "text"
+    assert parse_template("---\ntitle: '{{placeholder: name}}'\n---\n").questions[0].hint == "text, without '{{'"
+
+
+def test_a_message_names_the_hint_so_a_front_end_can_show_it():
+    fee = _asking()["fee"]
+    with pytest.raises(ValueError) as error:
+        fee.from_text("lots")
+    assert str(error.value) == f"Enter {fee.hint}."
+
+
+def test_from_text_wants_text():
+    with pytest.raises(TypeError):
+        _asking()["who"].from_text(5)  # type: ignore[arg-type]
+
+
+def test_a_text_answer_with_a_line_break_or_a_directive_in_frontmatter_is_refused():
+    who = _asking()["who"]
+    with pytest.raises(ValueError):
+        who.from_text("one\ntwo")
+    (name,) = parse_template("---\ntitle: '{{placeholder: name}}'\n---\n").questions
+    with pytest.raises(ValueError):
+        name.from_text("a {{b}}")
+
+
+def test_what_from_text_returns_is_always_valid_or_none():
+    """The guarantee: an answer from ``from_text`` passes ``problem``; anything else is a ValueError."""
+    import random
+
+    alphabet = list("0123456789.,- eEuUrRsSdDmMiInNoOwWyYhHtTfFaAlLcCbB€$\t") + ["yes", "no", "true", "EUR", "MIN", "courts", "ICC"]
+    rng = random.Random(20260602)
+    questions = list(_asking().values()) + list(parse_template(_FRONT + _BODY).questions)
+    for question in questions:
+        for _ in range(1500):
+            text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 6)))
+            try:
+                answer = question.from_text(text)
+            except ValueError:
+                continue
+            assert answer is None or question.problem(answer) is None, (question.id, text, answer)
+            assert (answer is None) == (not text.strip())
+
+
+def test_a_typed_answer_goes_into_the_form_and_assembles():
+    template = parse_template(_TEMPLATE)
+    answers: dict = {}
+    typed = {"extras": "no", "who": "Ann Smith", "fee": "250 eur"}
+    for _ in range(10):
+        form = template.form(answers)
+        pending = [q for q in form.questions if answers.get(q.id) is None and q.id in typed]
+        if not pending:
+            break
+        answers[pending[0].id] = pending[0].from_text(typed[pending[0].id])
+    form = template.form(answers)
+    assert form.ready and "Hi Ann Smith." in form.assemble().output and "250" in form.assemble().output

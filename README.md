@@ -450,6 +450,32 @@ make many of them unused. `form.problem("fee")` says why one answer is not valid
 neither do the questions: a `Question` is a fixed value, a copy of the template's declaration, which
 every form of the template shares (treat its `default` and `choices` as read-only).
 
+**Asking a person.** A question can read what a person types, so a terminal, a web form or an agent
+need not know the shapes `assemble` takes (money is `{amount, currency}`, a boolean is a boolean):
+
+```python
+answers, skipped = {}, set()
+while q := next((q for q in template.form(answers).questions
+                 if answers.get(q.id) is None and q.id not in skipped), None):
+    text = input(f"{q.prompt or q.id} — enter {q.hint}: ")
+    if not text:                       # no answer: the default applies, or the blank stays
+        skipped.add(q.id)
+        continue
+    try:
+        answers[q.id] = q.from_text(text)
+    except ValueError as exc:          # says what to enter
+        print(exc)
+```
+
+`question.hint` is what to type — `yes or no`, `a date, YYYY-MM-DD`, `an amount and a currency, like
+5000 EUR`, `one of: courts (State courts), arbitration` — and `question.from_text(text)` turns the
+text into the answer, or raises `ValueError` saying what to enter; the empty text is `None`, no
+answer. What it returns always passes `question.problem`. It is strict and not locale-aware:
+`yes`, `no`, `true`, `false`, `y`, `n` for a boolean; a choice by key or label, in any case (a label
+two choices share is ambiguous, and a key comes before a label); `5000 EUR` for money and `30 D`
+for a duration, with the amount alone where every placeholder fixes the currency or the unit; no
+grouping separators, symbols or `5 000,50`.
+
 **What stops a template.** `template.problems` are the reasons a template cannot be assembled
 whatever the answers: a file it includes that cannot be read, a placeholder written across lines, a
 translation group, and the Errors of the validator's template rules (`question-invalid`,

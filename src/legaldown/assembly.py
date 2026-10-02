@@ -68,7 +68,8 @@ from .parser import (
 from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
-from .validator.patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
+from .validator.helpers import is_positive_numeric, is_valid_money_amount
+from .validator.patterns import DURATION_UNITS, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
 from .validator.result import Diagnostic
 from .validator.templates import (
     DECISION_QUESTION_TYPES,
@@ -161,6 +162,99 @@ class Question:
         return answer_problem(
             self.type, answer, choices=self.choices if self.type == "choice" else None, blank=self._blank
         )
+
+    @property
+    def hint(self) -> str:
+        """What to type to answer it, as a phrase to follow "Enter": ``yes or
+        no``, ``an amount and a currency, like 5000 EUR``, ``one of: courts
+        (State courts), arbitration`` — for a person, a web form or an agent."""
+        if self.type == "boolean":
+            return "yes or no"
+        if self.type == "date":
+            return "a date, YYYY-MM-DD"
+        if self.type == "choice":
+            return "one of: " + ", ".join(
+                f"{key} ({label})" if label and label != key else key for key, label in self.choices.items()
+            )
+        if self.type == "money":
+            if self.currency:
+                return f"an amount, like 5000 (in {self.currency})"
+            return "an amount and a currency, like 5000 EUR"
+        if self.type == "duration":
+            if self.unit:
+                return f"a number, like 30 (in {self.unit})"
+            return f"a number and a unit, like 30 D (units: {', '.join(DURATION_UNITS)})"
+        if self._blank is not None and self._blank.in_frontmatter:
+            return "text, without '{{'"
+        return "text"
+
+    def from_text(self, text: str) -> Any:
+        """The answer that *text*, as a person types it, gives to this question:
+        the shape ``assemble`` takes, which :meth:`problem` accepts — or ``None``
+        for no answer (the empty text: the default applies, or the blank stays).
+        Surrounding spaces are dropped. Strict, and not locale-aware:
+
+        - ``text``: the text. ``date``: ``YYYY-MM-DD``.
+        - ``boolean``: yes, no, true, false, y, n, in any case.
+        - ``choice``: a choice's key, else its label, in any case; a label two
+          choices share is ambiguous.
+        - ``money``: ``5000 EUR`` (or ``5000EUR``), and the amount alone where the
+          placeholders fix a currency. ``duration``: ``30 D``, and the number
+          alone where they fix a unit. No grouping separators or symbols.
+
+        Raises ``ValueError``, saying what to enter, for text that is no answer.
+        """
+        if not isinstance(text, str):
+            raise TypeError(f"the text of an answer is a string, not {type(text).__name__}")
+        text = text.strip()
+        if not text:
+            return None
+        value = self._answer_from(text)
+        problem = self.problem(value)
+        if problem:
+            # Said as the question is, where what is wrong is not the shape of what was typed.
+            detail = f" ({problem})" if self.type in ("money", "duration") else ""
+            raise ValueError(f"Enter {self.hint}.{detail}")
+        return value
+
+    def _answer_from(self, text: str) -> Any:
+        shape = ValueError(f"Enter {self.hint}.")
+        if self.type == "boolean":
+            word = text.lower()
+            if word in ("yes", "y", "true"):
+                return True
+            if word in ("no", "n", "false"):
+                return False
+            raise shape
+        if self.type == "choice":
+            word = text.lower()
+            keys = [key for key in self.choices if key.lower() == word]
+            if keys:
+                return keys[0]
+            labels = [key for key, label in self.choices.items() if label.lower() == word]
+            if len(labels) == 1:
+                return labels[0]
+            if labels:
+                raise ValueError(f"'{text}' is the label of more than one choice ({', '.join(labels)}); "
+                                 f"enter {self.hint}.")
+            raise shape
+        if self.type in ("money", "duration"):
+            found = re.fullmatch(r"(\S*?\d)\s*([A-Za-z]+)?", text)
+            if found is None:
+                raise shape
+            amount, code = found.group(1), (found.group(2) or "").upper()
+            if not (is_valid_money_amount(amount) if self.type == "money" else is_positive_numeric(amount)):
+                what = "an amount" if self.type == "money" else "a positive number"
+                raise ValueError(f"'{amount}' is not {what}: digits and at most one decimal point, with no "
+                                 f"separators or symbols. Enter {self.hint}.")
+            fixed = self.currency if self.type == "money" else self.unit
+            if not code:
+                if not fixed:
+                    raise shape
+                return amount
+            names = ("amount", "currency") if self.type == "money" else ("value", "unit")
+            return {names[0]: amount, names[1]: code}
+        return text
 
 
 # ── Where the parser's blocks lie in the source ──────────────────
