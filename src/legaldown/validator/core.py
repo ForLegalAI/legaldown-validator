@@ -25,7 +25,7 @@ from ..directives import (
     lex,
     mask_directives,
 )
-from ..files import LoadFile, file_loader
+from ..files import LoadFile, file_loader, within
 from ..markdown import HTML_COMMENT_RE, INLINE_HTML_RE, is_comment_only
 from ..models import LIST_KINDS, Amends, Document
 from ..positions import Locator
@@ -646,8 +646,9 @@ def _resolver(
     stacklevel: int,
 ) -> LoadFile | None:
     """How the validation reads the files *document* refers to: *resolve*, else
-    the directory of its path, else not at all. Says the importers are
-    deprecated when one is given."""
+    the directory of its path (never the document itself), else not at all.
+    Says the importers are deprecated when one is given, and then reads nothing
+    by itself: each importer answers for its own files, as it always did."""
     if import_definitions is not None or import_attachment_definitions is not None:
         warnings.warn(
             "import_definitions and import_attachment_definitions are deprecated since 0.4.0 "
@@ -655,8 +656,15 @@ def _resolver(
             DeprecationWarning,
             stacklevel=stacklevel,
         )
+        return resolve
     if resolve is None and document.path is not None:
-        return file_loader(document.path.parent)
+        read = file_loader(document.path.parent)
+        own = document.path.resolve()
+
+        def resolve(relative: str) -> str | None:
+            # A document that names itself has nothing to add to itself.
+            return None if within(document.path.parent, relative) == own else read(relative)
+
     return resolve
 
 

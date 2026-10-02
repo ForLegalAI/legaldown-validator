@@ -66,7 +66,8 @@ conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, in
 boundaries, and the final option (§15.9, `validate(final=True)` or
 `legaldown validate --final`); assembly is described below. Two limits apply:
 
-- A template's include fragments and LegalDown attachment files are not read (Full, §17.4), so
+- A template's include fragments and LegalDown attachment files are not read (Full, §17.4) — the
+  attachment files only for the definitions they declare — so
   `question-unused` is not reported for a template that has either: a question may be used there.
 - A LegalDown attachment file or include fragment validated on its own is checked as a
   standalone document: conditions, placeholders, and terms that refer to its template's

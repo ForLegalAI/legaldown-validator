@@ -450,3 +450,22 @@ def test_a_loaded_document_can_be_validated_without_reading_anything(tmp_path):
     document = _amendment(tmp_path, _ORIGINAL)
     assert "amend-term-undefined" not in validate(document).rules()
     assert "amend-term-unresolvable" in validate(document, resolve=lambda path: None).rules()
+
+
+def test_a_document_that_names_itself_as_its_original_reads_nothing(tmp_path):
+    path = tmp_path / "amendment.lgd"
+    path.write_text(
+        '---\ntitle: A\namends:\n  title: A\n  file: ./amendment.lgd\n---\n\n# S\n\n"Services" {{def: services}} means x.\n',
+        encoding="utf-8",
+    )
+    rules = validate(load(path)).rules()
+    assert "amend-def-override" not in rules
+    assert "amend-term-unresolvable" not in rules  # no terms to resolve; and nothing said about the file
+
+
+def test_one_importer_does_not_start_reading_the_other_files_from_disk(tmp_path):
+    document = _amendment(tmp_path, _ORIGINAL)
+    with pytest.warns(DeprecationWarning):
+        # An importer for the attachments only: the amended original is still not read, as it never was.
+        result = validate(document, import_attachment_definitions=lambda _file: {})
+    assert "amend-term-unresolvable" in result.rules()
