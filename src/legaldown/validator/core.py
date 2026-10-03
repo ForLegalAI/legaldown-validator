@@ -49,12 +49,13 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
+from .result import Blank, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
-    Blank,
     Quote,
+    _BlankState,
+    _fixed_by_all,
     block_quotes,
     check_choose,
     check_questions,
@@ -294,7 +295,7 @@ def _check_directive_arguments(
 def _check_placeholder(
     directive: Directive,
     result: _Recorder,
-    blanks: dict[str, Blank],
+    blanks: dict[str, _BlankState],
     questions: Any,
     *,
     in_frontmatter: bool = False,
@@ -321,7 +322,7 @@ def _check_placeholder(
             f"Placeholder id '{pid}' is invalid — must match [a-z][a-z0-9-]*.",
         )
         return
-    blank = blanks.setdefault(pid, Blank())
+    blank = blanks.setdefault(pid, _BlankState())
     blank.in_frontmatter |= in_frontmatter
     type_valid = written_type is None or written_type in VALID_PLACEHOLDER_TYPES
     if not type_valid:
@@ -369,7 +370,7 @@ def _check_placeholder(
         _check_duration_unit(code, result)
 
 
-def _check_blank_codes(blanks: dict[str, Blank], result: _Recorder) -> None:
+def _check_blank_codes(blanks: dict[str, _BlankState], result: _Recorder) -> None:
     """Report each blank whose occurrences fix two currencies or units: one
     blank cannot hold two (§10.7)."""
     for pid, blank in blanks.items():
@@ -1122,6 +1123,7 @@ def _validate(
             path=".".join(path_stack),
             level=level,
             number=number,
+            alternative=alternative,
         )
         result.index.sections.append(entry)
         # Alternatives share an identifier: a reference resolves to
@@ -1326,7 +1328,7 @@ def _validate(
                 result.index.definition_lookup.setdefault(def_id, term_text)
 
     # ── Inline directive validation ──
-    blanks: dict[str, Blank] = {}
+    blanks: dict[str, _BlankState] = {}
     referenced_attachments: set[str] = set()
 
     # ── Frontmatter placeholders (§3.10) ──
@@ -1556,6 +1558,15 @@ def _validate(
                     )
 
     _check_blank_codes(blanks, result)
+    result.index.blanks = {
+        pid: Blank(
+            id=pid,
+            type=state.type or "text",
+            fixed=_fixed_by_all(state.codes) or "",
+            in_frontmatter=state.in_frontmatter,
+        )
+        for pid, state in blanks.items()
+    }
 
     # ── Templates (§15) ──
     # Every condition in a condition position (§15.3): on what, as written,
