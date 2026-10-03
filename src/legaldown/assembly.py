@@ -74,7 +74,7 @@ from .validator.patterns import DURATION_UNITS, IDENTIFIER_RE, LEGALDOWN_EXTENSI
 from .validator.result import Diagnostic
 from .validator.templates import (
     DECISION_QUESTION_TYPES,
-    Blank,
+    _BlankState,
     answer_problem,
     is_drafting_note,
     question_type,
@@ -143,14 +143,14 @@ class Question:
     currency: str | None = None
     unit: str | None = None
     declared: bool = True
-    #: What the placeholders of the question fix (``Blank``): every code, and
+    #: What the placeholders of the question fix (``_BlankState``): every code, and
     #: whether one is in frontmatter, which ``problem`` needs. Not a field: it is
     #: not part of the value (``asdict``, ``replace`` and equality leave it out). A
     #: question made without it behaves as if its placeholders fix the ``currency``
     #: or ``unit`` it names, if any, and none is in frontmatter.
-    _blank: InitVar[Blank | None] = None
+    _blank: InitVar[_BlankState | None] = None
 
-    def __post_init__(self, _blank: Blank | None) -> None:
+    def __post_init__(self, _blank: _BlankState | None) -> None:
         object.__setattr__(self, "choices", dict(self.choices or {}))
         object.__setattr__(self, "default", copy.deepcopy(self.default))
         object.__setattr__(self, "_info", _blank)
@@ -166,12 +166,12 @@ class Question:
             self.type, answer, choices=self.choices if self.type == "choice" else None, blank=self._placeholders()
         )
 
-    def _placeholders(self) -> Blank | None:
+    def _placeholders(self) -> _BlankState | None:
         """What the placeholders fix: as recorded, else as ``currency``/``unit`` name."""
         if self._info is not None:
             return self._info
         fixed = self.currency if self.type == "money" else self.unit if self.type == "duration" else None
-        return Blank(type=self.type, codes={fixed}) if fixed else None
+        return _BlankState(type=self.type, codes={fixed}) if fixed else None
 
     @property
     def _fixed(self) -> str | None:
@@ -859,7 +859,7 @@ class _Template:
     main: _Source
     subs: dict[str, _Source]
     declared: dict
-    blanks: dict[str, Blank]
+    blanks: dict[str, _BlankState]
     types: dict[str, str]  # every question's effective type: declared, then implicit
     bom: str
     problems: list[Diagnostic]
@@ -1006,16 +1006,16 @@ def _effective_type(directive: Directive, declared: dict) -> str:
     return qtype if qtype in VALID_PLACEHOLDER_TYPES else directive.params.get("type", "text")
 
 
-def _blanks(occurrences: list[tuple[_Occurrence, bool]], declared: dict) -> dict[str, Blank]:
+def _blanks(occurrences: list[tuple[_Occurrence, bool]], declared: dict) -> dict[str, _BlankState]:
     """Each placeholder id's blank, recorded as the validator records it: the
     type of its first occurrence, the currency or unit each occurrence of
     that type fixes, and whether one is in frontmatter."""
-    blanks: dict[str, Blank] = {}
+    blanks: dict[str, _BlankState] = {}
     for occ, in_frontmatter in occurrences:
         if occ.directive.name != "placeholder" or not IDENTIFIER_RE.fullmatch(occ.qid):
             continue
         ptype = _effective_type(occ.directive, declared)
-        blank = blanks.setdefault(occ.qid, Blank())
+        blank = blanks.setdefault(occ.qid, _BlankState())
         blank.in_frontmatter |= in_frontmatter
         blank.type = blank.type or ptype
         if ptype == blank.type and ptype in PLACEHOLDER_TYPE_PARAMS:
@@ -1023,7 +1023,7 @@ def _blanks(occurrences: list[tuple[_Occurrence, bool]], declared: dict) -> dict
     return blanks
 
 
-def _fixed(blank: Blank | None) -> str | None:
+def _fixed(blank: _BlankState | None) -> str | None:
     """The currency or unit every placeholder of *blank* fixes, if one."""
     if blank is None or len(blank.codes) != 1 or "" in blank.codes:
         return None

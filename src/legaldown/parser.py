@@ -16,12 +16,12 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 
-from .definitions import DefinitionAnchor, find_definition_anchors, text_fragments
-from .directives import Directive, iter_directives, lex
+from .definitions import DefinitionAnchor, block_fragments, find_definition_anchors
+from .directives import Directive, lex
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
@@ -1457,6 +1457,57 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     return parse(source, filename=filename)
 
 
+class DirectiveLocation(NamedTuple):
+    """A directive and where it is (``iter_document_directives``): in block
+    *block* of the preamble (*section* None) or of section *section*, in
+    fragment *fragment* of ``block_fragments(block)``, which *directive*'s
+    offsets are into. *fragment* is None for the ``{{ref:}}`` or
+    ``{{term:}}`` the parser lifted into the block's own fields: its offsets
+    are into the directive as the serializer writes it."""
+
+    section: int | None
+    block: int
+    fragment: int | None
+    directive: Directive
+
+
+def iter_document_directives(document: Document) -> Iterator[DirectiveLocation]:
+    """Every directive in the body of *document*, well-formed or malformed, in
+    document order, each with where it is (``DirectiveLocation``).
+
+    It reads the body as ``validate`` does — the same fragments
+    (``block_fragments``), lexed the same way — so code spans, comments, code
+    blocks and raw HTML hold none (§11.4), and a block quote's or a list's are
+    those of the blocks it holds. A ``{{ref:}}`` or ``{{term:}}`` the parser
+    lifted into a block's fields is among them, between the directives of the
+    block's text before it and after it. The frontmatter and the headings are
+    not read.
+    """
+    for section, index, block in document.iter_indexed_blocks():
+        lifted = block.kind in ("ref", "term") and bool(block.target)
+        # The fragments before the lifted directive: its text, and its prefix.
+        before = bool(block.text) + bool(block.prefix)
+        for fragment, (text, _anchor) in enumerate(block_fragments(block)):
+            if lifted and fragment == before:
+                yield from _lifted_directive(section, index, block)
+                lifted = False
+            for directive in lex(text).directives:
+                yield DirectiveLocation(section, index, fragment, directive)
+        if lifted:
+            yield from _lifted_directive(section, index, block)
+
+
+def _lifted_directive(section: int | None, index: int, block: Block) -> Iterator[DirectiveLocation]:
+    """The directive a ``ref`` or ``term`` block holds in its fields, as the
+    serializer writes it alone."""
+    from .serializer import render_block  # the serializer builds on this module
+
+    source = render_block(Block(kind=block.kind, target=block.target, label=block.label))
+    for directive in lex(source).directives:
+        yield DirectiveLocation(section, index, None, directive)
+        return
+
+
 def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
     """Collect all ref and term targets used in a document.
 
@@ -1464,17 +1515,11 @@ def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:
     """
     refs: set[str] = set()
     terms: set[str] = set()
-    for _section, _index, block in document.iter_blocks():
-        if block.kind == "ref" and block.target:
-            refs.add(block.target)
-        if block.kind == "term" and block.target:
-            terms.add(block.target)
-        for fragment in text_fragments(block):
-            for directive in iter_directives(fragment):
-                if directive.malformed or not directive.positional:
-                    continue
-                if directive.name == "ref":
-                    refs.add(directive.positional)
-                elif directive.name == "term":
-                    terms.add(directive.positional)
+    for _section, _index, _fragment, directive in iter_document_directives(document):
+        if directive.malformed or not directive.positional:
+            continue
+        if directive.name == "ref":
+            refs.add(directive.positional)
+        elif directive.name == "term":
+            terms.add(directive.positional)
     return refs, terms

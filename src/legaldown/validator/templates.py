@@ -45,7 +45,7 @@ YAML_KEYWORDS: frozenset[str] = frozenset(
 
 
 @dataclass(slots=True)
-class Blank:
+class _BlankState:
     """Every occurrence of one placeholder id — one logical blank (§10.7)."""
     #: The effective type of its first occurrence with a valid one.
     type: str | None = None
@@ -76,7 +76,7 @@ def _fixed_by_all(codes: set[str]) -> str | None:
     return next(iter(codes)) if len(codes) == 1 and "" not in codes else None
 
 
-def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: Blank | None = None) -> str | None:
+def answer_problem(qtype: str, answer: Any, *, choices: Any = None, blank: _BlankState | None = None) -> str | None:
     """Why *answer* is not a valid answer to a *qtype* question (§15.7.1,
     §15.7.2 step 1), or None when it is. *blank* describes the question's
     placeholders — the currency or unit they fix, and whether one is in
@@ -190,7 +190,7 @@ def _choices_problem(choices: Any) -> str | None:
 
 def check_questions(
     questions: Any,
-    blanks: dict[str, Blank],
+    blanks: dict[str, _BlankState],
     result: _Recorder,
     *,
     template: bool,
