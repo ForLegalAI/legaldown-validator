@@ -25,7 +25,9 @@ from .markdown import (
     FENCE_OPEN_RE,
     HTML_COMMENT_RE,
     LINE_ENDING_RE,
+    CodeContent,
     closes_fence,
+    code_content,
     dedent,
     fence_end,
     indent_width,
@@ -33,8 +35,15 @@ from .markdown import (
 )
 from .markers import MARKER_RE, Marker, format_marker, is_look_alike, parse_marker
 from .models import item_text, list_items
-from .parser import FRONTMATTER_RE, collect_source_directives
-from .validator.templates import Quote, block_quotes
+from .parser import (
+    FRONTMATTER_RE,
+    DirectiveLocation,
+    collect_source_directives,
+    iter_document_directives,
+    quote_blocks,
+)
+from .positions import BlockSpan, HeadingSpan, ItemSpan, SectionSpan, SourceLayout
+from .validator.templates import Quote, block_quotes, drafting_note_blocks
 from .validator.units import FoundMarker, find_markers, is_include_only
 
 __all__ = [
@@ -46,6 +55,8 @@ __all__ = [
     "is_escaped",
     "format_value",
     "collect_source_directives",
+    "iter_document_directives",
+    "DirectiveLocation",
     # Markers (§5.7, §15.3)
     "Marker",
     "MARKER_RE",
@@ -63,6 +74,10 @@ __all__ = [
     "text_fragments",
     "Quote",
     "block_quotes",
+    "quote_blocks",
+    "drafting_note_blocks",
+    "code_content",
+    "CodeContent",
     "list_items",
     "item_text",
     # Markdown
@@ -75,4 +90,10 @@ __all__ = [
     "dedent",
     "indent_width",
     "strip_text",
+    # Where a parsed document's parts are in its file (``Document.layout``)
+    "SourceLayout",
+    "SectionSpan",
+    "HeadingSpan",
+    "BlockSpan",
+    "ItemSpan",
 ]

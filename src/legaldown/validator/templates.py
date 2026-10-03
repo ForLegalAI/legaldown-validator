@@ -313,9 +313,9 @@ def drafting_note_blocks(quote: Block, *, depth: int = 0) -> list[Block]:
         return [Block(kind="paragraph", text=text)] if text.strip() else []
     blocks = quote_blocks(quote, depth=depth)
     first = blocks[0] if blocks else None
-    if first is None or first.kind not in ("paragraph", "heading") or not first.text.upper().startswith(_DRAFTING_MARKER):
+    if first is None or first.kind not in ("paragraph", "heading") or not first.text.upper().startswith(DRAFTING_MARKER):
         return quote_blocks(Block(kind="quote", text=quote.text.partition("\n")[2]), depth=depth)
-    rest = first.text[len(_DRAFTING_MARKER):].lstrip()
+    rest = first.text[len(DRAFTING_MARKER):].lstrip()
     if not rest:
         return blocks[1:]
     first.text = rest

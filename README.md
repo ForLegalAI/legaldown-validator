@@ -299,23 +299,16 @@ itself is what was found, kept nowhere but in `diagnostics`:
 
 | `result.index.…` | Contents |
 |---|---|
-| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8) |
+| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8); an entry's `alternative` is true for a section that is an alternative to the one before it and shares its number (§15.4) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
 | `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
+| `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence: `Blank(id, type, fixed, in_frontmatter)` — `type` the effective type (§10.7, §15.2; `text` when none is written), `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none or they disagree), `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
-A renderer builds from these decisions rather than re-deriving them, with the helpers the
-validator reads the document with.
-[`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way:
-
-| Helper | What it gives |
-|---|---|
-| `lex(text)` → `Lexed` | The directives in inline text (§11.4), and a `view` of it with comments and code spans blanked; `is_escaped(text, offset)` |
-| `block_fragments(block)`, `list_fragments(block)`, `list_items(block)` | The texts of a block that hold directives and markers, in the order `PlacedMarker.fragment` counts them (`Fragment(text, anchor)`); the same for a list, with the items each is in (`ListFragment(text, anchor, items)`), numbered in pre-order: an item before the items nested in it; a list's items, as `ListItem`s |
-| `is_template(document)`, `is_drafting_note(block)` | The template decision without validating (§15.1); whether a quote block is a drafting note (§15.6) |
-| `legaldown.validator`: `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units (each the set of conditions it appears under, `Presence`) can never appear together, given the document's `questions` |
-| `legaldown.validator`: `is_valid_iso_date`, `is_valid_money_amount`, `is_positive_numeric`, `IDENTIFIER_RE`, `KNOWN_CURRENCIES` | Value checks (§3.10, §10) |
+A renderer builds from these decisions rather than re-deriving them, reading the source with
+the validator's own helpers ([Tooling API](#tooling-api)).
+[`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way.
 
 ### Reading and editing the document model
 
@@ -481,12 +474,30 @@ for _section, _index, block in document.iter_blocks():
 
 | Names | What they are |
 |---|---|
-| `lex`, `Lexed`, `Directive`, `iter_directives`, `is_escaped`, `format_value`, `collect_source_directives` | The directive lexer (§11.4) and its inverse; the `{{ref:}}` and `{{term:}}` targets of a document |
+| `lex`, `Lexed`, `Directive`, `iter_directives`, `is_escaped`, `format_value` | The directive lexer (§11.4) and its inverse. A `Directive`'s `positional_span` and `param_spans` are where each value is written, quotes included, so `text[start:end]` is what to replace to change it; `Lexed.literals` are the comments and code spans the lexer skipped, as `(kind, start, end)` |
+| `iter_document_directives(document)` → `DirectiveLocation(section, block, fragment, directive)`, `collect_source_directives` | Every directive in a document's body, in order, read as `validate` reads it: `fragment` indexes `block_fragments(block)`, and is `None` for a `{{ref:}}`/`{{term:}}` the parser lifted into a block's fields; the `{{ref:}}` and `{{term:}}` targets of a document |
 | `Marker`, `MARKER_RE`, `parse_marker`, `format_marker`, `is_look_alike` | Anchor and condition markers (§5.7, §15.3) |
 | `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`) |
 | `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `text_fragments`, `list_items`, `item_text` | Where a block's text is, and a list's items |
 | `Quote`, `block_quotes` | The block quotes in a block and whether each is a drafting note |
+| `quote_blocks(block)`, `drafting_note_blocks(block)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6) |
+| `code_content(block)` → `CodeContent(info, text, fenced)` | A code block read as CommonMark reads it: the info string, and the code without its fences or indentation |
 | `FRONTMATTER_RE`, `LINE_ENDING_RE`, `HTML_COMMENT_RE`, `FENCE_OPEN_RE`, `closes_fence`, `fence_end`, `dedent`, `indent_width`, `strip_text` | The Markdown rules the reading is built on: frontmatter, line endings, comments, fenced code, indentation |
+
+**Where things are in the file.** `document.layout()` gives a `SourceLayout`: the frontmatter's
+`(start, end)`, the preamble's `BlockSpan`s, and per section a `SectionSpan` (its `HeadingSpan` and
+its blocks' spans), in `document.sections` order. Lines are file lines counted from 1, `end`
+exclusive; a list's `BlockSpan` has its `ItemSpan`s, each with the spans of its blocks.
+`document.line_of(section, block=None, item=None)` is one line: a section's heading, a top-level
+block (`section=None` for the preamble), or a list item's marker, items counted in pre-order as
+`PlacedMarker.item` counts them. These are the lines diagnostics name (§16.9). Both are `None`
+for a document built in code, or changed since it was parsed.
+
+```python
+document = load("contract.lgd")
+for number, section in enumerate(document.layout().sections):
+    print(document.sections[number].title, section.heading.start, [b.start for b in section.blocks])
+```
 
 If you import one of these from a private module, use its public home:
 
@@ -506,7 +517,9 @@ If you import one of these from a private module, use its public home:
 | `legaldown.validator.templates`: `block_quotes` | `legaldown.syntax` |
 | `legaldown.validator.templates`: `check_choose` | `legaldown.grammar.choose_problem` |
 | `legaldown.validator.units`: `find_markers`, `is_include_only` | `legaldown.syntax` |
-| `legaldown.validator`: `parse_condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS`, `is_valid_iso_date`, `is_valid_money_amount`, `is_positive_numeric`, `slugify_identifier` | `legaldown.grammar` |
+| `legaldown.parser`: `quote_content` | `legaldown.syntax.quote_blocks` (and `drafting_note_blocks`) |
+| `legaldown.parser`: `_layout` | `Document.layout()` (file lines, not body-relative) |
+| your own fence stripping (`FENCE_OPEN_RE`, `closes_fence`, `dedent`) | `legaldown.syntax.code_content` |
 | `legaldown.cli`: `_read_answers` | `legaldown.load_answers` |
 
 ## What gets checked

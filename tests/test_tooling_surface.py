@@ -34,13 +34,15 @@ GRAMMAR = [
 
 SYNTAX = [
     "lex", "Lexed", "Directive", "iter_directives", "is_escaped", "format_value",
-    "collect_source_directives",
+    "collect_source_directives", "iter_document_directives", "DirectiveLocation",
     "Marker", "MARKER_RE", "parse_marker", "format_marker", "is_look_alike",
     "FoundMarker", "find_markers", "is_include_only",
     "Fragment", "ListFragment", "block_fragments", "list_fragments", "text_fragments",
-    "Quote", "block_quotes", "list_items", "item_text",
+    "Quote", "block_quotes", "quote_blocks", "drafting_note_blocks", "code_content", "CodeContent",
+    "list_items", "item_text",
     "FRONTMATTER_RE", "LINE_ENDING_RE", "HTML_COMMENT_RE", "FENCE_OPEN_RE",
     "closes_fence", "fence_end", "dedent", "indent_width", "strip_text",
+    "SourceLayout", "SectionSpan", "HeadingSpan", "BlockSpan", "ItemSpan",
 ]
 
 #: Where each public name is implemented.
@@ -114,6 +116,17 @@ IMPLEMENTATION = {
     "FoundMarker": "legaldown.validator.units",
     "find_markers": "legaldown.validator.units",
     "is_include_only": "legaldown.validator.units",
+    "DirectiveLocation": "legaldown.parser",
+    "iter_document_directives": "legaldown.parser",
+    "quote_blocks": "legaldown.parser",
+    "drafting_note_blocks": "legaldown.validator.templates",
+    "CodeContent": "legaldown.markdown",
+    "code_content": "legaldown.markdown",
+    "SourceLayout": "legaldown.positions",
+    "SectionSpan": "legaldown.positions",
+    "HeadingSpan": "legaldown.positions",
+    "BlockSpan": "legaldown.positions",
+    "ItemSpan": "legaldown.positions",
 }
 
 #: What PactTrack and legaldown-render import today from private modules:
@@ -138,6 +151,8 @@ DOWNSTREAM = {
     ("legaldown.models", "LIST_KINDS"): ("legaldown.grammar", "LIST_KINDS"),
     ("legaldown.parser", "FRONTMATTER_RE"): ("legaldown.syntax", "FRONTMATTER_RE"),
     ("legaldown.parser", "MAX_QUOTE_DEPTH"): ("legaldown.grammar", "MAX_QUOTE_DEPTH"),
+    ("legaldown.parser", "quote_content"): ("legaldown.syntax", "quote_blocks"),
+    ("legaldown.parser", "_layout"): ("legaldown.syntax", "SourceLayout"),  # via Document.layout()
     ("legaldown.validator.patterns", "LEGALDOWN_EXTENSIONS"): ("legaldown.grammar", "LEGALDOWN_EXTENSIONS"),
     ("legaldown.validator.templates", "DECISION_QUESTION_TYPES"): ("legaldown.grammar", "DECISION_QUESTION_TYPES"),
     ("legaldown.validator.templates", "QUESTION_TYPES"): ("legaldown.grammar", "QUESTION_TYPES"),
@@ -164,14 +179,6 @@ DOWNSTREAM = {
     ("legaldown.validator", "is_positive_numeric"): ("legaldown.grammar", "is_positive_numeric"),
     ("legaldown.validator", "is_valid_money_amount"): ("legaldown.grammar", "is_valid_money_amount"),
 }
-
-#: TODO: downstream imports whose public home arrives in a later stage. Not
-#: asserted yet; the stage that adds the home moves the entry into DOWNSTREAM.
-DOWNSTREAM_TODO = {
-    ("legaldown.parser", "quote_content"): "syntax.quote_blocks (stage 3)",
-    ("legaldown.parser", "_layout"): "Document.layout() (stage 3)",
-}
-
 
 def test_all_lists_are_the_expected_names():
     assert sorted(grammar.__all__) == sorted(GRAMMAR)
@@ -208,10 +215,13 @@ def test_a_downstream_import_has_a_public_home(deep, public):
         assert home is old
 
 
-def test_the_downstream_todo_is_not_yet_a_public_home():
-    # Remove an entry here when its stage lands, and add it to DOWNSTREAM.
-    for (module, name), home in DOWNSTREAM_TODO.items():
-        assert hasattr(importlib.import_module(module), name), (module, name, home)
+def test_the_source_layout_is_reached_from_the_document():
+    # ``parser._layout`` gave body-relative spans; ``Document.layout()`` gives
+    # file lines, and ``Document.line_of`` one of them.
+    document = parse("---\ntitle: T\n---\n\n# A\n\nText.\n")
+    layout = document.layout()
+    assert isinstance(layout, syntax.SourceLayout)
+    assert layout.sections[0].blocks[0].start == document.line_of(0, 0) == 7
     assert load_answers is not None
 
 
