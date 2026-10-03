@@ -9,7 +9,6 @@ The parser handles:
 from __future__ import annotations
 
 import bisect
-import copy
 import os
 import re
 import warnings
@@ -21,6 +20,7 @@ from typing import Any, NamedTuple
 
 import yaml
 
+from ._deprecation import LegaldownDeprecationWarning
 from .definitions import DefinitionAnchor, block_fragments, find_definition_anchors
 from .directives import Directive, lex
 from .markdown import (
@@ -1357,6 +1357,12 @@ def quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], tuple[_
     how many list items and quotes the content is in (``_parse_list``).
     Cached, as the validator reads a quote's blocks more than once: the
     blocks are shared, not to be changed."""
+    return _read_quote_content(text, depth)
+
+
+def _read_quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], tuple[_BlockSpan, ...]]:
+    """``quote_content`` uncached: blocks of its own each time, which no
+    other caller holds."""
     layout = _Layout()
     blocks, _sections = _parse_body(text.split("\n"), layout, headings=False, depth=depth)
     return tuple(blocks), tuple(layout.preamble)
@@ -1364,7 +1370,7 @@ def quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], tuple[_
 
 def quote_blocks(block: Block, *, depth: int = 0) -> list[Block]:
     """The blocks the block quote *block* holds, as the validator reads them
-    (``quote_content``): each a fresh copy, free to change, since the
+    (``quote_content``): each block read afresh, free to change, since the
     validator keeps its own reading of a quote's content. A heading in one
     is a ``heading`` block, not a section, and no directive is lifted into
     block fields (§4.1). *depth*: how many list items and quotes *block* is
@@ -1376,7 +1382,9 @@ def quote_blocks(block: Block, *, depth: int = 0) -> list[Block]:
         raise ValueError(f"not a block quote: {block.kind}")
     if depth >= MAX_QUOTE_DEPTH:
         return [Block(kind="paragraph", text=block.text)] if block.text.strip() else []
-    return copy.deepcopy(list(quote_content(block.text, depth + 1)[0]))
+    # Read again rather than deep-copied from the cache: a copy recurses once
+    # per nesting level, and fails on a list nested near MAX_LIST_DEPTH.
+    return list(_read_quote_content(block.text, depth + 1)[0])
 
 
 def parse_item_content(text: str) -> list[Block]:
@@ -1469,7 +1477,7 @@ def parse_document(source: str, *, filename: str = "") -> Document:
     warnings.warn(
         "legaldown.parse_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
         "use legaldown.parse() for a string, or legaldown.load() for a file",
-        DeprecationWarning,
+        LegaldownDeprecationWarning,
         stacklevel=2,
     )
     return parse(source, filename=filename)

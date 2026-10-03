@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from ._deprecation import LegaldownDeprecationWarning
 from .directives import format_value
 from .files import write_atomically
 from .markdown import (
@@ -640,7 +641,7 @@ def serialize_document(document: Document) -> str:
     warnings.warn(
         "legaldown.serialize_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
         "use legaldown.serialize()",
-        DeprecationWarning,
+        LegaldownDeprecationWarning,
         stacklevel=2,
     )
     return serialize(document)

@@ -17,6 +17,9 @@ Quick start::
 """
 from __future__ import annotations
 
+# The category of every deprecation warning legaldown raises
+from ._deprecation import LegaldownDeprecationWarning
+
 # Assembly (§15.7): a named capability (§17.6)
 from .assembly import AssemblyError, AssemblyResult, Question, assemble, needed_questions, template_questions
 from .files import LoadFile, file_loader
@@ -168,4 +171,6 @@ __all__ = [
     # Deprecated importer callbacks
     "DefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate(resolve=)``
     "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate(resolve=)``
+    # What each deprecated name above warns with when used: one category to filter
+    "LegaldownDeprecationWarning",
 ]

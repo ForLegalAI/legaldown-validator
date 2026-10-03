@@ -300,7 +300,7 @@ def is_drafting_note(quote: Block) -> bool:
 
 def drafting_note_blocks(quote: Block, *, depth: int = 0) -> list[Block]:
     """The blocks of drafting note *quote* without its ``[!DRAFTING]`` marker
-    line (§15.6), as ``quote_blocks`` reads the note's content: fresh copies.
+    line (§15.6), as ``quote_blocks`` reads the note's content: fresh blocks.
     The marker starts the first paragraph or heading, and is cut from it,
     the block going when nothing else is in it; where it does not (a marker
     line indented as code), the note is what is written after its first
