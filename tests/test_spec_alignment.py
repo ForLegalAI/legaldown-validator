@@ -19,7 +19,7 @@ from legaldown import (
     iter_directives,
     render_block,
     render_item,
-    serialize_document,
+    serialize,
 )
 from legaldown.definitions import text_fragments
 from legaldown.directives import format_value, lex
@@ -257,7 +257,7 @@ def test_parameters_on_ref_and_def_are_reported():
     result = _validate(source)
     assert [d.rule for d in result.diagnostics] == ["directive-unknown-param"] * 2
     assert result.index.definition_lookup["foo"] == "Foo"
-    assert "{{ref: terms, format=long}}" in serialize_document(parse(_FRONTMATTER + source))
+    assert "{{ref: terms, format=long}}" in serialize(parse(_FRONTMATTER + source))
 
 
 def test_directive_in_code_span_is_not_lifted_or_checked():
@@ -271,7 +271,7 @@ def test_lifted_term_label_round_trips():
     source = _FRONTMATTER + '"Svc" {{def: svc}} x.\n\nSee {{term: svc, label="Services, as amended"}}.\n'
     block = parse(source).sections[0].blocks[1]
     assert (block.kind, block.target, block.label) == ("term", "svc", "Services, as amended")
-    assert '{{term: svc, label="Services, as amended"}}' in serialize_document(parse(source))
+    assert '{{term: svc, label="Services, as amended"}}' in serialize(parse(source))
 
 
 def test_placeholder_currency_is_defined_only_for_money():
@@ -325,7 +325,7 @@ def test_a_curly_quoted_reference_stays_paragraph_text():
     validator warns about is not lifted."""
     document = parse(_FRONTMATTER + "See {{ref: “terms”}}.\n")
     assert document.sections[0].blocks[0].kind == "paragraph"
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
     assert "value-curly-quote" in validate(document).rules("warning")
 
 
@@ -335,7 +335,7 @@ def test_a_curly_quoted_reference_stays_paragraph_text():
 )
 def test_a_quoted_curly_value_stays_quoted_through_a_round_trip(text):
     document = parse(_FRONTMATTER + text + "\n")
-    reparsed = parse(serialize_document(document))
+    reparsed = parse(serialize(document))
     assert reparsed.sections == document.sections
     assert "value-curly-quote" not in validate(reparsed).rules()
 
@@ -359,7 +359,7 @@ def test_collect_source_directives_sees_every_parameter_shape():
 
 def test_explicitly_empty_label_round_trips():
     source = _FRONTMATTER + '"X" {{def: x}} y.\n\nSee {{term: x, label=""}}.\n'
-    assert '{{term: x, label=""}}' in serialize_document(parse(source))
+    assert '{{term: x, label=""}}' in serialize(parse(source))
 
 
 def test_malformed_directive_with_unknown_name_is_malformed():
@@ -433,7 +433,7 @@ def test_quoted_value_may_contain_backticks():
 def test_lifted_values_are_kept_as_written():
     source = _FRONTMATTER + '"X" {{def: x}} y.\n\nSee {{term: x, label="a `b` c"}}.\n'
     assert parse(source).sections[0].blocks[1].label == "a `b` c"
-    reparsed = parse(serialize_document(parse(source)))
+    reparsed = parse(serialize(parse(source)))
     assert reparsed.sections[0].blocks[1].label == "a `b` c"
 
 
@@ -461,7 +461,7 @@ def test_malformed_directive_ends_at_the_next_opener(body):
 def test_definition_with_other_quotation_marks_round_trips(paragraph):
     """The serializer writes straight quotes, so other delimiters stay text."""
     source = _FRONTMATTER + paragraph + "\n"
-    assert paragraph in serialize_document(parse(source))
+    assert paragraph in serialize(parse(source))
 
 
 def test_ref_inside_a_defined_term_is_not_lifted():
@@ -504,7 +504,7 @@ def test_unclosed_directive_does_not_swallow_the_next():
 @pytest.mark.parametrize("paragraph", ['"" {{def: foo}} means x.', '" Foo " {{def: foo}} means x.'])
 def test_definition_the_block_cannot_hold_stays_text(paragraph):
     source = _FRONTMATTER + paragraph + "\n"
-    assert paragraph in serialize_document(parse(source))
+    assert paragraph in serialize(parse(source))
 
 
 def test_escaped_placeholder_in_metadata_is_not_a_placeholder():
@@ -923,7 +923,7 @@ def test_directives_in_the_preamble_are_checked():
 
 def test_preamble_round_trips():
     document = parse(_PREAMBLE_SOURCE)
-    reparsed = parse(serialize_document(document))
+    reparsed = parse(serialize(document))
     assert reparsed.preamble == document.preamble
     assert reparsed.sections == document.sections
 
@@ -1113,7 +1113,7 @@ def test_frontmatter_that_cannot_be_read_raises_frontmatter_error(frontmatter):
 )
 def test_a_document_without_frontmatter_is_written_without_it(source):
     document = parse(source)
-    written = serialize_document(document)
+    written = serialize(document)
     assert not written.startswith("---")
     assert parse(written) == document
     assert validate(parse(written)).rules() <= {"frontmatter-absent"}
@@ -1122,7 +1122,7 @@ def test_a_document_without_frontmatter_is_written_without_it(source):
 def test_metadata_set_on_a_bare_document_is_written_as_frontmatter():
     document = parse("# A\n\nText.\n")
     document.metadata.title = "Terms"
-    assert serialize_document(document).startswith("---\ntitle: Terms\n")
+    assert serialize(document).startswith("---\ntitle: Terms\n")
 
 
 def test_frontmatter_absent_is_not_read_from_frontmatter_or_a_dict():
@@ -1170,7 +1170,7 @@ def test_only_spaces_and_tabs_and_nine_digits_make_a_heading_or_an_item(line):
     assert [(b.kind, b.text) for b in document.sections[0].blocks] == [
         ("paragraph", line.strip(" \t\n\r"))
     ]
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 @pytest.mark.parametrize(("line", "kind"), [
@@ -1256,7 +1256,7 @@ def test_an_anchor_after_a_heading_in_an_item_is_misplaced():
 @pytest.mark.parametrize("text", [" See {{ref: x}}.", "See {{ref: x}} ", " Use {{term: x}}."])
 def test_a_no_break_space_round_trips_around_a_lifted_directive(text):
     document = parse(_FRONTMATTER + text + "\n")
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 def test_a_paragraph_of_only_spaces_is_empty():
@@ -1268,7 +1268,7 @@ def test_a_paragraph_of_a_no_break_space_is_text():
     # Not blank in CommonMark (#47): written back, it reads the same.
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": "\u00a0"}]}]})
     assert document.sections[0].blocks[0].text == "\u00a0"
-    written = parse(serialize_document(document))
+    written = parse(serialize(document))
     assert [(b.kind, b.text) for b in written.sections[0].blocks] == [("paragraph", "\u00a0")]
 
 
@@ -1300,7 +1300,7 @@ def test_where_a_list_does_not_continue_past_a_blank_line(body, kinds, titles):
     assert [b.kind for b in document.sections[0].blocks] == kinds
     assert [s.title for s in document.sections] == titles
     if "- \n" not in body:  # an empty item is not written back (#46)
-        assert parse(serialize_document(document)) == document
+        assert parse(serialize(document)) == document
 
 
 @pytest.mark.parametrize(("body", "items", "after"), [
@@ -1326,7 +1326,7 @@ def test_a_line_short_of_every_open_items_content_is_code(body):
     document = parse(_FRONTMATTER + body)
     assert [b.kind for b in document.sections[0].blocks] == ["ordered_list" if body[0] == "1" else "unordered_list", "code"]
     assert "ref-broken" not in _validate(body).rules()
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 @pytest.mark.parametrize("body", [
@@ -1338,13 +1338,13 @@ def test_a_block_after_a_wide_list_marker_round_trips(body):
     """The list is written back with its last item's content past the
     block's indentation, so the block stays after it."""
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 @pytest.mark.parametrize("text", ["<div class='x'>", "<a >", "</a >"])
 def test_a_tag_is_split_only_where_both_lines_stay_paragraph_text(text):
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": text}]}]})
-    blocks = parse(serialize_document(document)).sections[0].blocks
+    blocks = parse(serialize(document)).sections[0].blocks
     assert [b.kind for b in blocks] == ["paragraph"]
 
 
@@ -1363,7 +1363,7 @@ def test_what_follows_a_list_item_that_holds_no_open_paragraph(body, kinds, titl
     document = parse(_FRONTMATTER + body)
     assert [b.kind for b in document.sections[0].blocks] == kinds
     assert [s.title for s in document.sections] == titles
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 def test_wide_marker_spacing_sets_the_items_column_as_commonmark_does():
@@ -1380,12 +1380,12 @@ def test_an_unclosed_fence_after_a_list_is_closed_when_written():
         {"title": "A", "blocks": [{"kind": "unordered_list", "items": ["a"]}, {"kind": "code", "text": "```\nx"}]},
         {"title": "B", "blocks": []},
     ]})
-    assert [s.title for s in parse(serialize_document(document)).sections] == ["A", "B"]
+    assert [s.title for s in parse(serialize(document)).sections] == ["A", "B"]
 
 
 def test_an_empty_list_does_not_take_the_code_after_it():
     document = parse(_FRONTMATTER + "- a\n\n* \n\n    code\n")
-    reparsed = parse(serialize_document(document))
+    reparsed = parse(serialize(document))
     assert [(b.kind, _texts(b), b.text) for b in reparsed.sections[0].blocks] == [
         ("unordered_list", ["a"], ""), ("unordered_list", [""], ""), ("code", [], "    code")
     ]
@@ -1426,7 +1426,7 @@ def test_an_items_later_content_round_trips(body):
     """A `#` line in it is written in far enough not to read as a heading;
     a fence left open in it ends with the item and is not closed."""
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 def test_a_table_cell_opening_like_a_fence_is_text():
@@ -1441,7 +1441,7 @@ def test_frontmatter_with_cr_line_endings_is_frontmatter():
 
 def test_a_quote_round_trips_a_character_that_is_not_a_line_ending():
     document = parse(_FRONTMATTER + "> One\x0ctwo.\n> Three.\n")
-    assert serialize_document(document).endswith("> One\x0ctwo.\n> Three.\n")
+    assert serialize(document).endswith("> One\x0ctwo.\n> Three.\n")
 
 
 @pytest.mark.parametrize(
@@ -1468,7 +1468,7 @@ def test_a_signature_block_heading_is_an_ordinary_section(hashes):
     assert [d.message for d in result.diagnostics if d.rule == "ref-broken"] == [
         "Broken section reference: 'nowhere'."
     ]
-    serialized = serialize_document(document)
+    serialized = serialize(document)
     assert "Signed by the parties." in serialized
     assert parse(serialized) == document
 
@@ -1481,7 +1481,7 @@ def test_a_second_signature_block_identifier_is_a_duplicate():
 def test_setext_heading_round_trips_as_an_atx_heading():
     """Its generated identifier is not written: it stays generated."""
     source = _BARE + "Scope\n=====\n\nText.\n"
-    assert "\n# Scope\n" in serialize_document(parse(source))
+    assert "\n# Scope\n" in serialize(parse(source))
 
 
 def test_fenced_code_is_one_literal_block():
@@ -1493,7 +1493,7 @@ def test_fenced_code_is_one_literal_block():
     assert _outline(source) == [("Terms", 1, "terms"), ("Next", 1, "next")]
     assert [(b.kind, b.text) for b in document.sections[0].blocks] == [("code", fence)]
     assert validate(document).diagnostics == []
-    assert fence in serialize_document(document)
+    assert fence in serialize(document)
 
 
 @pytest.mark.parametrize(
@@ -1563,7 +1563,7 @@ def test_tab_indented_backticks_neither_open_nor_close_a_fence():
 
 def test_indented_fence_round_trips_unchanged():
     fence = "  ```\n  code\n  ```"
-    assert fence in serialize_document(parse(_FRONTMATTER + "Para.\n\n" + fence + "\n"))
+    assert fence in serialize(parse(_FRONTMATTER + "Para.\n\n" + fence + "\n"))
 
 
 def test_paragraph_directly_above_dashes_is_a_setext_heading():
@@ -1586,7 +1586,7 @@ def test_fence_in_a_list_item_is_literal_and_round_trips():
     body = "- Example:\n  ~~~\n  {{ref: nope}}\n\n  {#zz}\n  ~~~\n"
     document = parse(_FRONTMATTER + body)
     assert validate(document).diagnostics == []
-    assert body.strip() in serialize_document(document)
+    assert body.strip() in serialize(document)
 
 
 def test_blank_line_ends_the_lazy_context_even_inside_a_list_fence():
@@ -1637,7 +1637,7 @@ def test_item_text_after_its_closed_fence_is_checked():
     document = parse(_FRONTMATTER + "- ```\n  code\n  ```\n  more {{ref: nowhere}}\n")
     assert _texts(document.sections[0].blocks[0]) == ["```\ncode\n```\nmore {{ref: nowhere}}"]
     assert "ref-broken" in validate(document).rules("error")
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 def test_unclosed_fence_in_an_item_ends_at_the_next_item():
@@ -1673,7 +1673,7 @@ def test_code_block_text_after_its_closing_fence_is_checked():
 def test_serializer_closes_an_unclosed_fence():
     document = parse(_FRONTMATTER + "Text.\n\n# Next {#next}\n")
     document.sections[0].blocks.append(Block(kind="code", text="```\nx"))
-    reparsed = parse(serialize_document(document))
+    reparsed = parse(serialize(document))
     assert [s.identifier for s in reparsed.sections] == ["terms", "next"]
 
 
@@ -1681,7 +1681,7 @@ def test_code_in_a_list_item_keeps_trailing_spaces():
     source = _FRONTMATTER + "- ```\n  keep  \n  ```\n"
     item = parse(source).sections[0].blocks[0].items[0]
     assert [(block.kind, block.text) for block in item.blocks] == [("code", "```\nkeep  \n```")]
-    assert parse(serialize_document(parse(source))).sections[0].blocks[0].items[0] == item
+    assert parse(serialize(parse(source))).sections[0].blocks[0].items[0] == item
 
 
 @pytest.mark.parametrize(
@@ -1699,7 +1699,7 @@ def test_backticks_in_directive_values_open_nothing(text, targets):
 @pytest.mark.parametrize("paragraph", ["    ~~~\n    x", "    # not a heading"])
 def test_paragraph_that_would_open_a_block_stays_indented(paragraph):
     source = _FRONTMATTER + paragraph + "\n\n# Next {#next}\n\nBody.\n"
-    reparsed = parse(serialize_document(parse(source)))
+    reparsed = parse(serialize(parse(source)))
     assert reparsed.sections == parse(source).sections
 
 
@@ -1716,7 +1716,7 @@ def test_a_fence_left_open_in_a_list_item_ends_with_its_list():
         Block(kind="unordered_list", items=["x\n```\ncode"]),
         Block(kind="unordered_list", items=["y"]),
     ]
-    blocks = parse(serialize_document(document)).sections[0].blocks
+    blocks = parse(serialize(document)).sections[0].blocks
     assert [_texts(b) for b in blocks[1:]] == [["x\n```\ncode"], ["y"]]
 
 
@@ -1746,7 +1746,7 @@ def test_only_some_list_items_interrupt_a_paragraph(second_line, kinds, headings
 
 def _blocks(body: str) -> list[tuple[str, str | list[str]]]:
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
     return [(b.kind, _texts(b) if b.kind.endswith("list") else b.text) for b in document.sections[0].blocks]
 
 
@@ -1828,7 +1828,7 @@ def _table(body: str) -> Block:
 
 def _round_trips(body: str) -> None:
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 def test_an_escaped_pipe_is_cell_text_and_alignment_is_kept():
@@ -1837,7 +1837,7 @@ def test_an_escaped_pipe_is_cell_text_and_alignment_is_kept():
     assert block.headers == ["a | b", "c", "d", "e"]
     assert block.align == ["left", "right", "center", ""]
     assert block.rows == [["1", "2", "3", "4"]]
-    assert "| a \\| b | c | d | e |\n| :--- | ---: | :---: | --- |" in serialize_document(
+    assert "| a \\| b | c | d | e |\n| :--- | ---: | :---: | --- |" in serialize(
         parse(_FRONTMATTER + body)
     )
     _round_trips(body)
@@ -1908,7 +1908,7 @@ def test_table_cells_are_positional_in_the_model():
 def test_the_serializer_escapes_pipes_in_model_built_cells():
     def written(block: Block) -> list[str]:
         document = document_from_dict({"sections": [{"title": "A", "blocks": [block]}]})
-        return serialize_document(document).split("# A\n\n")[1].splitlines()
+        return serialize(document).split("# A\n\n")[1].splitlines()
 
     assert written({"kind": "table", "headers": ["a|b"], "rows": [["c|d"]]}) == [
         "| a\\|b |", "| --- |", "| c\\|d |"
@@ -1921,10 +1921,10 @@ def test_the_serializer_escapes_pipes_in_model_built_cells():
     assert written({"kind": "table", "headers": [], "rows": [[]]}) == ["|  |", "| --- |", "|  |"]
     block = {"kind": "table", "headers": ["a\\|b", "c\\\\|"], "rows": [["\\", "|"]]}
     document = document_from_dict({"sections": [{"title": "A", "blocks": [block]}]})
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
     # Nothing to take a width from: one empty column, still a table.
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "table", "headers": [], "rows": [[]]}]}]})
-    assert parse(serialize_document(document)).sections[0].blocks[0].kind == "table"
+    assert parse(serialize(document)).sections[0].blocks[0].kind == "table"
 
 
 def test_default_headers_widen_to_the_widest_row():
@@ -1951,7 +1951,7 @@ def _html(body: str, *, bare: bool = False) -> tuple[list[str], list[tuple[str, 
     """Section titles, and the (kind, text) of every block, preamble first."""
     source = (_BARE if bare else _FRONTMATTER) + body
     document = parse(source)
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
     blocks = [(b.kind, b.text) for _section, _index, b in document.iter_blocks()]
     return [s.title for s in document.sections], blocks
 
@@ -2037,7 +2037,7 @@ def test_an_html_block_in_the_model_keeps_its_indentation():
         {"sections": [{"title": "A", "blocks": [{"kind": "html", "text": "\n\n   <div>\n  x\n</div>  \n\n"}]}]}
     )
     assert document.sections[0].blocks[0].text == "   <div>\n  x\n</div>"
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 @pytest.mark.parametrize("prefix", ["<div> see", "# see", "```"])
@@ -2050,7 +2050,7 @@ def test_a_model_built_reference_that_would_open_a_block_is_escaped(prefix):
             {"kind": "paragraph", "text": f"{prefix} text"},
         ]}]}
     )
-    reparsed = parse(serialize_document(document)).sections[0].blocks
+    reparsed = parse(serialize(document)).sections[0].blocks
     assert [(b.kind, b.prefix or b.text) for b in reparsed] == [("ref", f"\\{prefix} "), ("paragraph", f"\\{prefix} text")]
 
 
@@ -2059,7 +2059,7 @@ def test_a_model_built_reference_that_would_open_a_block_is_escaped(prefix):
 
 def _code_blocks(body: str) -> list[tuple[str, str]]:
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
     return [(b.kind, b.text) for b in document.sections[0].blocks]
 
 
@@ -2103,7 +2103,7 @@ def test_a_heading_indented_up_to_three_spaces_interrupts_a_paragraph():
 def test_a_document_can_open_with_indented_code():
     document = parse("    code\n\n# A\n")
     assert [(b.kind, b.text) for b in document.preamble] == [("code", "    code")]
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 def test_indented_code_after_a_list_is_written_as_it_is():
@@ -2113,7 +2113,7 @@ def test_indented_code_after_a_list_is_written_as_it_is():
         {"kind": "unordered_list", "items": ["one"]},
         {"kind": "code", "text": "    x = `y`\n\n      z"},
     ]}]})
-    written = serialize_document(document)
+    written = serialize(document)
     assert "-    one\n\n    x = `y`\n\n      z" in written
     assert parse(written) == document
 
@@ -2135,7 +2135,7 @@ def test_an_indented_line_after_a_list_round_trips_whatever_it_begins_with(opene
     closer = f"\n    {opener}" if opener in ("```", "~~~") else ""
     body = f"- a\n\n    b\n\n    {opener}{closer}\n\nd\n\n    code\n"
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
     last = {
         "# foo": ("heading", "foo"), "<div>": ("html", "  <div>"), "```": ("code", "  ```\n  ```"),
         "~~~": ("code", "  ~~~\n  ~~~"), "<!-- c -->": ("html", "  <!-- c -->"),
@@ -2175,7 +2175,7 @@ def test_code_directly_after_a_list_is_written_so_it_stays_code():
     item's; only code with no paragraph between it and the list needs
     fencing to stay code rather than become the item's own text."""
     document = parse(_FRONTMATTER + "- a\n\n<a\nhref='x'>\n\n    code {{ref: nope}}\n")
-    reparsed = parse(serialize_document(document))
+    reparsed = parse(serialize(document))
     assert [(b.kind, b.text) for b in reparsed.sections[0].blocks] == [
         ("unordered_list", ""), ("paragraph", "<a\nhref='x'>"), ("code", "    code {{ref: nope}}")
     ]
@@ -2183,12 +2183,12 @@ def test_code_directly_after_a_list_is_written_so_it_stays_code():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "code", "text": "    x"},
     ]}]})
-    blocks = parse(serialize_document(document)).sections[0].blocks
+    blocks = parse(serialize(document)).sections[0].blocks
     assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("code", "    x")]
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "# foo"}, {"kind": "code", "text": "    x"},
     ]}]})
-    blocks = parse(serialize_document(document)).sections[0].blocks
+    blocks = parse(serialize(document)).sections[0].blocks
     assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("paragraph", "\\# foo"), ("code", "    x")]
 
 
@@ -2197,7 +2197,7 @@ def test_text_after_a_list_that_would_open_a_block_is_escaped():
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "paragraph", "text": "> q"},
         {"kind": "paragraph", "text": "# foo"},
     ]}]})
-    blocks = parse(serialize_document(document)).sections[0].blocks
+    blocks = parse(serialize(document)).sections[0].blocks
     assert (blocks[-1].kind, blocks[-1].text) == ("paragraph", "\\# foo")
 
 
@@ -2233,7 +2233,7 @@ def test_a_pipe_paragraph_does_not_end_the_list_item(first):
     together with the heading-looking line after it."""
     body = f"- a\n\n    {first}\n\n    # foo\n"
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
     assert [_shape(b) for b in document.sections[0].blocks] == [("unordered_list", [["a", first, ("heading", "foo")]])]
     assert "ref-broken" not in validate(document).rules()
 
@@ -2275,7 +2275,7 @@ _U, _O = "unordered_list", "ordered_list"
 def test_a_nested_item_is_in_the_item_it_is_nested_in(body, shape):
     assert _shape(_list(body))[1] == shape
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 @pytest.mark.parametrize(
@@ -2293,7 +2293,7 @@ def test_a_nested_item_is_in_the_item_it_is_nested_in(body, shape):
 )
 def test_a_nested_list_is_written_as_it_was(body):
     document = parse(_FRONTMATTER + body)
-    written = serialize_document(document)
+    written = serialize(document)
     assert written.endswith("{#terms}\n\n" + body)
     assert parse(written) == document
 
@@ -2326,7 +2326,7 @@ def test_code_after_a_nested_list_stays_code():
     # indentation, which puts the items nested in it past it too.
     document = parse(_FRONTMATTER + "- a\n  - b\n\n<!-- -->\n\n    code\n")
     del document.sections[0].blocks[1]  # the comment: the code now follows the list
-    written = serialize_document(document)
+    written = serialize(document)
     assert "-    a\n     - b\n\n    code" in written
     assert parse(written) == document
 
@@ -2338,7 +2338,7 @@ def test_an_item_written_as_a_string_is_read_as_its_content():
     ]}]})
     [block] = document.sections[0].blocks
     assert _shape(block)[1] == [["a", (_U, [["b"]]), "more"], [], ["c"]]
-    assert serialize_document(document).endswith("# A\n\n- a\n  - b\n\n  more\n-\n- c\n")
+    assert serialize(document).endswith("# A\n\n- a\n  - b\n\n  more\n-\n- c\n")
     # A block built in code may hold them too.
     assert _texts(Block(kind=_U, items=["x", "y"])) == ["x", "y"]
 
@@ -2380,7 +2380,7 @@ def test_a_list_indented_into_an_earlier_items_content_is_the_items():
 def test_a_marker_short_of_the_items_content_but_four_columns_in_is_lazy_text(body, shape):
     block = _list(body)
     assert _shape(block)[1] == shape
-    written = serialize_document(parse(_FRONTMATTER + body))
+    written = serialize(parse(_FRONTMATTER + body))
     assert parse(written).sections[0].blocks == [block]
 
 
@@ -2409,7 +2409,7 @@ def test_a_line_short_of_an_items_content_ends_it_after_anything_but_a_paragraph
 def test_leaving_signatures_out_survives_a_round_trip(value):
     document = parse(f"---\ntitle: T\ninclude_signatures: {value}\n---\n\n# A\n\nx\n")
     assert document.metadata.include_signatures is False
-    written = serialize_document(document)
+    written = serialize(document)
     assert "include_signatures: false" in written
     assert parse(written).metadata.include_signatures is False
     assert document_from_dict(document_to_dict(document)).metadata.include_signatures is False
@@ -2417,12 +2417,12 @@ def test_leaving_signatures_out_survives_a_round_trip(value):
 
 def test_the_default_include_signatures_is_not_written():
     document = parse("---\ntitle: T\ninclude_signatures: true\n---\n\n# A\n\nx\n")
-    assert "include_signatures" not in serialize_document(document)
+    assert "include_signatures" not in serialize(document)
     # A document without frontmatter stays without it.
     bare = parse("# A\n\nx\n")
-    assert serialize_document(bare) == "# A\n\nx\n"
+    assert serialize(bare) == "# A\n\nx\n"
     bare.metadata.include_signatures = False
-    assert parse(serialize_document(bare)).metadata.include_signatures is False
+    assert parse(serialize(bare)).metadata.include_signatures is False
 
 
 # ── Empty list items (#46) ────────────────────────────────────────
@@ -2455,7 +2455,7 @@ def test_an_empty_item_keeps_its_place(body, shape):
     document = parse(_FRONTMATTER + body)
     [block] = document.sections[0].blocks
     assert _shape(block)[1] == shape
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 @pytest.mark.parametrize(
@@ -2472,7 +2472,7 @@ def test_an_empty_item_keeps_its_place(body, shape):
 def test_where_a_bare_marker_starts_a_list(body, kinds):
     document = parse(_FRONTMATTER + body)
     assert [block.kind for section in document.sections for block in section.blocks] == kinds
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 def test_an_empty_item_with_items_nested_after_it_does_not_take_code():
@@ -2480,7 +2480,7 @@ def test_an_empty_item_with_items_nested_after_it_does_not_take_code():
     # the code out of it, so the code is written fenced.
     document = parse(_FRONTMATTER + "1.\n   -\n\n<!-- -->\n\n    code\n")
     del document.sections[0].blocks[1]
-    reparsed = parse(serialize_document(document))
+    reparsed = parse(serialize(document))
     assert [block.kind for block in reparsed.sections[0].blocks] == [_O, "code"]
     assert reparsed.sections[0].blocks[0] == document.sections[0].blocks[0]
 
@@ -2498,7 +2498,7 @@ def test_conditions_pass_an_empty_item_by():
 @pytest.mark.parametrize(("text", "written"), [("-", "\\-"), ("1.", "1\\."), ("2) x", "2\\) x"), ("+ y", "\\+ y")])
 def test_a_model_built_paragraph_that_reads_as_a_list_item_is_escaped(text, written):
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": text}]}]})
-    output = serialize_document(document)
+    output = serialize(document)
     assert output.endswith("# A\n\n" + written + "\n")
     assert [block.kind for block in parse(output).sections[0].blocks] == ["paragraph"]
 
@@ -2512,7 +2512,7 @@ def test_a_model_built_paragraph_that_reads_as_a_list_item_is_escaped(text, writ
 )
 def test_a_model_built_paragraph_that_reads_as_another_block_is_escaped(text, written):
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": text}]}]})
-    output = serialize_document(document)
+    output = serialize(document)
     assert output.endswith("# A\n\n" + written + "\n")
     assert [block.kind for block in parse(output).sections[0].blocks] == ["paragraph"]
 
@@ -2521,7 +2521,7 @@ def _lists(*blocks: tuple[str, list[str]]) -> str:
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": kind, "items": items} for kind, items in blocks
     ]}]})
-    output = serialize_document(document)
+    output = serialize(document)
     assert parse(output) == document
     return output.split("# A\n\n", 1)[1]
 
@@ -2550,7 +2550,7 @@ def test_adjacent_lists_whose_items_rule_out_two_bullets_still_differ():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": _U, "items": ["--", "**\n```\ncode"]}, {"kind": _U, "items": ["--", "**"]},
     ]}]})
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 # ── A fence left open at the end (#67) ────────────────────────────
@@ -2563,7 +2563,7 @@ def test_adjacent_lists_whose_items_rule_out_two_bullets_still_differ():
 @pytest.mark.parametrize("before", ["# A\n\n", ""])  # in a section, or in the preamble
 def test_a_fence_left_open_at_the_end_is_written_as_it_is(body, before):
     document = parse("---\ntitle: T\nlanguage: en\n---\n\n" + before + body)
-    written = serialize_document(document)
+    written = serialize(document)
     assert written.endswith("\n\n" + body)
     assert parse(written) == document
 
@@ -2571,7 +2571,7 @@ def test_a_fence_left_open_at_the_end_is_written_as_it_is(body, before):
 def test_a_fence_left_open_after_a_list_at_the_end_stays_open():
     # The item's fence ends with the item; the last one runs to the end.
     document = parse(_FRONTMATTER + "- a\n\n  ```\n code\n ```\n")
-    written = serialize_document(document)
+    written = serialize(document)
     assert written.endswith("\n ```\n")
     assert parse(written) == document
 
@@ -2581,7 +2581,7 @@ def test_a_fence_left_open_before_a_heading_is_closed():
     document = document_from_dict({"sections": [
         {"title": "A", "blocks": [{"kind": "code", "text": "```\nx"}]}, {"title": "B"},
     ]})
-    written = serialize_document(document)
+    written = serialize(document)
     assert "```\nx\n```\n\n# B" in written
     assert [section.title for section in parse(written).sections] == ["A", "B"]
 
@@ -2602,12 +2602,12 @@ def test_a_nested_list_that_changes_its_marker_is_another_list(body, shape):
     document = parse(_FRONTMATTER + body)
     [block] = document.sections[0].blocks
     assert _shape(block)[1] == shape
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 def test_the_second_nested_list_is_numbered_from_one():
     document = parse(_FRONTMATTER + "- one\n  1. a\n  2. b\n  1) c\n  2) d\n")
-    assert serialize_document(document).endswith("- one\n  1. a\n  2. b\n  1) c\n  2) d\n")
+    assert serialize(document).endswith("- one\n  1. a\n  2. b\n  1) c\n  2) d\n")
 
 
 def test_an_item_that_would_make_a_thematic_break_starts_on_the_next_line():
@@ -2615,7 +2615,7 @@ def test_an_item_that_would_make_a_thematic_break_starts_on_the_next_line():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": _U, "items": ["a"]}, {"kind": _U, "items": ["--", "**"]}, {"kind": _U, "items": ["--", "**"]},
     ]}]})
-    written = serialize_document(document)
+    written = serialize(document)
     assert parse(written) == document
     assert "\n-\n  --\n" in written  # the third list's: the second took "+"
 
@@ -2638,7 +2638,7 @@ def test_an_item_that_would_make_a_thematic_break_starts_on_the_next_line():
 def test_an_items_content_is_blocks(body, shape):
     document = parse(_FRONTMATTER + body)
     assert _shape(document.sections[0].blocks[0])[1] == shape
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 def test_directives_in_an_items_raw_html_are_not_read():
@@ -2663,7 +2663,7 @@ def test_a_nested_item_after_a_later_paragraph_is_in_its_item():
 def test_a_chain_of_items_each_opening_with_the_next_is_written_quickly():
     # Each nested list's first lines are read once, not once per level above.
     document = parse(_FRONTMATTER + "- " * 40 + "a\n")
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 def test_lists_nested_past_the_limit_are_read_as_text():
@@ -2750,7 +2750,7 @@ def test_a_quote_built_with_a_tab_is_written_as_its_content_reads():
     document = parse(_FRONTMATTER + "Text.\n")
     document.sections[0].blocks = [Block(kind="quote", text="\t{{ref: nowhere}}")]
     assert "ref-broken" not in validate(document).rules()  # four columns: code
-    written = parse(serialize_document(document))
+    written = parse(serialize(document))
     assert "ref-broken" not in validate(written).rules()
 
 
@@ -2789,7 +2789,7 @@ def test_quotes_nested_past_the_limit_are_read_as_text():
     assert "ref-broken" in _validate(f"{deep}     {{{{ref: nowhere}}}}\n").rules()  # its text, lexed
     assert "ref-broken" not in _validate(f"{'>' * 3}     {{{{ref: nowhere}}}}\n").rules()
     document = parse(_FRONTMATTER + ">" * 10000 + " a\n")
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
     _validate(">" * 10000 + " a\n")
 
 
@@ -2868,7 +2868,7 @@ def test_a_no_break_space_after_a_fence_does_not_close_it():
 def test_a_no_break_space_ending_a_setext_headings_line_is_kept():
     document = parse(f"---\ntitle: T\n---\n\nTitle{_NBSP}\nMore\n===\n")
     assert document.sections[0].title == f"Title{_NBSP} More"
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
 
 
 # ── Raw HTML in a list item ends where CommonMark ends it ─────────
@@ -3107,7 +3107,7 @@ def _tree(block: Block):
 
 def _trees(body: str) -> list:
     document = parse(_FRONTMATTER + body)
-    assert parse(serialize_document(document)) == document
+    assert parse(serialize(document)) == document
     return [_tree(block) for block in document.sections[0].blocks]
 
 
@@ -3256,7 +3256,7 @@ def test_a_model_built_heading_block_is_written_as_one_in_an_item(heading, writt
         {"kind": "unordered_list", "items": [{"blocks": [{"kind": "paragraph", "text": "a"}]}]},
     ]}]})
     list_items(document.sections[0].blocks[0])[0].blocks.append(heading)
-    source = serialize_document(document)
+    source = serialize(document)
     # Four columns in, where a heading after a blank line stays the item's.
     assert f"-   a\n    {written}\n" in source
     [reread] = list_items(parse(source).sections[0].blocks[0])[0].blocks[1:]
@@ -3266,7 +3266,7 @@ def test_a_model_built_heading_block_is_written_as_one_in_an_item(heading, writt
 def test_a_model_built_heading_outside_an_item_is_written_as_text():
     """At the margin it would be a section's heading."""
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "heading", "text": "T", "level": 3}]}]})
-    source = serialize_document(document)
+    source = serialize(document)
     assert "\n\\### T\n" in source
     assert [(b.kind, b.text) for b in parse(source).sections[0].blocks] == [("paragraph", "\\### T")]
 
@@ -3276,7 +3276,7 @@ def test_a_paragraph_in_an_item_that_reads_as_a_heading_is_escaped(text):
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "unordered_list", "items": [
         {"blocks": [{"kind": "paragraph", "text": "a"}, {"kind": "paragraph", "text": text}]},
     ]}]}]})
-    [item] = list_items(parse(serialize_document(document)).sections[0].blocks[0])
+    [item] = list_items(parse(serialize(document)).sections[0].blocks[0])
     assert [(b.kind, b.text) for b in item.blocks] == [("paragraph", "a"), ("paragraph", "\\" + text)]
 
 
@@ -3302,7 +3302,7 @@ def _with_sources(*rows: str, preamble: tuple[str, ...] = ()) -> str:
         "preamble": [{"kind": "source", "text": row} for row in preamble],
         "sections": [{"title": "A", "blocks": [{"kind": "source", "text": row} for row in rows]}],
     })
-    return serialize_document(document)
+    return serialize(document)
 
 
 def test_source_blocks_are_written_as_they_stand():
@@ -3337,21 +3337,21 @@ def test_a_fence_a_source_leaves_open_is_closed_unless_it_ends_the_document():
     document = document_from_dict({"sections": [
         {"title": "A", "blocks": [{"kind": "source", "text": "~~~\ncode"}]}, {"title": "B"},
     ]})
-    assert [s.title for s in parse(serialize_document(document)).sections] == ["A", "B"]
+    assert [s.title for s in parse(serialize(document)).sections] == ["A", "B"]
 
 
 def test_a_source_after_a_list_is_not_read_into_it():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a"]}, {"kind": "source", "text": "    code"},
     ]}]})
-    blocks = parse(serialize_document(document)).sections[0].blocks
+    blocks = parse(serialize(document)).sections[0].blocks
     assert [(b.kind, b.text) for b in blocks] == [("unordered_list", ""), ("code", "    code")]
 
 
 def test_a_document_without_frontmatter_opening_with_a_rule_in_a_source():
     document = document_from_dict({"preamble": [{"kind": "source", "text": "---\nText."}]})
     document.metadata.frontmatter_absent = True
-    source = serialize_document(document)
+    source = serialize(document)
     assert source == "***\nText.\n"
     reread = parse(source)
     assert reread.metadata.frontmatter_absent and [b.kind for b in reread.preamble] == ["rule", "paragraph"]
@@ -3363,14 +3363,14 @@ def test_a_source_block_is_not_validated():
         {"kind": "source", "text": "See {{ref: nope}}."},
     ]}]})
     assert "ref-broken" not in validate(document).rules()
-    assert "ref-broken" in validate(parse(serialize_document(document))).rules()
+    assert "ref-broken" in validate(parse(serialize(document))).rules()
 
 
 def test_a_source_block_in_a_list_item_is_its_content():
     document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "unordered_list", "items": [
         {"blocks": [{"kind": "paragraph", "text": "a"}, {"kind": "source", "text": "* x\n* y"}]},
     ]}]}]})
-    source = serialize_document(document)
+    source = serialize(document)
     assert "- a\n\n  * x\n  * y\n" in source
     [item] = list_items(parse(source).sections[0].blocks[0])
     assert [(b.kind, len(b.items)) for b in item.blocks] == [("paragraph", 0), ("unordered_list", 2)]
@@ -3406,7 +3406,7 @@ def test_a_paragraph_keeps_its_lines(body, text):
     "[a]: https://example.com/a\n[b]: https://example.com/b\n\nSee [a] and [b].\n",
 ])
 def test_a_hard_line_break_is_written_back(body):
-    assert serialize_document(parse(_FRONTMATTER + body)).endswith("\n" + body)
+    assert serialize(parse(_FRONTMATTER + body)).endswith("\n" + body)
 
 
 def test_an_items_and_a_quotes_paragraphs_keep_their_lines():
@@ -3438,7 +3438,7 @@ def test_a_definition_over_lines_is_lifted_with_its_lines():
     body = '"Term" {{def: term}} means\nthe thing.\n'
     [block] = parse(_FRONTMATTER + body).sections[0].blocks
     assert (block.kind, block.term, block.text) == ("definition", "Term", "means\nthe thing.")
-    assert serialize_document(parse(_FRONTMATTER + body)).endswith("\n" + body)
+    assert serialize(parse(_FRONTMATTER + body)).endswith("\n" + body)
 
 
 def test_a_marker_ends_a_paragraph_over_lines_only_at_its_end():
@@ -3495,7 +3495,7 @@ def test_a_models_paragraph_is_written_as_its_lines(text, read, in_item):
     paragraph = {"kind": "paragraph", "text": text}
     blocks = [{"kind": "unordered_list", "items": [{"blocks": [paragraph]}]}] if in_item else [paragraph]
     document = document_from_dict({"sections": [{"title": "A", "blocks": blocks}]})
-    [block] = parse(serialize_document(document)).sections[0].blocks
+    [block] = parse(serialize(document)).sections[0].blocks
     if in_item:
         [block] = list_items(block)[0].blocks
     assert (block.kind, block.text) == ("paragraph", read)
@@ -3538,7 +3538,7 @@ def test_an_entry_not_yet_complete_is_written_back(frontmatter, rule):
     yet filled in keeps its Error, rather than vanishing and leaving others
     in its place (attach-undeclared, sides-absent)."""
     document = parse(f"---\ntitle: T\n{frontmatter}---\n\n# A\n\nText.\n")
-    again = parse(serialize_document(document))
+    again = parse(serialize(document))
     assert again.metadata == document.metadata
     assert rule in validate(document).rules()
     assert validate(again).rules() == validate(document).rules()
@@ -3555,7 +3555,7 @@ def test_a_partys_custom_fields_are_its_other_keys():
     document = parse(source)
     party = document.metadata.sides[0].parties[0]
     assert [(f.label, f.value) for f in party.custom_fields] == [("tax_id", "CZ123"), ("vat", ""), ("count", "0")]
-    written = serialize_document(document)
+    written = serialize(document)
     assert "tax_id: CZ123\n" in written
     assert parse(written).metadata == document.metadata
     # A model's own, in the dict form it holds them in.
@@ -3573,11 +3573,11 @@ def test_custom_fields_no_keys_can_hold_are_written_as_a_list(fields):
     ``custom_fields`` list holds them, in order, and its fields stay."""
     document = parse(f"---\ntitle: T\nsides:\n{_SIDE_B}---\n\n# A\n\nText.\n")
     document.metadata.sides[0].parties[0].custom_fields = fields
-    written = serialize_document(document)
+    written = serialize(document)
     again = parse(written).metadata.sides[0].parties[0]
     assert (again.name, again.type) == ("y", "legal_entity")
     assert [(f.label, f.value) for f in again.custom_fields] == [(f.label.strip(), f.value) for f in fields]
-    assert serialize_document(parse(written)) == written
+    assert serialize(parse(written)) == written
 
 
 def test_a_placeholder_in_a_custom_fields_name_is_reported():
@@ -3595,9 +3595,9 @@ def test_a_custom_field_row_not_yet_labelled_is_written_back():
     """An editor's new row (§3.4): kept, as the key ``''``, until labelled."""
     document = parse(f"---\ntitle: T\nsides:\n{_SIDE_B}---\n\n# A\n\nText.\n")
     document.metadata.sides[0].parties[0].custom_fields = [CustomField(), CustomField("vat", "")]
-    written = serialize_document(document)
+    written = serialize(document)
     assert parse(written).metadata == document.metadata
-    assert serialize_document(parse(written)) == written
+    assert serialize(parse(written)) == written
 
 
 @pytest.mark.parametrize("key", ["' name'", "'type '", "' custom_fields'"])
@@ -3605,7 +3605,7 @@ def test_a_key_naming_a_party_field_with_spaces_is_no_custom_field(key):
     source = f"---\ntitle: T\nsides:\n  - name: a\n    parties:\n      - name: x\n        {key}: z\n{_SIDE_B}---\n\n# A\n\nText.\n"
     document = parse(source)
     assert document.metadata.sides[0].parties[0].custom_fields == []
-    assert parse(serialize_document(document)).metadata == document.metadata
+    assert parse(serialize(document)).metadata == document.metadata
 
 
 def test_a_custom_field_in_the_list_form_is_reported_on_its_line():
@@ -3726,9 +3726,9 @@ def test_a_fence_left_open_in_a_list_item_keeps_its_blank_lines_whatever_the_sib
 )
 def test_a_fence_left_open_in_a_nested_item_survives_the_round_trip(source):
     document = parse("---\ntitle: T\n---\n\n" + source)
-    again = parse(serialize_document(document))
+    again = parse(serialize(document))
     assert again == document
-    assert serialize_document(again) == serialize_document(document)
+    assert serialize(again) == serialize(document)
 
 
 def test_an_item_nested_after_the_first_line_text_of_an_item_that_only_nests_ends_a_paragraph_no_more_than_before():

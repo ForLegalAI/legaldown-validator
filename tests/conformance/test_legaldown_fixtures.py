@@ -249,14 +249,14 @@ def test_a_fixture_keeps_its_diagnostics_when_written_back(path: Path):
     holds, an entry not yet complete included (#83)."""
     from collections import Counter
 
-    from legaldown import serialize_document
+    from legaldown import serialize
     from legaldown.parser import FrontmatterError
 
     try:
         document = parse(_read(path), filename=path.name)
     except FrontmatterError:
         pytest.skip("unreadable frontmatter: nothing to write back")
-    again = parse(serialize_document(document), filename=path.name)
+    again = parse(serialize(document), filename=path.name)
     # How the source writes its YAML is not the model's (block style when
     # written back).
     assert replace(again.metadata, not_line_editable=[]) == replace(document.metadata, not_line_editable=[])

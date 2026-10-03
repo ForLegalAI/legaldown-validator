@@ -6,14 +6,14 @@ or escalate individual checks. Only external dependency: PyYAML.
 
 Quick start::
 
-    from legaldown import load, serialize_document, validate
+    from legaldown import load, serialize, validate
 
     doc = load("contract.lgd")
     result = validate(doc)
     for diagnostic in result.diagnostics:
         print(diagnostic.level, diagnostic.rule, diagnostic.message)
     if result.is_valid:
-        print(serialize_document(doc))
+        print(serialize(doc))  # save(doc) writes it back to the file
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ from .models import (
 
 # Parser & serializer
 from .parser import FrontmatterError, collect_source_directives, load, parse, parse_document
-from .serializer import render_block, render_item, serialize_document
+from .serializer import render_block, render_item, save, serialize, serialize_document
 
 # The LegalDown specification version this implementation targets.
 from .specification import SPEC_VERSION
@@ -125,7 +125,9 @@ __all__ = [
     "parse",
     "parse_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``parse`` or ``load``
     "FrontmatterError",
-    "serialize_document",
+    "save",
+    "serialize",
+    "serialize_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``serialize``
     "validate",
     "validate_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate``
     # Assembly (§15.7, §17.6)

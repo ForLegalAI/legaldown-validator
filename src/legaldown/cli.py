@@ -15,12 +15,9 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
-import stat
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +25,7 @@ import yaml
 
 from . import SPEC_VERSION, __version__
 from .assembly import AssemblyResult, frontmatter_diagnostic
-from .files import within
+from .files import within, write_atomically
 from .parser import FrontmatterError, load
 from .template import AnswersError, Form, Template, load_answers, load_template
 from .validator import validate
@@ -176,31 +173,6 @@ def _write_stdout(text: str, errors: str = "strict") -> None:
         sys.stdout.write(text)
 
 
-def _write_atomically(path: Path, text: str) -> None:
-    """*text* to *path*: all of it, or the file as it was — written beside it and
-    moved into place, since the file may be the answers a person typed. A symbolic
-    link is written through, and the file keeps its permissions (a new one gets
-    those a file made now would have)."""
-    target = path.resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        mode = stat.S_IMODE(target.stat().st_mode)
-    else:
-        mask = os.umask(0)
-        os.umask(mask)
-        mode = 0o666 & ~mask
-    descriptor, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
-            handle.write(text)
-        os.chmod(name, mode)
-        os.replace(name, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(name)
-        raise
-
-
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -296,7 +268,7 @@ def _save_answers(path: Path, answers: dict) -> str | None:
     try:
         text = yaml.safe_dump(answers, sort_keys=False, allow_unicode=True, default_flow_style=False)
         text.encode("utf-8")
-        _write_atomically(path, text)
+        write_atomically(path, text)
     except (OSError, ValueError, RuntimeError, yaml.YAMLError) as exc:  # a UnicodeEncodeError is a ValueError; a link loop a RuntimeError
         return f"cannot write the answers to {path}: {exc}"
     return None

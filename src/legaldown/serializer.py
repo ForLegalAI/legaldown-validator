@@ -5,12 +5,16 @@ The output is deterministic for a given Document input.
 """
 from __future__ import annotations
 
+import os
 import re
+import warnings
+from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .directives import format_value
+from .files import write_atomically
 from .markdown import (
     FENCE_OPEN_RE,
     close_fences,
@@ -555,8 +559,13 @@ class _BlockDumper(yaml.SafeDumper):
 
 # ── Public API ────────────────────────────────────────────────────
 
-def serialize_document(document: Document) -> str:
+def serialize(document: Document) -> str:
     """Serialize a Document object to LegalDown (.legal.md) source text.
+
+    The inverse of ``parse``: what it returns parses back as the document
+    (what the document says, not the source's own details such as line
+    endings or a byte-order mark). The text is LF-terminated and always ends
+    with a line break; ``save`` is the call for a file.
 
     A document parsed without frontmatter (§3.1) is written without it, as
     long as its metadata is still empty; a thematic break opening it is then
@@ -589,6 +598,52 @@ def serialize_document(document: Document) -> str:
     if _ends_open(document.sections[-1].blocks if document.sections else document.preamble):
         return text + "\n"
     return text.rstrip("\n") + "\n"
+
+
+def save(document: Document, path: str | os.PathLike[str] | None = None) -> Path:
+    """Write *document* as LegalDown source to *path*, or, without one, to the
+    file it came from (``Document.path``).
+
+    The call for a document that lives in a file, as ``load`` is for reading
+    it: it writes ``serialize(document)`` as UTF-8 with LF line endings and no
+    byte-order mark, so a file that was read with CRLF line endings or a
+    byte-order mark is written back without them. The write is atomic: the
+    file is either as it was or the new text, never half written, since the
+    text goes to a temporary file beside it and is moved into place. A
+    symbolic link is written through (the link stays one, its target changes);
+    the file keeps its permissions, and a new one gets those a file made now
+    would have. Directories that are missing on the way to *path* are created.
+
+    The document now lives at *path*, as after ``load``: ``Document.path`` is
+    set to its absolute path (symbolic links are not followed), which is where
+    ``validate`` looks for the files it refers to (§7.5, §12.4), and
+    ``Document.filename`` to its name, which diagnostics name. That path is
+    returned.
+
+    Raises ``ValueError`` when both *path* and ``Document.path`` are None (a
+    document parsed from text or built in code has no path; pass one), and
+    ``OSError`` when the file cannot be written; the document's path and
+    filename are then unchanged.
+    """
+    target = document.path if path is None else path
+    if target is None:
+        raise ValueError("a document parsed from text or built in code has no path; pass one")
+    file = Path(target).absolute()
+    write_atomically(file, serialize(document))
+    document.path = file
+    document.filename = file.name
+    return file
+
+
+def serialize_document(document: Document) -> str:
+    """Deprecated since 0.4.0, removed in 0.5.0. Same as ``serialize``."""
+    warnings.warn(
+        "legaldown.serialize_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
+        "use legaldown.serialize()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return serialize(document)
 
 
 
