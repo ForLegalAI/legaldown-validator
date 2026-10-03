@@ -33,9 +33,10 @@ def _ascii_text(value: str) -> tuple[str, bool]:
     return "".join(c for c in text if c.isascii()), lossy
 
 
-def generate_identifier(value: str) -> tuple[str, bool]:
+def generate_identifier(value: str, fallback: str = "section") -> tuple[str, bool]:
     """The identifier §5.3 generates from heading or term text *value*
-    (without its trailing marker), and whether a letter or digit without an
+    (without its trailing marker), or *fallback* when the text yields none,
+    and whether a letter or digit without an
     ASCII form, such as Cyrillic or CJK text, was dropped: the identifier
     then lost information, and an explicit one is recommended.
 
@@ -48,14 +49,21 @@ def generate_identifier(value: str) -> tuple[str, bool]:
     text = re.sub(r"-{2,}", "-", text).strip("-")
     text = text[:64].rstrip("-")
     if not text:
-        return "section", lossy
+        return fallback, lossy
     # The prefix is exempt from the 64-character maximum: no re-truncation.
     return (text if "a" <= text[0] <= "z" else f"section-{text}"), lossy
 
 
-def slugify_identifier(value: str) -> str:
-    """The identifier §5.3 generates from *value* (see generate_identifier)."""
-    return generate_identifier(value)[0]
+def slugify_identifier(value: str, *, fallback: str = "section") -> str:
+    """The identifier §5.3 generates from heading or term text *value*:
+    lower case, ASCII, hyphen-separated, at most 64 characters, and prefixed
+    ``section-`` when it would begin with a digit.
+
+    *fallback* is returned when the text yields no identifier at all (it
+    holds no letter or digit with an ASCII form), which §5.3 names
+    ``section``; pass ``""`` to tell that case from real text.
+    """
+    return generate_identifier(value, fallback)[0]
 
 
 def format_section_number(counters: list[int], level: int) -> str:

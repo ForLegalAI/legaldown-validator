@@ -44,6 +44,8 @@ from .patterns import (
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
     LEGALDOWN_EXTENSIONS,
+    MAX_SECTION_LEVEL,
+    PARTY_TYPES,
     RESERVED_VALUE_TYPES,
     VALID_DOC_TYPES,
     VALID_DURATION_UNITS,
@@ -386,6 +388,12 @@ def _check_blank_codes(blanks: dict[str, Blank], result: _Recorder) -> None:
             )
 
 
+_UNFILLED = "placeholder-unfilled"
+_CONSTRUCT_PRESENT = "template-construct-present"
+#: The rules of the final check (§15.9): the only ones it reports.
+FINAL_CHECK_RULES: frozenset[str] = frozenset({_UNFILLED, _CONSTRUCT_PRESENT})
+
+
 def _check_final(
     placeholders: list[tuple[Directive, Line]],
     chooses: list[tuple[Directive, Line]],
@@ -401,14 +409,14 @@ def _check_final(
     written, and their lines)."""
     for directive, line in placeholders:
         result.error(
-            "placeholder-unfilled",
+            _UNFILLED,
             f"'{directive.source}' is an unfilled blank in a document meant to be final (§15.9).",
             line=line,
         )
 
     def construct(what: str, line: int | None) -> None:
         result.error(
-            "template-construct-present",
+            _CONSTRUCT_PRESENT,
             f"{what} remains in a document meant to be final (§15.9).",
             line=line,
         )
@@ -852,10 +860,11 @@ def _validate(
                 )
                 continue
             seen_party_names.add(party_name)
-            if party.type not in ("legal_entity", "natural_person"):
+            if party.type not in PARTY_TYPES:
+                allowed = " or ".join(map(repr, PARTY_TYPES))
                 result.error(
                     "party-type-invalid",
-                    f"Party '{party_name}' has invalid type '{party.type}'. Must be 'legal_entity' or 'natural_person'.",
+                    f"Party '{party_name}' has invalid type '{party.type}'. Must be {allowed}.",
                     line=where.key(*party_path, "type"),
                 )
             with result.at(where.key(*party_path, "date_of_birth")):
@@ -1008,7 +1017,7 @@ def _validate(
     # headings all start at ## (an attachment or include file, which has no
     # # heading) numbers them 1, 2, … A level that a heading skips counts
     # as 1 (see below), so no two sections get the same number (#38).
-    shallowest = min((min(max(s.level, 1), 5) for s in document.sections), default=1)
+    shallowest = min((min(max(s.level, 1), MAX_SECTION_LEVEL) for s in document.sections), default=1)
     path_stack: list[str] = []
     # The level before the first heading: 0 in a main document, whose first
     # heading must be at level 1 (§4.1). A document without frontmatter may
@@ -1027,13 +1036,13 @@ def _validate(
         # one here would shift every later section's number and drop the last
         # one from rendered output. Numbering clamps into the valid range.
         level = section.level
-        if level < 1 or level > 5:
+        if level < 1 or level > MAX_SECTION_LEVEL:
             result.error(
                 "heading-depth",
                 f"Section '{section.title}' uses unsupported heading level "
-                f"{section.level}. LegalDown supports levels 1-5 (§4.1).", line=where.heading(section_index),
+                f"{section.level}. LegalDown supports levels 1-{MAX_SECTION_LEVEL} (§4.1).", line=where.heading(section_index),
             )
-            level = min(max(level, 1), 5)
+            level = min(max(level, 1), MAX_SECTION_LEVEL)
         if last_level == 0 and level > 1:
             result.error(
                 "heading-skip",

@@ -264,7 +264,8 @@ def check_questions(
 
 #: The first line of a quote that looks like a GitHub-flavoured alert.
 _ALERT_RE = re.compile(r"\[![A-Za-z]+\]")
-_DRAFTING_MARKER = "[!DRAFTING]"
+#: The first line that makes a quote a drafting note, letters in any case (§15.6).
+DRAFTING_MARKER = "[!DRAFTING]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,7 +280,7 @@ class Quote:
     def is_drafting_note(self) -> bool:
         """True if the quote is a drafting note: its first line is exactly
         ``[!DRAFTING]``, letters in any case (§15.6)."""
-        return self.first_line.upper() == _DRAFTING_MARKER
+        return self.first_line.upper() == DRAFTING_MARKER
 
     @property
     def is_unrecognized_alert(self) -> bool:
@@ -385,17 +386,14 @@ def insertion_boundary_problem(
 BRACE_STRAY = "'{{' does not begin a directive and is literal text; write '\\{{' if that is intended (§11.4)."
 
 
-def check_choose(directive: Directive, questions: Any, result: _Recorder) -> None:
-    """Report a ``{{choose:}}`` that does not list exactly the answers of a
-    declared decision question (choose-invalid, §15.5), and any ``{{`` in
-    its phrases, which is literal text (brace-stray)."""
+def _choose_problems(directive: Directive, questions: Any) -> list[str]:
+    """Every way a ``{{choose:}}`` fails to list exactly the answers of a
+    declared decision question (choose-invalid, §15.5), as messages."""
+    problems: list[str] = []
     qid = directive.positional or ""
     qtype = question_type(questions, qid)
     if qtype not in DECISION_QUESTION_TYPES:
-        result.error(
-            "choose-invalid",
-            f"'{directive.source}' must name a declared boolean or choice question (§15.5).",
-        )
+        problems.append(f"'{directive.source}' must name a declared boolean or choice question (§15.5).")
     elif qtype == "boolean" or _choices_problem(questions[qid].get("choices")) is None:
         # Malformed choices are question-invalid; there is nothing to match.
         answers = (
@@ -405,23 +403,38 @@ def check_choose(directive: Directive, questions: Any, result: _Recorder) -> Non
         extra = [param for param in directive.params if param not in answers]
         repeated = [param for param in dict.fromkeys(directive.duplicates) if param in answers]
         if missing:
-            result.error(
-                "choose-invalid",
+            problems.append(
                 f"'{directive.source}' lists no phrase for {', '.join(missing)}: every answer "
-                f"to '{qid}' needs one (§15.5).",
+                f"to '{qid}' needs one (§15.5)."
             )
         if extra:
-            result.error(
-                "choose-invalid",
+            problems.append(
                 f"'{directive.source}' lists {', '.join(extra)}, which "
-                f"{'is not an answer' if len(extra) == 1 else 'are not answers'} to '{qid}' (§15.5).",
+                f"{'is not an answer' if len(extra) == 1 else 'are not answers'} to '{qid}' (§15.5)."
             )
         if repeated:
-            result.error(
-                "choose-invalid",
+            problems.append(
                 f"'{directive.source}' lists {', '.join(repeated)} more than once; each answer "
-                f"has one phrase (§15.5).",
+                f"has one phrase (§15.5)."
             )
+    return problems
+
+
+def choose_problem(directive: Directive, questions: Any) -> str | None:
+    """Why the ``{{choose:}}`` *directive* is not valid for *questions* (the
+    document's ``metadata.questions``): the first choose-invalid message
+    (§15.5) the validator reports for it, or None when it names a declared
+    boolean or choice question and lists exactly its answers."""
+    problems = _choose_problems(directive, questions)
+    return problems[0] if problems else None
+
+
+def check_choose(directive: Directive, questions: Any, result: _Recorder) -> None:
+    """Report a ``{{choose:}}`` that does not list exactly the answers of a
+    declared decision question (choose-invalid, §15.5), and any ``{{`` in
+    its phrases, which is literal text (brace-stray)."""
+    for problem in _choose_problems(directive, questions):
+        result.error("choose-invalid", problem)
     for offset in range(2, len(directive.source) - 1):
         if directive.source.startswith("{{", offset) and not is_escaped(directive.source, offset):
             result.warning("brace-stray", BRACE_STRAY)
