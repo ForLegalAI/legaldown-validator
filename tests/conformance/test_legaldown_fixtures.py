@@ -163,7 +163,7 @@ def _assemble_case_with_a_form(template: Path, answers: Path):
     """The same by way of ``Template`` and ``Form``, without the validator's template rules:
     the form and its result."""
     loaded = yaml.safe_load(_read(answers)) or {}
-    form = Template(_read(template), resolve=_loader(template.parent), check=False).form(loaded)
+    form = Template(_read(template), resolve=_loader(template.parent), _check=False).form(loaded)
     return form, form.assemble()
 
 

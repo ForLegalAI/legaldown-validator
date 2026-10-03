@@ -208,19 +208,23 @@ class Template:
     as often as needed. A template is a snapshot: files that change on disk
     afterwards are not seen — load it again.
 
-    *check* is whether ``problems`` include the validator's template rules
-    (``TEMPLATE_RULES``); ``load_template`` and ``parse_template`` always do.
+    ``Template(text, resolve=None)`` is ``parse_template``: *resolve* reads the
+    include fragments and LegalDown attachment files the template names.
+    ``path`` is the file ``load_template`` read it from, absolute, and ``None``
+    for a template made from its text.
 
     Raises ``FrontmatterError`` when the template's frontmatter cannot be read.
     """
 
-    def __init__(
-        self, text: str, *, resolve: LoadFile | None = None, path: Path | None = None, check: bool = True
-    ) -> None:
-        self.path = path
+    def __init__(self, text: str, *, resolve: LoadFile | None = None, _check: bool = True) -> None:
+        # Private: ``_check=False`` leaves the validator's template rules
+        # (``TEMPLATE_RULES``) out of ``problems``, as the deprecated ``assemble``
+        # does, for the tests and the conformance harness that check assembly
+        # on its own.
+        self.path: Path | None = None
         self._resolve = _snapshot(resolve)
         self._t = _read(text, self._resolve)
-        self._check = check
+        self._check = _check
 
     @cached_property
     def questions(self) -> tuple[Question, ...]:
@@ -460,4 +464,6 @@ def load_template(path: str | os.PathLike[str]) -> Template:
     read as written — byte-order mark and line endings included — since assembly
     keeps every byte it does not edit (§15.7.2)."""
     file = Path(path).absolute()
-    return Template(file.read_bytes().decode("utf-8"), resolve=file_loader(file.parent), path=file)
+    template = Template(file.read_bytes().decode("utf-8"), resolve=file_loader(file.parent))
+    template.path = file
+    return template

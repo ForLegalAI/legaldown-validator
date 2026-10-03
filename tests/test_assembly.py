@@ -48,7 +48,7 @@ def _form_assemble(template, answers, *, load_file=None):
     it must say what the function says: whether assembly can run, and what it writes."""
     legacy = legaldown.assemble(template, answers, load_file=load_file)
     try:
-        tpl = Template(template, resolve=load_file, check=False)
+        tpl = Template(template, resolve=load_file, _check=False)
     except FrontmatterError as exc:
         return AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
     form = tpl.form(answers)

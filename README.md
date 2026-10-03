@@ -277,11 +277,18 @@ is the same function for files on disk, and the one `parse_template` takes as `r
 > `used_terms`, which only the validator used.
 
 The public API is what the `legaldown` and `legaldown.validator` packages export (their
-`__all__`). Changes to it are listed in the notes of each
+`__all__`), and `legaldown.grammar` and `legaldown.syntax`. `legaldown` is the workflow and the
+model: loading, validating, saving and assembling documents, what that returns, and the `Document`
+dataclasses. `legaldown.syntax` and `legaldown.grammar` are the tooling API (see
+[Tooling API](#tooling-api)): reading source text the way the validator does, and the language's
+constants and rules. The names that moved out of `legaldown.__all__` in 0.4.0 — the lexer, the
+fragments, the definition readers, `render_block`, the dict factories and the like — still import
+from `legaldown`, as the same objects and without a warning, so code written for earlier releases
+keeps working; new code imports them from their home (the table at the end of
+[Tooling API](#tooling-api)). Changes to the API are listed in the notes of each
 [GitHub release](https://github.com/ForLegalAI/legaldown-validator/releases); before 1.0 a
 minor release may change it, a patch release does not. Other modules are internal and may
-change in any release, except `legaldown.grammar` and `legaldown.syntax` (see
-[Tooling API](#tooling-api)), which are public too.
+change in any release.
 
 ### Working with the result
 
@@ -305,7 +312,7 @@ itself is what was found, kept nowhere but in `diagnostics`:
 | `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
 | `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence: `Blank(id, type, fixed, in_frontmatter, consistent)` — `type` the type the validator settled on: the effective type of the first occurrence with a valid one (§10.7, §15.2; `text` when none is written), or `None` when no occurrence has a usable type (each is written with an invalid one, or the id is a decision question's); `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none, or the blank is not `consistent`); `consistent` false when its occurrences have different types or fix two currencies or units (placeholder-type-inconsistent); `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
-| `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
+| `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)` (`legaldown.syntax`), at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
 `is_template(document)` (top-level) gives the template decision without validating (§15.1).
 A renderer builds from these decisions rather than re-deriving them, reading the source with
@@ -345,9 +352,11 @@ A `Section`'s `identifier` is the explicit `{#id}` written after its heading, or
 it has none. The identifiers the validator generates (§5.3, §5.5) are not written back into the
 model: read them from `result.index.sections`.
 
-`document_to_dict()` / `document_from_dict()` round-trip the model through JSON-friendly
-structures, except the fields that describe the parsed source rather than the document,
-`Metadata.not_line_editable`, `Metadata.frontmatter_absent` and `Document.source_map`.
+`document.to_dict()` and `Document.from_dict(data)` round-trip the model through JSON-friendly
+structures (missing fields take their defaults), except the fields that describe the parsed source
+rather than the document, `Metadata.not_line_editable`, `Metadata.frontmatter_absent`,
+`Document.source_map` and `Document.path`. A blank document is `Document()`; `empty_document()`,
+still importable from `legaldown`, is not one but a starter contract with two sides and two sections.
 
 Each diagnostic names its `line` (from 1) and its `file` (the document's `filename`), as §16.9
 requires: the line of the directive, marker, heading or block it is about, or of the
@@ -355,11 +364,11 @@ frontmatter key — for a missing key, the key that holds it, or the frontmatter
 come from the `source_map` that `load` and `parse` give a document. A document built from a dict
 has none, and one changed after parsing no longer fits its map: their diagnostics have no line
 (`None`) rather than a stale one. `FrontmatterError.line` is the line of YAML that cannot be
-read. `render_block()` renders a single block when you are driving your own layout.
-`iter_directives()` lexes the directives in a piece of text by the §11.2
+read. `render_block()` (`legaldown.syntax`) renders a single block when you are driving your own
+layout. `iter_directives()` (`legaldown.syntax`) lexes the directives in a piece of text by the §11.2
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
-`definition_lookup(collect_definitions(document))` gives a document's definitions, id to term,
+`definition_lookup(collect_definitions(document))` (`legaldown.syntax`) gives a document's definitions, id to term,
 without validating it: the same map as `result.index.definition_lookup`, except for definitions
 imported from an amended original or an attachment file. A term written empty (`"" {{def: x}}`)
 reads as its id (`id_term`), and an id that is not a valid identifier is left out.
@@ -392,8 +401,9 @@ kind `paragraph`: a directive in it stays in its text. A heading in an item or a
 `heading` block, not a section: its `text` without the `#` syntax, and its `level` (1–6; `level`
 is 0 on every other block). Written outside an item, where it would be a section's heading, a
 `heading` block becomes paragraph text with a backslash before it. `item_text(item)` gives an
-item's first paragraph's text, and `render_item(item)` its content as written after its marker;
-a string item in `document_from_dict` (as models before 0.3 held them) is read as such content.
+item's first paragraph's text, and `render_item(item)` its content as written after its marker
+(both in `legaldown.syntax`); a string item in `Document.from_dict` (as models before 0.3 held
+them) is read as such content.
 A nested item's condition applies within those of the items it is nested in (§15.3).
 
 A quote block keeps its `text`: its content, one line per source line without the `>` marker.
@@ -439,9 +449,10 @@ the document.
 Tools built on the validator (renderers, editors, importers) need the language itself: its
 vocabulary, its value formats, and how the validator reads source text. Two modules hand that
 over. They are part of the supported API and covered by the same versioning as `legaldown`
-and `legaldown.validator`, and they are the only supported way to reach these names: every
+and `legaldown.validator`, and they are the supported way to reach these names: every
 module path below them (`legaldown.markdown`, `legaldown.validator.patterns`, …) is internal
-and may be reorganised in any release. Their names are the validator's own objects, not copies, so
+and may be reorganised in any release (some of the names also still import from `legaldown`,
+for compatibility). Their names are the validator's own objects, not copies, so
 a tool and the validator cannot disagree.
 
 **`legaldown.grammar`** is what needs no document: constants and small rules.
@@ -491,6 +502,9 @@ for _section, _index, block in document.iter_blocks():
 | `Marker`, `MARKER_RE`, `parse_marker`, `format_marker`, `is_look_alike` | Anchor and condition markers (§5.7, §15.3) |
 | `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`) |
 | `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `text_fragments`, `list_items`, `item_text` | Where a block's text is, and a list's items |
+| `collect_definitions(document)` → `DefinitionRef`, `definition_lookup`, `id_term` | The definitions a document declares in its own source (§7), in document order, each with where it is; `definition_lookup(refs)` is their id-to-term map as `validate` builds `result.index.definition_lookup` (but for definitions imported from other files); `id_term(id)` is the term an empty one reads as |
+| `find_definition_anchors(text)` → `DefinitionAnchor` | Every `{{def:}}` in a text, with the quoted term it anchors and where that term starts (§7.2) |
+| `render_block(block)`, `render_item(item)` | The other way: a block written as LegalDown source, and a list item's content as written after its marker, as `serialize` writes them |
 | `Quote`, `block_quotes`, `is_drafting_note(block)` | The block quotes in a block and whether each is a drafting note; whether a quote block is one (§15.6) |
 | `quote_blocks(block, depth=0)`, `drafting_note_blocks(block, depth=0)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6). `depth` is how many list items and quotes the quote is in, the count before entering it (a quote in a list item is at 1); past `MAX_QUOTE_DEPTH` the validator reads a quote as one text, so you get one paragraph of its text as written |
 | `code_content(block)` → `CodeContent(info, text, fenced)` | A code block read as CommonMark reads it: the info string, and the code without its fences or indentation |
@@ -515,14 +529,23 @@ for number, section in enumerate(document.layout().sections):
     print(document.sections[number].title, section.heading.start, [b.start for b in section.blocks])
 ```
 
-If you import one of these from a private module, use its public home:
+If you import one of these from a private module, use its public home. The names that left
+`legaldown.__all__` in 0.4.0 are listed too, as guidance only: importing them from `legaldown` keeps
+working, without a warning.
 
 | From | Use |
 |---|---|
+| `legaldown`: `lex`, `Lexed`, `Directive`, `iter_directives`, `is_escaped`, `collect_source_directives` | `legaldown.syntax` |
+| `legaldown`: `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `list_items`, `item_text`, `is_drafting_note` | `legaldown.syntax` |
+| `legaldown`: `collect_definitions`, `definition_lookup`, `id_term`, `DefinitionRef`, `find_definition_anchors`, `DefinitionAnchor` | `legaldown.syntax` |
+| `legaldown`: `render_block`, `render_item` | `legaldown.syntax` |
+| `legaldown`: `DIRECTIVE_PARAMS`, `KNOWN_DIRECTIVES`, `DELIMITER_PAIRS`, `slugify_identifier` | `legaldown.grammar` |
+| `legaldown`: `document_from_dict(data)`, `document_to_dict(document)` | `Document.from_dict(data)`, `document.to_dict()` |
+| `legaldown`: `empty_document`, `BLOCK_DEFAULTS`, `metadata_from_dict`, `section_from_dict`, `block_from_dict`, `side_from_dict`, `party_from_dict` | No other home: they stay importable from `legaldown`; `Document()` is a blank document, and `Document.from_dict` builds every part |
 | `legaldown.directives`: `PLACEHOLDER_TYPE_PARAMS` | `legaldown.grammar` |
 | `legaldown.directives`: `format_value` | `legaldown.syntax` |
 | `legaldown.definitions`: `text_fragments` | `legaldown.syntax` |
-| `legaldown.definitions`: `DELIMITER_PAIRS` | `legaldown.grammar` (also top-level) |
+| `legaldown.definitions`: `DELIMITER_PAIRS` | `legaldown.grammar` |
 | `legaldown.markdown`: `FENCE_OPEN_RE`, `HTML_COMMENT_RE`, `LINE_ENDING_RE`, `closes_fence`, `dedent`, `fence_end`, `indent_width`, `strip_text` | `legaldown.syntax` |
 | `legaldown.markers`: `MARKER_RE`, `Marker`, `format_marker`, `is_look_alike`, `parse_marker` | `legaldown.syntax` |
 | `legaldown.models`: `LIST_KINDS` | `legaldown.grammar` |
@@ -586,7 +609,8 @@ for diagnostic in result.diagnostics:
 
 A template is read once; a form is a snapshot of the interview over it, so a front end asks for a
 new form after every answer — a decision opens or closes the questions under it. `parse_template(text)`
-is the same for source text. `load_template` raises `FrontmatterError` for frontmatter that cannot
+(or `Template(text)`, which takes the same `resolve=`) is the same for source text; `template.path` is
+the file `load_template` read, and `None` for a template from its text. `load_template` raises `FrontmatterError` for frontmatter that cannot
 be read, as `parse` does.
 
 **What a form says.** `questions` are those the assembly reaches given the answers so far: a
