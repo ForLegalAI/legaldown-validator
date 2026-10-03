@@ -11,6 +11,8 @@ Usage::
     legaldown validate --ignore def-unreferenced --warnings-as-errors doc.lgd
     legaldown validate --final signed-contract.lgd
     legaldown assemble template.lgd --answers answers.yaml -o out/
+    legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/
+    legaldown questions template.lgd --answers answers.yaml --format json
 """
 from __future__ import annotations
 
@@ -478,13 +480,21 @@ def build_parser() -> argparse.ArgumentParser:
         prog="legaldown",
         description=(
             "LegalDown reference validator "
-            f"(specification {SPEC_VERSION}, Core conformance level)."
+            f"(specification {SPEC_VERSION}, Core conformance level, Assembly capability)."
         ),
     )
     parser.add_argument("--version", action="version", version=f"legaldown {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    validate = sub.add_parser("validate", help="Validate LegalDown documents.")
+    validate = sub.add_parser(
+        "validate",
+        help="Validate LegalDown documents.",
+        description=(
+            "Validate LegalDown documents. Diagnostics go to standard output, the summary to "
+            "standard error. Exit status 0 when clean, 1 when diagnostics are found (errors, "
+            "or any with --strict), 2 when a file cannot be read."
+        ),
+    )
     validate.add_argument(
         "paths",
         nargs="+",
@@ -532,7 +542,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Assemble a template with an answers set (§15.7).",
         description=(
             "Assemble a template with an answers set (§15.7). Include fragments and "
-            "LegalDown attachment files are read relative to the template."
+            "LegalDown attachment files are read relative to the template. A template with "
+            "Errors in the validator's template rules is refused. Exit status as for validate."
         ),
     )
     assemble_cmd.add_argument("template", help="The template file.")
@@ -556,13 +567,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Ask, in the terminal, for the answers --answers does not give, as the "
             "questions are reached (prompts go to standard error). Without a terminal "
-            "it lists what must still be answered and exits 1."
+            "it lists what must still be answered and exits 1, or assembles if nothing must be."
         ),
     )
     assemble_cmd.add_argument(
         "--save-answers",
         metavar="FILE",
-        help="Write the answers used, with those typed, to FILE (YAML), also after an interruption.",
+        help="Write the answers used, with those typed, to FILE (YAML), also after an interruption or a failure.",
     )
     assemble_cmd.set_defaults(func=_run_assemble)
 

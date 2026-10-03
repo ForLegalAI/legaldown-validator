@@ -9,11 +9,12 @@ verifies the identity of the workflow run itself.
 
 ## One-time PyPI setup
 
-This must exist before the first publish, and it must be done by a PyPI account that will own the
-project. Because the project does not exist on PyPI yet, register it as a **pending** publisher.
+This is in place: the project has been on PyPI since 0.1.0. It is recorded here in case the
+publisher must be set up again, which takes an owner of the PyPI project.
 
-1. Sign in to <https://pypi.org> → **Your account** → **Publishing** →
-   *Add a new pending publisher*.
+1. Sign in to <https://pypi.org> → **Your projects** → `legaldown-validator` → **Manage** →
+   **Publishing** → *Add a new publisher* (for a project not yet on PyPI: **Your account** →
+   **Publishing** → *Add a new pending publisher*).
 2. Fill in exactly:
 
    | Field | Value |
@@ -54,7 +55,7 @@ built wheel by installing it and invoking the CLI, and uploads to PyPI.
 
 ## Dry run
 
-Before a first real release, exercise the whole path against TestPyPI:
+To rehearse a release, or after changing the workflow, exercise the whole path against TestPyPI:
 
 ```
 Actions → Publish → Run workflow → target: testpypi

@@ -7,7 +7,7 @@ name = "legaldown-validator"
 # Single-sourced from src/legaldown/__init__.py so the package and the
 # distribution can never disagree about the version.
 dynamic = ["version"]
-description = "Reference parser and validator for the LegalDown legal document format"
+description = "Reference parser, validator and template assembler for the LegalDown legal document format"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

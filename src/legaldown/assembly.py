@@ -106,7 +106,7 @@ class AssemblyError(ValueError):
 
 @dataclass(slots=True)
 class AssemblyResult:
-    """What :func:`assemble` produced.
+    """What assembling a template produced (``Form.assemble``).
 
     ``output`` is the assembled template file; ``files`` the assembled include
     fragments and LegalDown attachment files that remain, by relative path — an
@@ -254,7 +254,7 @@ class Question:
 
     def from_text(self, text: str) -> Any:
         """The answer that *text*, as a person types it, gives to this question:
-        the shape ``assemble`` takes, which :meth:`problem` accepts — or ``None``
+        the shape an answers set holds (§15.7.1), which :meth:`problem` accepts — or ``None``
         for no answer (the empty text: the default applies, or the blank stays).
         Surrounding spaces are dropped. Strict, and not locale-aware:
 
