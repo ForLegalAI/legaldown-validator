@@ -650,7 +650,7 @@ def serialize_document(document: Document) -> str:
 
 def render_item(item: ListItem) -> str:
     """A list item's content as written after its marker, later lines
-    indented from its content column: the text ``block_from_dict`` reads
+    indented from its content column: the text ``Document.from_dict`` reads
     back as the item (a string item)."""
     return _item_content(item, open_end=True)
 

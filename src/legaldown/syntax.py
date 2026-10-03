@@ -2,9 +2,10 @@
 
 What a tool needs to read the text of a document the way the validator does:
 the directive lexer (§11.4), anchor and condition markers (§5.7, §15.3), the
-text fragments of a block that may hold either, block quotes and drafting
-notes (§15.6), and the Markdown helpers (fences, indentation, comments)
-those readings are built on.
+text fragments of a block that may hold either, the definitions written in
+the source (§7), block quotes and drafting notes (§15.6), and the Markdown
+helpers (fences, indentation, comments) those readings are built on; and,
+the other way, a block or list item written back as LegalDown source.
 
 This module is part of the supported API and covered by semantic versioning.
 Every name here is the validator's own object, not a copy, so a tool that
@@ -19,7 +20,19 @@ the modules they are defined in are internal and may be reorganised.
 """
 from __future__ import annotations
 
-from .definitions import Fragment, ListFragment, block_fragments, list_fragments, text_fragments
+from .definitions import (
+    DefinitionAnchor,
+    DefinitionRef,
+    Fragment,
+    ListFragment,
+    block_fragments,
+    collect_definitions,
+    definition_lookup,
+    find_definition_anchors,
+    id_term,
+    list_fragments,
+    text_fragments,
+)
 from .directives import Directive, Lexed, format_value, is_escaped, iter_directives, lex
 from .markdown import (
     FENCE_OPEN_RE,
@@ -43,6 +56,7 @@ from .parser import (
     quote_blocks,
 )
 from .positions import BlockSpan, HeadingSpan, ItemSpan, SectionSpan, SourceLayout, body_layout
+from .serializer import render_block, render_item
 from .validator.templates import Quote, block_quotes, drafting_note_blocks, is_drafting_note
 from .validator.units import FoundMarker, find_markers, is_include_only
 
@@ -81,6 +95,16 @@ __all__ = [
     "CodeContent",
     "list_items",
     "item_text",
+    # Definitions in the source (§7): the terms a document defines, and where
+    "collect_definitions",
+    "DefinitionRef",
+    "definition_lookup",
+    "id_term",
+    "find_definition_anchors",
+    "DefinitionAnchor",
+    # A block or list item written as LegalDown source
+    "render_block",
+    "render_item",
     # Markdown
     "FRONTMATTER_RE",
     "LINE_ENDING_RE",

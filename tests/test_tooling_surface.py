@@ -10,7 +10,7 @@ import pytest
 import legaldown
 import legaldown.grammar as grammar
 import legaldown.syntax as syntax
-from legaldown import load_answers, parse, validate
+from legaldown import load_answers, parse, serialize, validate
 from legaldown.directives import lex
 from legaldown.syntax import find_markers
 from legaldown.validator.helpers import generate_identifier
@@ -40,6 +40,9 @@ SYNTAX = [
     "Fragment", "ListFragment", "block_fragments", "list_fragments", "text_fragments",
     "Quote", "block_quotes", "is_drafting_note", "quote_blocks", "drafting_note_blocks", "code_content", "CodeContent",
     "list_items", "item_text",
+    "collect_definitions", "DefinitionRef", "definition_lookup", "id_term",
+    "find_definition_anchors", "DefinitionAnchor",
+    "render_block", "render_item",
     "FRONTMATTER_RE", "LINE_ENDING_RE", "HTML_COMMENT_RE", "FENCE_OPEN_RE",
     "closes_fence", "fence_end", "dedent", "indent_width", "strip_text",
     "body_layout", "SourceLayout", "SectionSpan", "HeadingSpan", "BlockSpan", "ItemSpan",
@@ -48,6 +51,14 @@ SYNTAX = [
 #: Where each public name is implemented.
 IMPLEMENTATION = {
     "DELIMITER_PAIRS": "legaldown.definitions",
+    "DefinitionAnchor": "legaldown.definitions",
+    "DefinitionRef": "legaldown.definitions",
+    "collect_definitions": "legaldown.definitions",
+    "definition_lookup": "legaldown.definitions",
+    "find_definition_anchors": "legaldown.definitions",
+    "id_term": "legaldown.definitions",
+    "render_block": "legaldown.serializer",
+    "render_item": "legaldown.serializer",
     "Fragment": "legaldown.definitions",
     "ListFragment": "legaldown.definitions",
     "block_fragments": "legaldown.definitions",
@@ -192,6 +203,30 @@ def test_all_lists_are_the_expected_names():
 def test_the_tooling_names_stay_out_of_the_top_level_package():
     top = set(legaldown.__all__)
     assert top.isdisjoint({"PARTY_TYPES", "MAX_SECTION_LEVEL", "choose_problem", "find_markers"})
+    # Since 0.4.0 none is listed there: those that were still import from it (``test_public_api``).
+    assert top.isdisjoint(set(grammar.__all__) - {"SPEC_VERSION"})
+    assert top.isdisjoint(syntax.__all__)
+
+
+def test_the_definitions_read_from_source_are_the_validators():
+    document = parse('---\ntitle: T\n---\n\n# A\n\n"Late Fee" {{def: late-fee}} means x. "" {{def: bad_id}}\n')
+    refs = syntax.collect_definitions(document)
+    assert [(ref.id, ref.term, ref.inline) for ref in refs] == [("late-fee", "Late Fee", False), ("bad_id", "", True)]
+    assert syntax.definition_lookup(refs) == {"late-fee": "Late Fee"} == validate(document).index.definition_lookup
+    assert syntax.id_term("late-fee") == "Late Fee"
+    text = 'A "Late Fee" {{def: late-fee}} is due.'
+    [anchor] = syntax.find_definition_anchors(text)
+    assert (anchor.term, anchor.directive.positional, anchor.start) == ("Late Fee", "late-fee", text.index('"'))
+
+
+def test_a_block_and_an_item_are_written_as_the_serializer_writes_them():
+    document = parse("---\ntitle: T\n---\n\n# A\n\nText **bold**.\n\n- one\n\n  two\n")
+    [paragraph, listing] = document.sections[0].blocks
+    assert syntax.render_block(paragraph) == "Text **bold**."
+    item = syntax.render_item(listing.items[0])
+    assert item == "one\n\ntwo"  # later lines are indented from the item's content column
+    assert syntax.render_block(listing) == "- one\n\n  two"
+    assert serialize(document).endswith(syntax.render_block(paragraph) + "\n\n" + syntax.render_block(listing) + "\n")
 
 
 @pytest.mark.parametrize("module", [grammar, syntax])

@@ -1,7 +1,8 @@
 """LegalDown document model.
 
 Defines the canonical dataclasses for representing a LegalDown document
-in memory, plus factory functions for safe construction from dicts.
+in memory, plus factory functions for safe construction from dicts (public
+as ``Document.from_dict`` and ``Document.to_dict``).
 """
 from __future__ import annotations
 
@@ -157,7 +158,7 @@ LIST_KINDS = ("ordered_list", "unordered_list")
 
 def list_items(block: Block) -> list[ListItem]:
     """A list's items, each a ``ListItem`` — one written as a string, as a
-    model built in code may hold it, read as its content (``block_from_dict``)."""
+    model built in code may hold it, read as its content, as ``Document.from_dict`` reads one."""
     return [item if isinstance(item, ListItem) else _list_item(item) for item in block.items]
 
 
@@ -197,13 +198,36 @@ class Document:
     #: diagnostics that name their line (§16.9). Only ``parse`` and ``load``
     #: set it; it describes the source as parsed, so a document changed afterwards
     #: may no longer fit it (then its diagnostics name no line). Not part of
-    #: equality or of ``document_to_dict``.
+    #: equality or of ``to_dict``.
     source_map: Any = field(default=None, compare=False, repr=False)
     #: The file the document was loaded from, absolute (``load`` sets it), for
     #: resolving the files it refers to. ``None`` for a document
     #: parsed from a string or built in code. Not part of equality or of
-    #: ``document_to_dict``: where a document lives is not what it says.
+    #: ``to_dict``: where a document lives is not what it says.
     path: Path | None = field(default=None, compare=False)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> Document:
+        """A document built from the nested dict *data*, as ``to_dict`` gives
+        it or as JSON holds it: missing fields take their defaults, values are
+        read as strings, and a list item may be written as a string, its
+        content as written after its marker (the item form of models before
+        0.3). ``None`` reads as ``{}``.
+
+        A document built from a dict has no ``source_map`` and no ``path``,
+        and the fields that describe a parsed source,
+        ``Metadata.not_line_editable`` and ``Metadata.frontmatter_absent``,
+        are left at their defaults: only ``parse`` and ``load`` set them."""
+        return document_from_dict(data)
+
+    def to_dict(self) -> dict[str, Any]:
+        """The document as a plain, JSON-friendly dict — its metadata, sections,
+        filename and preamble — that ``Document.from_dict`` reads back. Not
+        part of it: ``source_map`` and ``path``, which describe where the
+        document was read from rather than what it says (and
+        ``Metadata.not_line_editable`` and ``Metadata.frontmatter_absent``,
+        which it holds but ``from_dict`` does not read)."""
+        return document_to_dict(self)
 
     def iter_indexed_blocks(self) -> Iterator[tuple[int | None, int, Block]]:
         """Every body block in document order, as ``(section_index, index,
@@ -599,7 +623,9 @@ def document_to_dict(document: Document) -> dict[str, Any]:
 
 
 def empty_document() -> Document:
-    """Create a new document with sensible starter content."""
+    """A new document with starter content to edit: a provider and a client
+    side, a definitions section and a scope section. Not a blank document:
+    ``Document()`` is one, with nothing in it but default metadata."""
     return Document(
         metadata=Metadata(
             title="Untitled Agreement",

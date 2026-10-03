@@ -18,40 +18,18 @@ Quick start::
 from __future__ import annotations
 
 # Assembly (§15.7): a named capability (§17.6)
-from .assembly import (
-    AssemblyError,
-    AssemblyResult,
-    Question,
-    assemble,
-    needed_questions,
-    template_questions,
-)
-
-# Definitions (§7)
-from .definitions import (
-    DELIMITER_PAIRS,
-    DefinitionAnchor,
-    DefinitionRef,
-    Fragment,
-    ListFragment,
-    block_fragments,
-    collect_definitions,
-    definition_lookup,
-    find_definition_anchors,
-    id_term,
-    list_fragments,
-)
-from .directives import (
-    DIRECTIVE_PARAMS,
-    KNOWN_DIRECTIVES,
-    Directive,
-    Lexed,
-    is_escaped,
-    iter_directives,
-    lex,
-)
+from .assembly import AssemblyError, AssemblyResult, Question, assemble, needed_questions, template_questions
 from .files import LoadFile, file_loader
-from .models import (
+
+# Compatibility: the ``grammar`` and ``syntax`` names imported here, and the
+# dict factories with ``BLOCK_DEFAULTS``, left ``__all__`` in 0.4.0 but still
+# import from ``legaldown``, as the same objects and without a warning. Their
+# supported home is the tooling API, ``legaldown.grammar`` and
+# ``legaldown.syntax``; for ``document_from_dict`` and ``document_to_dict`` it is
+# ``Document.from_dict`` and ``Document.to_dict`` (``models`` is internal, and
+# the other factories and ``empty_document`` have no home but this one).
+from .grammar import DELIMITER_PAIRS, DIRECTIVE_PARAMS, KNOWN_DIRECTIVES, slugify_identifier  # noqa: F401
+from .models import (  # noqa: F401 -- BLOCK_DEFAULTS and the *_from_dict factories are kept for compatibility
     BLOCK_DEFAULTS,
     Amends,
     Attachment,
@@ -68,8 +46,6 @@ from .models import (
     document_from_dict,
     document_to_dict,
     empty_document,
-    item_text,
-    list_items,
     metadata_from_dict,
     party_from_dict,
     section_from_dict,
@@ -77,16 +53,40 @@ from .models import (
 )
 
 # Parser & serializer
-from .parser import FrontmatterError, collect_source_directives, load, parse, parse_document
-from .serializer import render_block, render_item, save, serialize, serialize_document
+from .parser import FrontmatterError, load, parse, parse_document
+from .serializer import save, serialize, serialize_document
 
 # The LegalDown specification version this implementation targets.
 from .specification import SPEC_VERSION
+from .syntax import (  # noqa: F401 -- kept for compatibility
+    DefinitionAnchor,
+    DefinitionRef,
+    Directive,
+    Fragment,
+    Lexed,
+    ListFragment,
+    block_fragments,
+    collect_definitions,
+    collect_source_directives,
+    definition_lookup,
+    find_definition_anchors,
+    id_term,
+    is_drafting_note,
+    is_escaped,
+    item_text,
+    iter_directives,
+    lex,
+    list_fragments,
+    list_items,
+    render_block,
+    render_item,
+)
 from .template import AnswersError, Form, Template, load_answers, load_template, parse_template
 
 # Validator
 from .validator import (
     AttachmentDefinitionsImporter,
+    Blank,
     DefinitionsImporter,
     Diagnostic,
     DocumentIndex,
@@ -94,9 +94,7 @@ from .validator import (
     PlacedMarker,
     SectionIndexEntry,
     ValidationResult,
-    is_drafting_note,
     is_template,
-    slugify_identifier,
     validate,
     validate_document,
 )
@@ -145,65 +143,29 @@ __all__ = [
     "Question",
     "LoadFile",
     "file_loader",
-    # Definitions (§7)
-    "collect_definitions",
-    "definition_lookup",
-    "id_term",
-    "DefinitionRef",
-    "DELIMITER_PAIRS",
-    "find_definition_anchors",
-    "DefinitionAnchor",
-    # Directives (§11): the lexer, and where text holding them is
-    "iter_directives",
-    "lex",
-    "Lexed",
-    "is_escaped",
-    "block_fragments",
-    "list_fragments",
-    "Fragment",
-    "ListFragment",
-    "Directive",
-    "DIRECTIVE_PARAMS",
-    "KNOWN_DIRECTIVES",
-    "render_block",
-    "render_item",
-    "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0
     # Result types
     "ValidationResult",
     "DocumentIndex",
     "InlineValues",
     "SectionIndexEntry",
+    "Blank",
     "Diagnostic",
     "PlacedMarker",
-    # What validate decides, on its own (§15.1, §15.6)
+    # What validate decides, on its own (§15.1)
     "is_template",
-    "is_drafting_note",
     # Document model
     "Document",
     "Metadata",
     "Section",
     "Block",
     "ListItem",
-    "item_text",
-    "list_items",
     "Side",
     "Party",
     "Representative",
     "CustomField",
     "Amends",
     "Attachment",
-    "BLOCK_DEFAULTS",
-    # Factory functions
-    "document_from_dict",
-    "document_to_dict",
-    "metadata_from_dict",
-    "section_from_dict",
-    "block_from_dict",
-    "side_from_dict",
-    "party_from_dict",
-    "empty_document",
-    # Utilities
-    "collect_source_directives",
-    "slugify_identifier",
+    # Deprecated importer callbacks
     "DefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate(resolve=)``
+    "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate(resolve=)``
 ]

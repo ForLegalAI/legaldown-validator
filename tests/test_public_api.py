@@ -4,28 +4,34 @@ renderer builds with, importable from ``legaldown`` and ``legaldown.validator``.
 from __future__ import annotations
 
 import dataclasses
+import importlib
+import inspect
+import json
 import os
+import subprocess
+import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
 import legaldown
+import legaldown.grammar
+import legaldown.models
+import legaldown.syntax
 import legaldown.validator
 from legaldown import (
+    Document,
     PlacedMarker,
+    Template,
     ValidationResult,
-    block_fragments,
-    document_from_dict,
     file_loader,
-    is_drafting_note,
     is_template,
-    list_fragments,
     load,
     parse,
     validate,
 )
-from legaldown.directives import lex
-from legaldown.validator.units import find_markers
+from legaldown.syntax import block_fragments, find_markers, is_drafting_note, lex, list_fragments
 
 _FRONTMATTER = "---\ntitle: T\n---\n\n"
 
@@ -39,10 +45,138 @@ def test_every_public_name_is_importable(module):
     assert [name for name in module.__all__ if not hasattr(module, name)] == []
 
 
+#: ``legaldown.__all__``: the workflow and the model (0.4.0).
+PUBLIC = sorted([
+    # Package metadata
+    "__version__", "SPEC_VERSION", "CONFORMANCE_LEVEL", "CAPABILITIES",
+    # Core workflow
+    "load", "parse", "FrontmatterError", "save", "serialize", "validate",
+    "parse_document", "serialize_document", "validate_document",  # deprecated
+    # Assembly
+    "load_template", "parse_template", "load_answers", "AnswersError", "Template", "Form",
+    "Question", "AssemblyResult", "AssemblyError", "LoadFile", "file_loader",
+    "assemble", "template_questions", "needed_questions",  # deprecated
+    # Result types
+    "ValidationResult", "DocumentIndex", "InlineValues", "SectionIndexEntry", "Blank", "Diagnostic",
+    "PlacedMarker",
+    "is_template",
+    # Document model
+    "Document", "Metadata", "Section", "Block", "ListItem", "Side", "Party", "Representative",
+    "CustomField", "Amends", "Attachment",
+    "DefinitionsImporter", "AttachmentDefinitionsImporter",  # deprecated
+])
+
+#: What PactTrack and legaldown-render import from ``legaldown`` itself.
+_PACTTRACK = [
+    "Amends", "AssemblyError", "AssemblyResult", "Attachment", "BLOCK_DEFAULTS", "Block", "CustomField",
+    "DIRECTIVE_PARAMS", "DefinitionAnchor", "DefinitionRef", "Diagnostic", "Directive", "Document",
+    "KNOWN_DIRECTIVES", "Lexed", "ListItem", "LoadFile", "Metadata", "Party", "Question", "Representative",
+    "SPEC_VERSION", "Section", "SectionIndexEntry", "Side", "ValidationResult", "assemble", "block_fragments",
+    "block_from_dict", "collect_definitions", "collect_source_directives", "document_from_dict",
+    "document_to_dict", "empty_document", "find_definition_anchors", "is_drafting_note", "is_escaped",
+    "is_template", "iter_directives", "lex", "list_items", "metadata_from_dict", "needed_questions",
+    "parse_document", "party_from_dict", "render_block", "section_from_dict", "serialize_document",
+    "side_from_dict", "slugify_identifier", "template_questions", "validate_document",
+]
+_RENDER = [
+    "AssemblyError", "Block", "Diagnostic", "Directive", "Document", "PlacedMarker", "ValidationResult",
+    "assemble", "find_definition_anchors", "is_drafting_note", "lex", "list_items", "parse_document",
+    "render_block", "slugify_identifier", "validate_document",
+]
+DOWNSTREAM_TOP_LEVEL = sorted(set(_PACTTRACK) | set(_RENDER))
+
+#: The names that left ``legaldown.__all__`` in 0.4.0 and still import from
+#: ``legaldown``, by their supported home.
+MOVED = {
+    **dict.fromkeys([
+        "lex", "Lexed", "Directive", "iter_directives", "is_escaped", "collect_source_directives",
+        "Fragment", "ListFragment", "block_fragments", "list_fragments", "list_items", "item_text",
+        "is_drafting_note", "collect_definitions", "definition_lookup", "id_term", "DefinitionRef",
+        "find_definition_anchors", "DefinitionAnchor", "render_block", "render_item",
+    ], "legaldown.syntax"),
+    **dict.fromkeys(["DIRECTIVE_PARAMS", "KNOWN_DIRECTIVES", "DELIMITER_PAIRS", "slugify_identifier"],
+                    "legaldown.grammar"),
+    # ``Document.from_dict`` and ``Document.to_dict`` stand for the first two; the
+    # others have no public home but ``legaldown`` (``models`` is internal).
+    **dict.fromkeys([
+        "document_from_dict", "document_to_dict", "metadata_from_dict", "section_from_dict",
+        "block_from_dict", "side_from_dict", "party_from_dict", "empty_document", "BLOCK_DEFAULTS",
+    ], "legaldown.models"),
+}
+
+
+def test_the_public_names_are_the_workflow_and_the_model():
+    assert sorted(legaldown.__all__) == PUBLIC
+    assert len(set(legaldown.__all__)) == len(legaldown.__all__)
+
+
+def test_a_star_import_is_exactly_the_public_names():
+    namespace: dict = {}
+    exec("from legaldown import *", namespace)
+    assert sorted(name for name in namespace if name != "__builtins__") == PUBLIC
+
+
+def test_blank_is_the_validators():
+    assert legaldown.Blank is legaldown.validator.Blank
+
+
+def test_every_name_that_moved_out_is_its_homes_object():
+    assert set(MOVED).isdisjoint(legaldown.__all__)
+    for name, home in MOVED.items():
+        module = importlib.import_module(home)
+        assert getattr(legaldown, name) is getattr(module, name), name
+        if home != "legaldown.models":
+            assert name in module.__all__, name
+
+
+@pytest.mark.parametrize("name", DOWNSTREAM_TOP_LEVEL)
+def test_a_downstream_top_level_import_keeps_working_without_a_warning(name):
+    """Importing never warns; the deprecated callables warn only when called."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        namespace: dict = {}
+        exec(f"from legaldown import {name}", namespace)
+    assert namespace[name] is getattr(legaldown, name)
+    assert name in legaldown.__all__ or name in MOVED
+
+
+def test_downstream_top_level_imports_in_a_fresh_interpreter_raise_no_warning():
+    """``import legaldown`` itself, and every name downstream imports, with
+    each DeprecationWarning an error."""
+    code = f"from legaldown import {', '.join(DOWNSTREAM_TOP_LEVEL)}"
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent / "src")}
+    done = subprocess.run([sys.executable, "-W", "error", "-c", code], capture_output=True, env=env, check=False)
+    assert done.returncode == 0, done.stderr.decode()
+
+
+def test_the_dict_factories_are_the_documents_methods():
+    document = parse(_FRONTMATTER + "Pre.\n\n# A {#a}\n\n- x\n  - y\n\n| a |\n|---|\n| b |\n")
+    data = document.to_dict()
+    assert data == legaldown.models.document_to_dict(document)
+    assert json.loads(json.dumps(data)) == data
+    rebuilt = Document.from_dict(json.loads(json.dumps(data)))
+    assert rebuilt == legaldown.models.document_from_dict(data) == document
+    assert (rebuilt.source_map, rebuilt.path) == (None, None)
+    assert rebuilt.to_dict() == data
+    assert Document.from_dict(None) == legaldown.models.document_from_dict(None)
+
+
+def test_a_blank_document_is_document_not_the_starter_one():
+    assert validate(Document()).is_valid and Document().sections == []
+    assert legaldown.empty_document().sections != []
+
+
+def test_a_template_takes_its_text_and_a_resolver():
+    public = [name for name in inspect.signature(Template).parameters if not name.startswith("_")]
+    assert public == ["text", "resolve"]
+
+
 def test_the_renderers_names_are_public():
-    for name in ("PlacedMarker", "is_template", "is_drafting_note", "lex", "Lexed", "is_escaped",
-                 "block_fragments", "list_fragments", "list_items"):
+    for name in ("PlacedMarker", "is_template"):
         assert name in legaldown.__all__
+    for name in ("is_drafting_note", "lex", "Lexed", "is_escaped", "block_fragments", "list_fragments",
+                 "list_items", "find_definition_anchors", "render_block"):
+        assert name in legaldown.syntax.__all__
     for name in ("parse_condition", "Condition", "condition_problem", "exclusive", "Presence", "ALWAYS", "is_template",
                  "PlacedMarker", "IDENTIFIER_RE", "KNOWN_CURRENCIES", "is_valid_iso_date",
                  "is_valid_money_amount", "is_positive_numeric"):
@@ -101,7 +235,7 @@ def test_a_marker_out_of_place_is_not_placed(body):
 
 
 def test_a_document_built_in_code_has_no_lines():
-    document = document_from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": "Text {#t}"}]}]})
+    document = Document.from_dict({"sections": [{"title": "A", "blocks": [{"kind": "paragraph", "text": "Text {#t}"}]}]})
     [marker] = validate(document).index.placed_markers
     assert (marker.identifier, marker.line) == ("t", None)
 
@@ -184,7 +318,7 @@ def test_a_document_changed_since_parsing_has_no_lines():
 
 
 def test_a_list_of_string_items_built_in_code():
-    document = document_from_dict({"sections": [{"title": "A", "blocks": [
+    document = Document.from_dict({"sections": [{"title": "A", "blocks": [
         {"kind": "unordered_list", "items": ["a {#x}", "b\n\n  - c {#y}"]},
     ]}]})
     assert [(m.identifier, m.item) for m in validate(document).index.placed_markers] == [("x", 0), ("y", 2)]
