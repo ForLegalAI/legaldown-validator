@@ -19,7 +19,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Diagnostic, DocumentIndex, InlineValues, PlacedMarker, SectionIndexEntry, ValidationResult
+from .result import Blank, Diagnostic, DocumentIndex, InlineValues, PlacedMarker, SectionIndexEntry, ValidationResult
 from .templates import is_drafting_note
 
 __all__ = [
@@ -35,6 +35,7 @@ __all__ = [
     "DocumentIndex",
     "InlineValues",
     "SectionIndexEntry",
+    "Blank",
     "Diagnostic",
     "PlacedMarker",
     # Conditions (§15.3, §15.4): a condition's presence, a set of them

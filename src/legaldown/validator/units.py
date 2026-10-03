@@ -14,11 +14,12 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from ..directives import Directive, Lexed, is_escaped
+from ..directives import Directive, Lexed, is_escaped, lex
 from ..markdown import HTML_COMMENT_RE
 from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
 from ..models import Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
+from .patterns import MAX_SECTION_LEVEL
 
 _PARAGRAPHS = ("paragraph", "definition", "ref", "term")
 _LISTS = ("ordered_list", "unordered_list")
@@ -102,9 +103,13 @@ def marker_matches(text: str, lexed: Lexed) -> Iterator[re.Match[str]]:
             yield match
 
 
-def find_markers(document: Document, lex_fragment: Callable[[str], Lexed]) -> list[FoundMarker]:
+def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex) -> list[FoundMarker]:
     """Every marker and look-alike in the document's body text, outside code,
-    comments, directives, and escapes (§11.4), with its place."""
+    comments, directives, and escapes (§11.4), with its place: placed or not.
+    ``FoundMarker.placed(template)`` says which of them apply.
+
+    *lex_fragment* reads a text's directives; by default, the package lexer.
+    """
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> units would otherwise be a cycle.
     from ..definitions import block_fragments
@@ -190,7 +195,7 @@ class Units:
         self._section_enclosing: list[Presence] = []
         stack: list[tuple[int, Presence]] = []  # (level, presence) of open sections
         for section in document.sections:
-            level = min(max(section.level, 1), 5)  # clamped, as numbering does
+            level = min(max(section.level, 1), MAX_SECTION_LEVEL)  # clamped, as numbering does
             while stack and stack[-1][0] >= level:
                 stack.pop()
             enclosing = stack[-1][1] if stack else ALWAYS

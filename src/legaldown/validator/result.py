@@ -15,12 +15,17 @@ class SectionIndexEntry:
     shallowest heading level. A level a heading skips (heading-skip) counts
     as 1, so ``# A``, ``### B``, ``## C`` are 1, 1.1.1, 1.2: no two sections
     share a number, except alternatives and what they contain (§15.8).
-    ``path`` joins the identifiers of the section and its ancestors."""
+    ``path`` joins the identifiers of the section and its ancestors.
+    ``alternative`` is True when the section is an alternative to its
+    preceding sibling — the section just before it at its level under the
+    same parent — which has the same identifier and is never present
+    together with it (§15.4), and so shares its number (§15.8)."""
     title: str
     identifier: str
     path: str
     level: int
     number: str
+    alternative: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -80,6 +85,31 @@ class PlacedMarker:
     line: int | None = None
 
 
+@dataclass(slots=True, frozen=True)
+class Blank:
+    """Every occurrence of one placeholder id — one logical blank (§10.7) — as
+    validating the document resolved it. A tool that asks for the answers
+    (a form, an interview) reads the blank's type and what it fixes here.
+
+    ``type`` is the type the validator settled on: the effective type of its
+    first occurrence with a valid one (§10.7, §15.2), ``text`` when none is
+    written. It is None when no occurrence has a usable type: each is written
+    with an invalid one (placeholder-type-invalid), or the id is a decision
+    question's (placeholder-question-mismatch). ``fixed`` is the currency of
+    a money blank, or the unit of a duration blank, that every occurrence
+    fixes, and ``""`` when some occurrence fixes none, or the blank is not
+    ``consistent``. ``consistent`` is False when its occurrences have
+    different types, or fix two currencies or two units (both are
+    placeholder-type-inconsistent); ``type`` is then the first one's.
+    ``in_frontmatter`` is True when one of its occurrences is in the
+    frontmatter (§3.10)."""
+    id: str
+    type: str | None
+    fixed: str = ""
+    in_frontmatter: bool = False
+    consistent: bool = True
+
+
 #: A diagnostic's line (from 1), or a function giving it, called only when a
 #: diagnostic is recorded at it: finding a line costs more than knowing where.
 Line = int | None | Callable[[], "int | None"]
@@ -127,6 +157,13 @@ class DocumentIndex:
     #: The markers in body text that apply (``PlacedMarker``), in document
     #: order.
     placed_markers: list[PlacedMarker] = field(default_factory=list)
+    #: The document's blanks (``Blank``), by placeholder id, in the order of
+    #: their first occurrence — frontmatter first. A document that is not a
+    #: template has them too. A placeholder whose arguments or id are
+    #: malformed is not among them (the diagnostics report it); one with no
+    #: usable type is, with type None, and so is one that is not consistent
+    #: (``Blank``).
+    blanks: dict[str, Blank] = field(default_factory=dict)
 
 
 @dataclass(slots=True, kw_only=True)

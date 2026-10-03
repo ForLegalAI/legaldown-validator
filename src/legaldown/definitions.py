@@ -205,7 +205,7 @@ def block_fragments(block: Block) -> list[Fragment]:
     of a list item's first paragraph; a block quote or a table cell never is
     one. A list's fragments are its items' blocks', in order
     (``list_fragments``); a block quote's, those of the blocks it holds
-    (``parser.quote_content``), so that nothing written in one block — a
+    (each read as its own text), so that nothing written in one block — a
     code span or comment left open — runs into the next, and code and raw
     HTML in it hold none (§11.4).
     """

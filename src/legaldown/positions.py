@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from .directives import is_escaped
-from .markdown import paragraph_text
+from .markdown import LINE_ENDING_RE, paragraph_text
 
 if TYPE_CHECKING:
     from .models import Block, Document
@@ -85,6 +85,63 @@ def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], 
     return keys
 
 
+@dataclass(frozen=True, slots=True)
+class BlockSpan:
+    """Where a block lies in the file: lines ``[start, end)``, counted from 1.
+    *kind* is the block's. *items*: a list's items, each with where it lies
+    (the items of the list itself; a nested list's are in its item's blocks)."""
+
+    kind: str
+    start: int
+    end: int
+    items: tuple[ItemSpan, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ItemSpan:
+    """Where a list item lies in the file: lines ``[start, end)``, its marker's
+    line first, and where each block of its content lies."""
+
+    start: int
+    end: int
+    blocks: tuple[BlockSpan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HeadingSpan:
+    """Where a heading lies in the file: lines ``[start, end)``, and the line
+    its marker is on (an ATX heading's line, or a setext heading's last text
+    line, where a ``{#id}`` or ``{if:}`` marker is written, §5.2)."""
+
+    start: int
+    end: int
+    marker_line: int
+
+
+@dataclass(frozen=True, slots=True)
+class SectionSpan:
+    """Where a section's heading lies, and its top-level blocks."""
+
+    heading: HeadingSpan
+    blocks: tuple[BlockSpan, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLayout:
+    """Where a parsed document's parts lie in its file (``Document.layout``),
+    in lines counted from 1: each span is the lines ``[start, end)``, its end
+    exclusive — the line after its last — and the blank lines between parts
+    belong to none, but for those between a list's items, which the item
+    before holds. The frontmatter is ``(start, end)`` with its ``---``
+    lines, or None without one; then the preamble's blocks (§4.4); each
+    section's heading and blocks, in the document's order, so that
+    ``sections[n]`` is ``Document.sections[n]``'s."""
+
+    frontmatter: tuple[int, int] | None
+    preamble: tuple[BlockSpan, ...]
+    sections: tuple[SectionSpan, ...]
+
+
 @dataclass(slots=True)
 class SourceMap:
     """Where a parsed document's frontmatter keys, headings and blocks lie:
@@ -137,6 +194,33 @@ class SourceMap:
         """The first line of a top-level block."""
         return self.body_start + self.span(section, index).start + 1
 
+    def to_layout(self) -> SourceLayout:
+        """``layout`` as the public ``SourceLayout``, in file lines."""
+        frontmatter = None
+        if () in self.keys:
+            # The frontmatter's lines, its closing ``---`` too, which the
+            # source may end with no line ending after.
+            from .parser import FRONTMATTER_RE
+
+            written = FRONTMATTER_RE.match("\n".join(self.lines))
+            if written is not None:
+                text = written.group()
+                frontmatter = (1, 1 + text.count("\n") + (0 if text.endswith("\n") else 1))
+        return _public_layout(self.layout, self.body_start + 1, frontmatter)
+
+    def item(self, section: int | None, index: int, item: int) -> int:
+        """The line of list item *item* of top-level block *index* of a
+        section (or of the preamble): its marker's line. Items are numbered
+        in pre-order among all the list's items, nested ones included
+        (``definitions.list_fragments``)."""
+        span = self.span(section, index)
+        if not span.items:
+            raise ValueError("not a list")
+        found = [each for top in span.items for each in _preorder(top)]
+        if not 0 <= item < len(found):
+            raise IndexError(f"list item {item} out of range")
+        return self.body_start + found[item].start + 1
+
     def find(
         self,
         start: int,
@@ -179,6 +263,15 @@ class SourceMap:
             if line is not None:
                 return start + line
         return start
+
+
+def _preorder(item: Any) -> Iterator[Any]:
+    """The item span *item*, then the item spans of the lists in its
+    blocks, each in the same order."""
+    yield item
+    for block in item.blocks:
+        for inner in block.items:
+            yield from _preorder(inner)
 
 
 def _candidates(needle: str) -> list[str]:
@@ -429,3 +522,87 @@ def _lifted(block: Block, own: list[str], first: int, lines: list[str], start: i
             places[number] = (0, len(joined) - len(suffix))
         lifted = len(prefix)
     return _Leaf(start, end, [joined], places, lifted if lifted >= 0 else None)
+
+
+def _public_layout(layout: Any, base: int, frontmatter: tuple[int, int] | None) -> SourceLayout:
+    """The parser's *layout* (body lines from 0) as a ``SourceLayout`` whose
+    lines are counted from *base*, the line of the body's first."""
+
+    def block(span: Any) -> BlockSpan:
+        return BlockSpan(span.kind, base + span.start, base + span.end, tuple(item(each) for each in span.items))
+
+    def item(span: Any) -> ItemSpan:
+        return ItemSpan(base + span.start, base + span.end, tuple(block(each) for each in span.blocks))
+
+    return SourceLayout(
+        frontmatter,
+        tuple(block(each) for each in layout.preamble),
+        tuple(
+            SectionSpan(
+                HeadingSpan(base + heading.start, base + heading.end, base + heading.marker_line),
+                tuple(block(each) for each in blocks),
+            )
+            for heading, blocks in layout.sections
+        ),
+    )
+
+
+def body_layout(text: str) -> SourceLayout:
+    """Where the parts of *text* lie, read as a document body alone: a
+    ``SourceLayout`` of lines counted from 1 at the start of *text*, with no
+    frontmatter — a ``---`` first line is a thematic break, not the opening
+    of one. For text a tool holds apart from the file it came from, such as
+    an editor's field; ``Document.layout`` is the layout of a parsed
+    document. Line endings are LF, CR or CRLF, as the parser reads them."""
+    from .parser import _layout  # the parser builds on this module
+
+    lines = LINE_ENDING_RE.sub("\n", text).split("\n")
+    if lines[-1] == "":
+        lines.pop()  # the last line's ending, not a line
+    return _public_layout(_layout(lines), 1, None)
+
+
+def source_layout(document: Document) -> SourceLayout | None:
+    """``Document.layout``: where *document*'s parts lie in the source it was
+    parsed from; None without a source map, or when the document no longer
+    has the shape it was parsed with."""
+    source_map = document.source_map
+    if source_map is None or not source_map.fits(document):
+        return None
+    return source_map.to_layout()
+
+
+def line_of(document: Document, section: int | None, block: int | None, item: int | None) -> int | None:
+    """``Document.line_of``."""
+    from .models import LIST_KINDS, list_items
+
+    if section is not None and not 0 <= section < len(document.sections):
+        raise IndexError(f"section {section} out of range")
+    if block is None and item is not None:
+        raise ValueError("a list item is named by its block")
+    if block is None and section is None:
+        raise ValueError("the preamble has no heading")
+    if block is not None:
+        blocks = document.preamble if section is None else document.sections[section].blocks
+        if not 0 <= block < len(blocks):
+            raise IndexError(f"block {block} out of range")
+        if item is not None:
+            if blocks[block].kind not in LIST_KINDS:
+                raise ValueError("not a list")
+
+            def count(items: list[Any]) -> int:
+                return sum(
+                    1 + sum(count(list_items(child)) for child in each.blocks if child.kind in LIST_KINDS)
+                    for each in items
+                )
+
+            if not 0 <= item < count(list_items(blocks[block])):
+                raise IndexError(f"list item {item} out of range")
+    source_map = document.source_map
+    if source_map is None or not source_map.fits(document):
+        return None
+    if block is None:
+        return source_map.heading(section)  # type: ignore[arg-type]
+    if item is None:
+        return source_map.block(section, block)
+    return source_map.item(section, block, item)

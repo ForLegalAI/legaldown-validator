@@ -40,21 +40,26 @@ from .helpers import (
     slugify_identifier,
 )
 from .patterns import (
+    _CONSTRUCT_PRESENT,
+    _UNFILLED,
     DURATION_UNITS,
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
     LEGALDOWN_EXTENSIONS,
+    MAX_SECTION_LEVEL,
+    PARTY_TYPES,
     RESERVED_VALUE_TYPES,
     VALID_DOC_TYPES,
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
+from .result import Blank, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
-    Blank,
     Quote,
+    _BlankState,
+    _fixed_by_all,
     block_quotes,
     check_choose,
     check_questions,
@@ -294,7 +299,7 @@ def _check_directive_arguments(
 def _check_placeholder(
     directive: Directive,
     result: _Recorder,
-    blanks: dict[str, Blank],
+    blanks: dict[str, _BlankState],
     questions: Any,
     *,
     in_frontmatter: bool = False,
@@ -321,7 +326,7 @@ def _check_placeholder(
             f"Placeholder id '{pid}' is invalid — must match [a-z][a-z0-9-]*.",
         )
         return
-    blank = blanks.setdefault(pid, Blank())
+    blank = blanks.setdefault(pid, _BlankState())
     blank.in_frontmatter |= in_frontmatter
     type_valid = written_type is None or written_type in VALID_PLACEHOLDER_TYPES
     if not type_valid:
@@ -351,6 +356,7 @@ def _check_placeholder(
     if blank.type is None:
         blank.type = ptype
     if blank.type != ptype:
+        blank.mixed = True
         result.error(
             "placeholder-type-inconsistent",
             f"Placeholder '{pid}' used with inconsistent types: "
@@ -369,7 +375,7 @@ def _check_placeholder(
         _check_duration_unit(code, result)
 
 
-def _check_blank_codes(blanks: dict[str, Blank], result: _Recorder) -> None:
+def _check_blank_codes(blanks: dict[str, _BlankState], result: _Recorder) -> None:
     """Report each blank whose occurrences fix two currencies or units: one
     blank cannot hold two (§10.7)."""
     for pid, blank in blanks.items():
@@ -401,14 +407,14 @@ def _check_final(
     written, and their lines)."""
     for directive, line in placeholders:
         result.error(
-            "placeholder-unfilled",
+            _UNFILLED,
             f"'{directive.source}' is an unfilled blank in a document meant to be final (§15.9).",
             line=line,
         )
 
     def construct(what: str, line: int | None) -> None:
         result.error(
-            "template-construct-present",
+            _CONSTRUCT_PRESENT,
             f"{what} remains in a document meant to be final (§15.9).",
             line=line,
         )
@@ -852,10 +858,11 @@ def _validate(
                 )
                 continue
             seen_party_names.add(party_name)
-            if party.type not in ("legal_entity", "natural_person"):
+            if party.type not in PARTY_TYPES:
+                allowed = " or ".join(map(repr, PARTY_TYPES))
                 result.error(
                     "party-type-invalid",
-                    f"Party '{party_name}' has invalid type '{party.type}'. Must be 'legal_entity' or 'natural_person'.",
+                    f"Party '{party_name}' has invalid type '{party.type}'. Must be {allowed}.",
                     line=where.key(*party_path, "type"),
                 )
             with result.at(where.key(*party_path, "date_of_birth")):
@@ -1008,7 +1015,7 @@ def _validate(
     # headings all start at ## (an attachment or include file, which has no
     # # heading) numbers them 1, 2, … A level that a heading skips counts
     # as 1 (see below), so no two sections get the same number (#38).
-    shallowest = min((min(max(s.level, 1), 5) for s in document.sections), default=1)
+    shallowest = min((min(max(s.level, 1), MAX_SECTION_LEVEL) for s in document.sections), default=1)
     path_stack: list[str] = []
     # The level before the first heading: 0 in a main document, whose first
     # heading must be at level 1 (§4.1). A document without frontmatter may
@@ -1027,13 +1034,13 @@ def _validate(
         # one here would shift every later section's number and drop the last
         # one from rendered output. Numbering clamps into the valid range.
         level = section.level
-        if level < 1 or level > 5:
+        if level < 1 or level > MAX_SECTION_LEVEL:
             result.error(
                 "heading-depth",
                 f"Section '{section.title}' uses unsupported heading level "
-                f"{section.level}. LegalDown supports levels 1-5 (§4.1).", line=where.heading(section_index),
+                f"{section.level}. LegalDown supports levels 1-{MAX_SECTION_LEVEL} (§4.1).", line=where.heading(section_index),
             )
-            level = min(max(level, 1), 5)
+            level = min(max(level, 1), MAX_SECTION_LEVEL)
         if last_level == 0 and level > 1:
             result.error(
                 "heading-skip",
@@ -1122,6 +1129,7 @@ def _validate(
             path=".".join(path_stack),
             level=level,
             number=number,
+            alternative=alternative,
         )
         result.index.sections.append(entry)
         # Alternatives share an identifier: a reference resolves to
@@ -1326,7 +1334,7 @@ def _validate(
                 result.index.definition_lookup.setdefault(def_id, term_text)
 
     # ── Inline directive validation ──
-    blanks: dict[str, Blank] = {}
+    blanks: dict[str, _BlankState] = {}
     referenced_attachments: set[str] = set()
 
     # ── Frontmatter placeholders (§3.10) ──
@@ -1556,6 +1564,16 @@ def _validate(
                     )
 
     _check_blank_codes(blanks, result)
+    result.index.blanks = {}
+    for pid, state in blanks.items():
+        consistent = not state.mixed and len(state.codes - {""}) < 2
+        result.index.blanks[pid] = Blank(
+            id=pid,
+            type=state.type,
+            fixed=(_fixed_by_all(state.codes) or "") if consistent else "",
+            in_frontmatter=state.in_frontmatter,
+            consistent=consistent,
+        )
 
     # ── Templates (§15) ──
     # Every condition in a condition position (§15.3): on what, as written,

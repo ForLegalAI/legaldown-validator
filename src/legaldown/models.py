@@ -8,9 +8,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .markdown import LINE_ENDING_RE, is_blank, strip_text
+
+if TYPE_CHECKING:
+    from .positions import SourceLayout
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -210,6 +213,33 @@ class Document:
         for section_index, section in enumerate(self.sections):
             for index, block in enumerate(section.blocks):
                 yield section_index, index, block
+
+    def layout(self) -> SourceLayout | None:
+        """Where the document's frontmatter, headings, blocks and list items
+        lie in the file it was parsed from (§16.9): file lines counted from
+        1, each span the lines ``[start, end)`` (end exclusive; the blank
+        lines between parts belong to none, but for those between a list's
+        items). None for a document
+        built in code, and for one changed since it was parsed so that it
+        no longer fits its source: where its parts lie is not known then."""
+        from .positions import source_layout  # positions describes documents: it builds on this module
+
+        return source_layout(self)
+
+    def line_of(self, section: int | None, block: int | None = None, item: int | None = None) -> int | None:
+        """The first line, counted from 1, of a part of the document in its
+        file: section *section*'s heading (*block* None); a top-level block,
+        of a section or, with *section* None, of the preamble; or a list
+        item's marker, *item* counted in pre-order among all the list's
+        items, nested ones included (``list_fragments``). These are the
+        lines its diagnostics name (§16.9). None when the document has no
+        source to name a line of (``layout``). Raises ``IndexError`` for an
+        index out of range, and ``ValueError`` for a preamble without a
+        block, an item without a block, or an item of a block that is not a
+        list."""
+        from .positions import line_of
+
+        return line_of(self, section, block, item)
 
     def iter_blocks(self) -> Iterator[tuple[Section | None, int, Block]]:
         """Every body block in document order, as ``(section, index, block)``:

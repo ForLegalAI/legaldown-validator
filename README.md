@@ -279,8 +279,8 @@ The public API is what the `legaldown` and `legaldown.validator` packages export
 `__all__`). Changes to it are listed in the notes of each
 [GitHub release](https://github.com/ForLegalAI/legaldown-validator/releases); before 1.0 a
 minor release may change it, a patch release does not. Other modules are internal and may
-change in any release; constants still only there are to be made public
-([#34](https://github.com/ForLegalAI/legaldown-validator/issues/34)).
+change in any release, except `legaldown.grammar` and `legaldown.syntax` (see
+[Tooling API](#tooling-api)), which are public too.
 
 ### Working with the result
 
@@ -299,23 +299,17 @@ itself is what was found, kept nowhere but in `diagnostics`:
 
 | `result.index.…` | Contents |
 |---|---|
-| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8) |
+| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8); an entry's `alternative` is true for a section that is an alternative to its preceding sibling — the section just before it at its level under the same parent, with the same identifier, never present together with it (§15.4) — and so shares its number (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
 | `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
+| `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence: `Blank(id, type, fixed, in_frontmatter, consistent)` — `type` the type the validator settled on: the effective type of the first occurrence with a valid one (§10.7, §15.2; `text` when none is written), or `None` when no occurrence has a usable type (each is written with an invalid one, or the id is a decision question's); `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none, or the blank is not `consistent`); `consistent` false when its occurrences have different types or fix two currencies or units (placeholder-type-inconsistent); `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
-A renderer builds from these decisions rather than re-deriving them, with the helpers the
-validator reads the document with.
-[`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way:
-
-| Helper | What it gives |
-|---|---|
-| `lex(text)` → `Lexed` | The directives in inline text (§11.4), and a `view` of it with comments and code spans blanked; `is_escaped(text, offset)` |
-| `block_fragments(block)`, `list_fragments(block)`, `list_items(block)` | The texts of a block that hold directives and markers, in the order `PlacedMarker.fragment` counts them (`Fragment(text, anchor)`); the same for a list, with the items each is in (`ListFragment(text, anchor, items)`), numbered in pre-order: an item before the items nested in it; a list's items, as `ListItem`s |
-| `is_template(document)`, `is_drafting_note(block)` | The template decision without validating (§15.1); whether a quote block is a drafting note (§15.6) |
-| `legaldown.validator`: `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units (each the set of conditions it appears under, `Presence`) can never appear together, given the document's `questions` |
-| `legaldown.validator`: `is_valid_iso_date`, `is_valid_money_amount`, `is_positive_numeric`, `IDENTIFIER_RE`, `KNOWN_CURRENCIES` | Value checks (§3.10, §10) |
+`is_template(document)` (top-level) gives the template decision without validating (§15.1).
+A renderer builds from these decisions rather than re-deriving them, reading the source with
+the validator's own helpers ([Tooling API](#tooling-api)).
+[`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way.
 
 ### Reading and editing the document model
 
@@ -428,6 +422,110 @@ lines of its own, is an `html` block holding its source as written. No heading, 
 or anchor inside it is recognized (§8.6, §11.4), so a clause commented out with
 `<!-- … -->` is not a section. As in CommonMark, a comment left unclosed runs to the end of
 the document.
+
+## Tooling API
+
+Tools built on the validator (renderers, editors, importers) need the language itself: its
+vocabulary, its value formats, and how the validator reads source text. Two modules hand that
+over. They are part of the supported API and covered by the same versioning as `legaldown`
+and `legaldown.validator`, and they are the only supported way to reach these names: every
+module path below them (`legaldown.markdown`, `legaldown.validator.patterns`, …) is internal
+and may be reorganised in any release. Their names are the validator's own objects, not copies, so
+a tool and the validator cannot disagree.
+
+**`legaldown.grammar`** is what needs no document: constants and small rules.
+
+```python
+from legaldown.grammar import (
+    IDENTIFIER_RE, KNOWN_CURRENCIES, MAX_SECTION_LEVEL, PARTY_TYPES, VALID_PLACEHOLDER_TYPES,
+    is_valid_iso_date, slugify_identifier,
+)
+
+is_valid_iso_date("2026-02-30")                 # False
+slugify_identifier("1st Term")                  # "section-1st-term" (§5.3)
+slugify_identifier("日本語", fallback="")        # "": nothing usable, as against real text
+```
+
+| Names | What they are |
+|---|---|
+| `SPEC_VERSION`, `LEGALDOWN_EXTENSIONS` | The specification version implemented; the file extensions of LegalDown source (§2.1) |
+| `KNOWN_DIRECTIVES`, `DIRECTIVE_PARAMS`, `PLACEHOLDER_TYPE_PARAMS` | The directive vocabulary and the parameters each defines (§11) |
+| `IDENTIFIER_RE`, `RESERVED_VALUE_TYPES`, `VALID_DOC_TYPES`, `PARTY_TYPES`, `KNOWN_CURRENCIES`, `DELIMITER_PAIRS` | Identifier format (§5.3), reserved value-type names, document types, party types, ISO 4217 codes, accepted definition delimiters (§7.2) |
+| `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
+| `LIST_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; the deepest heading level (5); how deep the parser reads quotes and lists |
+| `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
+| `slugify_identifier(text, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
+| `is_valid_iso_date`, `is_valid_numeric`, `is_valid_money_amount`, `is_positive_numeric` | Value checks (§3.10, §10) |
+| `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units can never appear together |
+| `choose_problem(directive, questions)` | Why a `{{choose:}}` is invalid (choose-invalid, §15.5): the first message `validate` records for it, or `None`; `ValueError` for a directive that is not a `{{choose:}}` or is malformed (`validate` reports that as directive-malformed) |
+
+**`legaldown.syntax`** is reading source text the way the validator does.
+
+```python
+from legaldown import load
+from legaldown.syntax import block_fragments, find_markers, lex
+
+document = load("contract.lgd")
+for found in find_markers(document):             # every marker and look-alike in the body
+    print(found.source, found.placed(template=False), found.misplaced)
+for _section, _index, block in document.iter_blocks():
+    for text, _anchor in block_fragments(block):
+        print([d.name for d in lex(text).directives])
+```
+
+| Names | What they are |
+|---|---|
+| `lex`, `Lexed`, `Directive`, `iter_directives`, `is_escaped`, `format_value` | The directive lexer (§11.4) and its inverse. A `Directive`'s `positional_span` and `param_spans` are where each value is written, quotes included, so `text[start:end]` is what to replace to change it; `Lexed.literals` are the comments and code spans the lexer skipped, as `(kind, start, end)` |
+| `iter_document_directives(document)` → `DirectiveLocation(section, block, fragment, directive)`, `collect_source_directives` | Every directive in a document's body, in order, read as `validate` reads it: `fragment` indexes `block_fragments(block)`, and is `None` for a `{{ref:}}`, `{{term:}}` or `{{def:}}` the parser lifted into a block's fields (a definition's comes before its text); the `{{ref:}}` and `{{term:}}` targets of a document |
+| `Marker`, `MARKER_RE`, `parse_marker`, `format_marker`, `is_look_alike` | Anchor and condition markers (§5.7, §15.3) |
+| `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`) |
+| `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `text_fragments`, `list_items`, `item_text` | Where a block's text is, and a list's items |
+| `Quote`, `block_quotes`, `is_drafting_note(block)` | The block quotes in a block and whether each is a drafting note; whether a quote block is one (§15.6) |
+| `quote_blocks(block, depth=0)`, `drafting_note_blocks(block, depth=0)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6). `depth` is how many list items and quotes the quote is in, the count before entering it (a quote in a list item is at 1); past `MAX_QUOTE_DEPTH` the validator reads a quote as one text, so you get one paragraph of its text as written |
+| `code_content(block)` → `CodeContent(info, text, fenced)` | A code block read as CommonMark reads it: the info string, and the code without its fences or indentation |
+| `FRONTMATTER_RE`, `LINE_ENDING_RE`, `HTML_COMMENT_RE`, `FENCE_OPEN_RE`, `closes_fence`, `fence_end`, `dedent`, `indent_width`, `strip_text` | The Markdown rules the reading is built on: frontmatter, line endings, comments, fenced code, indentation |
+
+**Where things are in the file.** `document.layout()` gives a `SourceLayout`: the frontmatter's
+`(start, end)`, the preamble's `BlockSpan`s, and per section a `SectionSpan` (its `HeadingSpan` and
+its blocks' spans), in `document.sections` order. Lines are file lines counted from 1, `end`
+exclusive; a list's `BlockSpan` has its `ItemSpan`s, each with the spans of its blocks.
+`document.line_of(section, block=None, item=None)` is one line: a section's heading, a top-level
+block (`section=None` for the preamble), or a list item's marker, items counted in pre-order as
+`PlacedMarker.item` counts them. These are the lines diagnostics name (§16.9). Both are `None`
+for a document built in code, or changed since it was parsed. A span covers the lines
+`[start, end)`; the blank lines between parts belong to none (but for those between a list's items,
+which the item before holds). For text you hold apart from its file — an editor's field —
+`body_layout(text)` is the same `SourceLayout` of that text read as a body alone, with lines counted
+from 1 at its start and no frontmatter (a `---` first line is a thematic break there).
+
+```python
+document = load("contract.lgd")
+for number, section in enumerate(document.layout().sections):
+    print(document.sections[number].title, section.heading.start, [b.start for b in section.blocks])
+```
+
+If you import one of these from a private module, use its public home:
+
+| From | Use |
+|---|---|
+| `legaldown.directives`: `PLACEHOLDER_TYPE_PARAMS` | `legaldown.grammar` |
+| `legaldown.directives`: `format_value` | `legaldown.syntax` |
+| `legaldown.definitions`: `text_fragments` | `legaldown.syntax` |
+| `legaldown.definitions`: `DELIMITER_PAIRS` | `legaldown.grammar` (also top-level) |
+| `legaldown.markdown`: `FENCE_OPEN_RE`, `HTML_COMMENT_RE`, `LINE_ENDING_RE`, `closes_fence`, `dedent`, `fence_end`, `indent_width`, `strip_text` | `legaldown.syntax` |
+| `legaldown.markers`: `MARKER_RE`, `Marker`, `format_marker`, `is_look_alike`, `parse_marker` | `legaldown.syntax` |
+| `legaldown.models`: `LIST_KINDS` | `legaldown.grammar` |
+| `legaldown.parser`: `FRONTMATTER_RE` | `legaldown.syntax` |
+| `legaldown.parser`: `MAX_QUOTE_DEPTH` | `legaldown.grammar` |
+| `legaldown.validator.patterns`: `LEGALDOWN_EXTENSIONS`, `IDENTIFIER_RE`, `KNOWN_CURRENCIES`, `VALID_DOC_TYPES`, `VALID_DURATION_UNITS`, `VALID_PLACEHOLDER_TYPES` | `legaldown.grammar` |
+| `legaldown.validator.templates`: `DECISION_QUESTION_TYPES`, `QUESTION_TYPES` | `legaldown.grammar` |
+| `legaldown.validator.templates`: `block_quotes` | `legaldown.syntax` |
+| `legaldown.validator.templates`: `check_choose` | `legaldown.grammar.choose_problem` |
+| `legaldown.validator.units`: `find_markers`, `is_include_only` | `legaldown.syntax` |
+| `legaldown.parser`: `quote_content` | `legaldown.syntax.quote_blocks` (and `drafting_note_blocks`) |
+| `legaldown.parser`: `_layout` | `legaldown.syntax.body_layout(text)` for bare body text (lines from 1 at its start); `Document.layout()` for a parsed document (file lines) |
+| your own fence stripping (`FENCE_OPEN_RE`, `closes_fence`, `dedent`) | `legaldown.syntax.code_content` |
+| `legaldown.cli`: `_read_answers` | `legaldown.load_answers` |
 
 ## What gets checked
 

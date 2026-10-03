@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .markdown import FENCE_OPEN_RE, HTML_COMMENT_RE, fence_end
 
@@ -113,6 +113,13 @@ class Directive:
     is empty for a well-formed directive; a malformed directive carries no
     arguments, and runs through the first ``}}`` on its line or up to the next
     directive opener (§11.4 opener commitment), whichever comes first.
+
+    ``positional_span`` and ``param_spans`` say where the values are: the
+    offsets ``(start, end)`` in the lexed text of each value as written, quotes
+    included, so ``text[start:end]`` is what to replace to change the value (a
+    parameter written without a value, ``label=``, has an empty span where its
+    value would go). ``param_spans`` has the first occurrence of a repeated
+    parameter, as ``params`` has its value. A malformed directive has none.
     """
 
     name: str
@@ -124,6 +131,8 @@ class Directive:
     end: int
     source: str
     unquoted: tuple[tuple[str, str], ...] = ()
+    positional_span: tuple[int, int] | None = None
+    param_spans: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     def curly_quoted(self) -> list[tuple[str, str]]:
         """The ``unquoted`` arguments whose value begins with a typographic
@@ -177,12 +186,13 @@ def _skip_ws(text: str, pos: int) -> int:
     return pos
 
 
-def _lex_value(text: str, pos: int) -> tuple[str, int]:
-    """Lex one value at *pos*; return it decoded, with the offset of the
-    ``,`` or ``}}`` that terminates it."""
+def _lex_value(text: str, pos: int) -> tuple[str, tuple[int, int], int]:
+    """Lex one value at *pos*; return it decoded, where it is written (quotes
+    included), and the offset of the ``,`` or ``}}`` that terminates it."""
     pos = _skip_ws(text, pos)
     if text.startswith('"', pos):
         chars: list[str] = []
+        opening = pos
         pos += 1
         while True:
             if pos >= len(text) or text[pos] == "\n":
@@ -195,12 +205,13 @@ def _lex_value(text: str, pos: int) -> tuple[str, int]:
             else:
                 chars.append(text[pos])
                 pos += 1
-        pos = _skip_ws(text, pos + 1)
+        closing = pos + 1
+        pos = _skip_ws(text, closing)
         if not text.startswith((",", "}}"), pos):
             if pos >= len(text) or text[pos] == "\n":
                 raise _Malformed(_UNCLOSED)
             raise _Malformed("text after a quoted value")
-        return "".join(chars), pos
+        return "".join(chars), (opening, closing), pos
     start = pos
     while not text.startswith((",", "}}"), pos):
         if pos >= len(text) or text[pos] == "\n":
@@ -215,33 +226,38 @@ def _lex_value(text: str, pos: int) -> tuple[str, int]:
         # An argument must have content; ``label=`` names its parameter, so
         # only a bare empty argument (a stray comma) gets here.
         raise _Malformed("empty argument")
-    return value, pos
+    return value, (start, start + len(value)), pos
 
 
-def _lex_named_value(text: str, pos: int) -> tuple[str, int]:
+def _lex_named_value(text: str, pos: int) -> tuple[str, tuple[int, int], int]:
     """Lex a named parameter's value, which may be empty (``label=``)."""
     end = _skip_ws(text, pos)
     if text.startswith((",", "}}"), end):
-        return "", end
+        return "", (end, end), end
     return _lex_value(text, pos)
 
 
 def _lex_arguments(
     text: str, pos: int
-) -> tuple[str | None, dict[str, str], list[str], list[tuple[str, str]], int]:
+) -> tuple[
+    str | None, tuple[int, int] | None, dict[str, str], dict[str, tuple[int, int]],
+    list[str], list[tuple[str, str]], int,
+]:
     """Lex the arguments after a directive opener.
 
-    Returns ``(positional, params, duplicates, unquoted, end)``, where
-    *unquoted* is ``Directive.unquoted`` and *end* is the offset just past
-    the closing ``}}``.
+    Returns ``(positional, positional_span, params, param_spans, duplicates,
+    unquoted, end)``, where *unquoted* is ``Directive.unquoted`` and *end* is
+    the offset just past the closing ``}}``.
     """
     positional: str | None = None
+    positional_span: tuple[int, int] | None = None
     params: dict[str, str] = {}
+    param_spans: dict[str, tuple[int, int]] = {}
     duplicates: list[str] = []
     unquoted: list[tuple[str, str]] = []
     pos = _skip_ws(text, pos)
     if text.startswith("}}", pos):
-        return positional, params, duplicates, unquoted, pos + 2
+        return positional, positional_span, params, param_spans, duplicates, unquoted, pos + 2
     while True:
         pos = _skip_ws(text, pos)
         named = _PARAM_NAME_RE.match(text, pos)
@@ -249,24 +265,26 @@ def _lex_arguments(
             param = named.group(0)[:-1]
             # Quoting is syntax, lost on decoding (§11.3): note it first.
             quoted = text.startswith('"', _skip_ws(text, named.end()))
-            value, pos = _lex_named_value(text, named.end())
+            value, span, pos = _lex_named_value(text, named.end())
             if param in params:
                 duplicates.append(param)
             else:
                 params[param] = value
+                param_spans[param] = span
         else:
             param = ""
             quoted = text.startswith('"', pos)
-            value, pos = _lex_value(text, pos)
+            value, span, pos = _lex_value(text, pos)
             if positional is not None:
                 raise _Malformed("more than one positional value")
             if params:
                 raise _Malformed("positional value after a named parameter")
             positional = value
+            positional_span = span
         if value and not quoted:
             unquoted.append((param, value))
         if text.startswith("}}", pos):
-            return positional, params, duplicates, unquoted, pos + 2
+            return positional, positional_span, params, param_spans, duplicates, unquoted, pos + 2
         pos += 1  # past the comma
 
 
@@ -303,12 +321,15 @@ class Lexed:
     ``view`` has the same offsets as the text, with comments and code spans
     blanked. Callers that look around directives (the defined
     term before a ``{{def:}}``, anchor markers) use it so they agree with the
-    lexer about what is literal.
+    lexer about what is literal. ``literals`` lists those regions, in order, as
+    ``(kind, start, end)``: *kind* is ``"comment"`` or ``"code"`` (a code
+    span), and ``view[start:end]`` is what was blanked of ``text[start:end]``.
     """
 
     directives: list[Directive]
     stray_braces: list[int]  # offsets of each ``{{`` that opens no directive
     view: str
+    literals: list[tuple[str, int, int]] = field(default_factory=list)
 
 
 def lex(text: str) -> Lexed:
@@ -317,7 +338,7 @@ def lex(text: str) -> Lexed:
     *text* is inline text, such as a paragraph's: fenced code is not looked
     for. Text that can hold it (a code block's, a block quote's) has it
     blanked first, as block structure precedes inline structure
-    (``blank_fenced_code``; ``block_fragments`` gives such text so). It is
+    (``block_fragments`` gives such text so). It is
     read once, left to right, taking whichever
     of a directive, a comment, or a code span opens first. A directive is
     lexed from the source as written and consumes its own text, so a quoted
@@ -327,6 +348,7 @@ def lex(text: str) -> Lexed:
     view = text or ""
     directives: list[Directive] = []
     stray_braces: list[int] = []
+    literals: list[tuple[str, int, int]] = []
     pos = 0
     while token := _INLINE_START_RE.search(view, pos):
         start = token.start()
@@ -339,6 +361,7 @@ def lex(text: str) -> Lexed:
                 pos = start + 4  # an unclosed comment is literal text
             else:
                 view = _blank(view, start, comment.end())
+                literals.append(("comment", start, comment.end()))
                 pos = comment.end()
             continue
         if token.group(0).startswith("`"):
@@ -351,6 +374,7 @@ def lex(text: str) -> Lexed:
                 pos = token.end()  # an unmatched backtick run is literal text
             else:
                 view = _blank(view, start, close.end())
+                literals.append(("code", start, close.end()))
                 pos = close.end()
             continue
         opener = _OPENER_RE.match(view, start)
@@ -361,13 +385,15 @@ def lex(text: str) -> Lexed:
         directive = _lex_directive(text, start, opener)
         directives.append(directive)
         pos = directive.end
-    return Lexed(directives, stray_braces, view)
+    return Lexed(directives, stray_braces, view, literals)
 
 
 def _lex_directive(text: str, start: int, opener: re.Match[str]) -> Directive:
     """Lex the directive whose opener (``{{name:``) is *opener*."""
     try:
-        positional, params, duplicates, unquoted, end = _lex_arguments(text, opener.end())
+        positional, positional_span, params, param_spans, duplicates, unquoted, end = _lex_arguments(
+            text, opener.end()
+        )
     except _Malformed as exc:
         end = _malformed_end(text, start, opener.end())
         return Directive(
@@ -390,6 +416,8 @@ def _lex_directive(text: str, start: int, opener: re.Match[str]) -> Directive:
         end=end,
         source=text[start:end],
         unquoted=tuple(unquoted),
+        positional_span=positional_span,
+        param_spans=param_spans,
     )
 
 

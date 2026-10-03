@@ -13,11 +13,19 @@ LEGALDOWN_EXTENSIONS: tuple[str, ...] = (".lgd", ".legaldown", ".legal.md")
 # the built-in field specs or placeholder types.
 RESERVED_VALUE_TYPES: frozenset[str] = frozenset({"date", "money", "duration", "party", "text"})
 VALID_DOC_TYPES: frozenset[str] = frozenset({"contract", "unilateral_act", "collective_act"})
+# The `type` a party may have (§3.4).
+PARTY_TYPES: tuple[str, ...] = ("legal_entity", "natural_person")
+# The deepest heading level LegalDown supports (§4.1).
+MAX_SECTION_LEVEL = 5
 # §10.5: the bare unit "M" is deliberately undefined (ISO 8601 ambiguity);
 # validators reject it with a hint suggesting MIN (minutes) or MO (months).
 # In the order §10.5 lists them, for diagnostics.
 DURATION_UNITS: tuple[str, ...] = ("S", "MIN", "H", "D", "W", "MO", "Y")
 VALID_DURATION_UNITS: frozenset[str] = frozenset(DURATION_UNITS)
+# The rules of the final check (§15.9): the only ones it reports.
+_UNFILLED = "placeholder-unfilled"
+_CONSTRUCT_PRESENT = "template-construct-present"
+FINAL_CHECK_RULES: frozenset[str] = frozenset({_UNFILLED, _CONSTRUCT_PRESENT})
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 
