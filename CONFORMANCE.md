@@ -6,7 +6,7 @@ parse and validate a single document in memory. It also claims the **Assembly** 
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **84 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **85 of the
 corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes**,
 at the line each case gives.
 
@@ -17,7 +17,7 @@ holds it (`amends:` for a missing `amends.title`) or the frontmatter's first key
 not asserted at their given line:
 
 - The answer rules (`answer-invalid`, `answer-unknown`) point into the answers file, which
-  `assemble` receives already parsed, so its diagnostics name no line.
+  assembly receives already parsed (`Template.form(answers)`), so its diagnostics name no line.
 - `party-name-duplicate` gives line 10, the second side; this implementation reports line 12,
   the duplicate party's own entry, as `side-name-duplicate` and `representative-name-empty`
   point at theirs ([ForLegalAI/LegalDown#42](https://github.com/ForLegalAI/LegalDown/issues/42),
@@ -195,11 +195,13 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 
 Each case's expected rule is asserted at its expected line, where the case gives one (above).
 Cases for the rules above are skipped by name, so the 28 `not implemented` skips reproduce this
-table one for one, except `ref-not-enumerated`, which has no fixture. The run reports 92 passed
-and 38 skipped: eight of the other skips are the implemented rules named above, skipped as
-`multi-file case` or `requires conformance level full`, and two are the `multi-file` assembly
-case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py` assembles it with
-a loader instead. Cases that need the final option run with it; cases that need an answers set
+table one for one, except `ref-not-enumerated`, which has no fixture. Each fixture document is
+also written back (`serialize`) and validated again, which must report the same diagnostics. The
+run reports 234 passed and 39 skipped: eight of the other skips are the implemented rules named
+above, skipped as `multi-file case` or `requires conformance level full`, two are the `multi-file`
+assembly case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py`
+assembles it with a loader instead — and one is the write-back of the `frontmatter-invalid-yaml`
+case, whose frontmatter cannot be read. Cases that need the final option run with it; cases that need an answers set
 are assembled with it, and each assembly case is compared byte for byte with its expected output.
 CI runs this on demand (Actions → CI → Run workflow with the `conformance` input on, or the `ci` label on a pull request).
 
@@ -210,9 +212,9 @@ the answer rules of §16.12 (`answer-invalid`, `answer-missing`, `answer-unknown
 structure assembly edits is recorded by the parser's own walk, so assembly and validation read a
 template the same way. `Template.questions` lists the questions a template asks; `Form.questions`
 those it reaches given an answers set, and `Form.unanswered` those still left open. §15.7.2 gives assembly a template that
-validates without Errors, which assembly itself does not check; a `Template` refuses one with Errors
-in the validator's template rules (`Template.problems`), and the deprecated `assemble` function does
-not.
+validates without Errors. Assembly does not require the whole of that, but a `Template` refuses a
+template with Errors in the validator's template rules (`Template.problems`); the deprecated
+`assemble` function does not.
 
 - A single-file template is assembled at Core, as §17.6 permits ("Core + Assembly").
 - A template with include fragments or LegalDown attachment files is assembled when the caller

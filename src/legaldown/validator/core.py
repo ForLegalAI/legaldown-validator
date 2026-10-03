@@ -69,7 +69,8 @@ from .templates import (
 )
 from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
 
-# Type aliases for the optional definitions-import callbacks.
+# Type aliases for the definitions-import callbacks: deprecated since 0.4.0,
+# removed in 0.5.0, with the callbacks (``validate(resolve=)`` replaces them).
 DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
 AttachmentDefinitionsImporter = Callable[[str], dict[str, str] | None]
 

@@ -4,7 +4,7 @@
 
 ### The reference implementation of [LegalDown](https://github.com/ForLegalAI/LegalDown)
 
-**Parse, validate, and serialize LegalDown documents — from the command line or from Python.**
+**Parse, validate, and serialize LegalDown documents, and assemble templates — from the command line or from Python.**
 
 Targets specification **v0.2** · Every diagnostic carries a **stable rule id** · One dependency: PyYAML
 
@@ -91,8 +91,8 @@ legaldown validate contract.lgd
 ```
 
 ```
-contract.lgd:14: error: [ref-broken] Broken section reference: 'payment-terms'.
-contract.lgd:22: warning: [money-missing-currency] Money directive without currency parameter.
+contract.lgd:24: error: [ref-broken] Broken section reference: 'payment-terms'.
+contract.lgd:24: warning: [money-missing-currency] Money directive without currency parameter.
 
 1 error(s), 1 warning(s), 0 info(s)
 ```
@@ -203,8 +203,15 @@ integrations, and dashboards:
       "file": "contract.lgd",
       "rule": "ref-broken",
       "level": "error",
-      "line": 14,
+      "line": 24,
       "message": "Broken section reference: 'payment-terms'."
+    },
+    {
+      "file": "contract.lgd",
+      "rule": "money-missing-currency",
+      "level": "warning",
+      "line": 24,
+      "message": "Money directive without currency parameter."
     }
   ]
 }
@@ -258,14 +265,16 @@ not those it refers to in turn. A file that is not there, is not UTF-8, or has f
 if it had not been asked for: no diagnostic of its own. A document from `parse(text)` has no path,
 so there is nothing to read (`resolve=lambda path: None` does the same for a loaded one, to
 validate it without reading anything); give `validate` a `resolve=` function, from a relative path to the
-file's text (or `None`), to read them from elsewhere — a database, an upload. `file_loader(directory)`
-is the same function for files on disk, and the one `parse_template` takes as `resolve=` (`LoadFile`).
+file's text (or `None`), to read them from elsewhere — a database, an upload. Such a function is a
+`LoadFile`; `file_loader(directory)` makes one for files on disk, and `parse_template` takes one as
+`resolve=` too.
 
 > **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file),
 > `validate_document` is now `validate`, `serialize_document` is now `serialize` (text) or `save`
-> (file), and the importer callbacks `import_definitions=` and `import_attachment_definitions=` are
-> replaced by `resolve=`. They still work and raise a `DeprecationWarning`; they are deprecated
-> since 0.4.0 and will be removed in 0.5.0. Every deprecation warning legaldown raises is a
+> (file), and the importer callbacks `import_definitions=` and `import_attachment_definitions=` (and
+> their types, `DefinitionsImporter` and `AttachmentDefinitionsImporter`) are replaced by `resolve=`.
+> They still work, and calling one raises a `DeprecationWarning`; they are deprecated since 0.4.0
+> and will be removed in 0.5.0 (the template functions too: [Assembly](#assembly)). Every deprecation warning legaldown raises is a
 > `legaldown.LegaldownDeprecationWarning` (a `DeprecationWarning` subclass), so one filter catches
 > them all: `warnings.simplefilter("error", legaldown.LegaldownDeprecationWarning)` in code, or
 > `filterwarnings = ["error::legaldown.LegaldownDeprecationWarning"]` in pytest's configuration
@@ -286,11 +295,11 @@ The public API is what the `legaldown` and `legaldown.validator` packages export
 model: loading, validating, saving and assembling documents, what that returns, and the `Document`
 dataclasses. `legaldown.syntax` and `legaldown.grammar` are the tooling API (see
 [Tooling API](#tooling-api)): reading source text the way the validator does, and the language's
-constants and rules. The names that moved out of `legaldown.__all__` in 0.4.0 — the lexer, the
-fragments, the definition readers, `render_block`, the dict factories and the like — still import
-from `legaldown`, as the same objects and without a warning, so code written for earlier releases
-keeps working; new code imports them from their home (the table at the end of
-[Tooling API](#tooling-api)). Changes to the API are listed in the notes of each
+constants and rules. **Changed in 0.4.0:** the lexer, the fragments, the definition readers, `render_block`, the dict
+factories and the like moved out of `legaldown.__all__`, so `from legaldown import *` no longer
+brings them. Imported by name they still import from `legaldown`, as the same objects and without
+a warning, so code written for earlier releases keeps working; new code imports them from their
+home (the table at the end of [Tooling API](#tooling-api)). Changes to the API are listed in the notes of each
 [GitHub release](https://github.com/ForLegalAI/legaldown-validator/releases); before 1.0 a
 minor release may change it, a patch release does not. Other modules are internal and may
 change in any release.
@@ -312,7 +321,7 @@ itself is what was found, kept nowhere but in `diagnostics`:
 
 | `result.index.…` | Contents |
 |---|---|
-| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8); an entry's `alternative` is true for a section that is an alternative to its preceding sibling — the section just before it at its level under the same parent, with the same identifier, never present together with it (§15.4) — and so shares its number (§15.8) |
+| `sections`, `section_lookup` | Numbered section index, as `SectionIndexEntry(title, identifier, path, level, number, alternative)`, in document order and by identifier (a paragraph's or item's anchor too, to its section); resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8); an entry's `alternative` is true for a section that is an alternative to its preceding sibling — the section just before it at its level under the same parent, with the same identifier, never present together with it (§15.4) — and so shares its number (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
 | `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
 | `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence: `Blank(id, type, fixed, in_frontmatter, consistent)` — `type` the type the validator settled on: the effective type of the first occurrence with a valid one (§10.7, §15.2; `text` when none is written), or `None` when no occurrence has a usable type (each is written with an invalid one, or the id is a decision question's); `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none, or the blank is not `consistent`); `consistent` false when its occurrences have different types or fix two currencies or units (placeholder-type-inconsistent); `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
@@ -326,8 +335,9 @@ the validator's own helpers ([Tooling API](#tooling-api)).
 
 ### Reading and editing the document model
 
-`load` and `parse` return a `Document` of plain dataclasses — `Metadata`, `Section`, `Block`,
-`Side`, `Party`, `Attachment` — that you can inspect, edit, and write back out:
+`load` and `parse` return a `Document` of plain dataclasses — `Metadata` (with `Amends` for
+`amends` and an object `supersedes`, and `Attachment`), `Section`, `Block` and `ListItem`, `Side`,
+`Party` (with `Representative` and `CustomField`) — that you can inspect, edit, and write back out:
 
 ```python
 from legaldown import load, save
@@ -481,7 +491,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
 | `LIST_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
-| `slugify_identifier(text, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
+| `slugify_identifier(value, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term text, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
 | `is_valid_iso_date`, `is_valid_numeric`, `is_valid_money_amount`, `is_positive_numeric` | Value checks (§3.10, §10) |
 | `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units can never appear together |
 | `choose_problem(directive, questions)` | Why a `{{choose:}}` is invalid (choose-invalid, §15.5): the first message `validate` records for it, or `None`; `ValueError` for a directive that is not a `{{choose:}}` or is malformed (`validate` reports that as directive-malformed) |
@@ -511,7 +521,7 @@ for _section, _index, block in document.iter_blocks():
 | `find_definition_anchors(text)` → `DefinitionAnchor` | Every `{{def:}}` in a text, with the quoted term it anchors and where that term starts (§7.2) |
 | `render_block(block)`, `render_item(item)` | The other way: a block written as LegalDown source, and a list item's content as written after its marker, as `serialize` writes them |
 | `Quote`, `block_quotes`, `is_drafting_note(block)` | The block quotes in a block and whether each is a drafting note; whether a quote block is one (§15.6) |
-| `quote_blocks(block, depth=0)`, `drafting_note_blocks(block, depth=0)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6). `depth` is how many list items and quotes the quote is in, the count before entering it (a quote in a list item is at 1); past `MAX_QUOTE_DEPTH` the validator reads a quote as one text, so you get one paragraph of its text as written |
+| `quote_blocks(block, *, depth=0)`, `drafting_note_blocks(block, *, depth=0)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6). `depth` is how many list items and quotes the quote is in, the count before entering it (a quote in a list item is at 1); past `MAX_QUOTE_DEPTH` the validator reads a quote as one text, so you get one paragraph of its text as written |
 | `code_content(block)` → `CodeContent(info, text, fenced)` | A code block read as CommonMark reads it: the info string, and the code without its fences or indentation |
 | `FRONTMATTER_RE`, `LINE_ENDING_RE`, `HTML_COMMENT_RE`, `FENCE_OPEN_RE`, `closes_fence`, `fence_end`, `dedent`, `indent_width`, `strip_text` | The Markdown rules the reading is built on: frontmatter, line endings, comments, fenced code, indentation |
 
@@ -612,6 +622,12 @@ for diagnostic in result.diagnostics:
     print(diagnostic.level, diagnostic.rule, diagnostic.message)
 ```
 
+`form.assemble()` returns an `AssemblyResult`: `ok` (no Error), `output`, `files` (an emptied
+fragment is `""`, written as zero bytes) and `diagnostics`; nothing is assembled while an Error
+stands, and `output` and `files` are then empty. `AssemblyError` is raised, rather than a guess
+made, if the template's source cannot be mapped onto its parsed structure — never expected for a
+template the parser reads, so report it if you meet it.
+
 A template is read once; a form is a snapshot of the interview over it, so a front end asks for a
 new form after every answer — a decision opens or closes the questions under it. `parse_template(text)`
 (or `Template(text)`, which takes the same `resolve=`) is the same for source text; `template.path` is
@@ -633,7 +649,7 @@ neither do the questions: a `Question` is a fixed value, a copy of the template'
 every form of the template shares (treat its `default` and `choices` as read-only).
 
 **Asking a person.** A question can read what a person types, so a terminal, a web form or an agent
-need not know the shapes `assemble` takes (money is `{amount, currency}`, a boolean is a boolean):
+need not know the shapes an answers set holds (money is `{amount, currency}`, a boolean is a boolean):
 
 ```python
 answers, skipped = {}, set()
@@ -681,8 +697,9 @@ form = template.form(answers)
 **The form as data.** `form.as_dict()` is the form as JSON-ready data for a web form, a service or an
 agent: `ready`, `complete`, the template's `problems`, the `diagnostics` about the answers (each with
 the `question` it is about), and `questions` — those reached first, in order, then the others — each with
-`id`, `type`, `label`, `prompt`, `reached`, `blocking`, `state` (`answered`, `default`, `invalid`,
-`unanswered`), `answer`, `default`, `problem`, `hint` in words and `accepts` as data: the words of a
+`id`, `type`, `label`, `prompt`, `declared`, `choices`, `currency`, `unit`, `reached`, `blocking`,
+`state` (`answered`, `default`, `invalid`, `unanswered`), `answer`, `default`, `problem`, `hint` in
+words and `accepts` as data: the words of a
 boolean, the choices, the currency or unit the placeholders fix, the units there are.
 `question.to_text(answer)` is what a person would type for an answer (`yes`, `5000 EUR`, `30 D`),
 to show a default or fill in an input; `answer_text` and `default_text` hold it in the data.
@@ -725,14 +742,16 @@ checks and what it does not.
 ## Scope
 
 This implementation claims **Level 1 — Core** (§17.2) and the **Assembly** capability (§17.6):
-everything above applies to a single document, in memory, with no filesystem access beyond
-reading the file you point it at, and the files an assembled template includes when you supply
-them. That covers authoring, editing, CI validation, and assembly of individual documents.
+everything above applies to a single document. Beyond the file you point it at, validation reads
+only the definitions declared by the document it amends and by its LegalDown attachment files
+(§7.5, §12.4), and assembly the include fragments and LegalDown attachment files of a template —
+each from beside the document, never from outside its directory, or through `resolve=`. That
+covers authoring, editing, CI validation, and assembly of individual documents.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — every rule it
-implements passes, bar seven whose fixtures span several files and are covered by unit tests
-instead. The specification (§17.5) requires an implementation to be explicit about the
+implements passes, bar eight whose fixtures span several files or are marked for the Full level,
+and are covered by unit tests instead. The specification (§17.5) requires an implementation to be explicit about the
 checks it does not perform, so those are listed in
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md) rather than left to be discovered.
 
@@ -764,7 +783,7 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 
 Cases for rules outside Core are skipped and named, so the run doubles as the coverage ledger in
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md),
-which accounts for every skip. CI runs it with the rest of the checks, on demand (below).
+which accounts for every skip. CI runs it with the rest of the checks, on demand (above).
 
 Bug reports and pull requests are welcome in
 [Issues](https://github.com/ForLegalAI/legaldown-validator/issues); questions about the format

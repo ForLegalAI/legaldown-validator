@@ -111,7 +111,7 @@ class ItemSpan:
 class HeadingSpan:
     """Where a heading lies in the file: lines ``[start, end)``, and the line
     its marker is on (an ATX heading's line, or a setext heading's last text
-    line, where a ``{#id}`` or ``{if:}`` marker is written, §5.2)."""
+    line, where a ``{#id}`` or ``{when=...}`` marker is written, §5.2, §15.3)."""
 
     start: int
     end: int

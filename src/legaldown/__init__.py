@@ -1,8 +1,13 @@
 """legaldown — Reference implementation of the LegalDown document format.
 
-Parse, serialize, and validate LegalDown documents. Every diagnostic carries
-the specification's stable rule id (§16.1), so tooling can filter, suppress,
-or escalate individual checks. Only external dependency: PyYAML.
+Parse, serialize, and validate LegalDown documents, and assemble templates
+(§15.7). Every diagnostic carries the specification's stable rule id (§16.1),
+so tooling can filter, suppress, or escalate individual checks. Only
+external dependency: PyYAML.
+
+``legaldown`` is the workflow and the document model; tools that read
+LegalDown source the way the validator does use ``legaldown.syntax`` and
+``legaldown.grammar``.
 
 Quick start::
 

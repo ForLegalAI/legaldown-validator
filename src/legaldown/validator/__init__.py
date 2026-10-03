@@ -1,4 +1,11 @@
-"""legaldown.validator — Document validation and structural analysis."""
+"""legaldown.validator — Document validation and structural analysis.
+
+``validate``, ``is_template`` and the result types, which ``legaldown``
+exports too; and the condition, value and identifier rules and constants
+the checks use, whose home for tools is ``legaldown.grammar`` (the same
+objects). Part of the supported API, like ``legaldown``; its submodules are
+internal.
+"""
 from __future__ import annotations
 
 from .conditions import ALWAYS, Condition, Presence, condition_problem, exclusive, parse_condition
