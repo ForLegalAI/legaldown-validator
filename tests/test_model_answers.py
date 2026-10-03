@@ -67,6 +67,16 @@ def test_a_quote_past_the_quote_depth_is_one_text():
     assert quote_blocks(Block(kind="quote", text=""), depth=MAX_QUOTE_DEPTH) == []
 
 
+def test_a_quote_past_the_quote_depth_is_its_text_as_written_fenced_code_included():
+    text = "> not read\n\n```\n{{ref: x}}\n```\n\nafter"
+    quote = Block(kind="quote", text=text)
+    assert _shown(quote_blocks(quote, depth=MAX_QUOTE_DEPTH)) == [("paragraph", text)]
+    note = Block(kind="quote", text="[!DRAFTING]\n" + text)
+    assert _shown(drafting_note_blocks(note, depth=MAX_QUOTE_DEPTH)) == [("paragraph", text)]
+    # Short of the depth the same text is read into blocks, the fence a code block.
+    assert [block.kind for block in quote_blocks(quote, depth=MAX_QUOTE_DEPTH - 1)][:3] == ["quote", "code", "paragraph"]
+
+
 @pytest.mark.parametrize("kind", ["paragraph", "code", "unordered_list", "rule"])
 def test_quote_blocks_of_a_block_that_is_no_quote(kind):
     with pytest.raises(ValueError, match="quote"):
@@ -227,6 +237,15 @@ def test_the_layout_gives_the_file_lines_of_each_part():
     assert [(block.kind, block.start) for block in a.blocks] == [("paragraph", 9), ("unordered_list", 10)]
     assert [(item.start, item.end) for item in a.blocks[1].items] == [(10, 11), (11, 12)]
     assert third.blocks == (BlockSpan("paragraph", 25, 26),)
+
+
+def test_a_span_ends_after_its_last_line_and_the_blank_lines_between_parts_belong_to_none():
+    layout = parse("# A\n\nOne\ntwo\n\n\nThree\n").layout()
+    first, second = layout.sections[0].blocks
+    assert (layout.sections[0].heading.start, layout.sections[0].heading.end) == (1, 2)
+    assert (first.start, first.end) == (3, 5)  # lines 3 and 4
+    assert (second.start, second.end) == (7, 8)  # lines 5 and 6 are blank, in no span
+    assert first.end < second.start
 
 
 def test_the_layout_is_frozen():

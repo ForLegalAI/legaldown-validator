@@ -1368,9 +1368,10 @@ def quote_blocks(block: Block, *, depth: int = 0) -> list[Block]:
     validator keeps its own reading of a quote's content. A heading in one
     is a ``heading`` block, not a section, and no directive is lifted into
     block fields (§4.1). *depth*: how many list items and quotes *block* is
-    in; a quote in ``MAX_QUOTE_DEPTH`` of them is read as the validator reads
-    it, as one text: a single paragraph, or no block when it holds none.
-    Raises ``ValueError`` for a block that is not a quote."""
+    in, the count before entering it; a quote in ``MAX_QUOTE_DEPTH`` of them
+    is not read into blocks: it is one paragraph of its text as written
+    (the validator reads no directives in its fenced code there), or no
+    block when it holds none. Raises ``ValueError`` for a block that is not a quote."""
     if block.kind != "quote":
         raise ValueError(f"not a block quote: {block.kind}")
     if depth >= MAX_QUOTE_DEPTH:
@@ -1478,9 +1479,11 @@ class DirectiveLocation(NamedTuple):
     """A directive and where it is (``iter_document_directives``): in block
     *block* of the preamble (*section* None) or of section *section*, in
     fragment *fragment* of ``block_fragments(block)``, which *directive*'s
-    offsets are into. *fragment* is None for the ``{{ref:}}`` or
-    ``{{term:}}`` the parser lifted into the block's own fields: its offsets
-    are into the directive as the serializer writes it."""
+    offsets are into. *fragment* is None for the ``{{ref:}}``, ``{{term:}}``
+    or ``{{def:}}`` the parser lifted into the block's own fields: its
+    offsets are into the directive as the serializer writes it alone, and a
+    directive of a block built in code whose value holds a line break, which
+    no source can write, has none (offsets 0, no spans, empty source)."""
 
     section: int | None
     block: int
@@ -1497,10 +1500,13 @@ def iter_document_directives(document: Document) -> Iterator[DirectiveLocation]:
     blocks and raw HTML hold none (§11.4), and a block quote's or a list's are
     those of the blocks it holds. A ``{{ref:}}`` or ``{{term:}}`` the parser
     lifted into a block's fields is among them, between the directives of the
-    block's text before it and after it. The frontmatter and the headings are
-    not read.
+    block's text before it and after it, and the ``{{def:}}`` it lifted into
+    a definition block's fields, before those of the definition's text. The
+    frontmatter and the headings are not read.
     """
     for section, index, block in document.iter_indexed_blocks():
+        if block.kind == "definition":
+            yield from _lifted_directive(section, index, block)
         lifted = block.kind in ("ref", "term") and bool(block.target)
         # The fragments before the lifted directive: its text, and its prefix.
         before = bool(block.text) + bool(block.prefix)
@@ -1515,14 +1521,36 @@ def iter_document_directives(document: Document) -> Iterator[DirectiveLocation]:
 
 
 def _lifted_directive(section: int | None, index: int, block: Block) -> Iterator[DirectiveLocation]:
-    """The directive a ``ref`` or ``term`` block holds in its fields, as the
-    serializer writes it alone."""
+    """The directive a ``ref``, ``term`` or ``definition`` block holds in its
+    fields, as the serializer writes it alone; built directly, with no
+    offsets, when the serializer refuses its value (a line break)."""
     from .serializer import render_block  # the serializer builds on this module
 
-    source = render_block(Block(kind=block.kind, target=block.target, label=block.label))
-    for directive in lex(source).directives:
-        yield DirectiveLocation(section, index, None, directive)
-        return
+    name = "def" if block.kind == "definition" else block.kind
+    try:
+        source = render_block(
+            Block(
+                kind=block.kind,
+                target=block.target,
+                label=block.label,
+                definition_id=block.definition_id,
+                term=block.term,
+            )
+        )
+    except ValueError:
+        source = ""
+    # The last: a term written before a ``{{def:}}`` may hold directives itself.
+    found = [directive for directive in lex(source).directives if directive.name == name]
+    if found:
+        directive = found[-1]
+    else:
+        positional = block.definition_id if block.kind == "definition" else block.target
+        params = {"label": block.label} if block.kind == "term" and block.label else {}
+        directive = Directive(
+            name=name, positional=positional or None, params=params, duplicates=(), malformed="",
+            start=0, end=0, source="",
+        )
+    yield DirectiveLocation(section, index, None, directive)
 
 
 def collect_source_directives(document: Document) -> tuple[set[str], set[str]]:

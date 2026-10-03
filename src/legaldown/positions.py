@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from .directives import is_escaped
-from .markdown import paragraph_text
+from .markdown import LINE_ENDING_RE, paragraph_text
 
 if TYPE_CHECKING:
     from .models import Block, Document
@@ -129,10 +129,13 @@ class SectionSpan:
 @dataclass(frozen=True, slots=True)
 class SourceLayout:
     """Where a parsed document's parts lie in its file (``Document.layout``),
-    in lines counted from 1 and ending where the next begins: the frontmatter
-    as ``(start, end)`` with its ``---`` lines, or None without one; the
-    preamble's blocks (§4.4); each section's heading and blocks, in the
-    document's order, so that ``sections[n]`` is ``Document.sections[n]``'s."""
+    in lines counted from 1: each span is the lines ``[start, end)``, its end
+    exclusive — the line after its last — and the blank lines between parts
+    belong to none, but for those between a list's items, which the item
+    before holds. The frontmatter is ``(start, end)`` with its ``---``
+    lines, or None without one; then the preamble's blocks (§4.4); each
+    section's heading and blocks, in the document's order, so that
+    ``sections[n]`` is ``Document.sections[n]``'s."""
 
     frontmatter: tuple[int, int] | None
     preamble: tuple[BlockSpan, ...]
@@ -193,14 +196,6 @@ class SourceMap:
 
     def to_layout(self) -> SourceLayout:
         """``layout`` as the public ``SourceLayout``, in file lines."""
-        base = self.body_start + 1
-
-        def block(span: Any) -> BlockSpan:
-            return BlockSpan(span.kind, base + span.start, base + span.end, tuple(item(each) for each in span.items))
-
-        def item(span: Any) -> ItemSpan:
-            return ItemSpan(base + span.start, base + span.end, tuple(block(each) for each in span.blocks))
-
         frontmatter = None
         if () in self.keys:
             # The frontmatter's lines, its closing ``---`` too, which the
@@ -211,17 +206,7 @@ class SourceMap:
             if written is not None:
                 text = written.group()
                 frontmatter = (1, 1 + text.count("\n") + (0 if text.endswith("\n") else 1))
-        return SourceLayout(
-            frontmatter,
-            tuple(block(each) for each in self.layout.preamble),
-            tuple(
-                SectionSpan(
-                    HeadingSpan(base + heading.start, base + heading.end, base + heading.marker_line),
-                    tuple(block(each) for each in blocks),
-                )
-                for heading, blocks in self.layout.sections
-            ),
-        )
+        return _public_layout(self.layout, self.body_start + 1, frontmatter)
 
     def item(self, section: int | None, index: int, item: int) -> int:
         """The line of list item *item* of top-level block *index* of a
@@ -537,6 +522,44 @@ def _lifted(block: Block, own: list[str], first: int, lines: list[str], start: i
             places[number] = (0, len(joined) - len(suffix))
         lifted = len(prefix)
     return _Leaf(start, end, [joined], places, lifted if lifted >= 0 else None)
+
+
+def _public_layout(layout: Any, base: int, frontmatter: tuple[int, int] | None) -> SourceLayout:
+    """The parser's *layout* (body lines from 0) as a ``SourceLayout`` whose
+    lines are counted from *base*, the line of the body's first."""
+
+    def block(span: Any) -> BlockSpan:
+        return BlockSpan(span.kind, base + span.start, base + span.end, tuple(item(each) for each in span.items))
+
+    def item(span: Any) -> ItemSpan:
+        return ItemSpan(base + span.start, base + span.end, tuple(block(each) for each in span.blocks))
+
+    return SourceLayout(
+        frontmatter,
+        tuple(block(each) for each in layout.preamble),
+        tuple(
+            SectionSpan(
+                HeadingSpan(base + heading.start, base + heading.end, base + heading.marker_line),
+                tuple(block(each) for each in blocks),
+            )
+            for heading, blocks in layout.sections
+        ),
+    )
+
+
+def body_layout(text: str) -> SourceLayout:
+    """Where the parts of *text* lie, read as a document body alone: a
+    ``SourceLayout`` of lines counted from 1 at the start of *text*, with no
+    frontmatter — a ``---`` first line is a thematic break, not the opening
+    of one. For text a tool holds apart from the file it came from, such as
+    an editor's field; ``Document.layout`` is the layout of a parsed
+    document. Line endings are LF, CR or CRLF, as the parser reads them."""
+    from .parser import _layout  # the parser builds on this module
+
+    lines = LINE_ENDING_RE.sub("\n", text).split("\n")
+    if lines[-1] == "":
+        lines.pop()  # the last line's ending, not a line
+    return _public_layout(_layout(lines), 1, None)
 
 
 def source_layout(document: Document) -> SourceLayout | None:

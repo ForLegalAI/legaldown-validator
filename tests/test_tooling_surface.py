@@ -13,8 +13,8 @@ import legaldown.syntax as syntax
 from legaldown import load_answers, parse, validate
 from legaldown.directives import lex
 from legaldown.syntax import find_markers
-from legaldown.validator.core import FINAL_CHECK_RULES
 from legaldown.validator.helpers import generate_identifier
+from legaldown.validator.patterns import FINAL_CHECK_RULES
 from legaldown.validator.templates import check_choose, choose_problem
 
 GRAMMAR = [
@@ -38,11 +38,11 @@ SYNTAX = [
     "Marker", "MARKER_RE", "parse_marker", "format_marker", "is_look_alike",
     "FoundMarker", "find_markers", "is_include_only",
     "Fragment", "ListFragment", "block_fragments", "list_fragments", "text_fragments",
-    "Quote", "block_quotes", "quote_blocks", "drafting_note_blocks", "code_content", "CodeContent",
+    "Quote", "block_quotes", "is_drafting_note", "quote_blocks", "drafting_note_blocks", "code_content", "CodeContent",
     "list_items", "item_text",
     "FRONTMATTER_RE", "LINE_ENDING_RE", "HTML_COMMENT_RE", "FENCE_OPEN_RE",
     "closes_fence", "fence_end", "dedent", "indent_width", "strip_text",
-    "SourceLayout", "SectionSpan", "HeadingSpan", "BlockSpan", "ItemSpan",
+    "body_layout", "SourceLayout", "SectionSpan", "HeadingSpan", "BlockSpan", "ItemSpan",
 ]
 
 #: Where each public name is implemented.
@@ -89,14 +89,14 @@ IMPLEMENTATION = {
     "condition_problem": "legaldown.validator.conditions",
     "exclusive": "legaldown.validator.conditions",
     "parse_condition": "legaldown.validator.conditions",
-    "FINAL_CHECK_RULES": "legaldown.validator.core",
-    "format_section_number": "legaldown.validator.helpers",
+        "format_section_number": "legaldown.validator.helpers",
     "is_positive_numeric": "legaldown.validator.helpers",
     "is_valid_iso_date": "legaldown.validator.helpers",
     "is_valid_money_amount": "legaldown.validator.helpers",
     "is_valid_numeric": "legaldown.validator.helpers",
     "slugify_identifier": "legaldown.validator.helpers",
     "DURATION_UNITS": "legaldown.validator.patterns",
+    "FINAL_CHECK_RULES": "legaldown.validator.patterns",
     "IDENTIFIER_RE": "legaldown.validator.patterns",
     "KNOWN_CURRENCIES": "legaldown.validator.patterns",
     "LEGALDOWN_EXTENSIONS": "legaldown.validator.patterns",
@@ -112,6 +112,7 @@ IMPLEMENTATION = {
     "Quote": "legaldown.validator.templates",
     "VALUE_QUESTION_TYPES": "legaldown.validator.templates",
     "block_quotes": "legaldown.validator.templates",
+    "is_drafting_note": "legaldown.validator.templates",
     "choose_problem": "legaldown.validator.templates",
     "FoundMarker": "legaldown.validator.units",
     "find_markers": "legaldown.validator.units",
@@ -122,6 +123,7 @@ IMPLEMENTATION = {
     "drafting_note_blocks": "legaldown.validator.templates",
     "CodeContent": "legaldown.markdown",
     "code_content": "legaldown.markdown",
+    "body_layout": "legaldown.positions",
     "SourceLayout": "legaldown.positions",
     "SectionSpan": "legaldown.positions",
     "HeadingSpan": "legaldown.positions",
@@ -152,7 +154,7 @@ DOWNSTREAM = {
     ("legaldown.parser", "FRONTMATTER_RE"): ("legaldown.syntax", "FRONTMATTER_RE"),
     ("legaldown.parser", "MAX_QUOTE_DEPTH"): ("legaldown.grammar", "MAX_QUOTE_DEPTH"),
     ("legaldown.parser", "quote_content"): ("legaldown.syntax", "quote_blocks"),
-    ("legaldown.parser", "_layout"): ("legaldown.syntax", "SourceLayout"),  # via Document.layout()
+    ("legaldown.parser", "_layout"): ("legaldown.syntax", "body_layout"),  # for bare body text
     ("legaldown.validator.patterns", "LEGALDOWN_EXTENSIONS"): ("legaldown.grammar", "LEGALDOWN_EXTENSIONS"),
     ("legaldown.validator.templates", "DECISION_QUESTION_TYPES"): ("legaldown.grammar", "DECISION_QUESTION_TYPES"),
     ("legaldown.validator.templates", "QUESTION_TYPES"): ("legaldown.grammar", "QUESTION_TYPES"),
@@ -223,6 +225,63 @@ def test_the_source_layout_is_reached_from_the_document():
     assert isinstance(layout, syntax.SourceLayout)
     assert layout.sections[0].blocks[0].start == document.line_of(0, 0) == 7
     assert load_answers is not None
+
+
+def _spans(layout, shift=0):
+    """Every span of *layout* as ``(what, start, end)``, moved up by *shift* lines."""
+
+    def block(span):
+        yield span.kind, span.start - shift, span.end - shift
+        for item in span.items:
+            yield "item", item.start - shift, item.end - shift
+            for inner in item.blocks:
+                yield from block(inner)
+
+    found = [each for span in layout.preamble for each in block(span)]
+    for section in layout.sections:
+        heading = section.heading
+        found.append(("heading", heading.start - shift, heading.end - shift))
+        found.append(("marker", heading.marker_line - shift, 0))
+        found.extend(each for span in section.blocks for each in block(span))
+    return found
+
+
+def test_body_layout_reads_text_as_a_body_with_no_frontmatter():
+    layout = syntax.body_layout("---\ntitle: x\n---\nClause\n")
+    assert layout.frontmatter is None
+    # What the body parser reads: a thematic break, then a heading ("title: x" underlined) and a paragraph.
+    assert [(span.kind, span.start, span.end) for span in layout.preamble] == [("rule", 1, 2)]
+    (section,) = layout.sections
+    assert (section.heading.start, section.heading.end) == (2, 4)
+    assert [(span.kind, span.start, span.end) for span in section.blocks] == [("paragraph", 4, 5)]
+
+
+def test_body_layout_agrees_with_the_layout_of_a_document_shifted_by_its_body_start():
+    body = "Pre.\n\n# A\n\nText\nmore\n\n1. one\n   - x\n   - y\n2. two\n\n> q\n\n## B\n\n| h |\n|---|\n| c |\n\nEnd.\n"
+    source = "---\ntitle: T\nparties: []\n---\n\n" + body
+    document = parse(source)
+    layout = document.layout()
+    start = document.line_of(None, 0) - 1
+    assert start == 5
+    assert layout.frontmatter == (1, 5)
+    assert _spans(syntax.body_layout(body)) == _spans(layout, start)
+    assert syntax.body_layout(body).frontmatter is None
+
+
+def test_body_layout_counts_lines_from_the_start_of_the_text_and_reads_every_line_ending():
+    assert syntax.body_layout("A\r\n\r\n# H\r\n\rText\r") == syntax.body_layout("A\n\n# H\n\nText\n")
+    layout = syntax.body_layout("A\n\n# H\n\nText")
+    assert (layout.preamble[0].start, layout.sections[0].blocks[0].start) == (1, 5)
+    assert syntax.body_layout("") == syntax.SourceLayout(None, (), ())
+
+
+def test_is_drafting_note_is_the_validators_and_reads_a_quote_block():
+    from legaldown import Block
+
+    assert syntax.is_drafting_note is legaldown.is_drafting_note
+    assert syntax.is_drafting_note(Block(kind="quote", text="[!drafting]\nAdvise."))
+    assert not syntax.is_drafting_note(Block(kind="quote", text="Advise."))
+    assert not syntax.is_drafting_note(Block(kind="paragraph", text="[!DRAFTING]"))
 
 
 # ── The constants the validator now reads ─────────────────────────
@@ -370,6 +429,19 @@ def test_choose_problem_is_none_for_a_valid_choose():
 def test_choose_problem_without_questions():
     [directive] = lex("{{choose: vat, true=a, false=b}}").directives
     assert "declared boolean or choice question" in (choose_problem(directive, None) or "")
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["{{ref: vat}}", "{{placeholder: vat}}", '{{choose: vat, true="oops}}', "{{choose: vat, true=a, false=b"],
+)
+def test_choose_problem_refuses_what_is_no_well_formed_choose(source):
+    [directive] = lex(source).directives[:1]
+    with pytest.raises(ValueError, match="choose"):
+        choose_problem(directive, _QUESTIONS)
+    # The validator never reports one as choose-invalid.
+    result = validate(parse(f"---\ntitle: T\nquestions:\n  vat:\n    type: boolean\n---\n\n# A\n\n{source}\n"))
+    assert "choose-invalid" not in result.rules()
 
 
 # ── find_markers ──────────────────────────────────────────────────

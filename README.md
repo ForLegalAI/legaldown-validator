@@ -299,13 +299,14 @@ itself is what was found, kept nowhere but in `diagnostics`:
 
 | `result.index.…` | Contents |
 |---|---|
-| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8); an entry's `alternative` is true for a section that is an alternative to the one before it and shares its number (§15.4) |
+| `sections`, `section_lookup` | Numbered section index; resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8); an entry's `alternative` is true for a section that is an alternative to its preceding sibling — the section just before it at its level under the same parent, with the same identifier, never present together with it (§15.4) — and so shares its number (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
 | `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
-| `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence: `Blank(id, type, fixed, in_frontmatter)` — `type` the effective type (§10.7, §15.2; `text` when none is written), `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none or they disagree), `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
+| `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence: `Blank(id, type, fixed, in_frontmatter, consistent)` — `type` the type the validator settled on: the effective type of the first occurrence with a valid one (§10.7, §15.2; `text` when none is written), or `None` when no occurrence has a usable type (each is written with an invalid one, or the id is a decision question's); `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none, or the blank is not `consistent`); `consistent` false when its occurrences have different types or fix two currencies or units (placeholder-type-inconsistent); `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)`, at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
+`is_template(document)` (top-level) gives the template decision without validating (§15.1).
 A renderer builds from these decisions rather than re-deriving them, reading the source with
 the validator's own helpers ([Tooling API](#tooling-api)).
 [`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way.
@@ -456,7 +457,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 | `slugify_identifier(text, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
 | `is_valid_iso_date`, `is_valid_numeric`, `is_valid_money_amount`, `is_positive_numeric` | Value checks (§3.10, §10) |
 | `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units can never appear together |
-| `choose_problem(directive, questions)` | Why a `{{choose:}}` is invalid (choose-invalid, §15.5): the first message `validate` records for it, or `None` |
+| `choose_problem(directive, questions)` | Why a `{{choose:}}` is invalid (choose-invalid, §15.5): the first message `validate` records for it, or `None`; `ValueError` for a directive that is not a `{{choose:}}` or is malformed (`validate` reports that as directive-malformed) |
 
 **`legaldown.syntax`** is reading source text the way the validator does.
 
@@ -475,12 +476,12 @@ for _section, _index, block in document.iter_blocks():
 | Names | What they are |
 |---|---|
 | `lex`, `Lexed`, `Directive`, `iter_directives`, `is_escaped`, `format_value` | The directive lexer (§11.4) and its inverse. A `Directive`'s `positional_span` and `param_spans` are where each value is written, quotes included, so `text[start:end]` is what to replace to change it; `Lexed.literals` are the comments and code spans the lexer skipped, as `(kind, start, end)` |
-| `iter_document_directives(document)` → `DirectiveLocation(section, block, fragment, directive)`, `collect_source_directives` | Every directive in a document's body, in order, read as `validate` reads it: `fragment` indexes `block_fragments(block)`, and is `None` for a `{{ref:}}`/`{{term:}}` the parser lifted into a block's fields; the `{{ref:}}` and `{{term:}}` targets of a document |
+| `iter_document_directives(document)` → `DirectiveLocation(section, block, fragment, directive)`, `collect_source_directives` | Every directive in a document's body, in order, read as `validate` reads it: `fragment` indexes `block_fragments(block)`, and is `None` for a `{{ref:}}`, `{{term:}}` or `{{def:}}` the parser lifted into a block's fields (a definition's comes before its text); the `{{ref:}}` and `{{term:}}` targets of a document |
 | `Marker`, `MARKER_RE`, `parse_marker`, `format_marker`, `is_look_alike` | Anchor and condition markers (§5.7, §15.3) |
 | `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`) |
 | `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `text_fragments`, `list_items`, `item_text` | Where a block's text is, and a list's items |
-| `Quote`, `block_quotes` | The block quotes in a block and whether each is a drafting note |
-| `quote_blocks(block)`, `drafting_note_blocks(block)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6) |
+| `Quote`, `block_quotes`, `is_drafting_note(block)` | The block quotes in a block and whether each is a drafting note; whether a quote block is one (§15.6) |
+| `quote_blocks(block, depth=0)`, `drafting_note_blocks(block, depth=0)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6). `depth` is how many list items and quotes the quote is in, the count before entering it (a quote in a list item is at 1); past `MAX_QUOTE_DEPTH` the validator reads a quote as one text, so you get one paragraph of its text as written |
 | `code_content(block)` → `CodeContent(info, text, fenced)` | A code block read as CommonMark reads it: the info string, and the code without its fences or indentation |
 | `FRONTMATTER_RE`, `LINE_ENDING_RE`, `HTML_COMMENT_RE`, `FENCE_OPEN_RE`, `closes_fence`, `fence_end`, `dedent`, `indent_width`, `strip_text` | The Markdown rules the reading is built on: frontmatter, line endings, comments, fenced code, indentation |
 
@@ -491,7 +492,11 @@ exclusive; a list's `BlockSpan` has its `ItemSpan`s, each with the spans of its 
 `document.line_of(section, block=None, item=None)` is one line: a section's heading, a top-level
 block (`section=None` for the preamble), or a list item's marker, items counted in pre-order as
 `PlacedMarker.item` counts them. These are the lines diagnostics name (§16.9). Both are `None`
-for a document built in code, or changed since it was parsed.
+for a document built in code, or changed since it was parsed. A span covers the lines
+`[start, end)`; the blank lines between parts belong to none (but for those between a list's items,
+which the item before holds). For text you hold apart from its file — an editor's field —
+`body_layout(text)` is the same `SourceLayout` of that text read as a body alone, with lines counted
+from 1 at its start and no frontmatter (a `---` first line is a thematic break there).
 
 ```python
 document = load("contract.lgd")
@@ -518,7 +523,7 @@ If you import one of these from a private module, use its public home:
 | `legaldown.validator.templates`: `check_choose` | `legaldown.grammar.choose_problem` |
 | `legaldown.validator.units`: `find_markers`, `is_include_only` | `legaldown.syntax` |
 | `legaldown.parser`: `quote_content` | `legaldown.syntax.quote_blocks` (and `drafting_note_blocks`) |
-| `legaldown.parser`: `_layout` | `Document.layout()` (file lines, not body-relative) |
+| `legaldown.parser`: `_layout` | `legaldown.syntax.body_layout(text)` for bare body text (lines from 1 at its start); `Document.layout()` for a parsed document (file lines) |
 | your own fence stripping (`FENCE_OPEN_RE`, `closes_fence`, `dedent`) | `legaldown.syntax.code_content` |
 | `legaldown.cli`: `_read_answers` | `legaldown.load_answers` |
 

@@ -217,7 +217,9 @@ class Document:
     def layout(self) -> SourceLayout | None:
         """Where the document's frontmatter, headings, blocks and list items
         lie in the file it was parsed from (§16.9): file lines counted from
-        1, each span ending where the next begins. None for a document
+        1, each span the lines ``[start, end)`` (end exclusive; the blank
+        lines between parts belong to none, but for those between a list's
+        items). None for a document
         built in code, and for one changed since it was parsed so that it
         no longer fits its source: where its parts lie is not known then."""
         from .positions import source_layout  # positions describes documents: it builds on this module

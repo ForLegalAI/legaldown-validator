@@ -54,6 +54,8 @@ class _BlankState:
     #: fixes none. Two codes are an Error (placeholder-type-inconsistent).
     codes: set[str] = field(default_factory=set)
     in_frontmatter: bool = False
+    #: Whether two occurrences have different types (placeholder-type-inconsistent).
+    mixed: bool = False
     #: The line of the first occurrence fixing each code (§16.9).
     code_lines: dict[str, Any] = field(default_factory=dict)  # a ``result.Line`` each
 
@@ -302,8 +304,9 @@ def drafting_note_blocks(quote: Block, *, depth: int = 0) -> list[Block]:
     The marker starts the first paragraph or heading, and is cut from it,
     the block going when nothing else is in it; where it does not (a marker
     line indented as code), the note is what is written after its first
-    line. *depth*: as in ``quote_blocks``. Raises ``ValueError`` for a block
-    that is not a drafting note (``is_drafting_note``)."""
+    line. *depth*: as in ``quote_blocks``; past it the note is one paragraph
+    of its text after the first line, as written. Raises ``ValueError`` for a
+    block that is not a drafting note (``is_drafting_note``)."""
     from ..parser import MAX_QUOTE_DEPTH, quote_blocks  # see the import note in check_template_body
 
     if not is_drafting_note(quote):
@@ -450,7 +453,12 @@ def choose_problem(directive: Directive, questions: Any) -> str | None:
     """Why the ``{{choose:}}`` *directive* is not valid for *questions* (the
     document's ``metadata.questions``): the first choose-invalid message
     (§15.5) the validator reports for it, or None when it names a declared
-    boolean or choice question and lists exactly its answers."""
+    boolean or choice question and lists exactly its answers. Raises
+    ``ValueError`` for a directive that is not a ``{{choose:}}`` or is
+    malformed: the validator reports a malformed one as directive-malformed,
+    never as choose-invalid."""
+    if directive.name != "choose" or directive.malformed:
+        raise ValueError(f"not a well-formed {{{{choose:}}}}: {directive.source!r}")
     problems = _choose_problems(directive, questions)
     return problems[0] if problems else None
 

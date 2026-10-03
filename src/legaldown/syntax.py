@@ -42,8 +42,8 @@ from .parser import (
     iter_document_directives,
     quote_blocks,
 )
-from .positions import BlockSpan, HeadingSpan, ItemSpan, SectionSpan, SourceLayout
-from .validator.templates import Quote, block_quotes, drafting_note_blocks
+from .positions import BlockSpan, HeadingSpan, ItemSpan, SectionSpan, SourceLayout, body_layout
+from .validator.templates import Quote, block_quotes, drafting_note_blocks, is_drafting_note
 from .validator.units import FoundMarker, find_markers, is_include_only
 
 __all__ = [
@@ -74,6 +74,7 @@ __all__ = [
     "text_fragments",
     "Quote",
     "block_quotes",
+    "is_drafting_note",
     "quote_blocks",
     "drafting_note_blocks",
     "code_content",
@@ -90,7 +91,9 @@ __all__ = [
     "dedent",
     "indent_width",
     "strip_text",
-    # Where a parsed document's parts are in its file (``Document.layout``)
+    # Where a parsed document's parts are in its file (``Document.layout``),
+    # and where a body text's are (``body_layout``)
+    "body_layout",
     "SourceLayout",
     "SectionSpan",
     "HeadingSpan",

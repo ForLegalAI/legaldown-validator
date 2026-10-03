@@ -37,7 +37,8 @@ def test_blank_is_public_and_frozen():
     assert "Blank" in legaldown.validator.__all__
     assert legaldown.validator.Blank is Blank
     blank = Blank(id="a", type="text")
-    assert (blank.fixed, blank.in_frontmatter) == ("", False)
+    assert (blank.fixed, blank.in_frontmatter, blank.consistent) == ("", False, True)
+    assert [f.name for f in dataclasses.fields(Blank)] == ["id", "type", "fixed", "in_frontmatter", "consistent"]
     with pytest.raises(dataclasses.FrozenInstanceError):
         blank.type = "date"  # type: ignore[misc]
 
@@ -96,6 +97,59 @@ def test_a_blank_has_the_type_of_its_first_occurrence_with_a_valid_one():
     assert blank.type == "date"
 
 
+def test_a_plain_blank_is_text_and_consistent():
+    blank = _blanks("# A\n\n{{placeholder: name}} {{placeholder: name}}")["name"]
+    assert (blank.type, blank.fixed, blank.consistent) == ("text", "", True)
+
+
+def test_a_blank_whose_occurrences_disagree_on_type_is_not_consistent_and_fixes_nothing():
+    result = validate(
+        parse(
+            _FRONTMATTER
+            + "# A\n\n{{placeholder: p, type=money, currency=EUR}} {{placeholder: p, type=date}}\n"
+        )
+    )
+    assert "placeholder-type-inconsistent" in result.rules("error")
+    blank = result.index.blanks["p"]
+    assert (blank.type, blank.fixed, blank.consistent) == ("money", "", False)
+
+
+@pytest.mark.parametrize(
+    "occurrences",
+    [
+        "{{placeholder: p, type=money, currency=EUR}} {{placeholder: p, type=money, currency=USD}}",
+        "{{placeholder: p, type=duration, unit=D}} {{placeholder: p, type=duration, unit=W}}",
+    ],
+)
+def test_a_blank_fixing_two_currencies_or_units_is_not_consistent_and_fixes_nothing(occurrences):
+    blank = _blanks(f"# A\n\n{occurrences}")["p"]
+    assert (blank.fixed, blank.consistent) == ("", False)
+    assert blank.type in ("money", "duration")
+
+
+def test_a_blank_that_fixes_one_currency_or_none_is_consistent():
+    blank = _blanks("# A\n\n{{placeholder: p, type=money, currency=EUR}} {{placeholder: p, type=money}}")["p"]
+    assert (blank.type, blank.fixed, blank.consistent) == ("money", "", True)
+
+
+def test_a_blank_with_only_an_invalid_type_has_no_type():
+    result = validate(parse(_FRONTMATTER + "# A\n\n{{placeholder: p, type=foo}}\n"))
+    assert "placeholder-type-invalid" in result.rules("error")
+    blank = result.index.blanks["p"]
+    assert (blank.type, blank.fixed, blank.consistent) == (None, "", True)
+
+
+def test_a_blank_with_the_id_of_a_decision_question_has_no_type():
+    result = validate(
+        parse(
+            _FRONTMATTER.replace("---\n\n", "questions:\n  q:\n    type: boolean\n---\n\n")
+            + "# A\n\n{{placeholder: q}}\n"
+        )
+    )
+    assert "placeholder-question-mismatch" in result.rules("error")
+    assert result.index.blanks["q"].type is None
+
+
 def test_a_blank_takes_its_type_from_its_question():
     blanks = _blanks("# A\n\n{{placeholder: fee}}", "questions:\n  fee:\n    type: money\n")
     assert (blanks["fee"].type, blanks["fee"].fixed) == ("money", "")
@@ -130,6 +184,16 @@ def test_a_section_sharing_its_predecessors_number_is_an_alternative():
     sections = result.index.sections
     assert [s.number for s in sections] == ["1", "1.1", "1", "1.1", "2"]
     assert [s.alternative for s in sections] == [False, False, True, False, False]
+
+
+def test_an_alternative_is_to_its_preceding_sibling_not_to_any_earlier_section_with_its_identifier():
+    body = (
+        "# Disputes {#disputes when=forum:courts}\n\nText.\n\n# Notices\n\nText.\n\n"
+        "# Disputes {#disputes when=forum:arbitration}\n\nText.\n"
+    )
+    result = validate(parse(f"---\ntitle: T\n{_QUESTIONS}---\n\n{body}\n"))
+    assert [s.alternative for s in result.index.sections] == [False, False, False]
+    assert [s.number for s in result.index.sections] == ["1", "2", "3"]
 
 
 def test_sections_with_one_identifier_that_can_appear_together_are_not_alternatives():
@@ -400,6 +464,65 @@ def test_collect_source_directives_skips_malformed_and_empty_targets():
     assert collect_source_directives(document) == ({"ok"}, set())
 
 
+def test_a_directive_a_document_built_in_code_holds_with_a_line_break_is_still_yielded():
+    from legaldown import Block
+
+    document = parse(_FRONTMATTER + "# A\n\nText.\n")
+    blocks = document.sections[0].blocks
+    blocks.append(Block(kind="ref", target="line\nbreak"))
+    assert collect_source_directives(document) == ({"line\nbreak"}, set())
+    blocks.append(Block(kind="term", target="line\nbreak", label="la\nbel"))
+    assert collect_source_directives(document) == ({"line\nbreak"}, {"line\nbreak"})
+    ref, term = [loc for loc in iter_document_directives(document) if loc.fragment is None]
+    assert (ref.directive.name, ref.directive.positional, ref.directive.params) == ("ref", "line\nbreak", {})
+    assert (term.directive.name, term.directive.params) == ("term", {"label": "la\nbel"})
+    for loc in (ref, term):
+        directive = loc.directive
+        assert (directive.start, directive.end, directive.source) == (0, 0, "")
+        assert directive.malformed == "" and directive.duplicates == () and directive.param_spans == {}
+        assert directive.positional_span is None
+    # Without a label, a term holds no parameter.
+    blocks[-1] = Block(kind="term", target="a\nb")
+    assert list(iter_document_directives(document))[-1].directive.params == {}
+
+
+def test_the_definition_the_parser_lifted_is_yielded_before_its_text():
+    from legaldown import block_fragments
+
+    document = parse('# A\n\n"Services" {{def: services}} means work, see {{ref: a}}.\n')
+    block = document.sections[0].blocks[0]
+    assert block.kind == "definition"
+    found = list(iter_document_directives(document))
+    assert [(loc.directive.name, loc.fragment) for loc in found] == [("def", None), ("ref", 0)]
+    lifted = found[0].directive
+    assert lifted.positional == "services" and not lifted.malformed
+    assert lifted.source == "{{def: services}}"
+    assert render_block(dataclasses.replace(block, text="")) == f'"Services" {lifted.source}'
+    text = block_fragments(block)[0].text
+    assert text[found[1].directive.start:found[1].directive.end] == "{{ref: a}}"
+    # The term is not text, and the definition is no ref or term.
+    assert collect_source_directives(document) == ({"a"}, set())
+
+
+def test_a_definition_without_an_id_yields_its_bare_directive():
+    document = parse('# A\n\n"Services" {{def:}} means work\n')
+    (loc,) = iter_document_directives(document)
+    assert (loc.directive.name, loc.directive.positional, loc.fragment) == ("def", None, None)
+
+
+def test_a_definition_built_in_code_with_a_line_break_in_its_id_is_still_yielded():
+    from legaldown import Block
+
+    document = parse(_FRONTMATTER + "# A\n\nText.\n")
+    document.sections[0].blocks.append(Block(kind="definition", definition_id="a\nb", term="T", text="x {{ref: r}}"))
+    found = list(iter_document_directives(document))[-2:]
+    assert [(loc.directive.name, loc.directive.positional, loc.fragment) for loc in found] == [
+        ("def", "a\nb", None),
+        ("ref", "r", 0),
+    ]
+    assert found[0].directive.source == ""
+
+
 # ── Over the specification fixtures ───────────────────────────────
 
 _FIXTURES = Path(os.environ.get("LEGALDOWN_FIXTURES_DIR", ""))
@@ -463,7 +586,7 @@ def test_every_fixture_document_reads_consistently(path):
         assert blank.id == pid
         met = [ptype for met_id, ptype in placeholders if met_id == pid]
         assert met, pid
-        assert blank.type in met or blank.type == "text"
+        assert blank.type is None or blank.type in met
         if blank.fixed:
             assert blank.type in ("money", "duration")
     assert set(result.index.blanks) <= {pid for pid, _ptype in placeholders}

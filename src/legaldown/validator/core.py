@@ -40,6 +40,8 @@ from .helpers import (
     slugify_identifier,
 )
 from .patterns import (
+    _CONSTRUCT_PRESENT,
+    _UNFILLED,
     DURATION_UNITS,
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
@@ -354,6 +356,7 @@ def _check_placeholder(
     if blank.type is None:
         blank.type = ptype
     if blank.type != ptype:
+        blank.mixed = True
         result.error(
             "placeholder-type-inconsistent",
             f"Placeholder '{pid}' used with inconsistent types: "
@@ -387,12 +390,6 @@ def _check_blank_codes(blanks: dict[str, _BlankState], result: _Recorder) -> Non
                 f"({', '.join(fixed)}); one blank cannot hold two (§10.7).",
                 line=second,
             )
-
-
-_UNFILLED = "placeholder-unfilled"
-_CONSTRUCT_PRESENT = "template-construct-present"
-#: The rules of the final check (§15.9): the only ones it reports.
-FINAL_CHECK_RULES: frozenset[str] = frozenset({_UNFILLED, _CONSTRUCT_PRESENT})
 
 
 def _check_final(
@@ -1567,15 +1564,16 @@ def _validate(
                     )
 
     _check_blank_codes(blanks, result)
-    result.index.blanks = {
-        pid: Blank(
+    result.index.blanks = {}
+    for pid, state in blanks.items():
+        consistent = not state.mixed and len(state.codes - {""}) < 2
+        result.index.blanks[pid] = Blank(
             id=pid,
-            type=state.type or "text",
-            fixed=_fixed_by_all(state.codes) or "",
+            type=state.type,
+            fixed=(_fixed_by_all(state.codes) or "") if consistent else "",
             in_frontmatter=state.in_frontmatter,
+            consistent=consistent,
         )
-        for pid, state in blanks.items()
-    }
 
     # ── Templates (§15) ──
     # Every condition in a condition position (§15.3): on what, as written,

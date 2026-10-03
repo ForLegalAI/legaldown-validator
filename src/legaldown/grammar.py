@@ -26,7 +26,6 @@ from .models import LIST_KINDS
 from .parser import MAX_LIST_DEPTH, MAX_QUOTE_DEPTH
 from .specification import SPEC_VERSION
 from .validator.conditions import ALWAYS, Condition, Presence, condition_problem, exclusive, parse_condition
-from .validator.core import FINAL_CHECK_RULES
 from .validator.helpers import (
     format_section_number,
     is_positive_numeric,
@@ -37,6 +36,7 @@ from .validator.helpers import (
 )
 from .validator.patterns import (
     DURATION_UNITS,
+    FINAL_CHECK_RULES,
     IDENTIFIER_RE,
     KNOWN_CURRENCIES,
     LEGALDOWN_EXTENSIONS,
