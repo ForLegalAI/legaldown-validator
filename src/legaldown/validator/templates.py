@@ -296,6 +296,32 @@ def is_drafting_note(quote: Block) -> bool:
     return quote.kind == "quote" and Quote(quote.text.split("\n", 1)[0].strip(), range(0)).is_drafting_note
 
 
+def drafting_note_blocks(quote: Block, *, depth: int = 0) -> list[Block]:
+    """The blocks of drafting note *quote* without its ``[!DRAFTING]`` marker
+    line (§15.6), as ``quote_blocks`` reads the note's content: fresh copies.
+    The marker starts the first paragraph or heading, and is cut from it,
+    the block going when nothing else is in it; where it does not (a marker
+    line indented as code), the note is what is written after its first
+    line. *depth*: as in ``quote_blocks``. Raises ``ValueError`` for a block
+    that is not a drafting note (``is_drafting_note``)."""
+    from ..parser import MAX_QUOTE_DEPTH, quote_blocks  # see the import note in check_template_body
+
+    if not is_drafting_note(quote):
+        raise ValueError("not a drafting note")
+    if depth >= MAX_QUOTE_DEPTH:
+        text = quote.text.partition("\n")[2]
+        return [Block(kind="paragraph", text=text)] if text.strip() else []
+    blocks = quote_blocks(quote, depth=depth)
+    first = blocks[0] if blocks else None
+    if first is None or first.kind not in ("paragraph", "heading") or not first.text.upper().startswith(_DRAFTING_MARKER):
+        return quote_blocks(Block(kind="quote", text=quote.text.partition("\n")[2]), depth=depth)
+    rest = first.text[len(_DRAFTING_MARKER):].lstrip()
+    if not rest:
+        return blocks[1:]
+    first.text = rest
+    return blocks
+
+
 def block_quotes(block: Block) -> list[Quote]:
     """The block quotes in *block*, nested ones included: a quote block and
     the quotes in it, or those in a list's items."""

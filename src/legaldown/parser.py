@@ -9,6 +9,7 @@ The parser handles:
 from __future__ import annotations
 
 import bisect
+import copy
 import os
 import re
 import warnings
@@ -1359,6 +1360,22 @@ def quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], tuple[_
     layout = _Layout()
     blocks, _sections = _parse_body(text.split("\n"), layout, headings=False, depth=depth)
     return tuple(blocks), tuple(layout.preamble)
+
+
+def quote_blocks(block: Block, *, depth: int = 0) -> list[Block]:
+    """The blocks the block quote *block* holds, as the validator reads them
+    (``quote_content``): each a fresh copy, free to change, since the
+    validator keeps its own reading of a quote's content. A heading in one
+    is a ``heading`` block, not a section, and no directive is lifted into
+    block fields (§4.1). *depth*: how many list items and quotes *block* is
+    in; a quote in ``MAX_QUOTE_DEPTH`` of them is read as the validator reads
+    it, as one text: a single paragraph, or no block when it holds none.
+    Raises ``ValueError`` for a block that is not a quote."""
+    if block.kind != "quote":
+        raise ValueError(f"not a block quote: {block.kind}")
+    if depth >= MAX_QUOTE_DEPTH:
+        return [Block(kind="paragraph", text=block.text)] if block.text.strip() else []
+    return copy.deepcopy(list(quote_content(block.text, depth + 1)[0]))
 
 
 def parse_item_content(text: str) -> list[Block]:

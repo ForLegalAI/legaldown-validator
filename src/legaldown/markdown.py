@@ -9,6 +9,10 @@ starts or ends.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from .models import Block
 
 # A fenced code block opens with three or more backticks or tildes, indented
 # at most three columns; a backtick fence's info string cannot contain a
@@ -294,3 +298,38 @@ def close_fences(text: str) -> str:
             return text + "\n" + indent + fence
         index = end
     return text
+
+
+class CodeContent(NamedTuple):
+    """What a ``code`` block holds, read as CommonMark reads it
+    (``code_content``)."""
+
+    #: A fenced block's info string, without the spaces around it; ``""``
+    #: for an indented block, or a fence with none.
+    info: str
+    #: The code itself, each line ending with LF; ``""`` for no lines.
+    text: str
+    #: True for a fenced block, false for an indented one.
+    fenced: bool
+
+
+def code_content(block: Block) -> CodeContent:
+    """The content of the ``code`` block *block*, as CommonMark reads it
+    (§11.4): of a fenced block, its info string and the lines between its
+    fences, the closing fence left out when it has one (``closes_fence``),
+    each line without as much indentation as the opening fence had
+    (``dedent``); of an indented block, its lines without their four columns
+    of indentation. Raises ``ValueError`` for a block that is not code."""
+    if block.kind != "code":
+        raise ValueError(f"not a code block: {block.kind}")
+    lines = block.text.split("\n") if block.text else []
+    opening = FENCE_OPEN_RE.match(lines[0]) if lines else None
+    if opening is None:
+        return CodeContent("", "".join(dedent(line, 4) + "\n" for line in lines), False)
+    body = lines[1:]
+    if body and closes_fence(body[-1], opening.group("fence")):
+        body = body[:-1]
+    indent = indent_width(lines[0])
+    return CodeContent(
+        lines[0][opening.end():].strip(), "".join(dedent(line, indent) + "\n" for line in body), True
+    )
