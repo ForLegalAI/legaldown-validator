@@ -225,7 +225,7 @@ off.
 Three functions cover the common path:
 
 ```python
-from legaldown import load, validate, serialize_document
+from legaldown import load, serialize, validate
 
 document = load("contract.lgd")
 result = validate(document)
@@ -234,7 +234,7 @@ for diagnostic in result.diagnostics:
     print(diagnostic.level, diagnostic.rule, diagnostic.message)
 
 if result.is_valid:                      # no Error-level diagnostics
-    print(serialize_document(document))
+    print(serialize(document))           # the source text; save(document) writes it to the file
 ```
 
 `load(path)` takes a `str` or `os.PathLike`, reads the file as UTF-8 and returns the `Document`.
@@ -262,9 +262,10 @@ file's text (or `None`), to read them from elsewhere — a database, an upload. 
 is the same function for files on disk, and the one `parse_template` takes as `resolve=` (`LoadFile`).
 
 > **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file),
-> `validate_document` is now `validate`, and the importer callbacks `import_definitions=` and
-> `import_attachment_definitions=` are replaced by `resolve=`. They still work and raise a
-> `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0.
+> `validate_document` is now `validate`, `serialize_document` is now `serialize` (text) or `save`
+> (file), and the importer callbacks `import_definitions=` and `import_attachment_definitions=` are
+> replaced by `resolve=`. They still work and raise a `DeprecationWarning`; they are deprecated
+> since 0.4.0 and will be removed in 0.5.0.
 >
 > **Changed in 0.4.0:** `ValidationResult` is a plain value of two parts, `diagnostics` and `index`.
 > `errors`, `warnings` and `infos` are read-only lists taken from `diagnostics` (changing them
@@ -317,14 +318,24 @@ the validator's own helpers ([Tooling API](#tooling-api)).
 `Side`, `Party`, `Attachment` — that you can inspect, edit, and write back out:
 
 ```python
-from legaldown import load, serialize_document
+from legaldown import load, save
 
 document = load("contract.lgd")
 document.metadata.governing_law = "Czech Republic"
 
-with open("contract.lgd", "w", encoding="utf-8") as handle:
-    handle.write(serialize_document(document))
+save(document)                           # to document.path, where load found it
 ```
+
+`save(document, path=None)` mirrors `load`: it writes the document to `path` (a `str` or
+`os.PathLike`), or to `document.path` when it has none to be given, and returns the absolute path.
+A document from `parse(text)` or built in code has no path, so `save` raises `ValueError` until you
+pass one. The write is atomic — the file is either as it was or the new text, never half written —
+a symbolic link is written through, and a file keeps its permissions. Missing directories on the way
+are created. The text is UTF-8 with LF line endings and no byte-order mark, so a file that was read
+with CRLF line endings or a byte-order mark is written back without them. Afterwards `document.path`
+is the path written, as after `load`: that is where `validate` looks for the files the document
+refers to (and `document.filename`, which diagnostics name, is its name). `serialize(document)` is the same text as a `str`, the inverse of `parse`, for when the
+file is not what you want to write (an HTTP response, a database).
 
 Content before the first heading — typically the sentence identifying the parties — is the
 document's preamble (§4.4): it is unnumbered, so it lives in `document.preamble` rather than in

@@ -311,7 +311,7 @@ def _own_fragments(block: Block) -> list[tuple[str, bool]]:
     ):
         # Raw HTML and indented code: no directive or marker is recognized
         # (§11.4). A source block is not read at all: its text is read once
-        # written and parsed (``serialize_document``). A fenced block's text
+        # written and parsed (``serialize``). A fenced block's text
         # is read with its fence blanked (below): text a model puts after its
         # closing fence is checked -- which needs
         # at least the fence's own line and one more, so a fence with nothing

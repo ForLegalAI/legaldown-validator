@@ -271,7 +271,7 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     # not numbered and without an identifier. Its text is one line.
     "heading": {"kind": "heading", "text": "", "level": 1},
     # Markdown source a caller built, such as an editor's row: written as it
-    # stands (``serialize_document``), never produced by the parser and not
+    # stands (``serialize``), never produced by the parser and not
     # read by the validator. Read back, it is the blocks it holds.
     "source": {"kind": "source", "text": ""},
 }

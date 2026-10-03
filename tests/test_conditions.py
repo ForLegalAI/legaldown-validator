@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from legaldown import serialize_document
+from legaldown import serialize
 from legaldown.markers import Marker, parse_marker, split_heading
 from legaldown.parser import parse
 from legaldown.validator import validate
@@ -77,7 +77,7 @@ def test_a_conditional_heading_round_trips_and_its_identifier_is_generated():
     document = _parse("# Services {when=vat}\n\nText.")
     section = document.sections[0]
     assert (section.title, section.identifier, section.condition) == ("Services", "", "vat")
-    assert "\n# Services {when=vat}\n" in serialize_document(document)
+    assert "\n# Services {when=vat}\n" in serialize(document)
     result = validate(document)
     assert result.index.sections[0].identifier == "services"
     assert document.sections[0].identifier == ""  # validation leaves the document as it was
@@ -389,7 +389,7 @@ def test_a_comment_may_follow_a_heading_marker():
     document = _parse("# Termination {when=vat} <!-- optional -->\n\nText.")
     [section] = document.sections
     assert (section.title, section.condition) == ("Termination <!-- optional -->", "vat")
-    assert parse(serialize_document(document)).sections[0].condition == "vat"
+    assert parse(serialize(document)).sections[0].condition == "vat"
 
 
 def test_a_dotted_path_is_not_a_reference():

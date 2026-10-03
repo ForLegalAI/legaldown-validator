@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from legaldown import Amends, document_from_dict, document_to_dict, item_text, serialize_document
+from legaldown import Amends, document_from_dict, document_to_dict, item_text, serialize
 from legaldown.parser import parse
 from legaldown.validator import validate
 from legaldown.validator.templates import answer_problem
@@ -205,7 +205,7 @@ def test_questions_and_conditional_attachments_round_trip():
     )
     source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n# Terms {{#terms}}\n\nText.\n"
     document = parse(source)
-    again = parse(serialize_document(document))
+    again = parse(serialize(document))
     assert again.metadata == document.metadata
     assert again.metadata.legaldown == "0.2"
     assert again.metadata.attachments[0].when == "personal-data"
@@ -280,7 +280,7 @@ def test_supersedes_object_form_is_modelled_and_its_title_required():
         f"---\ntitle: Fixture\n{_SIDES}supersedes:\n  title: Old NDA\n  file: old.pdf\n---\n"
     )
     assert document.metadata.supersedes == Amends(title="Old NDA", file="old.pdf")
-    assert parse(serialize_document(document)).metadata == document.metadata
+    assert parse(serialize(document)).metadata == document.metadata
 
 
 # ── Include-only paragraphs (§12.2) ───────────────────────────────
@@ -324,7 +324,7 @@ def test_keys_yaml_reads_as_booleans_stay_distinct_and_as_written():
     source = f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n"
     document = parse(source)
     assert list(document.metadata.questions) == ["yes", "true"]
-    assert parse(serialize_document(document)).metadata == document.metadata
+    assert parse(serialize(document)).metadata == document.metadata
 
 
 def test_an_empty_attachments_key_in_a_template_is_line_editable():
@@ -434,7 +434,7 @@ def test_an_attachment_condition_is_read_as_written(when):
     )
     document = parse(source)
     assert document.metadata.attachments[0].when == when
-    assert parse(serialize_document(document)).metadata == document.metadata
+    assert parse(serialize(document)).metadata == document.metadata
 
 
 def test_choice_labels_are_read_as_written():
@@ -522,7 +522,7 @@ def test_the_serializer_writes_shared_declarations_in_full():
     source = (
         f"---\ntitle: Fixture\n{_SIDES}questions:\n  q: &a\n    type: text\n  r: *a\n---\n"
     )
-    written = serialize_document(parse(source))
+    written = serialize(parse(source))
     assert "&" not in written and "*" not in written
     assert parse(written).metadata.questions == {"q": {"type": "text"}, "r": {"type": "text"}}
 
@@ -778,7 +778,7 @@ def test_a_lazy_line_continues_its_quote():
         ("quote", "quoted\ncontinued"),
         ("paragraph", "After."),
     ]
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 @pytest.mark.parametrize(
@@ -852,7 +852,7 @@ def test_a_drafting_note_in_a_list_item_is_recognized():
     assert "drafting-note-def" in result.rules("error")
     assert "drafting-note-unrecognized" in result.rules("warning")
     assert "template-construct-present" in result.rules("error")
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 def test_a_quote_whose_first_line_is_blank_is_not_a_drafting_note():
@@ -861,7 +861,7 @@ def test_a_quote_whose_first_line_is_blank_is_not_a_drafting_note():
     assert not {"drafting-note-def", "template-construct-present"} & validate(
         document, final=True
     ).rules()
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 @pytest.mark.parametrize(
@@ -876,7 +876,7 @@ def test_a_lazy_line_after_a_quote_in_a_list_item_stays_in_the_quote():
     body = '- item\n  > [!DRAFTING]\n  > note\n"Fee" {{def: fee}} means the fee.\n\nPay the {{term: fee}}.'
     document = parse(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n")
     assert "drafting-note-def" in validate(document).rules("error")
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 # ── Quote extents, one scanner for every quote (second review) ────
@@ -902,7 +902,7 @@ _DEF_LINE = '"Fee" {{def: fee}} means money.'
 def test_a_drafting_note_extends_as_its_quote_does(body, in_note):
     document = parse(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n\nPay the {{{{term: fee}}}}.\n")
     assert ("drafting-note-def" in validate(document).rules()) == in_note
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 def test_quote_lines_in_an_items_code_are_code():
@@ -937,7 +937,7 @@ def test_an_items_text_after_a_closed_quote_is_not_quoted(first):
     document = parse(f"---\ntitle: T\n---\n\n# A\n\n- {first}\n  text after quote\n")
     item = document.sections[0].blocks[0].items[0]
     assert (item.blocks[-1].kind, item.blocks[-1].text) == ("paragraph", "text after quote")
-    assert parse(serialize_document(document)).sections == document.sections
+    assert parse(serialize(document)).sections == document.sections
 
 
 @pytest.mark.parametrize(

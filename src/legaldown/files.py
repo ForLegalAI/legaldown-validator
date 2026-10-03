@@ -7,8 +7,11 @@ amends (§7.5), its include fragments (§12.2), its LegalDown attachment files
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import posixpath
+import stat
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -61,3 +64,29 @@ def within(base: Path, relative: str) -> Path | None:
     except (OSError, ValueError, RuntimeError):
         return None
     return target if target.is_relative_to(root) else None
+
+
+def write_atomically(path: Path, text: str) -> None:
+    """*text* to *path* as UTF-8: all of it, or the file as it was — written
+    beside it and moved into place, since the file may be a document or the
+    answers a person wrote. A symbolic link is written through, the file keeps
+    its permissions (a new one gets those a file made now would have), and
+    missing directories on the way are created."""
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        mode = stat.S_IMODE(target.stat().st_mode)
+    else:
+        mask = os.umask(0)
+        os.umask(mask)
+        mode = 0o666 & ~mask
+    descriptor, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.chmod(name, mode)
+        os.replace(name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(name)
+        raise

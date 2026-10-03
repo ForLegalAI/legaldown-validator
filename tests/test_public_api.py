@@ -292,6 +292,20 @@ def test_parse_document_is_a_deprecated_alias_of_parse():
     assert record[0].filename == __file__  # the caller is named, not the shim
 
 
+def test_serialize_document_is_a_deprecated_alias_of_serialize():
+    document = parse(_SOURCE)
+    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0") as record:
+        text = legaldown.serialize_document(document)
+    assert text == legaldown.serialize(document)
+    assert record[0].filename == __file__  # the caller is named, not the shim
+
+
+def test_writing_mirrors_reading():
+    for name in ("load", "parse", "save", "serialize"):
+        assert name in legaldown.__all__
+    assert "write_atomically" not in legaldown.__all__
+
+
 def test_a_symbolic_link_is_named_as_it_was_given(tmp_path):
     target = tmp_path / "v3-final.lgd"
     target.write_text(_SOURCE, encoding="utf-8")
