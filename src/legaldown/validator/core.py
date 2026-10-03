@@ -14,6 +14,7 @@ from dataclasses import replace
 from functools import cache, partial
 from typing import Any
 
+from .._deprecation import LegaldownDeprecationWarning
 from ..directives import (
     DIRECTIVE_PARAMS,
     KNOWN_DIRECTIVES,
@@ -636,7 +637,7 @@ def validate_document(
     warnings.warn(
         "legaldown.validate_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
         "use legaldown.validate()",
-        DeprecationWarning,
+        LegaldownDeprecationWarning,
         stacklevel=2,
     )
     resolve = _resolver(document, None, import_definitions, import_attachment_definitions, stacklevel=3)
@@ -659,7 +660,7 @@ def _resolver(
         warnings.warn(
             "import_definitions and import_attachment_definitions are deprecated since 0.4.0 "
             "and will be removed in 0.5.0; use validate(resolve=), which reads the files itself",
-            DeprecationWarning,
+            LegaldownDeprecationWarning,
             stacklevel=stacklevel,
         )
         return resolve

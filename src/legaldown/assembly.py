@@ -39,6 +39,7 @@ from datetime import date
 from functools import cache
 from typing import Any
 
+from ._deprecation import LegaldownDeprecationWarning
 from .definitions import list_fragments
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
 from .files import LoadFile, relative_path
@@ -1785,7 +1786,7 @@ def assemble(
     warnings.warn(
         "legaldown.assemble() is deprecated since 0.4.0 and will be removed in 0.5.0; "
         "use legaldown.load_template() or parse_template(), then .form(answers).assemble()",
-        DeprecationWarning,
+        LegaldownDeprecationWarning,
         stacklevel=2,
     )
     try:
@@ -1845,7 +1846,7 @@ def template_questions(
     warnings.warn(
         "legaldown.template_questions() is deprecated since 0.4.0 and will be removed in 0.5.0; "
         "use legaldown.load_template() or parse_template(), then .questions",
-        DeprecationWarning,
+        LegaldownDeprecationWarning,
         stacklevel=2,
     )
     return _questions(_read(template, load_file))
@@ -1869,7 +1870,7 @@ def needed_questions(
     warnings.warn(
         "legaldown.needed_questions() is deprecated since 0.4.0 and will be removed in 0.5.0; "
         "use legaldown.load_template() or parse_template(), then .form(answers).questions",
-        DeprecationWarning,
+        LegaldownDeprecationWarning,
         stacklevel=2,
     )
     t = _read(template, load_file)

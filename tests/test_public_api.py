@@ -64,6 +64,7 @@ PUBLIC = sorted([
     "Document", "Metadata", "Section", "Block", "ListItem", "Side", "Party", "Representative",
     "CustomField", "Amends", "Attachment",
     "DefinitionsImporter", "AttachmentDefinitionsImporter",  # deprecated
+    "LegaldownDeprecationWarning",  # what the deprecated names warn with
 ])
 
 #: What PactTrack and legaldown-render import from ``legaldown`` itself.
@@ -548,6 +549,56 @@ def test_validate_document_is_a_deprecated_alias_of_validate():
         result = legaldown.validate_document(document, final=True)
     assert result == validate(document, final=True)
     assert record[0].filename == __file__
+
+
+_TEMPLATE_TEXT = "---\ntitle: T\n---\n\n# A {#a}\n\nHi {{placeholder: who}}.\n"
+
+#: Every deprecated entry point, called: (name, call).
+_DEPRECATED_CALLS = [
+    ("parse_document", lambda: legaldown.parse_document(_SOURCE)),
+    ("serialize_document", lambda: legaldown.serialize_document(parse(_SOURCE))),
+    ("validate_document", lambda: legaldown.validate_document(parse(_SOURCE))),
+    ("validator.validate_document", lambda: legaldown.validator.validate_document(parse(_SOURCE))),
+    ("import_definitions", lambda: validate(parse(_SOURCE), import_definitions=lambda *_: {})),
+    ("import_attachment_definitions", lambda: validate(parse(_SOURCE), import_attachment_definitions=lambda _f: {})),
+    ("validate_document importer", lambda: legaldown.validate_document(parse(_SOURCE), import_definitions=lambda *_: {})),
+    ("assemble", lambda: legaldown.assemble(_TEMPLATE_TEXT, {"who": "Ann"})),
+    ("template_questions", lambda: legaldown.template_questions(_TEMPLATE_TEXT)),
+    ("needed_questions", lambda: legaldown.needed_questions(_TEMPLATE_TEXT, {})),
+]
+
+
+@pytest.mark.parametrize("call", [call for _name, call in _DEPRECATED_CALLS], ids=[n for n, _c in _DEPRECATED_CALLS])
+def test_every_deprecation_warns_with_legaldowns_own_category(call):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        call()
+    assert caught, "no warning"
+    assert {type(w.message) for w in caught} == {legaldown.LegaldownDeprecationWarning}
+    assert all("removed in 0.5.0" in str(w.message) and w.filename == __file__ for w in caught)
+
+
+@pytest.mark.parametrize("call", [call for _name, call in _DEPRECATED_CALLS], ids=[n for n, _c in _DEPRECATED_CALLS])
+def test_one_filter_turns_every_deprecation_into_an_error(call):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", legaldown.LegaldownDeprecationWarning)
+        with pytest.raises(legaldown.LegaldownDeprecationWarning):
+            call()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)  # a filter on the base category still matches
+        with pytest.raises(DeprecationWarning):
+            call()
+
+
+def test_the_deprecation_category_is_a_deprecation_warning_named_from_legaldown():
+    category = legaldown.LegaldownDeprecationWarning
+    assert issubclass(category, DeprecationWarning) and category is not DeprecationWarning
+    assert f"{category.__module__}.{category.__qualname__}" == "legaldown.LegaldownDeprecationWarning"
+    assert "removed in the next minor release" in " ".join(category.__doc__.split())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        legaldown.validate(parse(_SOURCE))  # the current API does not warn
+        legaldown.parse_template(_TEMPLATE_TEXT).form({"who": "Ann"}).assemble()
 
 
 def test_the_messages_by_severity_are_the_diagnostics_own():

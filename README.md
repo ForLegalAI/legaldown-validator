@@ -265,7 +265,12 @@ is the same function for files on disk, and the one `parse_template` takes as `r
 > `validate_document` is now `validate`, `serialize_document` is now `serialize` (text) or `save`
 > (file), and the importer callbacks `import_definitions=` and `import_attachment_definitions=` are
 > replaced by `resolve=`. They still work and raise a `DeprecationWarning`; they are deprecated
-> since 0.4.0 and will be removed in 0.5.0.
+> since 0.4.0 and will be removed in 0.5.0. Every deprecation warning legaldown raises is a
+> `legaldown.LegaldownDeprecationWarning` (a `DeprecationWarning` subclass), so one filter catches
+> them all: `warnings.simplefilter("error", legaldown.LegaldownDeprecationWarning)` in code, or
+> `filterwarnings = ["error::legaldown.LegaldownDeprecationWarning"]` in pytest's configuration
+> (Python's own `-W` option and `PYTHONWARNINGS` ignore a category from a package, as they read it
+> before the package can be imported).
 >
 > **Changed in 0.4.0:** `ValidationResult` is a plain value of two parts, `diagnostics` and `index`.
 > `errors`, `warnings` and `infos` are read-only lists taken from `diagnostics` (changing them
@@ -709,7 +714,7 @@ checks and what it does not.
 > **Deprecated:** `assemble(text, answers, load_file=)`, `template_questions` and `needed_questions`
 > are replaced by `Template` and `Form`. They still work, unchanged (but for `Question`, below, and
 > that a `load_file=` loader is never asked for a path that is absolute or leads out of the template's
-> directory, §2.3), and raise a `DeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
+> directory, §2.3), and raise a `LegaldownDeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
 > differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
 > (the functions ask them after the body), and it refuses a template that has Errors in the
 > validator's template rules (the functions assemble it). `legaldown assemble` follows the new API,
