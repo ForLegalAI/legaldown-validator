@@ -462,20 +462,6 @@ def _merged(text: str, *needles: str) -> list[int]:
     return sorted(at for needle in needles for at in find_all(text, needle))
 
 
-def insertion_boundary_problem(
-    text: str, template: str, insertion: Directive, directives: list[Directive]
-) -> str | None:
-    """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in body
-    *text* — is not kept apart from template text as §15.7.3 requires, or
-    None. *directives* are all the directives lexed from *text*, and
-    *template* is ``template_text(text, directives)``.
-
-    Internal, and one-shot: it indexes the whole text for the one insertion.
-    To check many insertions of one text, make one ``_InsertionScan`` and ask
-    it for each (#94)."""
-    return _InsertionScan(text, template, directives).problem(insertion)
-
-
 # ── Inline choices (§15.5) ────────────────────────────────────────
 
 #: The brace-stray message, shared with the lexer's own strays.

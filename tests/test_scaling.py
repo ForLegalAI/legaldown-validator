@@ -192,6 +192,16 @@ def test_the_lexer_indexes_the_text_once(monkeypatch):
     assert blanks.calls == 1
 
 
+def test_a_comment_opener_in_a_quoted_value_builds_no_closer_list(monkeypatch):
+    """The lexer looks for a comment's end only at an opener it reads: this
+    one is a directive's text."""
+    closers = _Counter(monkeypatch, directives_module, "comment_closers")
+    lexed = lex('{{ref: "a <!-- b"}} x --> ' * 1000)
+    assert len(lexed.directives) == 1000 and not lexed.directives[0].malformed
+    assert lexed.literals == []
+    assert closers.calls == 0
+
+
 _LEXER_SHAPES = {
     # shape: (the unit repeated, how many times, the budget in seconds)
     "code spans": ("x `a` ", 200_000, 5.0),

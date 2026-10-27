@@ -118,7 +118,7 @@ _OLD_LINK_REFERENCE_RE = re.compile(
 
 
 def old_insertion_boundary_problem(text, template, insertion, directives):
-    """``insertion_boundary_problem`` as of 0.4.0."""
+    """``insertion_boundary_problem`` as of 0.4.0 (now ``_InsertionScan``)."""
     start, end = insertion.start, insertion.end
     line_start = text.rfind("\n", 0, start) + 1
     line_end = text.find("\n", end)
@@ -404,7 +404,14 @@ def test_find_markers_reads_the_lexer_it_is_given():
     assert find_markers(document, lex_fragment) == old_find_markers(document, lex_fragment)
 
 
-# ── insertion_boundary_problem ────────────────────────────────────
+# ── Insertion boundaries ──────────────────────────────────────────
+
+
+def fresh_problem(text, template, insertion, directives):
+    """The verdict of a scan made for this insertion alone."""
+    return templates._InsertionScan(text, template, directives).problem(insertion)
+
+
 
 _BOUNDARY_TOKENS = [
     "{{placeholder: a}}", "{{placeholder: a}}", "{{choose: q, x=y}}", "{{placeholder: \"a b\"}}", "{{def: t}}",
@@ -422,11 +429,11 @@ def _boundary_cases(count, max_tokens, seed, tokens=_BOUNDARY_TOKENS):
                 yield text, template, directive, lexed.directives
 
 
-def test_insertion_boundary_problem_equals_the_old_one():
+def test_the_boundary_verdict_equals_the_old_one():
     checked = problems = 0
     for text, template, directive, directives in _boundary_cases(7000, 14, seed=943):
         expected = old_insertion_boundary_problem(text, template, directive, directives)
-        assert templates.insertion_boundary_problem(text, template, directive, directives) == expected, (
+        assert fresh_problem(text, template, directive, directives) == expected, (
             text, directive.start,
         )
         checked += 1
@@ -434,13 +441,13 @@ def test_insertion_boundary_problem_equals_the_old_one():
     assert checked > 4000 and problems > 1000  # both verdicts are reached
 
 
-def test_insertion_boundary_problem_equals_the_old_one_around_links():
+def test_the_boundary_verdict_equals_the_old_one_around_links():
     tokens = ["[a]: ", "[a]:", "[b] ", "{{placeholder: a}}", "{{placeholder: a}}", " ", "\n", "x", "> ", "- ",
               "](", ")", "\"t\"", "(", "<"]
     reference = destination = 0
     for text, template, directive, directives in _boundary_cases(9000, 10, seed=945, tokens=tokens):
         expected = old_insertion_boundary_problem(text, template, directive, directives)
-        assert templates.insertion_boundary_problem(text, template, directive, directives) == expected, (
+        assert fresh_problem(text, template, directive, directives) == expected, (
             text, directive.start,
         )
         reference += expected == "it is in a link reference definition"
@@ -551,3 +558,22 @@ def test_comment_closers_are_the_overlapping_offsets_too():
     """``-->`` cannot overlap itself, so the two readings agree."""
     for s in _random_strings(list("-->a"), 3000, 16, seed=993):
         assert markdown.comment_closers(s) == markdown.find_all(s, "-->", overlapping=True)
+
+
+def test_one_scan_per_text_equals_a_fresh_scan_per_insertion():
+    """Several insertions over several lines, containers, links and
+    definitions: the scan's per-line caches give the verdicts that a scan
+    made for each insertion does."""
+    tokens = _BOUNDARY_TOKENS + ["{{placeholder: a}}"] * 8 + ["\n"] * 6 + ["[a]: x ", "> - ", "](x"]
+    insertions = 0
+    for text in _random_texts(tokens, 3000, 30, seed=946):
+        lexed = lex(text)
+        template = mask_directives(text, lexed.directives)
+        shared = templates._InsertionScan(text, template, lexed.directives)
+        found = [d for d in lexed.directives if d.name in ("placeholder", "choose") and not d.malformed]
+        for directive in reversed(found):  # in any order
+            assert shared.problem(directive) == fresh_problem(text, template, directive, lexed.directives), (
+                text, directive.start,
+            )
+        insertions += len(found)
+    assert insertions > 8000
