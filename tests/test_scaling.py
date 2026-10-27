@@ -161,6 +161,23 @@ def test_headings_of_one_title_under_conditions_decide_in_linear_work(shape, mon
     assert decisions.calls + decisions_in_exclusive.calls <= 4 * n  # n² / 2 and more before
 
 
+def test_headings_with_pairs_of_conditions_decide_without_testing_conditions(monkeypatch):
+    """``p_k ∧ q`` and ``p_k ∧ !q`` for every k: each clashes with every
+    earlier suffix, which the counts show without testing a condition (the
+    suffixes are still looked at, so the time is not linear)."""
+    from legaldown.validator.units import own_presence
+
+    n = 800
+    questions = _boolean_questions(n)
+    decisions = _Counter(monkeypatch, core, "satisfiable_in")
+    decisions_in_exclusive = _Counter(monkeypatch, conditions_module, "satisfiable_in")
+    pool = core._FreeIdentifiers(set(), questions)
+    for k in range(n):
+        presence = own_presence(f"q{k // 2 + 1}", questions) | own_presence("q0" if k % 2 else "!q0", questions)
+        pool.declare(pool("same", presence), presence)
+    assert decisions.calls + decisions_in_exclusive.calls <= 4 * n  # about 1.5 n² / 2 before
+
+
 def test_headings_of_one_title_under_conditions_get_their_suffixes():
     count = 300
     questions = "".join(f"  q{k}:\n    type: boolean\n" for k in range(count))

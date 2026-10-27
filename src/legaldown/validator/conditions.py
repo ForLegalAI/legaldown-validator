@@ -80,12 +80,12 @@ def question_answers(question: str, questions: Any) -> Collection[Any]:
     return choices if isinstance(choices, dict) else ()  # a dict is read as its keys
 
 
-def by_question(presence: Iterable[Condition]) -> dict[str, list[Condition]]:
+def by_question(presence: Iterable[Condition]) -> dict[str, Presence]:
     """The conditions in *presence* on each question they name."""
-    grouped: dict[str, list[Condition]] = {}
+    grouped: dict[str, set[Condition]] = {}
     for condition in presence:
-        grouped.setdefault(condition.question, []).append(condition)
-    return grouped
+        grouped.setdefault(condition.question, set()).add(condition)
+    return {question: frozenset(conditions) for question, conditions in grouped.items()}
 
 
 def condition_values(conditions: Iterable[Condition]) -> tuple[set[Any], set[Any]]:

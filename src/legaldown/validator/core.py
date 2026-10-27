@@ -459,10 +459,13 @@ _SUFFIXED_RE = re.compile(r"(.*)-([2-9]|[1-9][0-9]+)")
 
 class _Declarations(Sequence[Presence]):
     """The presences an identifier is declared with, to read: only its
-    ``_FreeIdentifiers`` adds to them."""
+    ``_FreeIdentifiers`` adds to them (``_add``)."""
 
     def __init__(self) -> None:
         self._presences: list[Presence] = []
+
+    def _add(self, presence: Presence) -> None:
+        self._presences.append(presence)
 
     def __len__(self) -> int:
         return len(self._presences)
@@ -470,8 +473,22 @@ class _Declarations(Sequence[Presence]):
     def __getitem__(self, index: Any) -> Any:
         return self._presences[index]
 
+    def __iter__(self) -> Iterator[Presence]:
+        return iter(self._presences)
 
-class _Declared:
+    def __contains__(self, presence: object) -> bool:
+        return presence in self._presences
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Sequence) and len(self) == len(other) and all(a == b for a, b in zip(self, other, strict=True))
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return repr(self._presences)
+
+
+class _AnswerTally:
     """What the declarations at one place — an identifier, or the suffixes of
     a base — say about one question, counted by the answers they allow, so
     that how many a presence excludes is a lookup, not a test of each (#94).
@@ -485,38 +502,44 @@ class _Declared:
         self.positive_total = 0
         self.negative = 0
         self.refusing: Counter[Any] = Counter()  # negative declarations refusing a value, by value
+        self.refusals: Counter[frozenset[Any]] = Counter()  # negative declarations, by the answers they refuse
         self.widest = 0  # the most answers one negative declaration refuses
 
     @property
     def mentions(self) -> int:
         return self.positive_total + self.negative
 
-    def add(self, conditions: Presence, answers: Collection[Any]) -> None:
-        """Count a declaration that can appear and has *conditions* on the question."""
-        wanted, refused = condition_values(conditions)
+    def add(self, wanted: Collection[Any], refused: Collection[Any], answers: Collection[Any]) -> None:
+        """Count a declaration that can appear and wants *wanted* and refuses
+        *refused* of the question (``condition_values``)."""
         if wanted:
             (value,) = wanted
             self.positive[value] += 1
             self.positive_total += 1
         else:
+            refusal = frozenset(value for value in refused if value in answers)
             self.negative += 1
-            self.refusing.update(refused)
-            self.widest = max(self.widest, sum(1 for value in refused if value in answers))
+            self.refusing.update(refusal)
+            self.refusals[refusal] += 1
+            self.widest = max(self.widest, len(refusal))
 
-    def excluded(self, conditions: Presence, answers: Collection[Any]) -> tuple[int, bool]:
-        """How many of the declarations that name the question *conditions*
-        (a presence that can appear) excludes: those with no answer in common
-        with it. The count is a lower bound unless the second value is true."""
-        wanted, refused = condition_values(conditions)
+    def excluded(self, wanted: Collection[Any], refused: Collection[Any], answers: Collection[Any]) -> int:
+        """How many of the declarations that name the question a presence
+        excludes, when it wants *wanted* and refuses *refused* of it (it can
+        appear): those with no answer in common with it."""
         if wanted:
             (value,) = wanted
             # A positive declaration wants another value; a negative one refuses this.
-            return self.positive_total - self.positive[value] + self.refusing[value], True
-        wanting_a_refused = sum(self.positive[value] for value in refused)
-        # Two negative declarations exclude each other only if between them they
-        # refuse every answer, which they cannot when the widest refuses too few.
-        exact = not self.negative or sum(1 for value in refused if value in answers) + self.widest < len(answers)
-        return wanting_a_refused, exact
+            return self.positive_total - self.positive[value] + self.refusing[value]
+        refusal = frozenset(value for value in refused if value in answers)
+        count = sum(self.positive[value] for value in refusal)  # wanting a value it refuses
+        # A negative declaration is excluded if between them they refuse every
+        # answer, which they cannot when the widest refuses too few.
+        if self.negative and len(refusal) + self.widest >= len(answers):
+            count += sum(
+                tally for refused_by, tally in self.refusals.items() if len(refused_by | refusal) == len(answers)
+            )
+        return count
 
 
 class _FreeIdentifiers:
@@ -542,14 +565,16 @@ class _FreeIdentifiers:
       first with none.
     - Whether the heading's conditions on one question exclude the
       declarations at a suffix, or all of them, is counted from what they
-      want and refuse (``_Declared``), not tested for each.
+      want and refuse (``_AnswerTally``), not tested for each.
 
-    What remains superlinear: a heading with conditions on several questions
-    is probed against each declaration at a suffix that some declarations
-    exclude and others do not, and a suffix that it shares with the
-    declarations of other headings whose negative conditions might together
-    refuse every answer; and such headings over many suffixes, like ``p_k ∧ q``
-    and ``p_k ∧ !q`` for every k, are probed against the suffixes before them.
+    What remains superlinear: a heading is still looked at against each suffix
+    that it neither fits nor is turned away from by the answers' counts, once
+    for each presence that is new, so headings whose presences are all
+    different and all clash, such as ``p_k ∧ q`` and ``p_k ∧ !q`` for every k,
+    cost a lookup for each pair of heading and earlier suffix, though no test
+    of the conditions. A heading with conditions on several questions, whose
+    counts per question exclude as many declarations as there are but not
+    each by one question, is tested against each declaration there.
     """
 
     def __init__(self, explicit_ids: Collection[str], questions: Any) -> None:
@@ -564,15 +589,15 @@ class _FreeIdentifiers:
         #: Per pool, what is asked of one question or presence again and again.
         self._answers: dict[str, Collection[Any]] = {}
         self._grouped: dict[Presence, dict[str, Presence]] = {}
+        self._wanted_refused: dict[Presence, tuple[set[Any], set[Any]]] = {}
         self._appears: dict[Presence, bool] = {}
         self._excludes: dict[tuple[Presence, Presence], bool] = {}
         #: How many declarations that can appear an identifier has.
         self._occupants: dict[str, int] = {}
         #: What those declarations say of a question: at an identifier, and
-        #: across a base's suffixes; and the distinct conditions across them.
-        self._at: dict[tuple[str, str], _Declared] = {}
-        self._across: dict[tuple[str, str], _Declared] = {}
-        self._seen: dict[tuple[str, str], set[Presence]] = {}
+        #: across a base's suffixes.
+        self._at: dict[tuple[str, str], _AnswerTally] = {}
+        self._across: dict[tuple[str, str], _AnswerTally] = {}
         #: Per base, the lowest suffix that is not explicit, and the lowest
         #: that is not explicit either and has no declaration that can appear.
         #: Both only move up.
@@ -581,18 +606,18 @@ class _FreeIdentifiers:
 
     def declare(self, identifier: str, presence: Presence) -> None:
         """Record that *identifier* is declared with *presence*."""
-        self._declarations.setdefault(identifier, _Declarations())._presences.append(presence)
+        self._declarations.setdefault(identifier, _Declarations())._add(presence)
         if not self._can_appear(presence):
             return  # it clashes with nothing
         self._occupants[identifier] = self._occupants.get(identifier, 0) + 1
         suffixed = _SUFFIXED_RE.fullmatch(identifier)
         bases = (identifier, suffixed.group(1)) if suffixed else (identifier,)
         for question, conditions in self._by_question(presence).items():
+            wanted, refused = self._values(conditions)
             answers = self._answers_of(question)
-            self._at.setdefault((identifier, question), _Declared()).add(conditions, answers)
+            self._at.setdefault((identifier, question), _AnswerTally()).add(wanted, refused, answers)
             for base in bases:
-                self._across.setdefault((base, question), _Declared()).add(conditions, answers)
-                self._seen.setdefault((base, question), set()).add(conditions)
+                self._across.setdefault((base, question), _AnswerTally()).add(wanted, refused, answers)
 
     def __call__(self, base: str, presence: Presence) -> str:
         if not self._can_appear(presence):
@@ -632,10 +657,7 @@ class _FreeIdentifiers:
             declared = self._across.get((base, question))
             if declared is None:
                 continue
-            count, exact = declared.excluded(conditions, self._answers_of(question))
-            if count:
-                return True
-            if not exact and any(self._exclude(conditions, seen) for seen in self._seen[(base, question)]):
+            if declared.excluded(*self._values(conditions), self._answers_of(question)):
                 return True
         return False
 
@@ -646,19 +668,22 @@ class _FreeIdentifiers:
         if not occupants:
             return False  # nothing, or only what never appears
         grouped = self._by_question(presence)
-        if not grouped:
-            return True  # it can appear with whatever can
-        if len(grouped) == 1:
-            ((question, conditions),) = grouped.items()
+        excluded = 0  # the declarations the questions exclude, counted for each question
+        for question, conditions in grouped.items():
             declared = self._at.get((identifier, question))
-            mentions = declared.mentions if declared else 0
-            if mentions < occupants:
-                return True  # a declaration that says nothing of the question
-            assert declared is not None
-            count, exact = declared.excluded(conditions, self._answers_of(question))
-            if exact:
-                return count < mentions
-        return any(not exclusive_in(presence, other, self._answers_of) for other in self._declarations[identifier])
+            if declared is None or declared.mentions < occupants:
+                if len(grouped) == 1:
+                    return True  # a declaration that says nothing of the one question
+                if declared is None:
+                    continue
+            count = declared.excluded(*self._values(conditions), self._answers_of(question))
+            if count == occupants:
+                return False  # this question alone excludes every declaration
+            excluded += count
+        if excluded < occupants:
+            return True  # some declaration is excluded by no question
+        # The questions together might exclude each declaration, one for each.
+        return any(not self._exclude(presence, other) for other in self._declarations[identifier])
 
     def _answers_of(self, question: str) -> Collection[Any]:
         if question not in self._answers:
@@ -667,10 +692,13 @@ class _FreeIdentifiers:
 
     def _by_question(self, presence: Presence) -> dict[str, Presence]:
         if presence not in self._grouped:
-            self._grouped[presence] = {
-                question: frozenset(conditions) for question, conditions in by_question(presence).items()
-            }
+            self._grouped[presence] = by_question(presence)
         return self._grouped[presence]
+
+    def _values(self, conditions: Presence) -> tuple[set[Any], set[Any]]:
+        if conditions not in self._wanted_refused:
+            self._wanted_refused[conditions] = condition_values(conditions)
+        return self._wanted_refused[conditions]
 
     def _can_appear(self, presence: Presence) -> bool:
         if presence not in self._appears:

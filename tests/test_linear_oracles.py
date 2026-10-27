@@ -729,3 +729,45 @@ def test_the_many_values_of_one_choice_question_are_decided_by_counts():
         assert got == old_free_identifier("same", presence, set(), old_anchors, questions)
         old_anchors.setdefault(got, []).append(presence)
         pool.declare(got, presence)
+
+
+def test_each_declaration_excluded_by_another_question_is_decided_by_each_declaration():
+    """Neither question alone excludes both declarations; together they do."""
+    questions = {"a": {"type": "boolean"}, "b": {"type": "boolean"}}
+    pool = core._FreeIdentifiers(set(), questions)
+    old_anchors: dict[str, list] = {}
+    first, second, third = (own_presence(text, questions) for text in ("a", "b", "!a"))
+    both = own_presence("!a", questions) | own_presence("!b", questions)
+    for presence in (first, second, both, third, both):
+        got = pool("same", presence)
+        assert got == old_free_identifier("same", presence, set(), old_anchors, questions)
+        old_anchors.setdefault(got, []).append(presence)
+        pool.declare(got, presence)
+    assert pool("same", both) == old_free_identifier("same", both, set(), old_anchors, questions)
+
+
+def test_pairs_of_conditions_get_the_old_probes_suffixes():
+    from legaldown.validator.units import own_presence
+
+    questions = {f"q{k}": {"type": "boolean"} for k in range(40)}
+    pool = core._FreeIdentifiers(set(), questions)
+    old_anchors: dict[str, list] = {}
+    for k in range(120):
+        presence = own_presence(f"q{k // 2 + 1}", questions) | own_presence("q0" if k % 2 else "!q0", questions)
+        got = pool("same", presence)
+        assert got == old_free_identifier("same", presence, set(), old_anchors, questions)
+        old_anchors.setdefault(got, []).append(presence)
+        pool.declare(got, presence)
+
+
+def test_declarations_read_like_a_list_that_only_the_pool_adds_to():
+    pool = core._FreeIdentifiers(set(), _QUESTIONS)
+    first, second = own_presence("a", _QUESTIONS), own_presence("!b", _QUESTIONS)
+    pool.declare("same", first)
+    pool.declare("same", second)
+    declared = pool.anchors["same"]
+    assert list(declared) == [first, second] == list(reversed(list(reversed(declared))))
+    assert first in declared and own_presence("b", _QUESTIONS) not in declared
+    assert declared == [first, second] and declared == (first, second) and declared != [first]
+    assert declared != "ab" and repr(declared) == repr([first, second])
+    assert len(declared) == 2 and declared[-1] == second
