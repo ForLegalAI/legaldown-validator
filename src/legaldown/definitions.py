@@ -209,7 +209,7 @@ def block_fragments(block: Block) -> list[Fragment]:
     code span or comment left open — runs into the next, and code and raw
     HTML in it hold none (§11.4).
     """
-    return [Fragment(text, position) for text, position, _items in _fragments(block)]
+    return [Fragment(text, position) for text, position, _items, _scope in _fragments(block)]
 
 
 def list_fragments(block: Block) -> list[ListFragment]:
@@ -220,7 +220,21 @@ def list_fragments(block: Block) -> list[ListFragment]:
     list's items: an item before the items nested in it, empty items
     included (§15.3). A list in a block quote is no unit: its fragments are
     in the items the quote is in."""
-    return [ListFragment(*fragment) for fragment in _fragments(block)]
+    return [ListFragment(text, position, items) for text, position, items, _scope in _fragments(block)]
+
+
+def fragment_scopes(block: Block) -> list[int]:
+    """The scope of each fragment of *block*, parallel to
+    ``block_fragments(block)``: fragments with the same number are in one
+    paragraph, the scope of a definition in it (§7.2, §16.3). A top-level
+    block's text, prefix and suffix are one paragraph (a lifted
+    ``{{term:}}`` target belongs to it too), as are those of a list item's
+    paragraph and of a block quote's; each block of an item or quote has its
+    own. A table's header row and each of its rows are scopes of their own,
+    not its cells: a glossary row (``| "Foo" {{def: foo}} | means … |``) is
+    one definition's paragraph. A quote too deep to read (``MAX_QUOTE_DEPTH``)
+    is one fragment, hence one scope. Numbers are per block, from 0."""
+    return [scope for _text, _position, _items, scope in _fragments(block)]
 
 
 def quote_ranges(block: Block) -> list[tuple[str, range]]:
@@ -234,20 +248,21 @@ def quote_ranges(block: Block) -> list[tuple[str, range]]:
 
 def _fragments(
     block: Block, quotes: list[tuple[str, range]] | None = None
-) -> list[tuple[str, bool, tuple[int, ...]]]:
-    """``list_fragments`` of any block: the one walk that numbers fragments
-    and items, and finds the quotes (``quote_ranges``) when *quotes* is
-    given."""
+) -> list[tuple[str, bool, tuple[int, ...], int]]:
+    """``list_fragments`` of any block, each with its scope
+    (``fragment_scopes``): the one walk that numbers fragments, items and
+    scopes, and finds the quotes (``quote_ranges``) when *quotes* is given."""
     from .parser import MAX_QUOTE_DEPTH, quote_content  # the parser builds on this module
 
-    fragments: list[tuple[str, bool, tuple[int, ...]]] = []
+    fragments: list[tuple[str, bool, tuple[int, ...], int]] = []
     count = 0
+    scope = 0  # the next scope number
 
     def walk(block: Block, depth: int, path: tuple[int, ...], anchor: bool, units: bool) -> None:
         # *depth*: the items and quotes *block* is in; *anchor*: whether its
         # end may be an anchor position; *units*: whether its items are
         # units, numbered — not in a quote.
-        nonlocal count
+        nonlocal count, scope
         if block.kind in LIST_KINDS:
             for item in list_items(block):
                 inner = path
@@ -270,11 +285,15 @@ def _fragments(
                     walk(child, depth + 1, path, False, False)
             elif block.text:
                 # Too deep to read: its text as one, its fenced code blanked.
-                fragments.append((blank_fenced_code(block.text), False, path))
+                fragments.append((blank_fenced_code(block.text), False, path, scope))
+                scope += 1
             if quotes is not None:
                 quotes[slot] = (quotes[slot][0], range(at, len(fragments)))
         else:
-            fragments.extend((text, position and anchor, path) for text, position in _own_fragments(block))
+            own = _scoped_fragments(block)
+            fragments.extend((text, position and anchor, path, scope + number) for text, position, number in own)
+            if own:
+                scope += max(number for _text, _position, number in own) + 1
 
     walk(block, 0, (), True, True)
     return fragments
@@ -303,6 +322,13 @@ def nested_blocks(block: Block) -> Iterator[Block]:
 
 def _own_fragments(block: Block) -> list[tuple[str, bool]]:
     """The fragments of a block that holds no blocks: ``block_fragments``."""
+    return [(text, position) for text, position, _scope in _scoped_fragments(block)]
+
+
+def _scoped_fragments(block: Block) -> list[tuple[str, bool, int]]:
+    """``_own_fragments``, each with its scope within the block
+    (``fragment_scopes``): 0 for the text, prefix and suffix, 1 for the
+    header row of a table and 2 on for its rows."""
     if block.kind in ("html", "source") or (
         block.kind == "code" and (
             is_indented_code(block.text)
@@ -319,17 +345,17 @@ def _own_fragments(block: Block) -> list[tuple[str, bool]]:
         return []
     paragraph = block.kind in ("paragraph", "definition")
     lifted = block.kind in ("ref", "term")
-    fragments: list[tuple[str, bool]] = []
+    fragments: list[tuple[str, bool, int]] = []
     if block.kind == "code" and block.text:
-        fragments.append((blank_fenced_code(block.text), False))
+        fragments.append((blank_fenced_code(block.text), False, 0))
     elif block.text:
-        fragments.append((block.text, paragraph))
+        fragments.append((block.text, paragraph, 0))
     if block.prefix:
-        fragments.append((block.prefix, False))
+        fragments.append((block.prefix, False, 0))
     if block.suffix:
-        fragments.append((block.suffix, lifted))
-    fragments.extend((cell, False) for cell in block.headers if cell)
-    fragments.extend((cell, False) for row in block.rows for cell in row if cell)
+        fragments.append((block.suffix, lifted, 0))
+    fragments.extend((cell, False, 1) for cell in block.headers if cell)
+    fragments.extend((cell, False, 2 + number) for number, row in enumerate(block.rows) for cell in row if cell)
     return fragments
 def text_fragments(block: Block) -> list[str]:
     """All free-text fragments of a block that may contain inline directives."""

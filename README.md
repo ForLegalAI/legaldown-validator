@@ -21,7 +21,8 @@ documents. This package is the toolkit for working with those documents in code:
 definitions, anchors.
 
 ✅ **Validates** it against the specification's rule set (§16): broken cross-references, undefined
-terms, duplicate identifiers, malformed party metadata, bad dates and money values, and more.
+terms, circular definitions, duplicate identifiers, malformed party metadata, bad dates and money
+values, and more.
 
 📤 **Serializes** the model back to LegalDown source, so you can edit documents programmatically
 and write them out again.
@@ -709,7 +710,7 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, unquoted values that begin with a curly quote, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
 | **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions and lost letters, markers outside an anchor position |
-| **Definitions** | Undefined `{{term:}}`, duplicate ids, auto-generated ids that lost letters, missing quoted span, ambiguous quoting, unreferenced definitions |
+| **Definitions** | Undefined `{{term:}}`, duplicate ids, auto-generated ids that lost letters, missing quoted span, ambiguous quoting, unreferenced definitions, circular definitions (a definition's paragraph names a term whose paragraph leads back to it; one Warning for each such set, §7.2) |
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |
 | **Placeholders** | Malformed ids, invalid types, one blank with two types, currencies, or units, placeholders in structural and format-checked frontmatter fields |

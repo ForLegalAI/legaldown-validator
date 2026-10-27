@@ -1207,12 +1207,14 @@ def _validate(
     # Imported here to avoid a module-level import cycle (definitions ->
     # validator.helpers -> validator/__init__ -> core).
     from ..definitions import (
+        DefinitionRef,
         block_fragments,
         collect_definitions,
         find_definition_anchors,
         id_term,
         text_fragments,
     )
+    from .circular import TermUse, circular_message, find_circular_definitions, term_owners
 
     # Each text is lexed once per validation and shared by the passes below.
     lex_fragment = cache(lex)
@@ -1674,6 +1676,10 @@ def _validate(
 
     # Each identifier's declarations: (term, auto-generated, presence).
     declared_terms: dict[str, list[tuple[str, bool, Presence]]] = {}
+    # The definitions that are registered, and the {{term:}} uses outside
+    # drafting notes, for definition-circular (§16.3, #105).
+    registered: list[tuple[DefinitionRef, Presence]] = []
+    term_uses: list[TermUse] = []
     for ref in definition_refs:
         def_id = ref.id
         if not IDENTIFIER_RE.fullmatch(def_id):
@@ -1712,6 +1718,7 @@ def _validate(
                 )
             continue
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
+        registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
 
     # ── Definition source-form checks (§7.2 validation table) ──
@@ -1855,9 +1862,12 @@ def _validate(
             lifted_line = partial(where.lifted, section_index, block_index, "{{" + block.kind)
             (ref_targets if block.kind == "ref" else term_targets).append((block.target.strip(), lifted_line))
             references[block.kind].append((block.target.strip(), block_presence, False, lifted_line))
+            if block.kind == "term":
+                term_uses.append(TermUse(section_index, block_index, None, block.target.strip(), block_presence))
         notes = [quote for quote in block_quotes(block) if quote.is_drafting_note]
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
+            owner_of = None  # for definition-circular, once a {{term:}} asks
             presence = units.presence(section_index, block_index, fragment_index)
             in_note = bool(lexed.directives) and in_drafting_note(notes, fragment_index)  # only a directive asks
             for offset in lexed.stray_braces:
@@ -1896,6 +1906,11 @@ def _validate(
                 params = directive.params
                 if name in references and value:
                     references[name].append((value, presence, in_note, line))
+                    if name == "term" and not in_note:
+                        owner_of = owner_of or term_owners(fragment, lexed, document.metadata.language)
+                        term_uses.append(
+                            TermUse(section_index, block_index, fragment_index, value, presence, owner_of(directive))
+                        )
                 if name in ("ref", "term") and not value:
                     # Whatever the host holds, a reference with no target is wrong.
                     result.error(
@@ -2090,6 +2105,22 @@ def _validate(
                 line=line, depends=depends if host_declares else None,
             )
     _check_never_true(document, markers, units, questions, result, where)
+
+    # Circular definitions (§16.3, §7.2): one Warning for each set of
+    # definitions explained in terms of each other, where the last of them, in
+    # document order, is declared. Alternatives (§15.4) that cannot appear
+    # together do not refer to each other; only a template has them.
+    for circle in find_circular_definitions(
+        document,
+        registered,
+        term_uses,
+        (lambda first, second: exclusive(first, second, questions)) if template else None,
+    ):
+        result.warning(
+            "definition-circular",
+            circular_message(registered[number][0].id for number in circle),
+            line=definition_line(registered[circle[-1]][0]),
+        )
 
     # Reference safety (§15.4): a reference resolves in every assembled
     # document it is in. References in drafting notes are exempt: assembly

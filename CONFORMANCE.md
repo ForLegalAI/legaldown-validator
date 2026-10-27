@@ -6,7 +6,7 @@ parse and validate a single document in memory. It also claims the **Assembly** 
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **87 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **88 of the
 corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes**,
 at the line each case gives.
 
@@ -50,7 +50,7 @@ files other than the document itself.
 | Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip`; of these, `include-has-frontmatter` and `include-has-h1` are reported for a fragment validated on its own (`validate(fragment=True)`, below), which is not how their fixtures run them: they validate the including document, which does not read the fragment, so those cases stay skipped |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Rendering (§17.3) | `ref-not-enumerated` |
-| Other | `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
+| Other | `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means validating a set of files is out of scope: the validator does not resolve
 or cross-check includes, attachment file contents, or bilingual document sets. The one thing it
@@ -88,6 +88,53 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   flagged and a document is checked as a complete one. The fragment's own frontmatter is
   `include-has-frontmatter` and its level-1 heading `include-has-h1`, reported by this mode alone;
   the rest of the Includes group, which reads files, is not implemented.
+
+`definition-circular` (§16.3, [#105](https://github.com/ForLegalAI/legaldown-validator/issues/105))
+reads a definition's scope as §7.2 gives it "for purposes such as circular-reference detection": the
+paragraph holding its `{{def:}}`. A definition is explained in terms of another when a
+`{{term:}}` of the other is in that paragraph, and definitions that are each explained in terms of
+the next, round to the first, are circular. A list item's paragraph, each block of a block quote
+and a heading in a quote are paragraphs; a table's scope is a row, so a glossary row
+(`| "Foo" {{def: foo}} | means {{term: bar}} |`) is one definition's paragraph, and so is its
+header row; a block quote nested deeper than the parser reads is one paragraph. A definition in a
+list item has its own paragraph as scope, as §7.2 says, so the references in the item's sub-list
+(the layout `- "Fee" {{def: fee}} means:` over `(a)` and `(b)` items) are not part of the
+definition, and a circle that runs only through them is not reported.
+
+The specification does not say how many diagnostics a circle gets, nor where. One Warning is
+given for each set of definitions that lead round to each other (a strongly connected component of
+the "explained in terms of" relation, however many circles it holds), at the line of the last of
+them in document order, where the circle closes, which is where the fixture has it (line 23);
+the message names up to five ids. The Warnings come in that order, so the output does not depend
+on the order the search visits the definitions. A circle has at least two distinct definitions.
+**A reference in a definition's own paragraph is not a circle:** `"Services" {{def: services}} means
+x. See {{term: services}}.` is ordinary wording, and the specification's own fixtures write it in
+17 cases (the translation, amendment and single-quote cases), none of which expects a Warning. The
+one self-reference reported is a `{{term:}}` to itself in the definition's own quoted term
+(`"Self {{term: s}}" {{def: s}}`), which cannot be read any other way.
+
+Only definitions that are registered count (not a duplicate, or an invalid id); a `{{term:}}`
+in code or a comment, or an undeclared id, is no reference; a `{{term:}}` in a drafting note
+is not either, as assembly removes it (§15.6). A definition imported from the amended original or
+an attachment file is a target and never a source (the validator reads only the ids of those
+files), so a circle through several files is Full (§17.4), but a definition of the document that
+shadows an imported id still is a source. The check is linear in the paragraphs and references,
+and takes no recursion, so a ring of any length, or a paragraph holding thousands of definitions,
+is as cheap as the rest.
+
+Two approximations, both towards giving a Warning (a Warning is better given than withheld):
+
+- **Paragraph scope.** A paragraph cannot tell which of its definitions a reference explains, so
+  two definitions in one paragraph that references both are reported as explaining each other
+  (`"A" {{def: a}} and "B" {{def: b}} use {{term: a}} and {{term: b}}.`). A reference to one of them
+  only is not (`"A" {{def: a}} means x. "B" {{def: b}} means {{term: a}}.`).
+- **Alternatives (§15.4).** In a template, a reference does not lead to a declaration it can never
+  appear with (their conditions exclude each other), so alternatives that share an id do not make a
+  circle together. Only a reference and the declaration it names are compared, each pair of
+  conditions once, so a circle whose members exclude each other further round (`d1` when `q` names
+  `d2`, which names `d3` when not `q`, which names `d4`, which names `d1`) is still reported; an
+  exact answer needs the answers to every question tried together. The tests are at most the
+  references' distinct conditions times the alternatives of the id they name.
 
 `raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
 each HTML block that holds more than comments (text after a comment's `-->` on its line
@@ -283,10 +330,10 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Each case's expected rule is asserted at its expected line, where the case gives one (above).
-Cases for the rules above are skipped by name, so the 27 `not implemented` skips reproduce this
+Cases for the rules above are skipped by name, so the 24 `not implemented` skips reproduce this
 table one for one, except `ref-not-enumerated`, which has no fixture. Each fixture document is
 also written back (`serialize`) and validated again, which must report the same diagnostics. The
-run reports 235 passed and 38 skipped: eight of the other skips are the implemented rules named
+run reports 238 passed and 35 skipped: eight of the other skips are the implemented rules named
 above, skipped as `multi-file case` or `requires conformance level full`, two are the `multi-file`
 assembly case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py`
 assembles it with a loader instead — and one is the write-back of the `frontmatter-invalid-yaml`
