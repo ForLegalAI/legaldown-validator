@@ -591,10 +591,14 @@ def test_the_pool_owns_its_declarations():
     pool = core._FreeIdentifiers(set(), {})
     assert pool("same", ALWAYS) == "same"
     pool.declare("same", ALWAYS)
-    assert pool.anchors == {"same": [ALWAYS]}
+    assert {identifier: list(presences) for identifier, presences in pool.anchors.items()} == {"same": [ALWAYS]}
     assert pool("same", ALWAYS) == "same-2"
     with pytest.raises(TypeError):
         pool.anchors["other"] = []  # type: ignore[index]
+    declared = pool.anchors["same"]
+    assert not hasattr(declared, "append") and len(declared) == 1 and declared[0] == ALWAYS
+    with pytest.raises(TypeError):
+        declared[0] = ALWAYS  # type: ignore[index]
 
 
 def test_the_pool_keeps_the_explicit_ids_it_was_given():
@@ -659,3 +663,69 @@ def test_satisfiable_equals_trying_each_answer():
         assert conditions_module.exclusive(first, second, questions) == (
             not old_satisfiable(first | second, questions)
         )
+
+
+_CHOICES = {
+    "a": {"type": "boolean"},
+    "k": {"type": "choice", "choices": {f"v{i}": str(i) for i in range(6)}},
+    "m": {"type": "choice", "choices": {"x": "X", "y": "Y"}},
+    "d": {"type": "choice", "choices": {"only": "The only value"}},
+}
+
+
+def _choice_presence(rng):
+    """Positive values, refusals that together cover every answer of a
+    question, mixes of questions, and presences that never appear."""
+    conditions = []
+    for _ in range(rng.choice([1, 1, 1, 2, 3])):
+        question = rng.choice(["k", "k", "k", "m", "a", "d"])
+        if question == "a":
+            conditions.append(rng.choice(["a", "!a"]))
+        else:
+            values = {"k": [f"v{i}" for i in range(6)], "m": ["x", "y"], "d": ["only"]}[question]
+            if rng.random() < 0.35:
+                conditions.append(f"{question}:{rng.choice(values)}")
+            else:  # refusals, often most of the values
+                conditions += [f"!{question}:{value}" for value in rng.sample(values, rng.randint(1, len(values)))]
+    presence = ALWAYS
+    for text in conditions:
+        presence = presence | own_presence(text, _CHOICES)
+    return presence
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_free_identifiers_over_choice_questions_are_the_lowest_free_suffix(seed):
+    rng = random.Random(10_000 + seed)
+    bases = ["same", "same-2", "x"]
+    explicit = {rng.choice(["same-3", "same-2-2", "x-2"]) for _ in range(rng.randint(0, 2))}
+    presences = [_choice_presence(rng) for _ in range(rng.randint(2, 14))]
+    old_anchors: dict[str, list] = {}
+    pool = core._FreeIdentifiers(explicit, _CHOICES)
+    for _ in range(rng.randint(10, 120)):
+        base, presence = rng.choice(bases), rng.choice(presences)
+        got = pool(base, presence)
+        assert got == old_free_identifier(base, presence, explicit, old_anchors, _CHOICES), (seed, base)
+        old_anchors.setdefault(got, []).append(presence)
+        pool.declare(got, presence)
+        if rng.random() < 0.1:
+            other = rng.choice(["same", "same-2", "same-3", "x-2"])
+            old_anchors.setdefault(other, []).append(presence)
+            pool.declare(other, presence)
+
+
+def test_the_many_values_of_one_choice_question_are_decided_by_counts():
+    """The old probe's verdicts with one declaration per value of a question
+    of many values: positive, then refused."""
+    values = {f"v{i}": str(i) for i in range(40)}
+    questions = {"c": {"type": "choice", "choices": values}}
+    rng = random.Random(1)
+    texts = [f"c:v{i}" for i in range(40)] + [f"!c:v{i}" for i in range(40)]
+    rng.shuffle(texts)
+    pool = core._FreeIdentifiers(set(), questions)
+    old_anchors: dict[str, list] = {}
+    for text in texts * 2:
+        presence = own_presence(text, questions)
+        got = pool("same", presence)
+        assert got == old_free_identifier("same", presence, set(), old_anchors, questions)
+        old_anchors.setdefault(got, []).append(presence)
+        pool.declare(got, presence)

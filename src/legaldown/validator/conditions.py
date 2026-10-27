@@ -7,10 +7,8 @@ document: its own condition and those of every unit enclosing it.
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
-from functools import lru_cache
-from types import MappingProxyType
 from typing import Any
 
 from .templates import question_type
@@ -74,7 +72,7 @@ def condition_problem(text: str, questions: Any) -> str | None:
 _BOOLEAN_ANSWERS = (True, False)
 
 
-def _answers(question: str, questions: Any) -> Collection[Any]:
+def question_answers(question: str, questions: Any) -> Collection[Any]:
     """Every answer *question* can have: true and false, or its choices."""
     if question_type(questions, question) == "boolean":
         return _BOOLEAN_ANSWERS
@@ -82,35 +80,31 @@ def _answers(question: str, questions: Any) -> Collection[Any]:
     return choices if isinstance(choices, dict) else ()  # a dict is read as its keys
 
 
-def _grouped(presence: Iterable[Condition]) -> dict[str, list[Condition]]:
+def by_question(presence: Iterable[Condition]) -> dict[str, list[Condition]]:
+    """The conditions in *presence* on each question they name."""
     grouped: dict[str, list[Condition]] = {}
     for condition in presence:
         grouped.setdefault(condition.question, []).append(condition)
     return grouped
 
 
-@lru_cache(maxsize=4096)
-def _cached_grouped(presence: Presence) -> Mapping[str, Presence]:
-    return MappingProxyType({question: frozenset(conditions) for question, conditions in _grouped(presence).items()})
-
-
-def by_question(presence: Presence) -> Mapping[str, Presence]:
-    """The conditions of *presence* on each question it mentions. Cached per
-    presence (it is immutable), so asking again is a lookup: for a presence
-    that is kept, not for the unions ``satisfiable`` is asked about once."""
-    return _cached_grouped(presence)
-
-
-def _some_answer_holds(conditions: Iterable[Condition], answers: Collection[Any]) -> bool:
-    """True if some answer in *answers* makes every one of *conditions*
-    (all on one question) hold, without trying each. A condition holds for
-    the answer equal to its value, or for every answer but that one when it
-    is negated (``Condition.holds``): so the answers are those equal to the
-    one positive value, if there is one, less the negated values."""
+def condition_values(conditions: Iterable[Condition]) -> tuple[set[Any], set[Any]]:
+    """The values that *conditions*, all on one question, want, and refuse. A
+    condition holds for the answer equal to its value, or for every answer but
+    that one when it is negated (``Condition.holds``); a boolean test's value
+    is true."""
     wanted: set[Any] = set()
     refused: set[Any] = set()
     for condition in conditions:
         (refused if condition.negated else wanted).add(True if condition.value is None else condition.value)
+    return wanted, refused
+
+
+def _some_answer_holds(conditions: Iterable[Condition], answers: Collection[Any]) -> bool:
+    """True if some answer in *answers* makes every one of *conditions*
+    (all on one question) hold, without trying each: the answers are those
+    equal to the one value wanted, if there is one, less the values refused."""
+    wanted, refused = condition_values(conditions)
     if len(wanted) > 1:
         return False
     if wanted:
@@ -119,23 +113,34 @@ def _some_answer_holds(conditions: Iterable[Condition], answers: Collection[Any]
     return len(answers) > sum(1 for value in refused if value in answers)
 
 
+def satisfiable_in(presence: Iterable[Condition], answers_of: Callable[[str], Collection[Any]]) -> bool:
+    """``satisfiable``, with the answers of a question given by *answers_of*:
+    for a caller that asks many times and keeps them."""
+    return all(
+        _some_answer_holds(conditions, answers_of(question))
+        for question, conditions in by_question(presence).items()
+    )
+
+
 def satisfiable(presence: Iterable[Condition], questions: Any) -> bool:
     """True if some answers make every condition in *presence* hold — decided
     per question, as §15.4 describes. Defaults play no part."""
-    return all(
-        _some_answer_holds(conditions, _answers(question, questions))
-        for question, conditions in _grouped(presence).items()
-    )
+    return satisfiable_in(presence, lambda question: question_answers(question, questions))
+
+
+def exclusive_in(first: Presence, second: Presence, answers_of: Callable[[str], Collection[Any]]) -> bool:
+    """``exclusive``, with the answers of a question given by *answers_of*."""
+    return not satisfiable_in(first | second, answers_of)
 
 
 def exclusive(first: Presence, second: Presence, questions: Any) -> bool:
     """True if two units, appearing under the conditions *first* and
     *second* (their ``Presence``), can never appear together for any answers
     to the document's *questions* (``document.metadata.questions``, §15.4)."""
-    return not satisfiable(first | second, questions)
+    return exclusive_in(first, second, lambda question: question_answers(question, questions))
 
 
-def always_covered(presence: Presence, targets: list[Presence], questions: Any) -> bool:
+def always_covered(presence: Presence, targets: Sequence[Presence], questions: Any) -> bool:
     """True if, whenever a reference with *presence* appears, a declaration
     with one of the *targets* presences appears too (§15.4).
 
@@ -148,7 +153,7 @@ def always_covered(presence: Presence, targets: list[Presence], questions: Any) 
         return True  # a target present whenever the reference is: no search
     involved = {c.question for c in presence.union(*targets)}
     possible = {
-        q: [a for a in _answers(q, questions) if all(c.holds(a) for c in presence if c.question == q)]
+        q: [a for a in question_answers(q, questions) if all(c.holds(a) for c in presence if c.question == q)]
         for q in involved
     }
     if not all(possible.values()):
@@ -156,7 +161,7 @@ def always_covered(presence: Presence, targets: list[Presence], questions: Any) 
     return _covered(possible, targets)
 
 
-def _covered(possible: dict[str, list[Any]], targets: list[Presence]) -> bool:
+def _covered(possible: dict[str, list[Any]], targets: Sequence[Presence]) -> bool:
     """True if every combination of the *possible* answers makes one of the
     *targets* hold."""
     live: list[Presence] = []

@@ -115,7 +115,9 @@ def test_sections_of_one_title_in_a_time_budget():
 
 
 def _boolean_questions(count):
-    return {f"q{k}": {"type": "boolean"} for k in range(count + 2)}
+    questions = {f"q{k}": {"type": "boolean"} for k in range(count + 2)}
+    questions["c"] = {"type": "choice", "choices": {f"v{k}": str(k) for k in range(count)}}
+    return questions
 
 
 def _condition_shapes(n):
@@ -133,19 +135,25 @@ def _condition_shapes(n):
         "one question and another each": [when("q0") | when(f"q{k + 1}") for k in range(n)],
         "pure alternation": [when("!q0" if k % 2 == 0 else "q0") for k in range(n)],
         "unconditional and distinct": [when(f"q{k}") if k % 2 else ALWAYS for k in range(n)],
+        "the values of one choice question": [when(f"c:v{k}") for k in range(n)],
+        "the refused values of one choice question": [when(f"!c:v{k}") for k in range(n)],
+        "values and refusals of one choice question": [
+            when(f"c:v{k // 2}" if k % 2 else f"!c:v{k // 2 + 1}") for k in range(n)
+        ],
     }
 
 
 @pytest.mark.parametrize("shape", [
     "distinct questions", "identical presences", "one question and another each", "pure alternation",
-    "unconditional and distinct",
+    "unconditional and distinct", "the values of one choice question",
+    "the refused values of one choice question", "values and refusals of one choice question",
 ])
 def test_headings_of_one_title_under_conditions_decide_in_linear_work(shape, monkeypatch):
     n = 1500
     questions, presences = _condition_shapes(n)
     clashes = _Counter(monkeypatch, core, "_clashes")
-    decisions = _Counter(monkeypatch, core, "satisfiable")
-    decisions_in_exclusive = _Counter(monkeypatch, conditions_module, "satisfiable")
+    decisions = _Counter(monkeypatch, core, "satisfiable_in")
+    decisions_in_exclusive = _Counter(monkeypatch, conditions_module, "satisfiable_in")
     pool = core._FreeIdentifiers(set(), questions)
     for presence in presences[shape]:
         pool.declare(pool("same", presence), presence)
