@@ -591,7 +591,7 @@ class _FreeIdentifiers:
         #: Per pool, what is asked of one question or presence again and again.
         self._answers: dict[str, Collection[Any]] = {}
         self._grouped: dict[Presence, dict[str, Presence]] = {}
-        self._wanted_refused: dict[Presence, tuple[frozenset[Any], frozenset[Any]]] = {}
+        self._wanted_refused: dict[tuple[str, Presence], tuple[frozenset[Any], frozenset[Any]]] = {}
         self._appears: dict[Presence, bool] = {}
         self._excludes: dict[tuple[Presence, Presence], bool] = {}
         #: How many declarations that can appear an identifier has.
@@ -701,14 +701,15 @@ class _FreeIdentifiers:
     def _values(self, question: str, conditions: Presence) -> tuple[frozenset[Any], frozenset[Any]]:
         """The values *conditions* on *question* want, and those of its
         answers they refuse."""
-        if conditions not in self._wanted_refused:
+        key = (question, conditions)  # the refusal is filtered by this question's answers
+        if key not in self._wanted_refused:
             wanted, refused = condition_values(conditions)
             answers = self._answers_of(question)
-            self._wanted_refused[conditions] = (
+            self._wanted_refused[key] = (
                 frozenset(wanted),
                 frozenset(value for value in refused if value in answers),
             )
-        return self._wanted_refused[conditions]
+        return self._wanted_refused[key]
 
     def _can_appear(self, presence: Presence) -> bool:
         if presence not in self._appears:
