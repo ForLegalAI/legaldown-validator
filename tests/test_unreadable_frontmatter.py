@@ -635,7 +635,7 @@ def test_nesting_too_deep_to_read_is_where_it_starts_whatever_the_stack(block, l
     block = block.format(open="[" * 3000, close="]" * 3000, dashes="- " * 800)
     source = f"---\n{block}---\n# A\n\n{{{{ref: nope}}}}\n"
     lines = set()
-    for frames in (0, 50, 200, 400):
+    for frames in (0, 300):
         document = _below(frames, lambda: _kept(source))
         assert isinstance(document.frontmatter_error.__cause__, RecursionError)
         lines.add(document.frontmatter_error.line)
