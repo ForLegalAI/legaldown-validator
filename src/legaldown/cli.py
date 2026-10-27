@@ -92,7 +92,9 @@ def _validate_path(path: Path, *, final: bool = False, fragment: bool = False) -
 def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
     for d in diagnostics:
         where = f"{d['file']}:{d['line']}" if d.get("line") else d["file"]
-        print(f"{where}: {d['level']}: [{d['rule']}] {d['message']}")
+        # A finding the including document may settle (--fragment) says so.
+        host = " (host-dependent)" if d.get("host_dependent") else ""
+        print(f"{where}: {d['level']}: [{d['rule']}] {d['message']}{host}")
     if quiet:
         return
     counts = {level: 0 for level in _LEVEL_ORDER}
@@ -151,10 +153,13 @@ def _run_validate(args: argparse.Namespace) -> int:
         print(f"error: {failure}", file=sys.stderr)
     if failures:
         return EXIT_ERROR
-    has_error = any(d["level"] == "error" for d in collected)
-    if has_error:
+    # What the including document may settle (--fragment) is shown, but is no
+    # failure of the fragment: a clean fragment that uses its host's party or
+    # term exits 0 (#39).
+    own = [d for d in collected if not d.get("host_dependent")]
+    if any(d["level"] == "error" for d in own):
         return EXIT_DIAGNOSTICS
-    if collected and args.strict:
+    if own and args.strict:
         return EXIT_DIAGNOSTICS
     return EXIT_OK
 
@@ -533,7 +538,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Validate each file as an include fragment or attachment file on its own (§12.2, §12.4): "
             "no frontmatter is expected, and what only the including document can settle (a party, "
             "side, attachment or question it declares, a section or term it defines) is reported "
-            "with \"host_dependent\": true in JSON."
+            "with \"host_dependent\": true in JSON and \"(host-dependent)\" in text, and does not "
+            "affect the exit status."
         ),
     )
     validate.add_argument(

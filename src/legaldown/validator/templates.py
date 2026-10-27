@@ -213,8 +213,8 @@ def check_questions(
 
     line = line_of("questions")  # of the declaration each diagnostic is about
 
-    def invalid(message: str, depends: Depends | None = None) -> None:
-        result.error("question-invalid", message, line=line, depends=depends)
+    def invalid(message: str) -> None:
+        result.error("question-invalid", message, line=line)
 
     if questions is not None and not isinstance(questions, dict):
         invalid("'questions' must be a map of question id to declaration (§15.2).")
@@ -258,11 +258,11 @@ def check_questions(
     if template:
         for pid in blanks:
             if pid not in declared and pid in YAML_KEYWORDS:
-                # A fragment's host may declare the question, which makes the id fine (#39).
+                # No host can settle it: a question declared under this id is
+                # question-invalid in its turn (§15.2), so it is intrinsic (#39).
                 invalid(
                     f"Placeholder id '{pid}' is read by YAML as a boolean or null, so it "
-                    f"cannot be answered portably in a template (§15.2).",
-                    Depends.FRONTMATTER,
+                    f"cannot be answered portably in a template (§15.2)."
                 )
 
 

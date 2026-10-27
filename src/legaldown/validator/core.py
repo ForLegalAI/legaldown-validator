@@ -895,8 +895,8 @@ class _Mode:
     that is not read still is the frontmatter of a main document. ``fragment``:
     the document is an include fragment or an attachment file validated on its
     own (§12.2, §12.4): its findings with a reason are ``host_dependent``, and
-    it is not asked to use everything it declares or to be used (the host
-    does)."""
+    it is a template when it holds any template construct, a blank included:
+    whether it is one is the host's to decide."""
     empty_metadata: bool = False
     suppress: frozenset[Depends] = frozenset()
     report_frontmatter_absent: bool = True
@@ -951,9 +951,12 @@ def validate(
         fragment itself is not marked. Frontmatter in the fragment is
         include-has-frontmatter (§16.11) and a level-1 heading include-has-h1;
         the metadata is then not read, so nothing is checked of it. A
-        definition the fragment declares is not reported unreferenced (the
-        host references it, §12.2). Default False: a complete document, as
-        before.
+        definition the fragment declares and does not reference is still
+        reported (def-unreferenced), as ``host_dependent``: the host may
+        reference it (§12.2). Whether it is a template is the host's to
+        decide, so it is read as one when it holds any template construct,
+        a placeholder included, and the checks of a template are made.
+        Default False: a complete document, as before.
     resolve:
         Reads a file the document refers to — the document it amends
         (``amends.file``, §7.5) and its LegalDown attachment files (§12.4) —
@@ -1020,15 +1023,6 @@ def _resolver(
     return resolve
 
 
-def _has_frontmatter(document: Document) -> bool:
-    """True if *document* has a frontmatter block (§3.1): a parsed one that opens
-    with it, empty or not, or one built in code with any metadata."""
-    if document.metadata.frontmatter_absent:
-        return False
-    source_map = document.source_map
-    return document.metadata != Metadata() or (source_map is not None and () in source_map.keys)
-
-
 def _check_fragment_shape(document: Document, where: Locator, result: _Recorder) -> None:
     """What §12.2 and §12.4 require of a fragment's own text: it has no
     frontmatter and no level-1 heading (include-has-frontmatter,
@@ -1037,7 +1031,10 @@ def _check_fragment_shape(document: Document, where: Locator, result: _Recorder)
     A fragment is validated as an include whichever way its host includes it
     (an attachment file's ids, attachment-has-*, §16.10, are the same two
     checks under another name)."""
-    if _has_frontmatter(document):
+    # A parsed one that opens with the block, empty or not (the Locator knows,
+    # while the document still fits its source), or one built in code with any
+    # metadata.
+    if not document.metadata.frontmatter_absent and (where.has() or document.metadata != Metadata()):
         result.error(
             "include-has-frontmatter",
             "The fragment has frontmatter, which a fragment cannot have: the document that "
@@ -1170,14 +1167,27 @@ def _validate(
     # Markers are found first: only a template gives a preamble paragraph's
     # condition its place (§5.7).
     markers = find_markers(document, lex_fragment)
-    template = _is_template(document, markers, lex_fragment)
-    units = Units(document, markers, questions, template=template)
     body_directives = {
         directive.name
         for _s, _i, block in document.iter_indexed_blocks()
         for text in text_fragments(block)
         for directive in lex_fragment(text).directives
     }
+    template = _is_template(document, markers, lex_fragment)
+    # Whether a fragment is a template is its host's to decide (§15.1): a blank
+    # or a drafting note, which make no document a template alone, are enough
+    # for the checks of one to be made (#39).
+    if mode.fragment and not template:
+        template = (
+            "placeholder" in body_directives
+            or any(named(title, "placeholder") for title in headings)
+            or any(
+                quote.is_drafting_note
+                for _s, _i, block in document.iter_indexed_blocks()
+                for quote in block_quotes(block)
+            )
+        )
+    units = Units(document, markers, questions, template=template)
 
     # ── Validate document_type (§16.6) ──
     doc_type = document.metadata.document_type or "contract"
@@ -2085,11 +2095,8 @@ def _validate(
 
     # Warn about declared but never-referenced definitions (§7). May
     # false-positive when §7.4 automatic term recognition is enabled.
-    # A fragment's definitions are the host's (§7.2, §12.2): it is the host
-    # that references them, so a fragment is not reported for leaving them
-    # unreferenced (#39).
     _warned_defs: set[str] = set()
-    for ref in () if mode.fragment else definition_refs:
+    for ref in definition_refs:
         if ref.id in _warned_defs:
             continue
         if ref.id in result.index.definition_lookup and ref.id not in result.used_terms:
@@ -2098,6 +2105,9 @@ def _validate(
                 "def-unreferenced",
                 f"Definition '{ref.id}' is declared but never referenced via {{{{term:}}}}.",
                 line=definition_line(ref),
+                # A fragment's definitions are document-wide (§7.2, §12.2): the
+                # including document may well reference them (#39).
+                depends=Depends.BODY,
             )
 
     # What a renderer builds from: the template decision and the markers

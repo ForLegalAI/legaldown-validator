@@ -67,7 +67,6 @@ HOST_DEPENDENT = [
     ("## Clause {when=vat}\n\nText.", "condition-invalid"),
     ("## Clause {when=forum:courts}\n\nText.", "condition-invalid"),
     ('{{choose: vat, true="a", false="b"}}', "choose-invalid"),
-    ("## Clause {when=vat}\n\n{{placeholder: yes}}", "question-invalid"),
 ]
 
 
@@ -101,6 +100,8 @@ INTRINSIC = [
     ("## Clause {{choose: q, a=\"x\"}}\n\nText.", "choose-invalid"),
     ("A {{date: yesterday}}", "date-invalid"),
     ("A {{money: abc, currency=EUR}}", "money-invalid-amount"),
+    # No host can settle it: a question declared under the id is invalid in its turn.
+    ("## Clause {when=vat}\n\n{{placeholder: yes}}", "question-invalid"),
 ]
 
 
@@ -135,10 +136,28 @@ def test_a_fragment_declares_nothing_for_its_blanks_and_questions_to_be_checked_
     assert "placeholder-question-mismatch" not in result.rules()
 
 
-def test_a_definition_the_fragment_declares_is_not_reported_unreferenced():
+def test_a_definition_the_fragment_leaves_unreferenced_is_host_dependent():
+    # The host may reference it (§7.2, §12.2).
     body = '## Scope\n\n"Fee" {{def: fee}} is due.\n'
-    assert "def-unreferenced" in validate(parse(body)).rules()
-    assert "def-unreferenced" not in _fragment(body).rules()
+    assert [(d.rule, d.host_dependent) for d in validate(parse(body)).diagnostics
+            if d.rule == "def-unreferenced"] == [("def-unreferenced", False)]
+    assert [(d.rule, d.level, d.host_dependent) for d in _fragment(body).diagnostics] == [
+        ("def-unreferenced", "warning", True)
+    ]
+
+
+def test_a_fragment_with_a_blank_is_read_as_a_template():
+    # Whether it is one is the host's to decide, so the template checks are made.
+    body = "## Scope\n\nPay {{placeholder: no}}.\n"
+    assert _rows(validate(parse(body))) == [("frontmatter-absent", "warning", 1)]
+    fragment = _fragment(body)
+    assert [(d.rule, d.host_dependent) for d in fragment.diagnostics] == [("question-invalid", False)]
+    assert fragment.index.is_template
+    # A blank in a heading, and a drafting note, are enough too.
+    assert _fragment("## Pay {{placeholder: ok}}\n").index.is_template
+    assert _fragment("## Scope\n\n> [!DRAFTING]\n> Note.\n\nPay {{placeholder: ok}}.\n").index.is_template
+    assert _fragment("## Scope\n\n> [!DRAFTING]\n> Note.\n").index.is_template
+    assert not _fragment("## Scope\n\nText.\n").index.is_template
 
 
 # ── A fragment that has frontmatter, or a level-1 heading ──────────
@@ -383,7 +402,8 @@ def test_the_cli_validates_a_fragment_with_the_flag(write, capsys):
     path = write("part.lgd", "## Scope\n\nSee {{ref: elsewhere}} and {{party: acme}}.\n")
     assert main(["validate", str(path)]) == EXIT_DIAGNOSTICS
     assert "frontmatter-absent" in capsys.readouterr().out
-    assert main(["validate", "--fragment", "--format", "json", str(path)]) == EXIT_DIAGNOSTICS
+    # Only the host can settle what is left: the exit status is clean.
+    assert main(["validate", "--fragment", "--format", "json", str(path)]) == EXIT_OK
     records = json.loads(capsys.readouterr().out)["diagnostics"]
     assert [(d["rule"], d["line"], d["host_dependent"]) for d in records] == [
         ("party-unknown", 3, True),
@@ -409,10 +429,32 @@ def test_the_cli_output_is_sorted_as_before_with_the_flag(write, capsys):
     assert lines == sorted(lines)
 
 
-def test_the_cli_text_output_adds_nothing_for_the_flag(write, capsys):
-    path = write("part.lgd", "## A\n\n{{ref: b}}\n")
+def test_the_cli_text_output_marks_a_host_dependent_finding_and_only_that(write, capsys):
+    path = write("part.lgd", "## A\n\n{{ref: b}} {{ref: Bad Id}}\n")
     main(["validate", "--fragment", str(path)])
-    assert capsys.readouterr().out == f"{path}:3: error: [ref-broken] Broken section reference: 'b'.\n"
+    assert capsys.readouterr().out == (
+        f"{path}:3: error: [ref-broken] Broken section reference: 'b'. (host-dependent)\n"
+        f"{path}:3: error: [ref-broken] Broken section reference: 'Bad Id'.\n"
+    )
+    main(["validate", str(path)])  # not a fragment: nothing is marked
+    assert "host-dependent" not in capsys.readouterr().out
+
+
+def test_the_cli_exits_zero_for_a_fragment_with_only_host_dependent_findings(write, capsys):
+    path = write("part.lgd", "## A\n\n{{ref: b}} {{party: acme}} {{term: fee}}\n")
+    assert main(["validate", "--fragment", str(path)]) == EXIT_OK
+    assert capsys.readouterr().out.count("(host-dependent)") == 3
+    assert main(["validate", "--fragment", "--strict", str(path)]) == EXIT_OK
+    assert main(["validate", str(path)]) == EXIT_DIAGNOSTICS  # as a complete document
+
+
+def test_the_cli_exits_one_for_a_fragment_with_an_intrinsic_finding(write, capsys):
+    path = write("part.lgd", "## A\n\n{{ref: b}} {{ref: Bad Id}}\n")
+    assert main(["validate", "--fragment", str(path)]) == EXIT_DIAGNOSTICS
+    skipped = write("warn.lgd", "## A\n\nPay {{money: 100}} {{ref: b}}\n")
+    assert main(["validate", "--fragment", str(skipped)]) == EXIT_OK
+    assert main(["validate", "--fragment", "--strict", str(skipped)]) == EXIT_DIAGNOSTICS
+    capsys.readouterr()
 
 
 def test_the_cli_reports_frontmatter_of_a_fragment_at_the_first_key_and_keeps_body_lines(write, capsys):

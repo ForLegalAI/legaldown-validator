@@ -121,7 +121,7 @@ legaldown validate --fragment clauses/               # include fragments and att
 | `--format {text,json}` | Output format (default `text`) |
 | `--ignore RULE_ID` | Suppress a rule by its stable id — repeatable |
 | `--final` | Check a document is ready for signature: a remaining placeholder, drafting note, or template construct is an error (§15.9) |
-| `--fragment` | Validate each file as an include fragment or attachment file on its own (§12.2, §12.4), as [`validate(fragment=True)`](#validating-a-fragment) does: what only the including document can settle is reported with `"host_dependent": true` in the JSON output |
+| `--fragment` | Validate each file as an include fragment or attachment file on its own (§12.2, §12.4), as [`validate(fragment=True)`](#validating-a-fragment) does: what only the including document can settle is reported with `"host_dependent": true` in the JSON output and `(host-dependent)` at the end of the line in text, and does not affect the exit status |
 | `--warnings-as-errors` | Report warnings at error severity |
 | `--strict` | Exit non-zero on any diagnostic, not just errors |
 | `--quiet` | Drop the trailing summary line |
@@ -371,8 +371,9 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   in a complete document, and has `host_dependent` set: a `{{party:}}`, `{{side:}}` or `{{attach:}}`
   it does not declare, a condition or `{{choose:}}` on a question it does not declare
   (`condition-invalid`, `choose-invalid`), a `{{ref:}}` to an identifier or a `{{term:}}` that the
-  fragment itself does not hold (`ref-broken`, `term-undefined`). Set those aside while the host is
-  not known; take them seriously when the fragment is validated in it.
+  fragment itself does not hold (`ref-broken`, `term-undefined`), and a definition it declares and does
+  not reference (`def-unreferenced`: the host may). Set those aside while the host is not known; take
+  them seriously when the fragment is validated in it.
 - Anything else is the fragment's own and is not marked: a malformed directive, a target that is not
   an identifier (`{{ref: Bad Id}}`), a `{{ref:}}` with no target, a malformed condition, a heading that
   skips a level, and so on. A `{{ref:}}` to a section or anchor of the fragment itself, and a
@@ -381,8 +382,13 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   key (the opening `---` when it has none), and a level-1 heading draws `include-has-h1`, at the
   heading, each an Error. Its metadata is then not read at all, and the lines of everything else are
   the file's. Whichever way the host includes it, the ids are the `include-*` ones.
-- A definition the fragment declares is not reported unreferenced (`def-unreferenced`): the host
-  references it.
+- Whether a fragment is a template is its host's to decide (§15.1), so one that holds any template
+  construct, a `{{placeholder:}}` or a drafting note included, is checked as a template
+  (`index.is_template` is true), and a blank with a YAML keyword for an id (`{{placeholder: no}}`) is
+  a `question-invalid` that no host can settle.
+- `legaldown validate --fragment` shows a flagged finding with `(host-dependent)` at the end of its
+  line, and its exit status ignores them (also under `--strict`): a fragment that only uses what its
+  host declares or defines exits `0`, and one with a finding of its own exits `1`.
 - `host_dependent` is `False` in every other result: for a complete document there is no host, and a
   broken reference is simply an Error. It takes part in a `Diagnostic`'s equality. Assembly's
   diagnostics never carry it.
