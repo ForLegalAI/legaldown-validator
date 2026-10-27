@@ -65,7 +65,7 @@ IMPLEMENTED_RULES = {
     "drafting-note-unrecognized",
     "duration-invalid-unit", "duration-invalid-value",
     "field-type-key-format", "field-type-key-reserved", "field-type-missing",
-    "field-type-undeclared",
+    "field-type-undeclared", "frontmatter-invalid-yaml",
     "heading-depth", "heading-hardcoded-number", "heading-skip", "insertion-boundary",
     "issuer-side-required", "legaldown-version-newer", "metadata-date-invalid",
     "money-invalid-amount", "money-missing-currency", "money-unknown-currency",
@@ -172,7 +172,9 @@ def _validate_file(path: Path, config: dict):
     reports the answer rules (§16.12)."""
     if "answers" in config:
         return _assemble_case(path, path.parent / config["answers"])
-    document = parse(path.read_text(encoding="utf-8"), filename=path.name)
+    # "keep": a fixture with frontmatter that cannot be read is validated, as the
+    # CLI does, not refused: validate reports frontmatter-invalid-yaml (#43).
+    document = parse(path.read_text(encoding="utf-8"), filename=path.name, on_frontmatter_error="keep")
     return validate(document, final=bool(config.get("final")))
 
 

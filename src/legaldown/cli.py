@@ -48,20 +48,11 @@ def _validate_path(
 ) -> tuple[list[dict], str | None]:
     """Validate one file; return (diagnostics, read/parse failure message)."""
     try:
-        document = load(path)
+        # Frontmatter that cannot be read is the document's fault, which validate
+        # reports (frontmatter-invalid-yaml) along with what the body has (#43).
+        document = load(path, on_frontmatter_error="keep")
     except (OSError, UnicodeDecodeError) as exc:
         return [], f"cannot read {path}: {exc}"
-    except FrontmatterError as exc:
-        return [
-            {
-                "file": str(path),
-                "rule": "frontmatter-invalid-yaml",
-                "level": "error",
-                "line": exc.line,
-                "message": str(exc),
-                "host_dependent": False,
-            }
-        ], None
     except Exception as exc:
         # Not the document's fault: a bug in this validator. Reported as a
         # failure, never as a diagnostic the author would try to fix.

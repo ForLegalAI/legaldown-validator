@@ -940,6 +940,12 @@ def validate(
 ) -> ValidationResult:
     """Validate a LegalDown document and build lookup indices.
 
+    A document whose frontmatter could not be read (``parse`` or ``load`` with
+    ``on_frontmatter_error="keep"``, #43) draws frontmatter-invalid-yaml, and
+    its body is validated all the same, as one whose metadata is empty:
+    nothing is reported for want of what the frontmatter might have declared
+    (a title, sides, and the party, side, attachment or question the body uses).
+
     Parameters
     ----------
     document:
@@ -1059,11 +1065,15 @@ def _check_fragment_shape(document: Document, where: Locator, result: _Recorder)
     # while the document still fits its source), or one built in code with any
     # metadata.
     if not document.metadata.frontmatter_absent and (where.has() or document.metadata != Metadata()):
+        # A block that could not be read (#43) has no key to name: the line of
+        # the problem in it. frontmatter-invalid-yaml is not drawn as well: the
+        # fragment must not have the block, readable or not, which this says.
+        error = document.frontmatter_error
         result.error(
             "include-has-frontmatter",
             "The fragment has frontmatter, which a fragment cannot have: the document that "
             "includes it supplies the metadata (§12.2). It is not read here.",
-            line=where.first_key(),
+            line=(error.line or 1) if error is not None else where.first_key(),
         )
     for index, section in enumerate(document.sections):
         if section.level == 1:
@@ -1111,6 +1121,13 @@ def _validate(
     import_attachment_definitions: AttachmentDefinitionsImporter | None,
     mode: _Mode,
 ) -> ValidationResult:
+    # A document whose frontmatter could not be read (parse(on_frontmatter_error=
+    # "keep"), #43) is validated by its body. A fragment is not: it must have no
+    # frontmatter, which is then not read either (§12.2), so what it asks is
+    # the same, and its mode is already that of a body that is not declared.
+    unreadable = document.frontmatter_error if not mode.fragment else None
+    if unreadable is not None:
+        mode = _UNREADABLE_FRONTMATTER
     result = _Recorder(suppress=mode.suppress, fragment=mode.fragment)
     # A fragment's own frontmatter, if it wrongly has any, is reported below
     # and then not read: the host's frontmatter is the one that declares.
@@ -1134,6 +1151,14 @@ def _validate(
             f"implementation supports {SPEC_VERSION}, so constructs added since may not "
             f"be recognized (§3.2).",
             line=where.field("legaldown"),
+        )
+    # §16.6: an Error, but "prevents rendering" (§16.1), not "stops validating":
+    # the block is not read (the metadata is empty, above), and the body still is.
+    if unreadable is not None:
+        result.error(
+            "frontmatter-invalid-yaml",
+            f"The frontmatter cannot be read: {unreadable}",
+            line=unreadable.line or 1,
         )
     # Without frontmatter a document is valid, but has no metadata to
     # check: it draws this Warning alone (§3.2, §16.6).

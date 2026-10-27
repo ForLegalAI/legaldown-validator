@@ -102,6 +102,15 @@ def test_frontmatter_that_cannot_be_read_names_its_line():
     assert raised.value.line == 3  # where the quote opens
 
 
+def test_frontmatter_that_is_kept_unread_names_the_same_line():
+    # on_frontmatter_error="keep" (#43) keeps the error parse raises, with its line.
+    source = "---\ntitle: Fixture\n  bad indent: [unclosed\n---\n\n# A\n"
+    with pytest.raises(FrontmatterError) as raised:
+        parse(source)
+    kept = parse(source, on_frontmatter_error="keep").frontmatter_error
+    assert (str(kept), kept.line) == (str(raised.value), raised.value.line) == (str(raised.value), 3)
+
+
 # ── Body ───────────────────────────────────────────────────────────
 
 

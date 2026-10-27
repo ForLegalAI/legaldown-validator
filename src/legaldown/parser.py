@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import yaml
 
@@ -164,26 +164,33 @@ class FrontmatterError(yaml.YAMLError, ValueError):
         self.line = line
 
 
-def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, bool, dict[tuple[Any, ...], int]]:
+def _split_frontmatter(
+    source: str, keep_error: bool = False
+) -> tuple[list[str], dict[str, Any], str, bool, dict[tuple[Any, ...], int], FrontmatterError | None]:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
-    body, absent, lines)``; the first is read from how the YAML is written,
-    which the parsed data loses, and the last is where each frontmatter node
-    is (``positions.frontmatter_keys``, the opening ``---`` at the empty
-    path), empty without frontmatter. The frontmatter is *absent* when no closed
-    ``---`` block opens the source, or when the block's YAML is a scalar or
-    a list rather than a mapping of fields: then its ``---`` lines are
-    thematic breaks, and the whole source is body. A block that is empty or
-    holds only comments is present and empty."""
+    body, absent, lines, error)``; the first is read from how the YAML is
+    written, which the parsed data loses, and *lines* is where each
+    frontmatter node is (``positions.frontmatter_keys``, the opening ``---``
+    at the empty path), empty without frontmatter. The frontmatter is
+    *absent* when no closed ``---`` block opens the source, or when the
+    block's YAML is a scalar or a list rather than a mapping of fields: then
+    its ``---`` lines are thematic breaks, and the whole source is body. A
+    block that is empty or holds only comments is present and empty. A block
+    whose YAML cannot be read (frontmatter-invalid-yaml, §16.6) raises
+    ``FrontmatterError``, or, with *keep_error*, is returned as *error*
+    (None otherwise): the block is still the frontmatter, empty and not
+    absent, with only its opening ``---`` in *lines*, and the rest is the
+    body, so that it can be validated (#43)."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return [], {}, source, True, {}
+        return [], {}, source, True, {}, None
     loader = _StrDateSafeLoader(match.group(1) or "")
     try:
         node = loader.get_single_node()
         if node is None:
-            return [], {}, source[match.end():], False, {(): 1}
+            return [], {}, source[match.end():], False, {(): 1}, None
         if not isinstance(node, yaml.MappingNode):
-            return [], {}, source, True, {}
+            return [], {}, source, True, {}, None
         if node.tag != "tag:yaml.org,2002:map":
             # A mapping tagged as something else (!!set, a flow !!omap) is
             # meant as frontmatter, but holds no fields. (A block !!omap is
@@ -197,19 +204,24 @@ def _split_frontmatter(source: str) -> tuple[list[str], dict[str, Any], str, boo
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
-    except FrontmatterError:
-        raise
+    except FrontmatterError as exc:
+        if not keep_error:
+            raise
+        return [], {}, source[match.end():], False, {(): 1}, exc
     except (yaml.YAMLError, ValueError, KeyError, RecursionError) as exc:
         # What the YAML says, not a fault of this parser: malformed YAML, a
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        raise FrontmatterError(str(exc) or type(exc).__name__, _error_line(exc)) from exc
+        error = FrontmatterError(str(exc) or type(exc).__name__, _error_line(exc))
+        if not keep_error:
+            raise error from exc
+        return [], {}, source[match.end():], False, {(): 1}, error
     finally:
         loader.dispose()
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
-    return not_line_editable, metadata, source[match.end():], False, keys
+    return not_line_editable, metadata, source[match.end():], False, keys, None
 
 
 def _error_line(exc: BaseException) -> int | None:
@@ -1396,7 +1408,7 @@ def parse_item_content(text: str) -> list[Block]:
     return blocks
 
 
-def load(path: str | os.PathLike[str]) -> Document:
+def load(path: str | os.PathLike[str], *, on_frontmatter_error: Literal["raise", "keep"] = "raise") -> Document:
     """Open the LegalDown file at *path* as a Document.
 
     The one call for a document that lives in a file: it reads the file as
@@ -1408,7 +1420,8 @@ def load(path: str | os.PathLike[str]) -> Document:
 
     Raises ``FileNotFoundError`` (or another ``OSError``) when the file cannot
     be read, ``UnicodeDecodeError`` when it is not UTF-8, and
-    ``FrontmatterError`` when its frontmatter cannot be read.
+    ``FrontmatterError`` when its frontmatter cannot be read, unless
+    *on_frontmatter_error* is ``"keep"`` (see ``parse``).
     """
     # The path as given is what is read: ``..`` after a symbolic link leads
     # where the operating system takes it, which tidying the text of the path
@@ -1417,16 +1430,28 @@ def load(path: str | os.PathLike[str]) -> Document:
     # Bytes, decoded once: a byte-order mark and the line endings (LF, CR and
     # CRLF alike) are the parser's to read, so the text layer's own
     # translation would only be a second, redundant pass over the file.
-    document = parse(file.read_bytes().decode("utf-8"), filename=file.name)
+    document = parse(file.read_bytes().decode("utf-8"), filename=file.name, on_frontmatter_error=on_frontmatter_error)
     document.path = file.absolute()
     return document
 
 
-def parse(source: str, *, filename: str = "") -> Document:
+def parse(
+    source: str, *, filename: str = "", on_frontmatter_error: Literal["raise", "keep"] = "raise"
+) -> Document:
     """Parse a LegalDown source string into a Document object.
 
     For a file, ``load`` reads and parses it in one call. ``filename`` only
     names the document in its diagnostics.
+
+    ``on_frontmatter_error`` says what to do with frontmatter that cannot be
+    read (its YAML is malformed, as when the opening ``---`` begins prose;
+    §3.1, frontmatter-invalid-yaml): ``"raise"`` (the default) raises
+    ``FrontmatterError``; ``"keep"`` parses the rest of the source as the
+    body and keeps the error as ``Document.frontmatter_error``, so that
+    ``validate`` reports it with the findings in the body (#43). The metadata
+    is then empty; such a document cannot be serialized, saved or converted
+    with ``to_dict``, which raise the error, so nothing written from it loses
+    the text of the block. Any other value raises ``ValueError``.
 
     The parser is deliberately faithful to the source: nothing is rewritten to
     make a document valid, so the validator reports what the document actually
@@ -1436,7 +1461,11 @@ def parse(source: str, *, filename: str = "") -> Document:
     # A byte-order mark is an encoding artifact, not content. Lines end at
     # LF, CR, or CRLF (CommonMark), and nowhere else.
     source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
-    not_line_editable, metadata, body, absent, keys = _split_frontmatter(source)
+    if on_frontmatter_error not in ("raise", "keep"):
+        raise ValueError(f"on_frontmatter_error must be 'raise' or 'keep', not {on_frontmatter_error!r}")
+    not_line_editable, metadata, body, absent, keys, frontmatter_error = _split_frontmatter(
+        source, keep_error=on_frontmatter_error == "keep"
+    )
     lines = body.split("\n")
     if lines[-1] == "":
         lines.pop()  # the last line's ending, not a line
@@ -1462,6 +1491,7 @@ def parse(source: str, *, filename: str = "") -> Document:
     document = document_from_dict(payload)
     document.metadata.not_line_editable = not_line_editable
     document.metadata.frontmatter_absent = absent
+    document.frontmatter_error = frontmatter_error
     document.source_map = SourceMap(
         lines=source.split("\n"),
         body_start=source.count("\n", 0, len(source) - len(body)),

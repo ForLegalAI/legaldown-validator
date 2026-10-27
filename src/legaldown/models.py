@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from .markdown import LINE_ENDING_RE, is_blank, strip_text
 
 if TYPE_CHECKING:
+    from .parser import FrontmatterError
     from .positions import SourceLayout
 
 # ---------------------------------------------------------------------------
@@ -205,6 +206,13 @@ class Document:
     #: parsed from a string or built in code. Not part of equality or of
     #: ``to_dict``: where a document lives is not what it says.
     path: Path | None = field(default=None, compare=False)
+    #: Why the frontmatter could not be read, for a document parsed with
+    #: ``on_frontmatter_error="keep"`` (#43): ``validate`` reports it as
+    #: frontmatter-invalid-yaml, and the document, whose metadata is then empty,
+    #: cannot be written out (``to_dict``, ``serialize`` and ``save`` raise it).
+    #: ``None`` for any other document. Not part of equality or of ``to_dict``,
+    #: like ``path``: it describes the source, not what the document says.
+    frontmatter_error: FrontmatterError | None = field(default=None, compare=False)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> Document:
@@ -217,7 +225,8 @@ class Document:
         A document built from a dict has no ``source_map`` and no ``path``,
         and the fields that describe a parsed source,
         ``Metadata.not_line_editable`` and ``Metadata.frontmatter_absent``,
-        are left at their defaults: only ``parse`` and ``load`` set them."""
+        are left at their defaults: only ``parse`` and ``load`` set them (and
+        ``Document.frontmatter_error``, which is ``None``)."""
         return document_from_dict(data)
 
     def to_dict(self) -> dict[str, Any]:
@@ -226,7 +235,13 @@ class Document:
         part of it: ``source_map`` and ``path``, which describe where the
         document was read from rather than what it says (and
         ``Metadata.not_line_editable`` and ``Metadata.frontmatter_absent``,
-        which it holds but ``from_dict`` does not read)."""
+        which it holds but ``from_dict`` does not read).
+
+        Raises ``Document.frontmatter_error`` for a document whose
+        frontmatter could not be read (``parse(on_frontmatter_error="keep")``):
+        its empty metadata would not say what the source does."""
+        if self.frontmatter_error is not None:
+            raise self.frontmatter_error
         return document_to_dict(self)
 
     def iter_indexed_blocks(self) -> Iterator[tuple[int | None, int, Block]]:

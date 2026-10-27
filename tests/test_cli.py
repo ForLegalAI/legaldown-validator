@@ -132,10 +132,10 @@ def test_a_parser_fault_is_an_internal_error_not_a_diagnostic(write, capsys, mon
     # failure to report, and the other files are still validated.
     import legaldown.cli
 
-    def broken(path):
+    def broken(path, **kwargs):
         if path.name == "a.lgd":
             raise AttributeError("'set' object has no attribute 'get'")
-        return load(path)
+        return load(path, **kwargs)
 
     monkeypatch.setattr(legaldown.cli, "load", broken)
     first, second = write("a.lgd", _VALID), write("b.lgd", _BROKEN)
