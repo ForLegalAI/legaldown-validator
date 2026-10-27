@@ -72,6 +72,7 @@ IMPLEMENTED_RULES = {
     "note-invalid", "parties-minimum",
     "party-name-duplicate", "party-name-malformed", "party-type-invalid",
     "party-unknown",
+    "path-not-relative", "path-outside-root",
     "placeholder-id-malformed", "placeholder-in-structural-field",
     "placeholder-question-mismatch", "placeholder-type-inconsistent",
     "placeholder-type-invalid", "placeholder-unfilled", "placeholder-unknown-currency",
@@ -133,9 +134,10 @@ def _iter_valid_cases():
 
 
 # Runner configuration this harness can supply (fixtures README): the final
-# option (§15.9), and an answers set for the Assembly capability (§17.6).
-# Cases needing anything else are skipped.
-_SUPPORTED_CONFIG = {"final", "answers"}
+# option (§15.9), an answers set for the Assembly capability (§17.6), and the
+# document root (§2.3, relative to the case's directory). Cases needing
+# anything else are skipped.
+_SUPPORTED_CONFIG = {"final", "answers", "document_root"}
 
 
 def _read(path: Path) -> str:
@@ -175,7 +177,8 @@ def _validate_file(path: Path, config: dict):
     # "keep": a fixture with frontmatter that cannot be read is validated, as the
     # CLI does, not refused: validate reports frontmatter-invalid-yaml (#43).
     document = parse(path.read_text(encoding="utf-8"), filename=path.name, on_frontmatter_error="keep")
-    return validate(document, final=bool(config.get("final")))
+    root = path.parent / config["document_root"] if "document_root" in config else None
+    return validate(document, final=bool(config.get("final")), document_root=root)
 
 
 @pytest.mark.parametrize("case", list(_iter_valid_cases()))

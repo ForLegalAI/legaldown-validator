@@ -44,7 +44,12 @@ _LEVEL_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 
 def _validate_path(
-    path: Path, *, final: bool = False, fragment: bool = False, template: bool | None = None
+    path: Path,
+    *,
+    final: bool = False,
+    fragment: bool = False,
+    template: bool | None = None,
+    document_root: str | None = None,
 ) -> tuple[list[dict], str | None]:
     """Validate one file; return (diagnostics, read/parse failure message)."""
     try:
@@ -62,7 +67,7 @@ def _validate_path(
         )
 
     try:
-        result = validate(document, final=final, fragment=fragment, template=template)
+        result = validate(document, final=final, fragment=fragment, template=template, document_root=document_root)
     except Exception as exc:
         # As above: validating reads the files the document refers to, too.
         return [], (
@@ -124,7 +129,11 @@ def _run_validate(args: argparse.Namespace) -> int:
             targets = [path]
         for target in targets:
             diagnostics, failure = _validate_path(
-                target, final=args.final, fragment=args.fragment, template=args.host_template
+                target,
+                final=args.final,
+                fragment=args.fragment,
+                template=args.host_template,
+                document_root=args.document_root,
             )
             if failure:
                 failures.append(failure)
@@ -574,6 +583,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "With --fragment: the including document is not a template, so it declares no "
             "question for a condition or {{choose:}} to name."
+        ),
+    )
+    validate.add_argument(
+        "--document-root",
+        metavar="DIR",
+        help=(
+            "The directory every file a document refers to must lie within (§2.3): a path that "
+            "escapes it, as ../ does, is path-outside-root. Each document is read from its own "
+            "directory, which must be within DIR; paths are only read as text, no file is looked "
+            "at. Without it, ../shared/definitions.lgd is valid. A path that is absolute or begins "
+            "with a URI scheme is path-not-relative with or without it."
         ),
     )
     validate.add_argument(

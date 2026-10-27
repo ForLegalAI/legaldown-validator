@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import os
 import posixpath
+import re
 import stat
 import tempfile
 from collections.abc import Callable
@@ -20,12 +21,69 @@ from pathlib import Path
 LoadFile = Callable[[str], "str | None"]
 
 
+#: A URI scheme at the start of a reference (RFC 3986): ``https:``, ``file:``,
+#: ``data:`` and, for the same reason, a drive letter, ``C:``.
+_URI_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def has_uri_scheme(path: str) -> bool:
+    """True if *path* begins with a URI scheme (§2.3): ``https://x``, ``file:///x``,
+    ``data:x``, ``mailto:x``, and ``C:/x`` or ``C:x`` with a drive letter. A
+    relative file whose name holds a colon before any ``/`` reads as having one
+    (RFC 3986 says to write ``./a:b.lgd``)."""
+    return _URI_SCHEME_RE.match(path) is not None
+
+
+def is_absolute_reference(path: str) -> bool:
+    """True if *path*, as a document names a file (§2.3), is not a relative path: it
+    begins with a URI scheme, or with ``/`` or ``\\`` (an absolute path, ``//host``,
+    ``\\\\host``). Judged by its text alone: no file is looked at, and ``../x``
+    is relative (``resolves_within`` tells where it leads)."""
+    return has_uri_scheme(path) or path[:1] in ("/", "\\")
+
+
+def _names_below(directory: str | os.PathLike[str], root: str | os.PathLike[str]) -> int | None:
+    """How many names *directory* is below *root*, by their text alone, or None
+    when it is not at or below it."""
+    try:
+        below = Path(os.path.abspath(directory)).relative_to(os.path.abspath(root))
+    except ValueError:
+        return None
+    return len(below.parts)
+
+
+def resolves_within(path: str, base: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
+    """True if the relative *path*, read from directory *base*, leads to a place at
+    or below directory *root* (§2.3). Lexical: ``..`` is taken off the name before
+    it, and no file is looked at, so a symbolic link is not followed (``within``
+    does, to decide what is read). Either separator splits a name. *base* and
+    *root* are made absolute, and a *base* that is not within *root* has no path
+    within it."""
+    depth = _names_below(base, root)
+    if depth is None:
+        return False
+    for name in re.split(r"[/\\]", path):
+        if name == "..":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif name not in ("", "."):
+            depth += 1
+    return True
+
+
+def is_within_root(directory: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
+    """True if *directory* is *root* or below it, by their text alone."""
+    return _names_below(directory, root) is not None
+
+
 def relative_path(path: str) -> str | None:
     """*path*, as a document names a file it refers to, normalized — ``/``-separated,
     within the directory of the document (§2.3) — or None when it is not such a path:
-    empty, absolute, with a drive letter or a backslash or a null byte, or leading out
-    of the directory. A ``LoadFile`` is asked for these paths and no others."""
-    if not path or "\\" in path or "\0" in path or posixpath.isabs(path) or (len(path) > 1 and path[0].isalpha() and path[1] == ":"):
+    empty, absolute, with a URI scheme (``https://x``, ``file:///x``, a drive letter),
+    a backslash or a null byte, or leading out of the directory. A ``LoadFile`` is
+    asked for these paths and no others."""
+    if not path or "\\" in path or "\0" in path or is_absolute_reference(path):
         return None
     normalized = posixpath.normpath(path)
     if normalized in (".", "..") or normalized.startswith("../"):

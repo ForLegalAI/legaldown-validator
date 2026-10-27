@@ -1,0 +1,725 @@
+"""path-not-relative and path-outside-root (§2.3, §16.2, §17.2; #104).
+
+The two Core checks on the paths a document names: ``{{include:}}``, an
+image's path, and ``attachments[].file``, ``amends.file``, ``supersedes.file``
+and ``translations`` of the frontmatter. They read the text of a path and
+never a file; the second runs only when a document root is configured
+(``validate(document_root=)``, ``legaldown validate --document-root``).
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+import legaldown
+from legaldown import Document, load, parse, validate
+from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
+from legaldown.files import (
+    has_uri_scheme,
+    is_absolute_reference,
+    is_within_root,
+    relative_path,
+    resolves_within,
+)
+from legaldown.validator import paths as paths_module
+
+_RULES = {"path-not-relative", "path-outside-root"}
+_ROOT_FRONT = "---\ntitle: T\n---\n\n"
+
+
+def _body(text: str) -> Document:
+    """A document whose body is *text*: its first line after the heading is line 7."""
+    return parse(f"{_ROOT_FRONT}# A {{#a}}\n\n{text}\n", filename="t.lgd")
+
+
+def _found(result) -> list[tuple[str, int | None]]:
+    return [(d.rule, d.line) for d in result.diagnostics if d.rule in _RULES]
+
+
+def _messages(result) -> list[str]:
+    return [d.message for d in result.diagnostics if d.rule in _RULES]
+
+
+def _front_source(yaml_text: str, body: str = "Text.") -> str:
+    return f"---\ntitle: T\n{yaml_text}---\n\n# A {{#a}}\n\n{body}\n"
+
+
+def _front(yaml_text: str, body: str = "Text.") -> Document:
+    return parse(_front_source(yaml_text, body), filename="t.lgd")
+
+
+def _line_of(source: str, needle: str) -> int:
+    return next(n for n, line in enumerate(source.split("\n"), 1) if needle in line)
+
+
+# The relative form (§2.3) -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "https://example.com/part.lgd", "HTTP://x/y", "data:x", "file:///etc/passwd", "mailto:a@b.cz",
+        "C:/x.lgd", "C:\\x.lgd", "C:x.lgd", "c:\\x", "/etc/passwd", "//host/share/x.lgd", "\\\\host\\share\\x.lgd",
+        "\\abs.lgd", "a+b.c-d:x",
+    ],
+)
+def test_a_path_that_is_not_relative_is_an_error_in_an_include(path):
+    result = validate(_body(f"{{{{include: {path}}}}}"))
+    assert _found(result) == [("path-not-relative", 7)]
+    assert f"'{path}'" in _messages(result)[0] and "(§2.3)" in _messages(result)[0]
+    assert all(d.level == "error" for d in result.diagnostics if d.rule in _RULES)
+
+
+@pytest.mark.parametrize("path", ["./a.lgd", "a.lgd", "sub/a.lgd", "../shared/x.lgd", "../../x.lgd", "a/../../b.lgd"])
+def test_a_relative_path_is_valid_without_a_root(path):
+    assert _found(validate(_body(f"{{{{include: {path}}}}}"))) == []
+
+
+def test_a_path_with_a_colon_after_a_slash_is_relative():
+    assert _found(validate(_body("{{include: sub/a:b.lgd}}"))) == []
+    assert _found(validate(_body("{{include: ./a:b.lgd}}"))) == []
+
+
+def test_a_file_name_with_a_colon_reads_as_having_a_scheme():
+    """RFC 3986: ``a:b`` is the scheme ``a``; the relative path is written ``./a:b``."""
+    assert _found(validate(_body("{{include: a:b.lgd}}"))) == [("path-not-relative", 7)]
+
+
+def test_the_classification_is_the_text_of_the_path_alone():
+    assert has_uri_scheme("https://x") and has_uri_scheme("C:x") and not has_uri_scheme("./C:x")
+    assert not has_uri_scheme(":x") and not has_uri_scheme("1a:x") and not has_uri_scheme("")
+    assert is_absolute_reference("/x") and is_absolute_reference("\\x") and is_absolute_reference("//h/x")
+    assert not is_absolute_reference("../x") and not is_absolute_reference("a/b") and not is_absolute_reference("")
+
+
+def test_an_include_is_found_wherever_it_is_written_and_by_its_own_line():
+    body = "First.\n\n- item\n  {{include: /a.lgd}}\n\n> quoted {{include: file:///b.lgd}}\n\n{{include: c.lgd}}\n"
+    result = validate(_body(body))
+    assert _found(result) == [("path-not-relative", 10), ("path-not-relative", 12)]
+
+
+def test_an_include_in_code_or_a_comment_is_not_a_reference():
+    body = "`{{include: /a.lgd}}`\n\n```\n{{include: /b.lgd}}\n```\n\n<!-- {{include: /c.lgd}} -->\n"
+    assert _found(validate(_body(body))) == []
+
+
+# The frontmatter (§3.2, §3.8, §3.9, §14) ------------------------------------------
+
+_FRONT = (
+    "attachments:\n  - id: one\n    title: One\n    file: ok.pdf\n"
+    "  - id: two\n    title: Two\n    file: https://x/y.pdf\n"
+    "amends:\n  title: Original\n  file: /etc/x.lgd\n"
+    "supersedes:\n  title: Old\n  file: file:///x\n"
+    "translations:\n  cs: C:/cs.lgd\n  de: de.lgd\n"
+)
+
+
+def test_each_file_of_the_frontmatter_is_checked_at_its_own_key():
+    source = _front_source(_FRONT)
+    result = validate(parse(source))
+    assert _found(result) == [
+        ("path-not-relative", _line_of(source, "https://x/y.pdf")),
+        ("path-not-relative", _line_of(source, "/etc/x.lgd")),
+        ("path-not-relative", _line_of(source, "file:///x")),
+        ("path-not-relative", _line_of(source, "C:/cs.lgd")),
+    ]
+    assert _found(result) == [("path-not-relative", 9), ("path-not-relative", 12), ("path-not-relative", 15), ("path-not-relative", 17)]
+    assert [m.split("'")[1] for m in _messages(result)] == ["https://x/y.pdf", "/etc/x.lgd", "file:///x", "C:/cs.lgd"]
+    assert ["(attachments[1].file)" in _messages(result)[0], "(amends.file)" in _messages(result)[1]] == [True, True]
+    assert "(supersedes.file)" in _messages(result)[2] and "(translations.cs)" in _messages(result)[3]
+
+
+def test_a_supersedes_that_is_a_string_describes_a_document_and_names_no_file():
+    assert _found(validate(_front('supersedes: "Policy: v2"\n'))) == []
+    assert _found(validate(_front("supersedes: https://example.com/old\n"))) == []
+
+
+def test_a_supersedes_object_without_a_file_names_none():
+    assert _found(validate(_front("supersedes:\n  title: Old\n"))) == []
+
+
+def test_a_missing_file_is_not_this_rules_concern():
+    result = validate(_front("attachments:\n  - id: one\n    title: One\n"))
+    assert _found(result) == [] and "attachment-file-missing" in result.rules()
+
+
+def test_a_translations_file_with_a_colon_is_documented_as_a_scheme():
+    assert _found(validate(_front('translations:\n  cs: "a:b"\n'))) == [("path-not-relative", 4)]
+
+
+@pytest.mark.parametrize("yaml_text", ["attachments:\n  - id: a\n    title: A\n    file: ../x.pdf\n", "amends:\n  title: O\n  file: ../o.lgd\n"])
+def test_a_relative_file_of_the_frontmatter_is_valid_without_a_root(yaml_text):
+    assert _found(validate(_front(yaml_text))) == []
+
+
+def test_the_frontmatter_is_checked_against_the_root_too():
+    document = _front("attachments:\n  - id: a\n    title: A\n    file: ../x.pdf\ntranslations:\n  cs: ok/../cs.lgd\n")
+    result = validate(document, document_root="/work/root")
+    assert _found(result) == [("path-outside-root", 6)]
+    assert "(attachments[0].file)" in _messages(result)[0] and "'/work/root'" in _messages(result)[0]
+
+
+# Images (§8.7) ------------------------------------------------------------------
+
+
+def test_the_four_images_of_the_issue_are_four_errors():
+    body = "![x](https://example.com/p.png) ![y](/etc/passwd) ![z](//host/x.png) ![w](C:/x.png)"
+    result = validate(_body(body))
+    assert _found(result) == [("path-not-relative", 7)] * 4
+    paths = ["https://example.com/p.png", "/etc/passwd", "//host/x.png", "C:/x.png"]
+    assert all(f"File reference '{path}' (image)" in message for path, message in zip(paths, _messages(result), strict=True))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "`![a](/e)`",
+        "```\n![a](/e)\n```",
+        "~~~\n![a](/e)\n~~~",
+        "    ![a](/e)",
+        "<!-- ![a](/e) -->",
+        '{{placeholder: x, note="![a](/e)"}}',
+        "[t](https://example.com/x)",
+        "<https://example.com/x>",
+        '<img src="/x">',
+        "\\![a](https://x)",
+        "![a][r]\n\n[r]: /etc/passwd",
+        "![a] (/e)",
+        "![a](/e",
+        "![a]()",
+        "![a](<>)",
+        "![a]({{placeholder: p}})",
+        "![a](<{{placeholder: p}}>)",
+        "![a](/e \"unclosed)",
+        "!\\[a](/e)",
+        "![a [b](/e)",
+        "![a](/e (unclosed)",
+    ],
+)
+def test_what_is_not_an_image_with_a_path_is_not_checked(body):
+    assert _found(validate(_body(body))) == []
+
+
+def test_raw_html_is_only_raw_html():
+    result = validate(_body('<img src="/x">'))
+    assert "raw-html" in result.rules() and _found(result) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- item ![a](/e)",
+        "1. item\n2. ![a](/e)",
+        "- item\n  - nested ![a](/e)",
+        "> quoted ![a](/e)",
+        "> - quoted item ![a](/e)",
+        "| h |\n|---|\n| ![a](/e) |",
+        '![a](/e "a title")',
+        "![a](/e 'a title')",
+        "![a](/e (a title))",
+        "![a](</e>)",
+        "![a](</e with spaces>)",
+        "![a](&#47;e)",
+        "![a](&#x2F;e)",
+        "![a](&sol;e)",
+        "![a](\\/e)",
+        "![a]( /e )",
+        "[![a](/e)](https://example.com)",
+        "![a `]` b](/e)",
+        "![{{placeholder: p}}](/e)",
+        "![a\\]b](/e)",
+        "![a](/e\n\"title\")",
+        "\\\\![a](/e)",
+    ],
+)
+def test_an_image_in_text_has_its_path_checked(body):
+    result = validate(_body(body))
+    assert [rule for rule, _line in _found(result)] == ["path-not-relative"]
+    assert "/e'" in _messages(result)[0] or "/e with spaces'" in _messages(result)[0]
+
+
+def test_a_nested_image_gives_both_paths():
+    result = validate(_body("![![g](/in)](/out)"))
+    assert sorted(m.split("'")[1] for m in _messages(result)) == ["/in", "/out"]
+
+
+def test_an_image_in_a_heading_is_at_the_heading():
+    document = parse(f"{_ROOT_FRONT}# A {{#a}}\n\ntext\n\n## B ![x](https://x/y.png) {{#b}}\n\ntext\n", filename="t.lgd")
+    assert _found(validate(document)) == [("path-not-relative", 9)]
+
+
+def test_an_image_is_at_its_own_line_in_a_paragraph_a_list_a_quote_and_a_table():
+    body = (
+        "One\n![a](/1) two\nthree ![b](/2)\n\n"
+        "- item\n  ![c](/3)\n- ![d](/4)\n\n"
+        "> quoted\n> ![e](/5)\n\n"
+        "| h | i |\n|---|---|\n| x | ![f](/6) |\n"
+    )
+    result = validate(_body(body))
+    assert _found(result) == [
+        ("path-not-relative", 8), ("path-not-relative", 9),
+        ("path-not-relative", 12), ("path-not-relative", 13),
+        ("path-not-relative", 16),
+        ("path-not-relative", 20),
+    ]
+
+
+def test_the_same_image_twice_is_at_each_of_its_lines():
+    result = validate(_body("![a](/e)\n\n![a](/e)\n\ntext ![a](/e)"))
+    assert _found(result) == [("path-not-relative", 7), ("path-not-relative", 9), ("path-not-relative", 11)]
+
+
+def test_an_image_in_a_table_cell_with_an_escaped_pipe_is_at_its_line():
+    body = "| h | i |\n|---|---|\n| a \\| b | ![x\\|y](/e) |\n| c | ![z](/f) |"
+    assert _found(validate(_body(body))) == [("path-not-relative", 9), ("path-not-relative", 10)]
+
+
+def test_an_escaped_bang_is_a_link_with_a_bang_before_it():
+    assert _found(validate(_body("\\![a](https://x/y.png)"))) == []
+    # ... and two backslashes escape one another, not the bang.
+    assert _found(validate(_body("\\\\![a](https://x/y.png)"))) == [("path-not-relative", 7)]
+
+
+def test_an_image_whose_alt_holds_a_directive_is_still_checked():
+    result = validate(_body("![{{placeholder: p}}](/etc/x.png)"))
+    assert _found(result) == [("path-not-relative", 7)]
+
+
+def test_an_image_whose_destination_holds_a_directive_is_skipped():
+    """Its path is not known until the directive is filled in; assembly's output is validated again (§15.7.4)."""
+    for body in ("![a]({{placeholder: p}})", "![a](/{{placeholder: p}})", "![a](<https://{{placeholder: p}}/x>)"):
+        assert _found(validate(_body(body))) == [], body
+
+
+def test_an_image_in_a_drafting_note_or_in_a_definition_is_checked_all_the_same():
+    body = '> **Note**: see ![a](/e).\n\n"Term" {{def: term}} means ![b](/f).\n\nSee {{term: term}} ![c](/g).\n'
+    assert _found(validate(_body(body))) == [("path-not-relative", 7), ("path-not-relative", 9), ("path-not-relative", 11)]
+
+
+@pytest.mark.parametrize("path", ["C:x.png", "c:img/x.png", "C:\\x.png"])
+def test_a_drive_relative_path_has_a_scheme(path):
+    assert _found(validate(_body(f"![a](<{path}>)"))) == [("path-not-relative", 7)]
+    assert _found(validate(_body(f"{{{{include: {path}}}}}"))) == [("path-not-relative", 7)]
+
+
+def test_a_relative_image_is_valid():
+    assert _found(validate(_body("![a](x.png) ![b](img/x.png) ![c](../shared/x.png) ![d](./x.png) ![e](./a:b.png)"))) == []
+    assert _found(validate(_body("![e](a:b/x.png)"))) == [("path-not-relative", 7)]  # ``a:`` reads as a scheme
+
+
+def test_an_image_destination_is_read_as_the_escapes_and_references_it_holds():
+    result = validate(_body("![a](&#47;etc)"))
+    assert [m.split("'")[1] for m in _messages(result)] == ["/etc"]
+    # A backslash before an ampersand makes it literal, and the reference stays text.
+    assert _found(validate(_body("![a](\\&#47;etc)"))) == []
+
+
+def test_an_image_percent_encoded_slash_is_a_path_that_is_not_relative():
+    result = validate(_body("![a](%2Fetc/passwd)"))
+    assert _found(result) == [("path-not-relative", 7)]
+    assert "'%2Fetc/passwd'" in _messages(result)[0] and "read as '/etc/passwd' once percent-decoded" in _messages(result)[0]
+
+
+def test_a_percent_sign_that_is_no_escape_stays_as_written():
+    assert _found(validate(_body("![a](100%/x.png) ![b](%zz/x.png) ![c](%2)"))) == []
+    assert _found(validate(_body("![a](100%/x.png)"), document_root="/r")) == []
+
+
+def test_percent_encoding_is_not_read_in_the_other_references():
+    """Only an image destination is a URL: ``%2Fetc`` in an include is a file name."""
+    assert _found(validate(_body("{{include: %2Fetc/x.lgd}}"))) == []
+    assert _found(validate(_body("{{include: %2E%2E/%2E%2E/x.lgd}}"), document_root="/r")) == []
+
+
+# The document root (§2.3) -------------------------------------------------------
+
+
+def _root(tmp_path: Path) -> Path:
+    root = tmp_path / "root"
+    root.mkdir(exist_ok=True)
+    return root
+
+
+def test_without_a_root_the_containment_check_does_not_run():
+    result = validate(_body("{{include: ../../../outside/part.lgd}} ![a](../../../x.png)"))
+    assert "path-outside-root" not in result.rules()
+
+
+def test_a_path_that_escapes_the_root_is_an_error(tmp_path):
+    result = validate(_body("{{include: ../../../outside/part.lgd}}"), document_root=_root(tmp_path))
+    assert _found(result) == [("path-outside-root", 7)]
+    assert "'../../../outside/part.lgd'" in _messages(result)[0] and str(_root(tmp_path)) in _messages(result)[0]
+    assert all(d.level == "error" for d in result.diagnostics if d.rule in _RULES)
+
+
+@pytest.mark.parametrize(
+    ("path", "outside"),
+    [
+        ("a/../b.lgd", False), ("a/b/../../c.lgd", False), ("./a.lgd", False), ("a.lgd", False), ("a//b.lgd", False),
+        ("..", True), ("../a.lgd", True), ("a/../../b.lgd", True), ("a/../../../b.lgd", True), ("a\\..\\..\\b.lgd", True),
+        ("./../a.lgd", True), ("a/b/../../../c.lgd", True),
+    ],
+)
+def test_a_parsed_document_is_taken_to_be_at_the_root(tmp_path, path, outside):
+    result = validate(_body(f"{{{{include: {path}}}}}"), document_root=_root(tmp_path))
+    assert _found(result) == ([("path-outside-root", 7)] if outside else [])
+
+
+def test_the_backslash_separates_names_for_the_containment_too(tmp_path):
+    result = validate(_body("{{include: a\\..\\..\\b.lgd}}"), document_root=_root(tmp_path))
+    assert _found(result) == [("path-outside-root", 7)]
+
+
+def test_a_document_in_a_directory_below_the_root_may_go_up_to_it(tmp_path):
+    root = _root(tmp_path)
+    (root / "sub").mkdir()
+    path = root / "sub" / "doc.lgd"
+    path.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n{{{{include: ../x.lgd}}}}\n\n{{{{include: ../../x.lgd}}}}\n", encoding="utf-8")
+    document = load(path)
+    assert _found(validate(document, document_root=root)) == [("path-outside-root", 9)]
+    # With the document's own directory as the root, one ``..`` leaves it.
+    assert _found(validate(document, document_root=root / "sub")) == [("path-outside-root", 7), ("path-outside-root", 9)]
+    assert _found(validate(document)) == []
+
+
+def test_a_relative_document_path_and_a_relative_root_are_compared_as_absolute(tmp_path, monkeypatch):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "doc.lgd").write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n{{{{include: ../x.lgd}}}}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    document = replace(load("sub/doc.lgd"), path=Path("sub/doc.lgd"))  # as a caller may have set it
+    assert _found(validate(document, document_root=".")) == []
+    assert _found(validate(document, document_root="sub")) == [("path-outside-root", 7)]
+    assert _found(validate(document, document_root=Path("sub/../sub"))) == [("path-outside-root", 7)]
+    monkeypatch.chdir(tmp_path / "sub")
+    assert _found(validate(document, document_root="..")) == []  # the same document: its path read from here
+
+
+def test_a_document_outside_the_root_is_reported_once_for_all_its_paths(tmp_path):
+    root = _root(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    path = tmp_path / "elsewhere" / "doc.lgd"
+    path.write_text(
+        f"{_ROOT_FRONT}# A {{#a}}\n\n{{{{include: a.lgd}}}} ![i](b.png) {{{{include: c.lgd}}}}\n", encoding="utf-8"
+    )
+    result = validate(load(path), document_root=root)
+    assert _found(result) == [("path-outside-root", 1)]
+    assert "The document is outside the document root" in _messages(result)[0] and "'a.lgd' ({{include:}})" in _messages(result)[0]
+
+
+def test_a_document_outside_the_root_that_names_no_file_is_not_reported(tmp_path):
+    root = _root(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    path = tmp_path / "elsewhere" / "doc.lgd"
+    path.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\nText.\n", encoding="utf-8")
+    assert _found(validate(load(path), document_root=root)) == []
+
+
+def test_a_document_outside_the_root_still_has_its_paths_that_are_not_relative_reported(tmp_path):
+    root = _root(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    path = tmp_path / "elsewhere" / "doc.lgd"
+    path.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n{{{{include: /abs.lgd}}}} {{{{include: rel.lgd}}}}\n", encoding="utf-8")
+    assert _found(validate(load(path), document_root=root)) == [("path-not-relative", 7), ("path-outside-root", 1)]
+
+
+def test_a_path_that_is_not_relative_is_not_also_outside_the_root(tmp_path):
+    root = _root(tmp_path)
+    for path in ("/etc/passwd", "https://x/../../y", "C:/x/../..", "//host/../x"):
+        assert _found(validate(_body(f"{{{{include: {path}}}}} ![a](<{path}>)"), document_root=root)) == [
+            ("path-not-relative", 7)
+        ] * 2
+
+
+def test_an_image_percent_encoded_dots_escape_the_root_too(tmp_path):
+    root = _root(tmp_path)
+    for destination in ("%2E%2E/%2E%2E/secret.png", "%2e%2e/secret.png", "a/%2E%2E/%2E%2E/secret.png", "..%2Fsecret.png", "..%5Csecret.png"):
+        result = validate(_body(f"![a]({destination})"), document_root=root)
+        assert _found(result) == [("path-outside-root", 7)], destination
+    result = validate(_body("![a](%2E%2E/secret.png)"), document_root=root)
+    assert "'%2E%2E/secret.png'" in _messages(result)[0] and "read as '../secret.png' once percent-decoded" in _messages(result)[0]
+    # ... and an image whose decoded form stays inside does not.
+    assert _found(validate(_body("![a](a%2F..%2Fb.png)"), document_root=root)) == []
+    # Not for the other references: only an image is a URL.
+    assert _found(validate(_body("{{include: %2E%2E/x.lgd}}"), document_root=root)) == []
+
+
+def test_the_root_may_be_given_as_text_or_as_a_path(tmp_path):
+    root = _root(tmp_path)
+    document = _body("{{include: ../x.lgd}}")
+    assert _found(validate(document, document_root=root)) == _found(validate(document, document_root=str(root)))
+
+
+def test_the_checks_look_at_no_file_and_follow_no_link(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    (tmp_path / "outside").mkdir()
+    try:
+        (root / "link").symlink_to(tmp_path / "outside", target_is_directory=True)
+    except OSError:
+        pytest.skip("symbolic links are not available")
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the file system was asked")
+
+    monkeypatch.setattr(Path, "resolve", refuse)
+    monkeypatch.setattr(Path, "exists", refuse)
+    monkeypatch.setattr(Path, "is_file", refuse)
+    monkeypatch.setattr(Path, "stat", refuse)
+    import os
+
+    monkeypatch.setattr(os.path, "realpath", refuse)
+    document = _body("{{include: link/x.lgd}} {{include: ../x.lgd}} ![a](link/y.png) ![b](../y.png)")
+    assert _found(validate(document, document_root=root)) == [("path-outside-root", 7)] * 2
+    doc_path = root / "doc.lgd"
+    doc_path.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n{{{{include: link/x.lgd}}}}\n", encoding="utf-8")
+    assert _found(validate(load(doc_path), document_root=root, resolve=lambda path: None)) == []
+
+
+def test_a_root_that_does_not_exist_is_a_root_all_the_same(tmp_path):
+    assert _found(validate(_body("{{include: ../x.lgd}}"), document_root=tmp_path / "none")) == [("path-outside-root", 7)]
+
+
+def test_the_helpers_of_the_containment():
+    assert resolves_within("a/../b", "/r", "/r") and not resolves_within("../b", "/r", "/r")
+    assert resolves_within("../b", "/r/s", "/r") and not resolves_within("../../b", "/r/s", "/r")
+    assert not resolves_within("b", "/elsewhere", "/r")  # a base outside the root has no path within it
+    assert not resolves_within("b", "/r2", "/r")  # not a prefix of the text: of the names
+    assert resolves_within("", "/r", "/r") and not resolves_within("..\\x", "/r", "/r")
+    assert is_within_root("/r/s/t", "/r") and is_within_root("/r", "/r") and not is_within_root("/", "/r")
+
+
+# Fragments (§12.2, §12.4) -------------------------------------------------------
+
+
+def test_a_fragments_own_paths_are_checked_and_are_never_host_dependent():
+    document = parse("## B\n\n{{include: /abs.lgd}} ![a](https://x/y.png)\n", filename="f.lgd")
+    result = validate(document, fragment=True)
+    assert [(d.rule, d.line, d.host_dependent) for d in result.diagnostics if d.rule in _RULES] == [
+        ("path-not-relative", 3, False)
+    ] * 2
+
+
+def test_a_fragments_paths_are_checked_against_the_root(tmp_path):
+    result = validate(parse("## B\n\n![a](../../x.png)\n"), fragment=True, document_root=_root(tmp_path))
+    assert [(d.rule, d.host_dependent) for d in result.diagnostics if d.rule in _RULES] == [("path-outside-root", False)]
+
+
+def test_a_fragments_frontmatter_is_never_read_for_paths():
+    text = "---\ntitle: T\namends:\n  title: O\n  file: /etc/x.lgd\nattachments:\n  - id: a\n    title: A\n    file: https://x/y\n---\n\n## B\n\nText.\n"
+    result = validate(parse(text), fragment=True)
+    assert _found(result) == [] and "include-has-frontmatter" in result.rules()
+    # ... while it is read in the document it is a part of.
+    assert {rule for rule, _ in _found(validate(parse(text)))} == {"path-not-relative"}
+
+
+def test_a_document_whose_frontmatter_cannot_be_read_is_validated_by_its_body():
+    text = "---\ntitle: [unclosed\namends: {file: /etc/x}\n---\n\n# A\n\n![a](/etc/x.png)\n"
+    result = validate(parse(text, on_frontmatter_error="keep"))
+    assert "frontmatter-invalid-yaml" in result.rules() and [rule for rule, _ in _found(result)] == ["path-not-relative"]
+
+
+# Reading files: relative_path is the same rule (§2.3) ----------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "https://example.com/a.lgd", "HTTPS://example.com/a.lgd", "data:text/plain,x", "file:///x", "file://host/x",
+        "mailto:a@b.cz", "urn:x:y", "C:/x", "C:x", "a:b.lgd", "//host/x.lgd", "\\\\host\\x.lgd", "/x",
+    ],
+)
+def test_relative_path_refuses_a_scheme_and_a_url(path):
+    assert relative_path(path) is None
+
+
+@pytest.mark.parametrize(
+    ("path", "relative"),
+    [("a.lgd", "a.lgd"), ("sub/a.lgd", "sub/a.lgd"), ("./sub//a.lgd", "sub/a.lgd"), ("sub/../a.lgd", "a.lgd"), ("sub/a:b.lgd", "sub/a:b.lgd"),
+     ("./a:b.lgd", "a:b.lgd"), ("a.b+c/x.lgd", "a.b+c/x.lgd"), ("1a/x:y", "1a/x:y")],
+)
+def test_relative_path_still_reads_a_relative_one(path, relative):
+    assert relative_path(path) == relative
+
+
+_AMENDMENT = "---\ntitle: A\namends:\n  title: Original\n  file: {file}\n---\n\n# S\n\nUses {{{{term: services}}}}.\n"
+_ORIGINAL = '---\ntitle: O\n---\n\n# S\n\n"Services" {{def: services}} means x.\n'
+
+
+def test_a_definition_import_reads_a_relative_path_as_before():
+    asked: list[str] = []
+
+    def resolve(path: str) -> str | None:
+        asked.append(path)
+        return _ORIGINAL
+
+    result = validate(parse(_AMENDMENT.format(file="./sub//o.lgd")), resolve=resolve)
+    assert asked == ["sub/o.lgd"] and "amend-term-undefined" not in result.rules() and _found(result) == []
+
+
+@pytest.mark.parametrize("url", ["https://example.com/o.lgd", "data:x", "file:///x", "mailto:a@b.cz", "//host/o.lgd"])
+def test_a_definition_import_is_not_handed_a_url(url):
+    asked: list[str] = []
+    result = validate(parse(_AMENDMENT.format(file=url)), resolve=lambda path: asked.append(path))
+    assert asked == [] and "amend-term-unresolvable" in result.rules()
+    assert _found(result) == [("path-not-relative", 5)]
+
+
+def test_an_attachment_file_import_is_not_handed_a_url():
+    text = "---\ntitle: A\nattachments:\n  - id: a\n    title: A\n    file: {file}\n---\n\n# S\n\n{{{{attach: a}}}}\n"
+    asked: list[str] = []
+
+    def resolve(path: str) -> str | None:
+        asked.append(path)
+        return '"Services" {{def: services}} means x.\n'
+
+    assert "services" in validate(parse(text.format(file="sub/a.lgd")), resolve=resolve).index.definition_lookup
+    assert asked == ["sub/a.lgd"]
+    asked.clear()
+    result = validate(parse(text.format(file="https://example.com/a.lgd")), resolve=resolve)
+    assert asked == [] and _found(result) == [("path-not-relative", 6)]
+
+
+_TEMPLATE = "---\ntitle: T\n---\n\n# A\n\n{{include: %s}}\n"
+
+
+def test_assembly_reads_a_relative_include_as_before():
+    files = {"parts/a.lgd": "## B {#b}\n\nText.\n"}
+    asked: list[str] = []
+
+    def resolve(path: str) -> str | None:
+        asked.append(path)
+        return files.get(path)
+
+    result = legaldown.parse_template(_TEMPLATE % "./parts//a.lgd", resolve=resolve).form({}).assemble()
+    assert asked == ["parts/a.lgd"] and result.ok and result.files == files
+
+
+@pytest.mark.parametrize("url", ["https://example.com/a.lgd", "data:x", "file:///x", "mailto:a@b.cz"])
+def test_assembly_does_not_ask_for_a_url_and_still_refuses_it(url):
+    asked: list[str] = []
+
+    def resolve(path: str) -> str | None:
+        asked.append(path)
+        return "## B\n\nText.\n"
+
+    template = legaldown.parse_template(_TEMPLATE % url, resolve=resolve)
+    assert "include-file-missing" in [d.rule for d in template.problems]
+    assert asked == []
+    # The template's own validation says what is wrong with the path; assembly is not stopped by that alone.
+    assert "path-not-relative" in template.validation.rules()
+
+
+# The command line ---------------------------------------------------------------
+
+
+@pytest.fixture
+def tree(tmp_path):
+    (tmp_path / "root" / "sub").mkdir(parents=True)
+    doc = tmp_path / "root" / "sub" / "doc.lgd"
+    doc.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n{{{{include: ../shared.lgd}}}}\n\n![a](../../x.png)\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_cli_document_root_reports_a_path_that_escapes_it(tree, capsys):
+    doc = tree / "root" / "sub" / "doc.lgd"
+    assert main(["validate", str(doc), "--document-root", str(tree / "root")]) == EXIT_DIAGNOSTICS
+    out = capsys.readouterr().out
+    assert out.count("[path-outside-root]") == 1 and f"{doc}:9:" in out
+    assert main(["validate", str(doc)]) == EXIT_OK  # no root: no containment check
+    assert "path-outside-root" not in capsys.readouterr().out
+
+
+def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree, capsys, monkeypatch):
+    monkeypatch.chdir(tree / "root")
+    assert main(["validate", "sub/doc.lgd", "--document-root", "."]) == EXIT_DIAGNOSTICS
+    assert capsys.readouterr().out.count("[path-outside-root]") == 1
+    assert main(["validate", "sub/doc.lgd", "--document-root", "sub"]) == EXIT_DIAGNOSTICS
+    assert capsys.readouterr().out.count("[path-outside-root]") == 2
+    assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_OK
+
+
+def test_cli_reports_a_path_that_is_not_relative_with_or_without_a_root(tree, capsys):
+    doc = tree / "root" / "bad.lgd"
+    doc.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n{{{{include: https://example.com/part.lgd}}}}\n", encoding="utf-8")
+    for extra in ([], ["--document-root", str(tree / "root")]):
+        assert main(["validate", str(doc), "--format", "json", *extra]) == EXIT_DIAGNOSTICS
+        out = capsys.readouterr().out
+        assert '"rule": "path-not-relative"' in out and '"host_dependent": false' in out
+
+
+def test_cli_fragment_mode_takes_the_root_too(tree, capsys):
+    fragment = tree / "root" / "frag.lgd"
+    fragment.write_text("## B\n\n![a](../x.png)\n", encoding="utf-8")
+    assert main(["validate", "--fragment", str(fragment), "--document-root", str(tree / "root")]) == EXIT_DIAGNOSTICS
+    assert "[path-outside-root]" in capsys.readouterr().out
+
+
+# Hostile text (linear time) -----------------------------------------------------
+
+
+def _seconds(call, *args) -> float:
+    start = time.perf_counter()
+    call(*args)
+    return time.perf_counter() - start
+
+
+class _Counted:
+    def __init__(self, monkeypatch, name):
+        self.calls = 0
+        wrapped = getattr(paths_module, name)
+
+        def counted(*args, **kwargs):
+            self.calls += 1
+            return wrapped(*args, **kwargs)
+
+        monkeypatch.setattr(paths_module, name, counted)
+
+
+def test_the_brackets_of_a_text_are_paired_once_and_each_image_is_parsed_once(monkeypatch):
+    from legaldown.directives import lex
+
+    pairs, parses = _Counted(monkeypatch, "_closing_brackets"), _Counted(monkeypatch, "_destination")
+    text = "![a](/x) " * 5000
+    assert len(paths_module.images(text, lex(text))) == 5000
+    assert pairs.calls == 1 and parses.calls == 5000
+
+
+_HOSTILE = {
+    "unclosed destinations": "![a](",
+    "nested destinations": "![a](![a](",
+    "unclosed titles": '![a](/x "',
+    "unclosed single-quoted titles": "![a](/x '",
+    "unclosed paren titles": "![a](/x (",
+    "unclosed angle destinations": "![a](<",
+    "unclosed brackets": "![a",
+    "bare openers": "![",
+    "opening brackets": "[",
+    "closing brackets": "]",
+    "backslashes": "\\![",
+    "images": "![a](/x.png) ",
+    "images with titles": '![a](/x.png "t") ',
+    "deep parentheses": "![a](((((((((((((((((((((((((((((((((((((",
+}
+
+
+@pytest.mark.parametrize("shape", _HOSTILE)
+def test_hostile_text_is_read_in_linear_time(shape):
+    from legaldown.directives import lex
+
+    unit = _HOSTILE[shape]
+    text = unit * (200_000 // len(unit))
+    assert _seconds(lambda: paths_module.images(text, lex(text))) < 3.0  # tens of milliseconds now; a quadratic scan took minutes
+
+
+@pytest.mark.parametrize("shape", ["![a](", "![a](/x \"", "![a](/x (", "![a](![a](", "![a", "![a](/x.png) "])
+def test_a_document_of_hostile_paragraphs_is_validated_in_a_time_budget(shape):
+    document = _body((shape * (50_000 // len(shape)) + "\n\n") * 4)
+    assert _seconds(validate, document) < 10.0
+
+
+def test_ten_thousand_images_in_one_paragraph_are_each_found_at_their_line():
+    document = _body("![a](/x.png) " * 10_000)
+    result = validate(document)
+    assert _found(result) == [("path-not-relative", 7)] * 10_000

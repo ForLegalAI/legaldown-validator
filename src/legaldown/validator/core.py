@@ -7,6 +7,7 @@ across implementations (§16.9).
 """
 from __future__ import annotations
 
+import os
 import re
 import warnings
 from collections import Counter
@@ -55,6 +56,7 @@ from .helpers import (
     is_valid_money_amount,
     slugify_identifier,
 )
+from .paths import FileReferences, check_frontmatter_paths, check_image_paths
 from .patterns import (
     _CONSTRUCT_PRESENT,
     _UNFILLED,
@@ -935,6 +937,7 @@ def validate(
     fragment: bool = False,
     template: bool | None = None,
     resolve: LoadFile | None = None,
+    document_root: str | os.PathLike[str] | None = None,
     import_definitions: DefinitionsImporter | None = None,
     import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
 ) -> ValidationResult:
@@ -1000,6 +1003,24 @@ def validate(
         a loaded document that is to be validated without reading anything.
         Only the referenced file's own definitions are read, not those it
         refers to in turn.
+    document_root:
+        The directory every file the document refers to must lie within
+        (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
+        image, draws path-outside-root. Without one (the default) the
+        containment check does not run, and ``../shared/definitions.lgd`` is
+        valid. A document from ``load`` is read from the directory of its
+        ``path``, which must be within the root (else the document is
+        reported once as outside it); one from ``parse`` is taken to be at the
+        root. Only the text of the paths is read, never a file, and a symbolic
+        link is not followed. A path that is not relative (an absolute one, or
+        one beginning with a URI scheme) draws path-not-relative, with or
+        without a root. Both checks cover ``{{include:}}``, an image's path
+        (``![alt](path)``, not a reference-style one) and ``attachments[].file``,
+        ``amends.file``, ``supersedes.file`` and ``translations`` of the
+        frontmatter, and are Core checks: whether the file exists is Full
+        (§17.4). In a *fragment* the include and image paths are the
+        fragment's own, so they are checked and never ``host_dependent``;
+        its frontmatter is never read, so it has no paths to check.
     import_definitions, import_attachment_definitions:
         Deprecated since 0.4.0, removed in 0.5.0: use *resolve*. They give the
         definitions themselves, which *resolve* leaves to the validator.
@@ -1008,7 +1029,9 @@ def validate(
         raise ValueError("validate(template=) is only meaningful with fragment=True")
     resolve = _resolver(document, resolve, import_definitions, import_attachment_definitions, stacklevel=3)
     mode = replace(_FRAGMENT, template=template) if fragment else _DOCUMENT
-    return _validate(document, final, resolve, import_definitions, import_attachment_definitions, mode)
+    return _validate(
+        document, final, resolve, import_definitions, import_attachment_definitions, mode, document_root=document_root
+    )
 
 
 def validate_document(
@@ -1123,6 +1146,7 @@ def _validate(
     import_definitions: DefinitionsImporter | None,
     import_attachment_definitions: AttachmentDefinitionsImporter | None,
     mode: _Mode,
+    document_root: str | os.PathLike[str] | None = None,
 ) -> ValidationResult:
     # A document whose frontmatter could not be read (parse(on_frontmatter_error=
     # "keep"), #43) is validated by its body. A fragment is not: it must have no
@@ -1141,6 +1165,10 @@ def _validate(
         document = replace(document, metadata=Metadata(frontmatter_absent=True))
     # Where each part is, for the line of each diagnostic (§16.9).
     where = Locator(document)
+    # The paths the document names (§2.3, #104), from the directory it is in.
+    file_references = FileReferences(
+        result, document_root, document.path.parent if document.path is not None else None, where.start()
+    )
     # §3.2: a newer declared version draws a Warning, never a failure, and
     # softens unknown directives to Warnings (§11.5).
     declared_version = parse_version(document.metadata.legaldown)
@@ -1424,6 +1452,9 @@ def _validate(
             "supersedes.title is required when supersedes is written as an object (§3.2).",
             line=where.key("supersedes", "title"),
         )
+
+    # ── File references of the frontmatter (§2.3, §16.2) ──
+    check_frontmatter_paths(document.metadata, where, file_references)
 
     # ── Section numbering and identifiers ──
     # Explicit identifiers share the anchor namespace with attachment ids
@@ -1960,6 +1991,8 @@ def _validate(
                 elif name == "choose":
                     with result.at(line):
                         check_choose(directive, questions, result, host_declares=host_declares)
+                elif name == "include":
+                    file_references.check(value, "{{include:}}", line)  # §2.3: a path of the fragment's own, whoever includes it
                 elif name == "attach":
                     referenced_attachments.add(value)
                     if value not in attachment_ids:
@@ -2116,6 +2149,7 @@ def _validate(
     )
     notes = check_template_body(document, lex_fragment, result, template=template, where=where)
     _check_raw_html(document, lex_fragment, result, where)
+    check_image_paths(document, lex_fragment, file_references, where)
     if final:
         _check_final(placeholders, chooses, notes, conditions, questions, result, where.key("questions"))
 
