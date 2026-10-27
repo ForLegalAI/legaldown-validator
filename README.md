@@ -473,8 +473,8 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   because its path leads out of the document's directory (`../x.lgd`) or holds a backslash, which a
   loader is never asked for and assembly refuses the template for (an absolute path or one with a
   URI scheme is `path-not-relative` alone, and a path that leaves a `document_root` is
-  `path-outside-root` alone; with a `document_root` that contains it, such a path is valid and is
-  skipped, not read);
+  `path-outside-root` alone; with a `document_root` that contains it, a path that only leads out of the
+  directory (`../x.lgd`) is valid and is skipped, not read; a backslash is still missing);
 - `include-has-frontmatter` and `include-has-h1` (§16.11), `include-has-frontmatter` also for a block
   whose YAML cannot be read;
 - `include-heading-skip`: the headings of every fragment are placed where its include paragraph is,

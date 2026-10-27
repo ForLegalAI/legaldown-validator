@@ -726,3 +726,100 @@ def test_a_nested_include_is_quoted_as_written_in_a_templates_finding_too():
     result, _ = _template("## B {#b}\n\nSee {{include:   g.lgd }} inline.\n")
     message = [d.message for d in result.diagnostics if d.rule == _TFR][0]
     assert "'{{include:   g.lgd }}'" in message and message.count("include") == 2
+
+
+# ── A root, a path the loader is not asked for, and what is not a fragment (#35 review) ─────
+
+def test_with_a_root_only_a_path_that_leads_out_of_the_directory_within_it_is_skipped(tmp_path):
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    path = root / "sub" / "main.lgd"
+
+    def found(include: str, document_root):
+        path.write_text(_FRONT + _SCOPE + f"{{{{include: {include}}}}}\n", encoding="utf-8")
+        return _found(validate(load(path), document_root=document_root))
+
+    # A backslash is no separator (§2.3): not a path to read, with a root or without one.
+    assert found("parts\\x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
+    assert found("parts\\x.lgd", None) == [("include-file-missing", "main.lgd", 21)]
+    # ../ that stays within the root is a valid path this implementation does not read: nothing to say.
+    assert found("../x.lgd", root) == []
+    assert found("sub/../../x.lgd", root) == []
+    # Without a root, assembly refuses it (include-file-missing); out of the root it is #104's.
+    assert found("../x.lgd", None) == [("include-file-missing", "main.lgd", 21)]
+    assert found("../../x.lgd", root) == [("path-outside-root", "main.lgd", 21)]
+    # A backslash after a ../ is still a backslash.
+    assert found("..\\x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
+
+
+def test_a_block_with_no_text_is_no_include_paragraph():
+    from legaldown.models import Block
+    from legaldown.validator.fragments import nested_includes
+
+    # An empty paragraph built in code has no text fragment at all: it holds no include, and is no error.
+    document = parse(_FRONT + "# A {#a}\n\n{{include: g.lgd}}\n")
+    section = document.sections[0]
+    document = dataclasses.replace(document, sections=[
+        dataclasses.replace(section, blocks=[Block(kind="paragraph", text=""), *section.blocks])
+    ])
+    assert [source for source, _line in nested_includes(FragmentFile("part.lgd", document))] == ["{{include: g.lgd}}"]
+    assert validate(document, resolve=_Loader({})).diagnostics is not None
+
+
+def test_a_file_is_spliceable_when_it_has_neither_frontmatter_nor_a_level_one_heading():
+    def part(text: str) -> FragmentFile:
+        return FragmentFile("part.lgd", parse(text, on_frontmatter_error="keep"))
+
+    assert part("## A {#a}\n").spliceable
+    assert not part("# A {#a}\n").spliceable
+    assert not part("---\ntitle: T\n---\n\n## A {#a}\n").spliceable
+    assert not part("---\ntitle: [unclosed\n---\n\n## A {#a}\n").spliceable
+    # The flag and the findings are one test.
+    for text in ("## A {#a}\n", "# A {#a}\n", "---\ntitle: T\n---\n"):
+        found = fragment_findings(part(text), kind="include", template=False)
+        assert part(text).spliceable == (not found)
+
+
+# ── The output of one run over several documents (#35 review) ─────────────────
+
+def _diagnostic(file: str, rule: str = "include-has-h1", line: int = 1, message: str = "m") -> dict:
+    return {"file": file, "rule": rule, "level": "error", "line": line, "message": message, "host_dependent": False}
+
+
+def _run_cli(monkeypatch, capsys, by_target: dict[str, list[dict]], *targets: str) -> list[tuple[str, str]]:
+    """The (file, rule) of each finding printed for *targets* when validating each yields *by_target*."""
+    monkeypatch.setattr("legaldown.cli._validate_path", lambda path, **_kwargs: (by_target[str(path)], None))
+    main(["validate", "--format", "json", *targets])
+    return [(d["file"], d["rule"]) for d in json.loads(capsys.readouterr().out)["diagnostics"]]
+
+
+@pytest.mark.parametrize("order", [("a.lgd", "part.lgd"), ("part.lgd", "a.lgd")])
+def test_a_fragment_that_is_also_a_target_is_reported_once_whatever_the_order(monkeypatch, capsys, order):
+    by_target = {
+        "a.lgd": [_diagnostic("a.lgd", "ref-broken"), _diagnostic("part.lgd")],
+        "part.lgd": [_diagnostic("part.lgd")],
+    }
+    shown = _run_cli(monkeypatch, capsys, by_target, *order)
+    assert sorted(shown) == [("a.lgd", "ref-broken"), ("part.lgd", "include-has-h1")]
+
+
+def test_a_fragment_found_wrong_twice_in_one_target_is_reported_once(monkeypatch, capsys):
+    by_target = {"a.lgd": [_diagnostic("part.lgd"), _diagnostic("part.lgd"), _diagnostic("part.lgd", line=2)]}
+    assert _run_cli(monkeypatch, capsys, by_target, "a.lgd") == [("part.lgd", "include-has-h1")] * 2
+
+
+def test_the_findings_a_target_has_in_itself_are_never_collapsed_against_each_other(monkeypatch, capsys):
+    by_target = {
+        "a.lgd": [_diagnostic("a.lgd", "ref-broken"), _diagnostic("a.lgd", "ref-broken")],
+        "b.lgd": [_diagnostic("a.lgd", "ref-broken")],  # a finding in a file b brought: a's own already say it
+    }
+    assert _run_cli(monkeypatch, capsys, by_target, "b.lgd", "a.lgd") == [("a.lgd", "ref-broken")] * 2
+
+
+def test_a_fragment_included_through_two_spellings_is_found_wrong_once(tmp_path, capsys):
+    text = _FRONT + _SCOPE + "{{include: part.lgd}}\n\n{{include: ./sub/../part.lgd}}\n"
+    (tmp_path / "a.lgd").write_text(text, encoding="utf-8")
+    (tmp_path / "part.lgd").write_text("# H {#h}\n", encoding="utf-8")
+    assert main(["validate", "--format", "json", str(tmp_path / "a.lgd")]) == EXIT_DIAGNOSTICS
+    records = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert [d["rule"] for d in records].count("include-has-h1") == 1

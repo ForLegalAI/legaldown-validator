@@ -124,11 +124,22 @@ def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
     print(f"\n{summary}" if diagnostics else "No issues found.", file=sys.stderr)
 
 
+def _own(d: dict, target: str) -> bool:
+    """Whether finding *d* is in the file of the target that produced it, and not in a
+    fragment it includes."""
+    return os.path.normpath(d["file"]) == os.path.normpath(target)
+
+
+def _identity(d: dict) -> tuple[Any, ...]:
+    """What makes two findings one: the same file (however it is spelt), line, rule and message."""
+    return (os.path.normpath(d["file"]), d.get("line"), d["rule"], d["message"])
+
+
 def _run_validate(args: argparse.Namespace) -> int:
     ignored = set(args.ignore or [])
     collected: list[dict] = []
     failures: list[str] = []
-    shared: set[tuple[Any, ...]] = set()  # the findings in fragment files, of the targets so far
+    reports: list[tuple[str, list[dict]]] = []  # the findings of each target, but those ignored
 
     for raw_path in args.paths:
         path = Path(raw_path)
@@ -152,20 +163,22 @@ def _run_validate(args: argparse.Namespace) -> int:
             if failure:
                 failures.append(failure)
                 continue
-            # A fragment several of the documents include is found wrong once, not once for
-            # each (#35): a finding in a file other than the target's, the same as one an
-            # earlier target brought. A document's own findings are all kept, however alike.
-            found = set()
-            for d in diagnostics:
-                if d["rule"] in ignored:
+            reports.append((str(target), [d for d in diagnostics if d["rule"] not in ignored]))
+
+    # A fragment several of the documents include is found wrong once, not once for each
+    # (#35): across all the targets of the run, a finding in a file other than the one
+    # that produced it is printed and counted once per identical (file, line, rule,
+    # message). The findings the targets have in themselves are seen first, so a fragment
+    # that is also a target is not reported twice whatever the order of the arguments, and
+    # are never collapsed: two alike in one document are two findings.
+    seen = {_identity(d) for target, found in reports for d in found if _own(d, target)}
+    for target, found in reports:
+        for d in found:
+            if not _own(d, target):
+                if _identity(d) in seen:
                     continue
-                if d["file"] != str(target):
-                    key = (d["file"], d.get("line"), d["rule"], d["message"])
-                    found.add(key)
-                    if key in shared:
-                        continue
-                collected.append(d)
-            shared |= found
+                seen.add(_identity(d))
+            collected.append(d)
 
     if args.warnings_as_errors:
         for d in collected:

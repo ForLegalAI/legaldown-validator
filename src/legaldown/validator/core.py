@@ -1035,8 +1035,11 @@ def validate(
         without its path (``dataclasses.replace(document, path=None)``). A path
         a loader is not asked for (``relative_path``: one that leads out of the
         document's directory, or holds a backslash) is not read, and an include of
-        one is ``include-file-missing``, as assembly refuses it, unless a
-        ``document_root`` is given: the path is then valid, and skipped. Only the referenced file's own
+        one is ``include-file-missing``, as assembly refuses it. The one exception
+        is a path that is refused only because it leads out of the document's
+        directory, when a ``document_root`` is given and it stays within it: it is a
+        valid path (§2.3) that is not read, and says nothing (a known limitation; out
+        of the root it is path-outside-root). Only the referenced file's own
         definitions are read, not those it refers to in turn; an include a
         fragment holds is not followed (``include-cycle`` is not implemented).
     document_root:

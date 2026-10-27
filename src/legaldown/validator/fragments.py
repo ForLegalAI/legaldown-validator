@@ -15,19 +15,19 @@ frontmatter that cannot be read is a finding of its own, not an exception (#43).
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
-from functools import cache, cached_property, partial
+from functools import cache, cached_property
 from typing import Literal
 
 from ..directives import Lexed, lex
-from ..files import LoadFile, relative_path, within
+from ..files import LoadFile, is_absolute_reference, relative_path, within
 from ..models import Document, Metadata
 from ..positions import Locator
 from .patterns import LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
 from .templates import BodyScan, IncludeDirective, check_template_body
-from .units import FoundMarker, find_markers, include_paragraph
+from .units import FoundMarker, find_markers
 
 #: How a file is used by the document that names it: an include fragment
 #: (``{{include:}}``, §12.2) or a LegalDown attachment file (``attachments[].file``,
@@ -58,6 +58,16 @@ class FragmentFile:
     def where(self) -> Locator:
         """The lines of the file's parts."""
         return Locator(self.document)
+
+    @cached_property
+    def spliceable(self) -> bool:
+        """Whether the file is a fragment in the sense of §12.2: it has no frontmatter and
+        no level-1 heading (``shape_findings`` reports a file that has either), so
+        the including document can take it in as it is. A file that is not is reported
+        and not spliced (``include-heading-skip``). The same test as the findings,
+        so the two cannot part."""
+        has_frontmatter, headings = _shape(self.document, self.where)
+        return not has_frontmatter and not headings
 
 
 class Files:
@@ -102,6 +112,16 @@ class Files:
         return self._read[relative]
 
 
+def _leads_out(written: str, normalised: str) -> bool:
+    """True if a path that ``relative_path`` refuses is refused only because it leads out
+    of the document's directory (§2.3): ``../x.lgd``, as normalised. A path with a
+    backslash or a null byte, or an absolute one, is refused for its own reason."""
+    return (
+        "\\" not in written and "\0" not in written and not is_absolute_reference(written)
+        and (normalised == ".." or normalised.startswith("../"))
+    )
+
+
 def _line(line: Line) -> int | None:
     return line() if callable(line) else line
 
@@ -122,6 +142,16 @@ def _subject(kind: FragmentKind, path: str) -> str:
     return f"{name} '{path}'" if path else name
 
 
+def _shape(document: Document, where: Locator) -> tuple[bool, list[int]]:
+    """Whether a file has frontmatter, and the indexes of its level-1 headings: what
+    §12.2 and §12.4 forbid in it, for ``shape_findings`` and ``FragmentFile.spliceable``."""
+    # A parsed one that opens with the block, empty or not (the Locator knows,
+    # while the document still fits its source), or one built in code with any
+    # metadata.
+    has_frontmatter = not document.metadata.frontmatter_absent and (where.has() or document.metadata != Metadata())
+    return has_frontmatter, [index for index, section in enumerate(document.sections) if section.level == 1]
+
+
 def shape_findings(document: Document, where: Locator, kind: FragmentKind, *, path: str = "") -> list[Finding]:
     """What §12.2 and §12.4 require of a file's own text: no frontmatter, which
     the including document supplies, and no level-1 heading, which it writes
@@ -131,10 +161,8 @@ def shape_findings(document: Document, where: Locator, kind: FragmentKind, *, pa
     frontmatter it wrongly has; *where* locates its parts."""
     subject = _subject(kind, path)
     found = []
-    # A parsed one that opens with the block, empty or not (the Locator knows,
-    # while the document still fits its source), or one built in code with any
-    # metadata.
-    if not document.metadata.frontmatter_absent and (where.has() or document.metadata != Metadata()):
+    has_frontmatter, headings = _shape(document, where)
+    if has_frontmatter:
         # A block that could not be read (#43) has no key to name: the line of
         # the problem in it. frontmatter-invalid-yaml is not drawn as well: the
         # file must not have the block, readable or not, which this says.
@@ -146,15 +174,14 @@ def shape_findings(document: Document, where: Locator, kind: FragmentKind, *, pa
             f"({'§12.2' if kind == 'include' else '§12.4'}). It is not read.",
             (error.line or 1) if error is not None else where.first_key(),
         ))
-    for index, section in enumerate(document.sections):
-        if section.level == 1:
-            found.append(Finding(
-                f"{kind}-has-h1",
-                f"{subject} has a level 1 heading, '{section.title}', which {noun(kind, 'a')} cannot have: "
-                + ("the including document writes the heading around it (§12.2)."
-                   if kind == "include" else "the renderer writes the attachment's heading from its title (§12.4)."),
-                where.heading(index),
-            ))
+    for index in headings:
+        found.append(Finding(
+            f"{kind}-has-h1",
+            f"{subject} has a level 1 heading, '{document.sections[index].title}', which {noun(kind, 'a')} cannot have: "
+            + ("the including document writes the heading around it (§12.2)."
+               if kind == "include" else "the renderer writes the attachment's heading from its title (§12.4)."),
+            where.heading(index),
+        ))
     return found
 
 
@@ -256,29 +283,26 @@ def fragment_findings(
     return found
 
 
+def include_paragraphs(includes: Iterable[IncludeDirective]) -> list[IncludeDirective]:
+    """The include paragraphs among the ``{{include:}}`` of a body scan (§12.2): the
+    only ones a fragment replaces, so the only ones the include rules look at. An
+    ``{{include:}}`` in a sentence, a list item or a quote is text. The one place that
+    says so, for ``check_includes`` and ``nested_includes``."""
+    return [include for include in includes if include.paragraph]
+
+
 def nested_includes(
     fragment: FragmentFile, lex_fragment: Callable[[str], Lexed] | None = None
 ) -> list[tuple[str, int | None]]:
     """The include paragraphs a file holds, in order, each as written with its line:
     what is allowed outside a template (§12.2) and that assembly does not
-    assemble. An ``{{include:}}`` in a sentence, a list item or a quote is text
-    (§12.2), and a drafting note is a quote: only a paragraph of its own counts."""
-    # Imported here, as in core.py: definitions -> validator.helpers -> validator would
-    # otherwise be a cycle at import time.
-    from ..definitions import text_fragments
-
-    lexed = lex_fragment or cache(lex)
-    found = []
-    for section, index, block in fragment.document.iter_indexed_blocks():
-        if block.kind != "paragraph":
-            continue
-        text = text_fragments(block)[0]
-        if "{{include" not in text:
-            continue
-        directive = include_paragraph(text, lexed(text))
-        if directive is not None:
-            found.append((directive.source, _line(partial(fragment.where.find, section, index, directive.source, 0, directive.start))))
-    return found
+    assemble. A drafting note is a quote, so only a paragraph of its own counts."""
+    # The scan is the body check's own, so that what is an include paragraph is
+    # decided where the validator decides it; what it reports of the file is not wanted.
+    scan = check_template_body(
+        fragment.document, lex_fragment or cache(lex), _Recorder(), template=False, where=fragment.where
+    )
+    return [(include.source, _line(include.line)) for include in include_paragraphs(scan.includes)]
 
 
 def skips(previous: int | None, level: int) -> bool:
@@ -395,7 +419,9 @@ def check_includes(
     A path that is not there is ``include-file-missing`` at its include, one
     finding for each include, as is a path a loader is never asked for, because it
     leads out of the document's directory (§2.3) or holds a backslash: assembly
-    refuses the template for it too (with a ``document_root`` it is valid, and skipped). A fragment
+    refuses the template for it too. The exception is a path that only leads out of the
+    directory, when a ``document_root`` is given and it stays within it: it is valid (§2.3),
+    and skipped, not read. A fragment
     that is there is checked for its shape and, in a *template*, its content
     (``fragment_findings``), once for each file however often it is included, and
     its headings are joined to the document's for ``include-heading-skip``
@@ -420,9 +446,7 @@ def check_includes(
     splices: dict[int | None, list[FragmentFile]] = {}
     unread: set[int | None] = set()  # the sections with an include paragraph whose fragment is not known
     findings: dict[str, list[Finding]] = {}  # of each fragment, once
-    for include in includes:
-        if not include.paragraph:
-            continue
+    for include in include_paragraphs(includes):
         if include.at in judged:
             unread.add(include.section)
             continue
@@ -442,9 +466,11 @@ def check_includes(
         # does for a file that is not there. It is not path-not-relative (an absolute path or a
         # URI scheme, judged above), nor path-outside-root, which judges where it leads.
         relative = relative_path(include.written)
-        if relative is None and rooted:
-            # Valid as a path within the root (§2.3), but this implementation reads nothing
-            # outside the document's directory: a known limitation (CONFORMANCE.md).
+        if relative is None and rooted and _leads_out(include.written, include.path):
+            # Not judged above, so within the root: a valid path (§2.3) that this implementation
+            # does not read, as it reads nothing outside the document's directory. A known
+            # limitation (CONFORMANCE.md), and nothing to say. A backslash or a null byte is
+            # not such a path, nor any other that cannot be asked for: still missing.
             unread.add(include.section)
             continue
         fragment = None if relative is None else files.read(relative)
@@ -470,7 +496,7 @@ def check_includes(
             for finding in findings[fragment.path]:
                 result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
         # A file with frontmatter or a level 1 heading is not a fragment: it is reported, not spliced.
-        if any(finding.rule in ("include-has-frontmatter", "include-has-h1") for finding in findings[fragment.path]):
+        if not fragment.spliceable:
             unread.add(include.section)
             continue
         splices.setdefault(include.section, []).append(fragment)

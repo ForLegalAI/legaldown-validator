@@ -381,8 +381,9 @@ Decisions the specification leaves open:
   files, it is `include-file-missing` too, at the include, with a message that says the file is
   outside the document's directory or not a readable relative path; the two agree. It is not
   `path-not-relative` (an absolute path or a URI scheme, #104's) and, given a root it leaves, not
-  `path-outside-root` as well. **Known limitation:** with a `document_root` that contains it, the path
-  is valid (§2.3), and this implementation only does not read outside the document's directory, so
+  `path-outside-root` as well. **Known limitation:** with a `document_root` that contains it, a path that is
+  refused only for leading out of the directory is valid (§2.3; a backslash or a null byte is not that, and stays
+  `include-file-missing`), and this implementation only does not read outside the document's directory, so
   it is skipped and nothing is said (the root-versus-reader follow-up). (`amends.file` and attachment
   files outside the directory are still as if not asked for.) A document with no path, and no
   `resolve`, reads nothing and says nothing.
