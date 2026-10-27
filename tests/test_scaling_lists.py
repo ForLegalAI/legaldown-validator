@@ -162,29 +162,28 @@ class _CountingPattern:
 def _read_text(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Count the text the line tests read: what ``RULE_RE`` is asked to match,
     what ``item_content_column`` measures, and what the tests for a thematic
-    break from the end of the line (``_rule_from``) read: the line, to build
-    one. (Asking one costs a step, but for a count over the end of the line
-    where a break could begin, and that is a few characters.)"""
+    break from the end of the line (``_Rule``) read: the line, to find where
+    one could begin. (Asking costs a step, but for a count over the end of the
+    line where a break could begin, and that is a few characters.)"""
     total = [0]
     measure = markdown_module.item_content_column
-    rule_from = parser_module._rule_from
+    find, ask = parser_module._Rule._find, parser_module._Rule.__call__
 
-    def counting_rule_from(content: str) -> Any:
-        total[0] += len(content)
-        is_rule = rule_from(content)
+    def counting_find(rule: Any) -> None:
+        total[0] += len(rule._content)
+        find(rule)
 
-        def counting_is_rule(position: int) -> bool:
-            total[0] += 1
-            return is_rule(position)
-
-        return counting_is_rule
+    def counting_ask(rule: Any, position: int) -> bool:
+        total[0] += 1
+        return ask(rule, position)
 
     def counting(line: str) -> int:
         total[0] += len(line)
         return measure(line)
 
     monkeypatch.setattr(parser_module, "RULE_RE", _CountingPattern(RULE_RE, total))
-    monkeypatch.setattr(parser_module, "_rule_from", counting_rule_from)
+    monkeypatch.setattr(parser_module._Rule, "_find", counting_find)
+    monkeypatch.setattr(parser_module._Rule, "__call__", counting_ask)
     monkeypatch.setattr(parser_module, "item_content_column", counting)
     monkeypatch.setattr(markdown_module, "item_content_column", counting)
     return total
@@ -212,3 +211,30 @@ def test_items_nested_on_one_line_are_measured_on_themselves(prefix: str, monkey
     if block.kind == "quote":
         quote_blocks(block)
     assert total[0] < 1000 * len(source)
+
+
+@pytest.mark.parametrize("prefix", ["", "> ", "- > "])
+def test_each_level_of_nesting_reads_its_own_marker_of_a_line_of_them(prefix: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A line of items nested on it is read at each level of list nesting, down
+    to sixty-four, with its first marker gone. What a level finds is told to the
+    next, so that the markers are read two or six times each in all (as the
+    levels need them), not sixty-four: 648,000 reads for a line of 20,000 before."""
+    markers = 2000
+    calls = [0]
+
+    def counted(real: Any) -> Any:
+        def reading(*args: Any, **kwargs: Any) -> Any:
+            calls[0] += 1
+            return real(*args, **kwargs)
+
+        return reading
+
+    for module, name in [(markdown_module, "item_marker_at"), (parser_module, "item_marker_at"),
+                         (parser_module, "item_marker_end")]:
+        monkeypatch.setattr(module, name, counted(getattr(module, name)))
+    block = parse(prefix + "- " * markers + "a\n").preamble[0]
+    while block.kind != "quote" and block.items:
+        block = block.items[0].blocks[0]
+    if block.kind == "quote":
+        quote_blocks(block)
+    assert 0 < calls[0] < 10 * markers

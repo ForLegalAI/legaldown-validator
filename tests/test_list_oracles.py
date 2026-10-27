@@ -10,7 +10,6 @@ import random
 import re
 
 from legaldown.markdown import (
-    _ITEM_START_RE,
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
     indent_width,
@@ -18,7 +17,6 @@ from legaldown.markdown import (
     item_content_column,
     item_marker_at,
     nested_content,
-    nested_offset,
 )
 from legaldown.parser import (
     _QUOTE_MARKERS_RE,
@@ -29,7 +27,7 @@ from legaldown.parser import (
     _expand_prefix,
     _item_body,
     _opens_paragraph,
-    _rule_from,
+    _Rule,
     _skip_markers,
 )
 
@@ -43,8 +41,11 @@ _OLD_ITEM_RE = re.compile(r"^[ \t]*(?:(?P<number>[0-9]{1,9})(?P<delimiter>[.)])|
 _OLD_CLOSING_SEQUENCE_RE = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
 
 
+_OLD_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
+
+
 def _old_item_content_column(line: str) -> int:
-    marker = _ITEM_START_RE.match(line)
+    marker = _OLD_ITEM_START_RE.match(line)
     if marker is None:
         return indent_width(line) + 2
     after = len(line[:marker.end()].expandtabs(4))
@@ -108,10 +109,11 @@ def test_item_content_column_is_what_it_was() -> None:
     rng = random.Random(_SEED)
     for _ in range(30000):
         line = _markers(rng)
-        assert item_content_column(line) == _old_item_content_column(line), repr(line)
+        if _OLD_ITEM_RE.match(line):  # the parser asks it of the line of an item
+            assert item_content_column(line) == _old_item_content_column(line), repr(line)
 
 
-def test_nested_offset_is_what_it_was() -> None:
+def test_nested_content_is_what_nested_offset_was() -> None:
     """Without tabs it is the earlier function's, in columns and in characters.
     With them, what the earlier function made of the line with its markers' tabs
     written as the spaces they stand for, from the line's start."""
@@ -119,7 +121,7 @@ def test_nested_offset_is_what_it_was() -> None:
     for _ in range(30000):
         line = _markers(rng) + rng.choice(["", "a", " a"])
         columns, characters = nested_content(line)
-        assert columns == nested_offset(line) == _old_nested_offset(_expand_prefix(line)), repr(line)
+        assert columns == _old_nested_offset(_expand_prefix(line)), repr(line)
         if "\t" not in line:
             assert characters == columns, repr(line)
 
@@ -166,11 +168,11 @@ def test_item_marker_at_agrees_with_list_item_re() -> None:
 
 
 def test_the_rule_test_from_the_end_agrees_with_rule_re_at_every_position() -> None:
-    """``_rule_from`` stands in for ``RULE_RE.match(content[position:])``."""
+    """``_Rule`` stands in for ``RULE_RE.match(content[position:])``."""
     rng = random.Random(_SEED)
     for _ in range(30000):
         content = _markers(rng)
-        is_rule = _rule_from(content)
+        is_rule = _Rule(content)
         for position in range(len(content) + 2):
             assert is_rule(position) == bool(RULE_RE.match(content[position:])), (content, position)
 
@@ -184,7 +186,7 @@ def test_possessive_runs_of_blanks_match_as_the_backtracking_ones_did() -> None:
         assert (new is None) == (old is None), repr(line)
         if new is not None and old is not None:
             assert new.span() == old.span()
-            assert new.groupdict() == old.groupdict()
+            assert all(new.group(name) == old.group(name) for name in ("number", "delimiter", "bullet"))
 
 
 def test_atx_text_reads_the_closing_sequence_as_its_expression_did() -> None:

@@ -258,20 +258,18 @@ def indent_width(line: str) -> int:
     return column
 
 
-# A list item's marker, as the parser's LIST_ITEM_RE reads it.
-_ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
-_BLANKS_RE = re.compile(r"[ \t]*")
-
-
-def blank_run_end(text: str, position: int) -> int:
-    """The index just past the spaces and tabs that *text* has from *position*
-    on: where the text after them starts, found without copying the rest."""
-    return _BLANKS_RE.match(text, position).end()
-
-
-# A list item's marker and its spacing, as the parser's LIST_ITEM_RE reads
-# them (``tests/test_list_oracles.py`` checks that they agree).
-_MARKER_AT_RE = re.compile(r"([ \t]*+)([0-9]{1,9}[.)]|[-*+])(?:([ \t]+)|$)")
+# A list item's marker (CommonMark): ``-``, ``*``, or ``+`` for an unordered
+# list, a number of at most nine ASCII digits and ``.`` or ``)`` for an
+# ordered one, with only spaces and tabs around it: its blanks before, the
+# marker, and the blanks after it, if any. The parser's ``LIST_ITEM_RE`` is
+# this anchored at the start of a line; here it matches at an offset in a long
+# line (``item_marker_at``). The runs of blanks are possessive, as what
+# follows one is never a blank.
+LIST_ITEM_PATTERN = (
+    r"(?P<lead>[ \t]*+)(?P<marker>(?P<number>[0-9]{1,9})(?P<delimiter>[.)])|(?P<bullet>[-*+]))"
+    r"(?:(?P<gap>[ \t]+)|$)"
+)
+_MARKER_AT_RE = re.compile(LIST_ITEM_PATTERN)
 
 
 def _advance(column: int, blanks: str) -> int:
@@ -315,7 +313,7 @@ def item_marker_at(text: str, position: int = 0, column: int = 0) -> ItemMarker 
     found = _MARKER_AT_RE.match(text, position)
     if found is None:
         return None
-    _, (_, lead_end), (_, marker_end), (gap_start, _) = found.regs
+    _, (_, lead_end), (_, marker_end), _, _, _, (gap_start, _) = found.regs
     end = found.end()
     if text.find("\t", position, end) < 0:
         marker_column = column + lead_end - position
@@ -341,12 +339,7 @@ def item_content_column(line: str) -> int:
     starts (CommonMark): after its marker and one to four columns of spacing,
     or one column when there are more, or when the item is empty."""
     found = item_marker_at(line)
-    if found is not None:
-        return found.column
-    marker = _ITEM_START_RE.match(line)
-    if marker is None:  # never: the parser read *line* as an item
-        return indent_width(line) + 2
-    return len(line[:marker.end()].expandtabs(4))  # a marker with text right after it
+    return found.column if found is not None else indent_width(line) + 2  # never: *line* is an item
 
 
 def nested_content(first: str, column: int = 0) -> tuple[int, int]:
@@ -365,11 +358,6 @@ def nested_content(first: str, column: int = 0) -> tuple[int, int]:
         characters += found.cut - position
         position, column = found.end, found.end_column
     return columns, characters
-
-
-def nested_offset(first: str, column: int = 0) -> int:
-    """The columns of ``nested_content``."""
-    return nested_content(first, column)[0]
 
 
 def dedent(line: str, columns: int, *, expand: bool = False) -> str:
