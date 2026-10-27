@@ -11,6 +11,7 @@ Usage::
     legaldown validate --ignore def-unreferenced --warnings-as-errors doc.lgd
     legaldown validate --final signed-contract.lgd
     legaldown validate --fragment clauses/*.lgd
+    legaldown validate --fragment --template clauses/*.lgd
     legaldown assemble template.lgd --answers answers.yaml -o out/
     legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/
     legaldown questions template.lgd --answers answers.yaml --format json
@@ -41,7 +42,9 @@ EXIT_ERROR = 2
 _LEVEL_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 
-def _validate_path(path: Path, *, final: bool = False, fragment: bool = False) -> tuple[list[dict], str | None]:
+def _validate_path(
+    path: Path, *, final: bool = False, fragment: bool = False, template: bool | None = None
+) -> tuple[list[dict], str | None]:
     """Validate one file; return (diagnostics, read/parse failure message)."""
     try:
         document = load(path)
@@ -67,7 +70,7 @@ def _validate_path(path: Path, *, final: bool = False, fragment: bool = False) -
         )
 
     try:
-        result = validate(document, final=final, fragment=fragment)
+        result = validate(document, final=final, fragment=fragment, template=template)
     except Exception as exc:
         # As above: validating reads the files the document refers to, too.
         return [], (
@@ -100,15 +103,15 @@ def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
     # The host-dependent findings (--fragment) are counted apart, as the exit
     # status leaves them out, so the summary agrees with it.
     counts = {level: 0 for level in _LEVEL_ORDER}
-    host = 0
+    host_count = 0
     for d in diagnostics:
         if d.get("host_dependent"):
-            host += 1
+            host_count += 1
         else:
             counts[d["level"]] = counts.get(d["level"], 0) + 1
     summary = ", ".join(f"{counts.get(lvl, 0)} {lvl}(s)" for lvl in _LEVEL_ORDER)
-    if host:
-        summary += f"; {host} host-dependent"
+    if host_count:
+        summary += f"; {host_count} host-dependent"
     print(f"\n{summary}" if diagnostics else "No issues found.", file=sys.stderr)
 
 
@@ -128,7 +131,9 @@ def _run_validate(args: argparse.Namespace) -> int:
         else:
             targets = [path]
         for target in targets:
-            diagnostics, failure = _validate_path(target, final=args.final, fragment=args.fragment)
+            diagnostics, failure = _validate_path(
+                target, final=args.final, fragment=args.fragment, template=True if args.host_is_template else None
+            )
             if failure:
                 failures.append(failure)
                 continue
@@ -551,6 +556,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     validate.add_argument(
+        "--template",
+        dest="host_is_template",  # not `template`: assemble and questions have that argument
+        action="store_true",
+        help=(
+            "With --fragment: the document that includes the fragments is a template (§15.1), so "
+            "they are checked as parts of one. Without it a fragment is a template only when it "
+            "holds a condition or a {{choose:}}."
+        ),
+    )
+    validate.add_argument(
         "--warnings-as-errors",
         action="store_true",
         help="Report warnings at error severity.",
@@ -634,6 +649,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "host_is_template", False) and not args.fragment:
+        parser.error("--template is only valid with --fragment")
     return args.func(args)
 
 

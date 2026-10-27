@@ -320,10 +320,12 @@ def _check_placeholder(
     questions: Any,
     *,
     in_frontmatter: bool = False,
+    in_note: bool = False,
     line: Line = None,
 ) -> None:
     """Validate one ``{{placeholder:}}`` directive, its arguments included,
-    and record it in *blanks*; *line* is where it is.
+    and record it in *blanks*; *line* is where it is, and *in_note* whether it
+    is in a drafting note.
 
     Shared by the body-block scan and the frontmatter scan so a placeholder id
     used in both is treated as the *same* blank (consistent type, currency,
@@ -344,8 +346,10 @@ def _check_placeholder(
         )
         return
     blank = blanks.setdefault(pid, _BlankState())
-    if blank.line is None:
-        blank.line = line
+    if not in_note:
+        blank.kept = True
+        if blank.line is None:
+            blank.line = line
     blank.in_frontmatter |= in_frontmatter
     type_valid = written_type is None or written_type in VALID_PLACEHOLDER_TYPES
     if not type_valid:
@@ -841,33 +845,21 @@ def _check_never_true(
             )
 
 
-def is_template(document: Document, *, fragment: bool = False) -> bool:
+def is_template(document: Document) -> bool:
     """True if *document* is a template (§15.1): it declares ``questions``,
     carries a condition — on a section, an attachment, or a placed marker —
     or contains a ``{{choose:}}``, wherever it is. ``validate``
-    reports it too (``DocumentIndex.is_template``).
-
-    With *fragment*, *document* is an include fragment or attachment file
-    (§12.2, §12.4), as for ``validate(fragment=True)``: its own metadata is
-    not read, and whether it is part of a template is its host's to decide,
-    so it also counts when it holds a ``{{placeholder:}}`` or a drafting note,
-    which a document that is not a template may hold too."""
-    if fragment:
-        document = replace(document, metadata=Metadata(frontmatter_absent=True))
-    return _is_template(document, None, lex, fragment=fragment)
+    reports it too (``DocumentIndex.is_template``)."""
+    return _is_template(document, None, lex)
 
 
 def _is_template(
     document: Document,
     markers: list[FoundMarker] | None,
     lex_fragment: Callable[[str], Lexed],
-    *,
-    fragment: bool = False,
 ) -> bool:
     """``is_template``; *markers* are ``find_markers(document,
-    lex_fragment)`` when the caller has them. *fragment*: a blank or a
-    drafting note counts as well (``validate`` makes this decision from what
-    it has met, without another pass)."""
+    lex_fragment)`` when the caller has them."""
     from ..definitions import text_fragments  # see the import note in _validate
 
     meta = document.metadata
@@ -886,17 +878,6 @@ def _is_template(
         or any(section.condition for section in document.sections)
         or any(found.marker and found.marker.condition and not found.misplaced for found in markers)
         or any(d.name == "choose" for text in texts for d in lex_fragment(text or "").directives)
-        or (
-            fragment
-            and (
-                any(d.name == "placeholder" for text in texts for d in lex_fragment(text or "").directives)
-                or any(
-                    quote.is_drafting_note
-                    for _s, _i, block in document.iter_indexed_blocks()
-                    for quote in block_quotes(block)
-                )
-            )
-        )
     )
 
 
@@ -919,15 +900,16 @@ class _Mode:
     level 1 (§4.1) although the metadata is the empty one, because the block
     that is not read still is the frontmatter of a main document. ``fragment``:
     the document is an include fragment or an attachment file validated on its
-    own (§12.2, §12.4): its findings with a reason are ``host_dependent``, and
-    its template-only findings depend on its host, which decides whether it is
-    a template (``Depends.FRONTMATTER``) when it holds nothing but a blank or a
-    drafting note of one."""
+    own (§12.2, §12.4): its findings with a reason are ``host_dependent``.
+    ``template``: whether the document is a template, when the caller knows
+    (the fragment's host is one, or is not); None leaves it to the document
+    (``is_template``)."""
     empty_metadata: bool = False
     suppress: frozenset[Depends] = frozenset()
     report_frontmatter_absent: bool = True
     check_first_heading: bool = False
     fragment: bool = False
+    template: bool | None = None
 
 
 #: A complete document.
@@ -950,6 +932,7 @@ def validate(
     *,
     final: bool = False,
     fragment: bool = False,
+    template: bool | None = None,
     resolve: LoadFile | None = None,
     import_definitions: DefinitionsImporter | None = None,
     import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
@@ -979,13 +962,18 @@ def validate(
         the metadata is then not read, so nothing is checked of it. A
         definition the fragment declares and does not reference is still
         reported (def-unreferenced), as ``host_dependent``: the host may
-        reference it (§12.2). A fragment with a condition or a
-        ``{{choose:}}`` is a template; whether one with only a
-        ``{{placeholder:}}`` or a drafting note is, is its host's to decide
-        (a document that is not a template may hold them), so the checks only
-        a template has are made and reported as ``host_dependent``
-        (``is_template(fragment=True)``). Default False: a complete
-        document, as before.
+        reference it (§12.2). Default False: a complete document, as before.
+    template:
+        Only with *fragment*: whether the document that includes the fragment
+        is a template (§15.1), which a fragment cannot tell by itself (a
+        blank or a drafting note is legal in any document). True checks it as
+        part of a template: the checks only a template has are made (a
+        blank whose id YAML reads as a boolean, ``template-fragment-invalid``)
+        and a preamble paragraph's condition is placed (§5.7, §15.3).
+        False says it is not one. By default (None) a fragment is a template
+        exactly when it holds a condition or a ``{{choose:}}``, as any document
+        does; ``DocumentIndex.is_template`` and ``placed_markers`` follow the
+        decision. Raises ``ValueError`` without *fragment*.
     resolve:
         Reads a file the document refers to — the document it amends
         (``amends.file``, §7.5) and its LegalDown attachment files (§12.4) —
@@ -1002,8 +990,10 @@ def validate(
         Deprecated since 0.4.0, removed in 0.5.0: use *resolve*. They give the
         definitions themselves, which *resolve* leaves to the validator.
     """
+    if template is not None and not fragment:
+        raise ValueError("validate(template=) is only meaningful with fragment=True")
     resolve = _resolver(document, resolve, import_definitions, import_attachment_definitions, stacklevel=3)
-    mode = _FRAGMENT if fragment else _DOCUMENT
+    mode = replace(_FRAGMENT, template=template) if fragment else _DOCUMENT
     return _validate(document, final, resolve, import_definitions, import_attachment_definitions, mode)
 
 
@@ -1196,7 +1186,7 @@ def _validate(
     # Markers are found first: only a template gives a preamble paragraph's
     # condition its place (§5.7).
     markers = find_markers(document, lex_fragment)
-    template = _is_template(document, markers, lex_fragment)
+    template = _is_template(document, markers, lex_fragment) if mode.template is None else mode.template
     units = Units(document, markers, questions, template=template)
     body_directives = {
         directive.name
@@ -1791,7 +1781,6 @@ def _validate(
     # Every {{ref:}}, {{term:}}, and {{attach:}}: (target, presence, in a
     # drafting note, line), for reference safety (§15.4).
     references: dict[str, list[tuple[str, Presence, bool, Line]]] = {"ref": [], "term": [], "attach": []}
-    has_note = False  # a drafting note met
     for section_index, block_index, block in document.iter_indexed_blocks():
         # The parser lifts a paragraph's first {{ref:}} or {{term:}} into
         # block fields when they hold it without loss (no other parameters).
@@ -1803,7 +1792,6 @@ def _validate(
             (ref_targets if block.kind == "ref" else term_targets).append((block.target.strip(), lifted_line))
             references[block.kind].append((block.target.strip(), block_presence, False, lifted_line))
         notes = [quote for quote in block_quotes(block) if quote.is_drafting_note]
-        has_note = has_note or bool(notes)
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             presence = units.presence(section_index, block_index, fragment_index)
@@ -1821,8 +1809,9 @@ def _validate(
                 if name == "placeholder":
                     placeholders.append((directive, line))
                     # Its effective type decides which parameters it defines.
+                    in_note = any(fragment_index in note.fragments for note in notes)
                     with result.at(line):
-                        _check_placeholder(directive, result, blanks, questions, line=line)
+                        _check_placeholder(directive, result, blanks, questions, in_note=in_note, line=line)
                     continue
                 with result.at(line):
                     well_formed = _check_directive_arguments(directive, result)
@@ -2085,25 +2074,15 @@ def _validate(
                     line=where.key("questions", qid),
                 )
 
-    # Whether a fragment that holds a blank or a drafting note and no condition
-    # or choice is a template is its host's to decide (§15.1): the checks only
-    # a template has are made, and depend on the host's questions (#39). What
-    # makes a unit's presence, and so the markers, is not changed by it.
-    uncertain = mode.fragment and not template and bool(placeholders or has_note)
-    template_depends = Depends.FRONTMATTER if uncertain else None
     check_questions(
         questions,
         blanks,
         result,
-        template=template or uncertain,
-        template_depends=template_depends,
+        template=template,
         not_line_editable=meta.not_line_editable,
         where=where,
     )
-    notes = check_template_body(
-        document, lex_fragment, result,
-        template=template or uncertain, template_depends=template_depends, where=where,
-    )
+    notes = check_template_body(document, lex_fragment, result, template=template, where=where)
     _check_raw_html(document, lex_fragment, result, where)
     if final:
         _check_final(placeholders, chooses, notes, conditions, questions, result, where.key("questions"))
@@ -2140,7 +2119,7 @@ def _validate(
 
     # What a renderer builds from: the template decision and the markers
     # that apply, as every check above read them.
-    result.index.is_template = template or uncertain
+    result.index.is_template = template
     result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
 
     if document.filename:

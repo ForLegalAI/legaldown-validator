@@ -122,6 +122,7 @@ legaldown validate --fragment clauses/               # include fragments and att
 | `--ignore RULE_ID` | Suppress a rule by its stable id — repeatable |
 | `--final` | Check a document is ready for signature: a remaining placeholder, drafting note, or template construct is an error (§15.9) |
 | `--fragment` | Validate each file as an include fragment or attachment file on its own (§12.2, §12.4), as [`validate(fragment=True)`](#validating-a-fragment) does: what only the including document can settle is reported with `"host_dependent": true` in the JSON output and `(host-dependent)` at the end of the line in text, and does not affect the exit status |
+| `--template` | With `--fragment`: the document that includes the fragments is a template, so they are checked as parts of one (`validate(fragment=True, template=True)`). Without it a fragment is a template only when it holds a condition or a `{{choose:}}` |
 | `--warnings-as-errors` | Report warnings at error severity |
 | `--strict` | Exit non-zero on any diagnostic, not just errors |
 | `--quiet` | Drop the trailing summary line |
@@ -334,10 +335,10 @@ itself is what was found, kept nowhere but in `diagnostics`:
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
 | `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
 | `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence: `Blank(id, type, fixed, in_frontmatter, consistent)` — `type` the type the validator settled on: the effective type of the first occurrence with a valid one (§10.7, §15.2; `text` when none is written), or `None` when no occurrence has a usable type (each is written with an invalid one, or the id is a decision question's); `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none, or the blank is not `consistent`); `consistent` false when its occurrences have different types or fix two currencies or units (placeholder-type-inconsistent); `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
-| `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
+| `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` — or, for a fragment, what `validate(fragment=True, template=)` was told ([below](#validating-a-fragment)); `placed_markers` follows the same decision |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)` (`legaldown.syntax`), at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
-`is_template(document, *, fragment=False)` (top-level) gives the template decision without validating (§15.1); with `fragment=True`, the decision for a fragment ([below](#validating-a-fragment)).
+`is_template(document)` (top-level) gives the template decision without validating (§15.1).
 A renderer builds from these decisions rather than re-deriving them, reading the source with
 the validator's own helpers ([Tooling API](#tooling-api)).
 [`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way.
@@ -360,7 +361,7 @@ for d in result.diagnostics:
 ```
 
 ```python
-validate(document, *, final=False, fragment=False, resolve=None) -> ValidationResult
+validate(document, *, final=False, fragment=False, template=None, resolve=None) -> ValidationResult
 Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
 ```
 
@@ -382,13 +383,15 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   key (the opening `---` when it has none), and a level-1 heading draws `include-has-h1`, at the
   heading, each an Error. Its metadata is then not read at all, and the lines of everything else are
   the file's. Whichever way the host includes it, the ids are the `include-*` ones.
-- Whether a fragment is a template is its host's to decide (§15.1). One with a condition or a
-  `{{choose:}}` certainly is, and the findings only a template has stay its own. One with only a
-  `{{placeholder:}}` or a drafting note may be part of a document that is not a template, so the
-  template checks are still made, but their findings are `host_dependent`: a blank with a YAML
-  keyword for an id (`{{placeholder: no}}`, `question-invalid`), an `{{include:}}` in a drafting note,
-  a fragment included twice (`template-fragment-invalid`). `is_template(document, fragment=True)` and
-  `index.is_template` agree on this.
+- A fragment cannot tell whether the document that includes it is a template (§15.1): a blank or a
+  drafting note is legal in any document. By default it is a template exactly when it holds a
+  condition or a `{{choose:}}`, as any document is, with no `questions` to count. Say what the host is
+  with `template=`: `True` checks the fragment as part of a template (a blank whose id YAML reads as a
+  boolean, `{{placeholder: no}}`, is a `question-invalid`; `template-fragment-invalid`; a preamble
+  paragraph's condition is placed, §5.7), `False` says it is not one, and `None`, the default, leaves it
+  to the fragment. `index.is_template` and `placed_markers` follow that one decision. `template=` without
+  `fragment=True` raises `ValueError`. A blank only in a drafting note is never checked for such an id
+  in any document: assembly removes the note first (§15.7.2).
 - `legaldown validate --fragment` shows a flagged finding with `(host-dependent)` at the end of its
   line, and its exit status ignores them (also under `--strict`): a fragment that only uses what its
   host declares or defines exits `0`, and one with a finding of its own exits `1`. The summary line

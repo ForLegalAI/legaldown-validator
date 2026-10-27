@@ -60,7 +60,11 @@ class _BlankState:
     mixed: bool = False
     #: The line of the first occurrence fixing each code (§16.9).
     code_lines: dict[str, Any] = field(default_factory=dict)  # a ``result.Line`` each
-    #: The line of the blank's first occurrence (§16.9), a ``result.Line``.
+    #: Whether an occurrence is outside every drafting note, which assembly
+    #: removes before anything is inserted (§15.7.2); one only in notes is never
+    #: filled in, so what it would be asked is no one's concern.
+    kept: bool = False
+    #: The line of the first such occurrence (§16.9), a ``result.Line``.
     line: Any = None
 
 
@@ -200,7 +204,6 @@ def check_questions(
     result: _Recorder,
     *,
     template: bool,
-    template_depends: Depends | None = None,
     not_line_editable: list[str],
     where: Locator | None = None,
 ) -> None:
@@ -209,9 +212,7 @@ def check_questions(
     *blanks* are the document's placeholders by id: a default must agree with
     the currency or unit its question's placeholders fix, and in a *template*
     an undeclared placeholder id is a question id too. *where* gives each
-    diagnostic's line: the question's, or the key's. *template_depends* is what
-    the findings that only a *template* has depend on (``Depends``): None when it
-    certainly is one.
+    diagnostic's line: the question's, or the key's.
     """
     def line_of(*path: Any) -> int | None:
         return where.key(*path) if where is not None else None
@@ -262,20 +263,14 @@ def check_questions(
     line = line_of("questions")
     written = questions is not None and where is not None and where.has("questions")
     if template:
-        for pid in blanks:
-            if pid not in declared and pid in YAML_KEYWORDS:
-                # A question declared under this id is question-invalid in its
-                # turn (§15.2), so no host's declaration settles it. Only a
-                # host that is no template does: a blank is legal in any
-                # document, and a fragment that holds nothing else of a
-                # template is one only when its host is (*template_depends*,
-                # #39). Without `questions` written, it is the blank's line.
+        for pid, blank in blanks.items():
+            if blank.kept and pid not in declared and pid in YAML_KEYWORDS:
+                # Without `questions` written, it is the blank's line.
                 result.error(
                     "question-invalid",
                     f"Placeholder id '{pid}' is read by YAML as a boolean or null, so it "
                     f"cannot be answered portably in a template (§15.2).",
-                    line=line if written else blanks[pid].line,
-                    depends=template_depends,
+                    line=line if written else blank.line,
                 )
 
 
@@ -562,15 +557,13 @@ def check_template_body(
     result: _Recorder,
     *,
     template: bool,
-    template_depends: Depends | None = None,
     where: Locator | None = None,
 ) -> list[tuple[Quote, Line]]:
     """Report what §16.12 checks in the body of a document: drafting notes
     (drafting-note-unrecognized, drafting-note-def), a blank or choice in a
     defined term (def-term-variable) or against template text
     (insertion-boundary), and, in a *template*, the Core parts of
-    template-fragment-invalid (which depend on *template_depends*, as for
-    ``check_questions``). Return the document's drafting notes, each
+    template-fragment-invalid. Return the document's drafting notes, each
     with its line. *where* gives the lines."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
@@ -638,7 +631,6 @@ def check_template_body(
                             f"'{directive.source}' is inside a drafting note; in a template an "
                             f"include belongs in the template's own body (§15.3).",
                             line=line,
-                            depends=template_depends,
                         )
                 # A drafting note is removed before anything is inserted
                 # (§15.7.2 step 2), so a blank in one is never filled.
@@ -662,7 +654,7 @@ def check_template_body(
                             line=find(block_section, block_index, directive.source, index, directive.start),
                         )
     if template:
-        _check_fragments(document, includes, result, where, template_depends)
+        _check_fragments(document, includes, result, where)
     return all_notes
 
 
@@ -678,11 +670,7 @@ def _check_insertion(scan: _InsertionScan, insertion: Directive, result: _Record
 
 
 def _check_fragments(
-    document: Document,
-    includes: list[tuple[str, Line]],
-    result: _Recorder,
-    where: Locator | None,
-    depends: Depends | None = None,
+    document: Document, includes: list[tuple[str, Line]], result: _Recorder, where: Locator | None
 ) -> None:
     """The Core parts of template-fragment-invalid (§15.3): each fragment is
     included once, and each LegalDown attachment file is declared by one
@@ -699,7 +687,6 @@ def _check_fragments(
                 f"Fragment '{path}' is included more than once; in a template each fragment has "
                 f"one place (§15.3).",
                 line=line,
-                depends=depends,
             )
         seen.add(path)
     files = [
@@ -719,12 +706,10 @@ def _check_fragments(
                 f"Attachment file '{path}' is declared by more than one attachment; in a "
                 f"template each LegalDown attachment file has one entry (§15.3).",
                 line=where.key("attachments", indices[1], "file") if where is not None else None,
-                depends=depends,
             )
         if path in fragments:
             result.error(
                 "template-fragment-invalid",
                 f"Attachment file '{path}' is also included as a fragment (§15.3).",
                 line=where.key("attachments", indices[0], "file") if where is not None else None,
-                depends=depends,
             )
