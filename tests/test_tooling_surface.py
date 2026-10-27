@@ -489,3 +489,17 @@ def test_find_markers_reads_with_the_package_lexer_by_default():
     # A heading's marker is not body text; a code span's is literal.
     assert [f.source for f in found] == ["{#b}", "{#d when=}", "{#e}"]
     assert [f.source for f in found if f.placed(False)] == ["{#e}"]
+
+
+def test_find_markers_handles_many_directives_markers_and_a_comment_tail():
+    body = "".join(
+        "{{placeholder: value {#hidden" + str(index) + "}}} {#visible" + str(index) + "} "
+        for index in range(300)
+    )
+    document = parse("---\ntitle: T\n---\n\n# A\n\n" + body + "<!-- trailing -->\n")
+
+    found = find_markers(document)
+
+    assert [marker.source for marker in found] == [f"{{#visible{index}}}" for index in range(300)]
+    assert all(marker.misplaced for marker in found[:-1])
+    assert found[-1].misplaced == ""
