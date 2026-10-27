@@ -294,8 +294,8 @@ def _error_line(exc: BaseException, block: str, loader: _StrDateSafeLoader | Non
     problem is — or, for a quoted scalar or a flow collection left open, where
     it opens, which the problem is only found far past. An error that names no
     place is where the *loader* was: at the node it was constructing (a value
-    its tag cannot hold) or, for nesting too deep to read, at the innermost
-    collection open when it was found."""
+    its tag cannot hold) or, for nesting too deep to read, at where the nesting
+    starts."""
     context = getattr(exc, "context", None) or ""
     context_mark = getattr(exc, "context_mark", None)
     problem_mark = getattr(exc, "problem_mark", None)
@@ -307,8 +307,11 @@ def _error_line(exc: BaseException, block: str, loader: _StrDateSafeLoader | Non
         return _file_line(block, exc.position)  # the reader names a character
     if loader is not None and loader.constructing is not None:
         return _file_line(block, loader.constructing.start_mark.index)
-    if loader is not None and isinstance(exc, RecursionError) and getattr(loader, "marks", None):
-        return _file_line(block, loader.marks[-1].index)
+    if loader is not None and isinstance(exc, RecursionError) and loader.marks:
+        # Where the nesting starts: the outermost open collection below the root
+        # mapping (the value of a top-level key), not the innermost, which is
+        # wherever the stack and the recursion limit left the reader.
+        return _file_line(block, loader.marks[min(1, len(loader.marks) - 1)].index)
     return 1
 
 

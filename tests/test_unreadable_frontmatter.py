@@ -616,14 +616,30 @@ def test_the_text_of_questions_places_a_problem_or_a_diagnostic_as_assemble_does
     ]
 
 
-def test_nesting_too_deep_to_read_is_where_it_got_too_deep():
-    # The reader gives no mark for it: the innermost collection open when it gave up. A nesting on one
-    # line, as it is usually written, is the line of the key holding it.
-    for depth in (3000, 1500):
-        source = f"---\ntitle: T\nnest: {'[' * depth}{']' * depth}\nlanguage: en\n---\n# A\n\n{{{{ref: nope}}}}\n"
-        document = _kept(source)
+def _below(frames, call):
+    """*call*'s result from *frames* deeper in the stack."""
+    return call() if frames == 0 else _below(frames - 1, call)
+
+
+@pytest.mark.parametrize(
+    ("block", "line"),
+    [
+        ("title: T\nnest: {open}{close}\nlanguage: en\n", 3),  # on the key's line
+        ("title: T\nnest:\n{dashes}x\nlanguage: en\n", 4),  # a block sequence, where it starts
+        ("title: T\nnest:\n  a:\n    b: {open}\n", 4),  # inside a block mapping: where that starts
+    ],
+)
+def test_nesting_too_deep_to_read_is_where_it_starts_whatever_the_stack(block, line):
+    # The reader gives no mark for it, and where it gives up depends on the recursion limit and
+    # on how deep the caller is: the line is that of the outermost collection below the root.
+    block = block.format(open="[" * 3000, close="]" * 3000, dashes="- " * 800)
+    source = f"---\n{block}---\n# A\n\n{{{{ref: nope}}}}\n"
+    lines = set()
+    for frames in (0, 50, 200, 400):
+        document = _below(frames, lambda: _kept(source))
         assert isinstance(document.frontmatter_error.__cause__, RecursionError)
-        assert _rows(document) == [("frontmatter-invalid-yaml", "error", 3), ("ref-broken", "error", 8)]
+        lines.add(document.frontmatter_error.line)
+    assert lines == {line}
 
 
 def test_no_node_is_recorded_for_a_document_that_is_read():
