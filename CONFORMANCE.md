@@ -178,16 +178,21 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
 - An image is the inline `![alt](destination)` (§8.7), in a paragraph, list item, quote, table cell, heading
   or definition, and in the alt text of another image (both are checked). The destination is `<…>` or a
   raw one with balanced parentheses, then an optional title; backslash escapes and character references in
-  it are decoded (`&#47;etc` is `/etc`). **It is also read percent-decoded, for both checks**: `%2Fetc` is
-  not relative and `%2E%2E/%2E%2E/x.png` leaves a root, since a tool that opens the file decodes the URL
-  first; a `%` not followed by two hex digits stays as written. No other reference is percent-decoded.
+  it are decoded (`&#47;etc` is `/etc`). A destination is a URL, so it is read as one: a query or fragment
+  (`?…`, `#…`, the first of either) is not part of the path (`x.png?p=/../..` stays in the root), and **it is
+  also read percent-decoded**: `%2Fetc` is not relative and `%2E%2E/%2E%2E/x.png` leaves a root, since a tool
+  that opens the file decodes the URL first; a `%` not followed by two hex digits stays as written. Only
+  the `/` and `\` that decoding yields make a path absolute: a scheme is the one written, so `a%3Ab.png`
+  is a file named `a:b.png`. No other reference is percent-decoded or loses a query.
   Not an image: one in a code span, fenced or indented code, a comment or a raw HTML block, `\![a](x)`
   (a link after a literal `!`), a link or autolink (valid, §8.7), `<img src>` (that is `raw-html`),
   and a reference-style image (`![a][r]`, `[r]: path`), which waits for link reference definitions in the
-  model ([#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)). An image whose
-  destination holds a directive (`![a]({{placeholder: p}})`) is skipped, since its path is not known
-  until the directive is filled in; assembly's output is validated again (§15.7.4). A directive in the
-  alt text is no matter.
+  model ([#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)). A directive in
+  an image's destination (`![a](https://{{placeholder: host}}/x.png)`) leaves its path unknown until it is
+  filled in (assembly's output is validated again, §15.7.4), but the text before the first directive may
+  decide already: one that begins with a scheme or a `/` or `\` (`![a](/abs/{{placeholder: p}}.png)`) is
+  `path-not-relative` whatever is filled in. The rest is not judged, and the containment never is, since
+  `../../{{placeholder: p}}` may be filled in as anything. A directive in the alt text is no matter.
 - In a fragment (`validate(fragment=True)`) the include and image paths are its own, whoever includes it:
   they are checked and never `host_dependent`. Its frontmatter is never read, so none of its keys is checked.
   A document whose frontmatter cannot be read is validated by its body alone, as for the other rules.

@@ -56,7 +56,7 @@ from .helpers import (
     is_valid_money_amount,
     slugify_identifier,
 )
-from .paths import FileReferences, check_frontmatter_paths, check_image_paths
+from .paths import FileReferences, check_fragment_images, check_frontmatter_paths, check_heading_images
 from .patterns import (
     _CONSTRUCT_PRESENT,
     _UNFILLED,
@@ -1868,6 +1868,10 @@ def _validate(
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             owner_of = None  # for definition-circular, once a {{term:}} asks
+            if "![" in fragment:
+                check_fragment_images(
+                    fragment, lexed, file_references, where, section_index, block_index, fragment_index
+                )
             presence = units.presence(section_index, block_index, fragment_index)
             in_note = bool(lexed.directives) and in_drafting_note(notes, fragment_index)  # only a directive asks
             for offset in lexed.stray_braces:
@@ -2180,7 +2184,7 @@ def _validate(
     )
     notes = check_template_body(document, lex_fragment, result, template=template, where=where)
     _check_raw_html(document, lex_fragment, result, where)
-    check_image_paths(document, lex_fragment, file_references, where)
+    check_heading_images(document, lex_fragment, file_references, where)
     if final:
         _check_final(placeholders, chooses, notes, conditions, questions, result, where.key("questions"))
 

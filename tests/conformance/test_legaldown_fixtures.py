@@ -178,7 +178,12 @@ def _validate_file(path: Path, config: dict):
     # "keep": a fixture with frontmatter that cannot be read is validated, as the
     # CLI does, not refused: validate reports frontmatter-invalid-yaml (#43).
     document = parse(path.read_text(encoding="utf-8"), filename=path.name, on_frontmatter_error="keep")
-    root = path.parent / config["document_root"] if "document_root" in config else None
+    root = None
+    if "document_root" in config:
+        # The root is the case's directory by the config; the document is where its
+        # file is, as it is for a loaded one, so its paths are read from there.
+        root = path.parent / config["document_root"]
+        document = replace(document, path=path.absolute())
     return validate(document, final=bool(config.get("final")), document_root=root)
 
 

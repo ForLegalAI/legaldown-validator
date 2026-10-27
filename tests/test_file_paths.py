@@ -288,10 +288,38 @@ def test_an_image_whose_alt_holds_a_directive_is_still_checked():
     assert _found(result) == [("path-not-relative", 7)]
 
 
-def test_an_image_whose_destination_holds_a_directive_is_skipped():
-    """Its path is not known until the directive is filled in; assembly's output is validated again (§15.7.4)."""
-    for body in ("![a]({{placeholder: p}})", "![a](/{{placeholder: p}})", "![a](<https://{{placeholder: p}}/x>)"):
+def test_an_image_whose_destination_holds_a_directive_is_judged_by_what_precedes_it():
+    """Its path is not known until the directive is filled in (assembly's output is validated again, §15.7.4),
+    but a start that is not relative is not relative whatever follows."""
+    for body in ("![a]({{placeholder: p}})", "![a]({{placeholder: p}}/x.png)", "![a](x/{{placeholder: p}}.png)",
+                 "![a](<{{placeholder: p}}https://x>)", "![a](ht{{placeholder: p}}://x)", "![a](C{{placeholder: p}}:x)"):
         assert _found(validate(_body(body))) == [], body
+    for body, shown in (
+        ("![a](https://{{placeholder: host}}/x.png)", "https://{{placeholder: host}}/x.png"),
+        ("![a](/abs/{{placeholder: p}}.png)", "/abs/{{placeholder: p}}.png"),
+        ("![a](<https://{{placeholder: p}}/x y.png>)", "https://{{placeholder: p}}/x y.png"),
+        ("![a](\\\\host/{{placeholder: p}})", "\\\\host/{{placeholder: p}}"),
+        ("![a](C:/{{placeholder: p}})", "C:/{{placeholder: p}}"),
+        ("![a](%2Fetc/{{placeholder: p}})", "%2Fetc/{{placeholder: p}}"),
+        ("![a](/x{{placeholder: p}}/{{placeholder: q}} \"t\")", "/x{{placeholder: p}}/{{placeholder: q}}"),
+    ):
+        result = validate(_body(body))
+        assert _found(result) == [("path-not-relative", 7)], body
+        assert f"'{shown}' (image" in _messages(result)[0], body
+
+
+def test_a_destination_with_a_directive_is_not_judged_for_the_root(tmp_path):
+    """Only its start is known: ``../../{{placeholder: p}}`` may be filled in as anything."""
+    root = _root(tmp_path)
+    for body in ("![a](../../../{{placeholder: p}})", "![a](../../../x/{{placeholder: p}}.png)",
+                 "![a](<../../../{{placeholder: p}}>)"):
+        assert _found(validate(_body(body), document_root=root)) == [], body
+    assert _found(validate(_body("![a](/{{placeholder: p}})"), document_root=root)) == [("path-not-relative", 7)]
+
+
+def test_a_directive_in_a_destination_leaves_the_line_of_the_next_image_alone():
+    result = validate(_body("![a](https://{{placeholder: p}}/x.png)\n![b](/y.png)"))
+    assert _found(result) == [("path-not-relative", 7), ("path-not-relative", 8)]
 
 
 def test_an_image_in_a_drafting_note_or_in_a_definition_is_checked_all_the_same():
@@ -406,7 +434,7 @@ def test_a_document_outside_the_root_is_reported_once_for_all_its_paths(tmp_path
     )
     result = validate(load(path), document_root=root)
     assert _found(result) == [("path-outside-root", 1)]
-    assert "The document is outside the document root" in _messages(result)[0] and "'a.lgd' ({{include:}})" in _messages(result)[0]
+    assert "The document is outside the document root" in _messages(result)[0] and "such as '" in _messages(result)[0]
 
 
 def test_a_document_outside_the_root_that_names_no_file_is_not_reported(tmp_path):
@@ -723,3 +751,69 @@ def test_ten_thousand_images_in_one_paragraph_are_each_found_at_their_line():
     document = _body("![a](/x.png) " * 10_000)
     result = validate(document)
     assert _found(result) == [("path-not-relative", 7)] * 10_000
+
+
+# A destination is a URL (§8.7): what is encoded, what is a query ------------------
+
+
+@pytest.mark.parametrize("destination", ["a%3Ab.png", "a%3ab.png", "img/a%3Ab.png", "https%3A//x/y.png", "%68ttps://x"])
+def test_a_percent_encoded_colon_is_a_character_of_the_name_not_a_scheme(destination, tmp_path):
+    """``a%3Ab.png`` is a file named ``a:b.png``, not the scheme ``a``: a scheme is the one written."""
+    assert _found(validate(_body(f"![a]({destination})"))) == [], destination
+    assert _found(validate(_body(f"![a]({destination})"), document_root=_root(tmp_path))) == [], destination
+
+
+def test_the_decoded_form_is_still_absolute_with_a_slash_and_still_escapes():
+    for destination in ("%2Fetc", "%2fetc/passwd", "%5Cwindows", "%2F%2Fhost/x.png"):
+        assert _found(validate(_body(f"![a]({destination})"))) == [("path-not-relative", 7)], destination
+    assert _found(validate(_body("![a](%2E%2E/x.png)"), document_root="/r")) == [("path-outside-root", 7)]
+    # ... while a scheme written plainly is a scheme, with or without encoding elsewhere in it.
+    assert _found(validate(_body("![a](https://x/a%20b.png)"))) == [("path-not-relative", 7)]
+
+
+@pytest.mark.parametrize(
+    "destination",
+    ["x.png?p=/../../..", "x.png#/../..", "x.png?p=../..#/../..", "sub/x.png?next=../../../y", "x.png?u=https://z/q", "x.png?p=/etc",
+     "x.png#C:/y", "<x.png?p=../../..>", "x.png?p=%2F..%2F..%2F.."],
+)
+def test_a_query_or_a_fragment_is_no_part_of_the_path_of_an_image(destination, tmp_path):
+    assert _found(validate(_body(f"![a]({destination})"), document_root=_root(tmp_path))) == [], destination
+    assert _found(validate(_body(f"![a]({destination})"))) == [], destination
+
+
+def test_what_precedes_a_query_still_counts():
+    root = "/r"
+    assert _found(validate(_body("![a](../../x.png?p=1)"), document_root=root)) == [("path-outside-root", 7)]
+    assert _found(validate(_body("![a](..%2F..%2Fx.png#top)"), document_root=root)) == [("path-outside-root", 7)]
+    assert _found(validate(_body("![a](/x.png?p=1)"))) == [("path-not-relative", 7)]
+    assert _found(validate(_body("![a](https://x/y.png?p=1#f)"))) == [("path-not-relative", 7)]
+    assert _found(validate(_body("![a](?p=/etc)"))) == []  # nothing before the query
+
+
+def test_an_encoded_query_mark_is_a_character_of_the_name(tmp_path):
+    """``%3F`` is not a ``?``: ``x%3F/../../../y`` leaves the root."""
+    assert _found(validate(_body("![a](x%3F/../../../y.png)"), document_root=_root(tmp_path))) == [("path-outside-root", 7)]
+
+
+def test_a_query_is_part_of_the_path_of_an_include():
+    """Only an image destination is a URL: a ``?`` in an include is a character of the file name."""
+    assert _found(validate(_body("{{include: https://x/y?z}}"))) == [("path-not-relative", 7)]
+    assert _found(validate(_body("{{include: a?/../../../b.lgd}}"), document_root="/r")) == [("path-outside-root", 7)]
+
+
+# The document's own directory is the base ------------------------------------------
+
+
+def test_a_document_in_a_subdirectory_with_the_parent_as_root_may_climb_one_level(tmp_path, monkeypatch):
+    """The base is the document's own directory, not the root: the harness of the fixtures sets ``path`` for a
+    ``document_root`` case for this, and a root like ``..`` is relative to the case's directory."""
+    (tmp_path / "sub").mkdir()
+    path = tmp_path / "sub" / "doc.lgd"
+    path.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n{{{{include: ../x.lgd}}}} ![i](../../y.png)\n", encoding="utf-8")
+    document = load(path)
+    assert _found(validate(document, document_root=tmp_path)) == [("path-outside-root", 7)]  # only ``../../y.png``
+    monkeypatch.chdir(path.parent)
+    assert _found(validate(document, document_root="..")) == [("path-outside-root", 7)]
+    assert _found(validate(document, document_root=".")) == [("path-outside-root", 7), ("path-outside-root", 7)]
+    # A document that was parsed is at the root, so ``../x.lgd`` leaves it.
+    assert _found(validate(parse(path.read_text(encoding="utf-8")), document_root="..")) == [("path-outside-root", 7)] * 2

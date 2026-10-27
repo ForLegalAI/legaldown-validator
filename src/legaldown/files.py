@@ -42,9 +42,9 @@ def is_absolute_reference(path: str) -> bool:
     return has_uri_scheme(path) or path[:1] in ("/", "\\")
 
 
-def _names_below(directory: str | os.PathLike[str], root: str | os.PathLike[str]) -> int | None:
-    """How many names *directory* is below *root*, by their text alone, or None
-    when it is not at or below it."""
+def names_below(directory: str | os.PathLike[str], root: str | os.PathLike[str]) -> int | None:
+    """How many names *directory* is below *root*, by their text alone (both are
+    made absolute, and no file is looked at), or None when it is not at or below it."""
     try:
         below = Path(os.path.abspath(directory)).relative_to(os.path.abspath(root))
     except ValueError:
@@ -52,29 +52,32 @@ def _names_below(directory: str | os.PathLike[str], root: str | os.PathLike[str]
     return len(below.parts)
 
 
-def resolves_within(path: str, base: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
-    """True if the relative *path*, read from directory *base*, leads to a place at
-    or below directory *root* (§2.3). Lexical: ``..`` is taken off the name before
-    it, and no file is looked at, so a symbolic link is not followed (``within``
-    does, to decide what is read). Either separator splits a name. *base* and
-    *root* are made absolute, and a *base* that is not within *root* has no path
-    within it."""
-    depth = _names_below(base, root)
-    if depth is None:
-        return False
+def leaves_root(path: str, depth: int) -> bool:
+    """True if the relative *path*, read from a directory *depth* names below the
+    root (``names_below``), leads out of the root (§2.3). Lexical: ``..`` is taken
+    off the name before it, and either separator splits a name."""
     for name in re.split(r"[/\\]", path):
         if name == "..":
             depth -= 1
             if depth < 0:
-                return False
+                return True
         elif name not in ("", "."):
             depth += 1
-    return True
+    return False
+
+
+def resolves_within(path: str, base: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
+    """True if the relative *path*, read from directory *base*, leads to a place at
+    or below directory *root* (§2.3). Lexical, as ``leaves_root``: no file is
+    looked at, so a symbolic link is not followed (``within`` does, to decide what
+    is read). A *base* that is not within *root* has no path within it."""
+    depth = names_below(base, root)
+    return depth is not None and not leaves_root(path, depth)
 
 
 def is_within_root(directory: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
     """True if *directory* is *root* or below it, by their text alone."""
-    return _names_below(directory, root) is not None
+    return names_below(directory, root) is not None
 
 
 def relative_path(path: str) -> str | None:

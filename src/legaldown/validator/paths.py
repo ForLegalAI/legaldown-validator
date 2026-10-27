@@ -20,7 +20,7 @@ from typing import NamedTuple
 from urllib.parse import unquote
 
 from ..directives import Lexed, is_escaped, mask_directives
-from ..files import is_absolute_reference, is_within_root, resolves_within
+from ..files import is_absolute_reference, leaves_root, names_below
 from ..models import Amends, Document, Metadata
 from ..positions import Locator
 from .result import Line, _Recorder
@@ -45,61 +45,73 @@ class FileReferences:
     ) -> None:
         self._result = result
         self._root = None if root is None else os.fspath(root)
-        self._base = self._root if base is None else os.fspath(base)
         self._line = line
-        # Every path of a document outside the root leads out of it: one finding
-        # says so, not one for each path (#104).
-        self._outside = self._root is not None and not is_within_root(self._base, self._root)
+        # How many names the document is below the root, once: None when it is
+        # not within it. Every path of a document outside the root leads out of
+        # it, and one finding says so, not one for each path (#104).
+        self._depth: int | None = None
+        if self._root is not None:
+            self._depth = names_below(self._root if base is None else base, self._root)
         self._said_outside = False
 
-    def check(self, path: str, what: str, line: Line, *, percent_decoded: bool = False) -> None:
+    def check(
+        self, path: str, what: str, line: Line, *, url: bool = False, literal: str | None = None
+    ) -> None:
         """Check *path*, which *what* names (``attachments[0].file``, ``image``),
-        found at *line*. With *percent_decoded* the path is also read as a
-        renderer or a tool opening the file would, with ``%2F`` as ``/`` and
-        ``%2E%2E`` as ``..`` (image destinations are URLs, §8.7). A path that is
-        empty is not this rule's concern (``attachment-file-missing``)."""
+        found at *line*. With *url* it is an image destination (§8.7), which is
+        read as a URL is: without a query or fragment (``x.png?p=/../..`` is
+        ``x.png``), and also percent-decoded, as a tool opening the file would
+        read it, with ``%2F`` as ``/`` and ``%2E%2E`` as ``..``. A decoded path
+        is absolute when it begins with ``/`` or ``\\``; a scheme is only the one
+        written, since ``%3A`` in ``a%3Ab.png`` is a character of the name. With
+        *literal*, only that start of *path* is known, since a directive follows
+        it: it is judged for being absolute and its containment is not, as the
+        rest of the path is not known. A path that is empty is not this rule's
+        concern (``attachment-file-missing``)."""
         written = path.strip()
-        if not written:
+        known = written if literal is None else literal.strip()
+        if url:
+            known = known.split("?", 1)[0].split("#", 1)[0]
+        if not known:
             return
-        forms = [written]
-        if percent_decoded and "%" in written and (decoded := unquote(written)) != written:
-            forms.append(decoded)
-        for form in forms:
-            if is_absolute_reference(form):
-                self._result.error(
-                    "path-not-relative",
-                    f"File reference '{written}' ({what}{_read_as(form, written)}) is not relative: an absolute "
-                    f"path, or one beginning with a URI scheme (https://, file://, a drive letter), is an Error. "
-                    f"Write a path relative to the document (§2.3).",
-                    line=line,
-                )
-                return  # not also outside the root: one finding for one path
-        if self._root is None:
+        decoded = unquote(known) if url and "%" in known else known
+        if is_absolute_reference(known) or decoded[:1] in ("/", "\\"):
+            self._result.error(
+                "path-not-relative",
+                f"File reference '{written}' ({what}{_read_as(known, known if is_absolute_reference(known) else decoded)}"
+                f") is not relative: an absolute "
+                f"path, or one beginning with a URI scheme (https://, file://, a drive letter), is an Error. "
+                f"Write a path relative to the document (§2.3).",
+                line=line,
+            )
+            return  # not also outside the root: one finding for one path
+        if self._root is None or literal is not None:
             return
-        if self._outside:
+        depth = self._depth
+        if depth is None:
             if not self._said_outside:
                 self._said_outside = True
                 self._result.error(
                     "path-outside-root",
                     f"The document is outside the document root '{self._root}', so none of the files it names "
-                    f"lies within it (§2.3). The first is '{written}' ({what}).",
+                    f"lies within it (§2.3), such as '{written}' ({what}).",
                     line=self._line,
                 )
             return
-        for form in forms:
-            if not resolves_within(form, self._base, self._root):
+        for form in (known, decoded):
+            if leaves_root(form, depth):
                 self._result.error(
                     "path-outside-root",
-                    f"File reference '{written}' ({what}{_read_as(form, written)}) leads out of the document root "
+                    f"File reference '{written}' ({what}{_read_as(known, form)}) leads out of the document root "
                     f"'{self._root}' (§2.3).",
                     line=line,
                 )
                 return
 
 
-def _read_as(form: str, written: str) -> str:
-    """What a finding says of the form of a path other than the one written."""
-    return "" if form == written else f", read as '{form}' once percent-decoded"
+def _read_as(known: str, form: str) -> str:
+    """What a finding says of a path read other than as written."""
+    return "" if form == known else f", read as '{form}' once percent-decoded"
 
 
 def check_frontmatter_paths(meta: Metadata, where: Locator, references: FileReferences) -> None:
@@ -123,11 +135,15 @@ def check_frontmatter_paths(meta: Metadata, where: Locator, references: FileRefe
 class Image(NamedTuple):
     """An inline image ``![alt](destination)`` of a text: its destination, with
     backslash escapes and character references decoded (as written, otherwise),
-    and the offsets in the text of the image from ``!`` to ``)``."""
+    and the offsets in the text of the image from ``!`` to ``)``. When a directive
+    is in the destination its path is not known until it is filled in: *path* is
+    as written, and *literal* is the (decoded) text before the first directive,
+    which is known; it is None for a destination with none."""
 
     path: str
     start: int
     end: int
+    literal: str | None = None
 
 
 #: A backslash escape of an ASCII punctuation character, or a character reference.
@@ -169,23 +185,22 @@ def _skip_space(raw: str, at: int) -> int:
     return at
 
 
-def _destination(raw: str, opening: int) -> tuple[str, int] | None:
+def _destination(raw: str, opening: int) -> tuple[int, int, int] | None:
     """The inline link destination that follows the ``(`` at ``raw[opening]``
     (CommonMark): ``<…>``, or a raw one with balanced parentheses, then an
-    optional title and the ``)``. ``(destination as written, offset after the
-    ")")``, or None when what follows is no inline link. A destination with a
-    directive in it (``mask_directives`` fills it with NUL) is none: its path is
-    not known until the directive is, and assembly's output is validated again
-    (§15.7.4)."""
+    optional title and the ``)``. ``(start, stop, after)``: the destination is
+    ``raw[start:stop]`` and ``after`` is the offset after the ``)``; None when
+    what follows is no inline link. A directive in the destination
+    (``mask_directives`` fills it with NUL) is part of it."""
     size = len(raw)
     at = _skip_space(raw, opening + 1)
     if raw.startswith("<", at):
         end = at + 1
         while end < size and raw[end] not in "<>\n":
             end += 2 if _escapes(raw, end) else 1
-        if raw[end:end + 1] != ">" or "\0" in raw[at:end]:
+        if raw[end:end + 1] != ">":
             return None
-        destination, at = raw[at + 1:end], end + 1
+        start, stop, at = at + 1, end, end + 1
     else:
         depth = 0
         end = at
@@ -194,7 +209,7 @@ def _destination(raw: str, opening: int) -> tuple[str, int] | None:
             if _escapes(raw, end):
                 end += 2
                 continue
-            if char == " " or ord(char) < 32:
+            if char == " " or (ord(char) < 32 and char != "\0"):
                 break
             if char == "(":
                 depth += 1
@@ -207,7 +222,7 @@ def _destination(raw: str, opening: int) -> tuple[str, int] | None:
             end += 1
         if depth:
             return None
-        destination, at = raw[at:end], end
+        start, stop, at = at, min(end, size), end
     at = _skip_space(raw, at)
     if raw[at:at + 1] in ('"', "'", "("):
         closer = ")" if raw[at] == "(" else raw[at]
@@ -222,15 +237,15 @@ def _destination(raw: str, opening: int) -> tuple[str, int] | None:
         if end >= size:
             return None
         at = _skip_space(raw, end + 1)
-    return (destination, at + 1) if raw[at:at + 1] == ")" else None
+    return (start, stop, at + 1) if raw[at:at + 1] == ")" else None
 
 
 def images(text: str, lexed: Lexed) -> list[Image]:
     """The inline images of *text*, whose lexing is *lexed*, in order (§8.7): outside
     code spans and comments, which the lexer blanks. An image in the alt text of
     another is one too. ``\\![a](x)`` is a link, with a literal ``!``. An image
-    whose destination is empty, or holds a directive, has no path. Linear in the
-    length of *text*, however it is bracketed."""
+    whose destination is empty has no path. Linear in the length of *text*,
+    however it is bracketed."""
     # The lexer's view finds the images (brackets in a code span count for
     # nothing); the destination is read from the text as it is written, since a
     # backtick there is no code span: the link is parsed before it.
@@ -244,48 +259,57 @@ def images(text: str, lexed: Lexed) -> list[Image]:
         if close is not None and view.startswith("(", close + 1) and not is_escaped(view, at):
             link = _destination(raw, close + 1)
             if link is not None:
-                found.append(Image(_decoded(link[0]), at, link[1]))
+                start, stop, after = link
+                unknown = raw.find("\0", start, stop)
+                if unknown < 0:
+                    found.append(Image(_decoded(text[start:stop]), at, after))
+                else:
+                    found.append(Image(text[start:stop], at, after, _decoded(text[start:unknown])))
         at = view.find("![", at + 2)
     return found
 
 
-def check_image_paths(
+def check_heading_images(
     document: Document, lex_fragment: Callable[[str], Lexed], references: FileReferences, where: Locator
 ) -> None:
-    """Check the path of each inline image (§8.7) of the headings and the free
-    text of the body: the paragraphs, list items, quotes and table cells, but not
-    code or raw HTML blocks, whose fragments ``block_fragments`` leaves out. A
-    path is percent-decoded as well, and a reference-style image
-    (``![a][r]``, ``[r]: path``) is not read: link reference definitions are not
-    in the model (#92)."""
-    from ..definitions import block_fragments  # see the import note in _validate
-
+    """Check the path of each inline image (§8.7) in the headings."""
     for index, section in enumerate(document.sections):
         title = section.title
         if "![" in title:
             for image in images(title, lex_fragment(title)):
-                references.check(image.path, "image", where.heading(index), percent_decoded=True)
-    for section_index, block_index, block in document.iter_indexed_blocks():
-        for fragment_index, (text, _position) in enumerate(block_fragments(block)):
-            if "![" not in text:
-                continue
-            found = images(text, lex_fragment(text))
-            if not found:
-                continue
-            # The first image is looked for in the source; each of the others is as many
-            # lines below it as its text has line breaks before it (a fragment's lines are
-            # its source's). ``Locator.find`` looks for a needle that is no directive from
-            # the start of its block, which for every image of a long paragraph is
-            # quadratic (#94, #104).
-            first = found[0]
-            first_line = cache(
-                partial(where.find, section_index, block_index, text[first.start:first.end], fragment_index, first.start)
-            )
-            breaks, previous = 0, first.start
-            for image in found:
-                breaks += text.count("\n", previous, image.start)
-                previous = image.start
-                references.check(image.path, "image", partial(_below, first_line, breaks), percent_decoded=True)
+                references.check(image.path, "image", where.heading(index), url=True, literal=image.literal)
+
+
+def check_fragment_images(
+    text: str,
+    lexed: Lexed,
+    references: FileReferences,
+    where: Locator,
+    section: int | None,
+    block: int,
+    fragment: int,
+) -> None:
+    """Check the path of each inline image (§8.7) in *text*, fragment *fragment*
+    of ``block_fragments`` of block *block* of *section* (None: the preamble): the
+    free text of a paragraph, list item, quote or table cell, but not code or raw
+    HTML, which ``block_fragments`` leaves out. A reference-style image
+    (``![a][r]``, ``[r]: path``) is not read: link reference definitions are not
+    in the model (#92)."""
+    found = images(text, lexed)
+    if not found:
+        return
+    # The first image is looked for in the source; each of the others is as many
+    # lines below it as its text has line breaks before it (a fragment's lines are
+    # its source's). ``Locator.find`` looks for a needle that is no directive from
+    # the start of its block, which for every image of a long paragraph is
+    # quadratic (#94, #104).
+    first = found[0]
+    first_line = cache(partial(where.find, section, block, text[first.start:first.end], fragment, first.start))
+    breaks, previous = 0, first.start
+    for image in found:
+        breaks += text.count("\n", previous, image.start)
+        previous = image.start
+        references.check(image.path, "image", partial(_below, first_line, breaks), url=True, literal=image.literal)
 
 
 def _below(first: Callable[[], int | None], lines: int) -> int | None:
