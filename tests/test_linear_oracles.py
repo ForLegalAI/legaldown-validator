@@ -18,6 +18,7 @@ from legaldown.directives import Directive, lex, mask_directives
 from legaldown.markdown import HTML_COMMENT_RE, is_comment_only
 from legaldown.markers import MARKER_RE, is_look_alike, parse_marker
 from legaldown.parser import parse
+from legaldown.validator import conditions as conditions_module
 from legaldown.validator import core, templates
 from legaldown.validator import units as units_module
 from legaldown.validator.conditions import ALWAYS
@@ -483,8 +484,9 @@ _QUESTIONS = {
     "a": {"type": "boolean"},
     "b": {"type": "boolean"},
     "c": {"type": "choice", "choices": {"x": "X", "y": "Y", "z": "Z"}},
+    "d": {"type": "choice", "choices": {"only": "The only value"}},  # a single value
 }
-_CONDITIONS = ["a", "!a", "b", "!b", "c:x", "c:y", "!c:x", "!c:z"]
+_CONDITIONS = ["a", "!a", "b", "!b", "c:x", "c:y", "!c:x", "!c:z", "d:only", "!d:only"]
 
 
 def _presences(rng):
@@ -511,7 +513,7 @@ def test_free_identifiers_are_the_lowest_free_suffix(seed):
     }
     presences = [_presences(rng) for _ in range(rng.randint(1, 8))]
     old_anchors: dict[str, list] = {}
-    pool = core._FreeIdentifiers(explicit, {}, _QUESTIONS)
+    pool = core._FreeIdentifiers(explicit, _QUESTIONS)
     for _ in range(rng.randint(5, 80)):
         base, presence = rng.choice(bases), rng.choice(presences)
         got = pool(base, presence)
@@ -581,3 +583,79 @@ def test_one_scan_per_text_equals_a_fresh_scan_per_insertion():
             )
         insertions += len(found)
     assert insertions > 8000
+
+
+def test_the_pool_owns_its_declarations():
+    """Everything the pool's indexes follow is declared through it: its
+    ``anchors`` are read-only, and a declaration is seen by the next call."""
+    pool = core._FreeIdentifiers(set(), {})
+    assert pool("same", ALWAYS) == "same"
+    pool.declare("same", ALWAYS)
+    assert pool.anchors == {"same": [ALWAYS]}
+    assert pool("same", ALWAYS) == "same-2"
+    with pytest.raises(TypeError):
+        pool.anchors["other"] = []  # type: ignore[index]
+
+
+def test_the_pool_keeps_the_explicit_ids_it_was_given():
+    explicit = {"same"}
+    pool = core._FreeIdentifiers(explicit, {})
+    assert pool("same", ALWAYS) == "same-2"
+    explicit.discard("same")  # not seen: the pointers rely on the ids not changing
+    assert pool("same", ALWAYS) == "same-2"
+
+
+# ── satisfiable ───────────────────────────────────────────────────
+
+
+def old_answers(question, questions):
+    if conditions_module.question_type(questions, question) == "boolean":
+        return [True, False]
+    choices = questions[question].get("choices")
+    return list(choices) if isinstance(choices, dict) else []
+
+
+def old_satisfiable(presence, questions):
+    """``satisfiable`` as of 0.4.0: each answer tried."""
+    by_question = {}
+    for condition in presence:
+        by_question.setdefault(condition.question, []).append(condition)
+    return all(
+        any(all(c.holds(answer) for c in conditions) for answer in old_answers(question, questions))
+        for question, conditions in by_question.items()
+    )
+
+
+def test_satisfiable_equals_trying_each_answer():
+    questions = {
+        "a": {"type": "boolean"},
+        "b": {"type": "boolean"},
+        "c": {"type": "choice", "choices": {"x": "X", "y": "Y", "z": "Z"}},
+        "d": {"type": "choice", "choices": {"only": "The only value"}},
+        "e": {"type": "choice", "choices": {}},  # no answer at all
+        "f": {"type": "choice", "choices": ["x", "y"]},  # malformed: read as no answers
+    }
+    texts = ["a", "!a", "b", "!b", "c:x", "c:y", "c:w", "!c:x", "!c:y", "!c:z", "!c:w", "d:only", "!d:only",
+             "e:x", "!e:x", "f:x", "!f:x"]
+    conditions = [conditions_module.parse_condition(text) for text in texts]
+    # The values a type does not take: a boolean tested for a value, a choice without one.
+    conditions += [
+        conditions_module.Condition("a", "x"), conditions_module.Condition("a", "x", True),
+        conditions_module.Condition("c"), conditions_module.Condition("c", None, True),
+    ]
+    rng = random.Random(995)
+    true_count = 0
+    for _ in range(20000):
+        presence = frozenset(rng.choice(conditions) for _ in range(rng.randint(0, 5)))
+        expected = old_satisfiable(presence, questions)
+        assert conditions_module.satisfiable(presence, questions) == expected, sorted(map(str, presence))
+        assert conditions_module.satisfiable(list(presence), questions) == expected  # any iterable
+        true_count += expected
+    assert 3000 < true_count < 18000  # both verdicts are reached
+    # Exclusivity stays "never satisfiable together".
+    for _ in range(3000):
+        first = frozenset(rng.choice(conditions) for _ in range(rng.randint(0, 3)))
+        second = frozenset(rng.choice(conditions) for _ in range(rng.randint(0, 3)))
+        assert conditions_module.exclusive(first, second, questions) == (
+            not old_satisfiable(first | second, questions)
+        )

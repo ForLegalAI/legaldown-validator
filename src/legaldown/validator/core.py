@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import re
 import warnings
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import replace
 from functools import cache, partial
+from types import MappingProxyType
 from typing import Any
 
 from .._deprecation import LegaldownDeprecationWarning
@@ -33,9 +34,9 @@ from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
 from .conditions import (
     ALWAYS,
-    Condition,
     Presence,
     always_covered,
+    by_question,
     condition_problem,
     exclusive,
     parse_condition,
@@ -446,14 +447,6 @@ def _clashes(presence: Presence, others: list[Presence], questions: Any) -> bool
     return any(not exclusive(presence, other, questions) for other in others)
 
 
-def _conditions_by_question(presence: Presence) -> dict[str, Presence]:
-    """The conditions of *presence* on each question it mentions."""
-    grouped: dict[str, set[Condition]] = {}
-    for condition in presence:
-        grouped.setdefault(condition.question, set()).add(condition)
-    return {question: frozenset(conditions) for question, conditions in grouped.items()}
-
-
 # The identifier ``stem-k`` is the suffix k of ``stem`` (§5.5), as written: no
 # leading zero, and k at least 2.
 _SUFFIXED_RE = re.compile(r"(.*)-([2-9]|[1-9][0-9]+)")
@@ -465,7 +458,8 @@ class _FreeIdentifiers:
     Called with a heading's base identifier and presence, it returns the
     lowest suffix of the base — none, -2, -3, … — not taken by an explicit
     identifier or by an earlier heading that can appear with this one. The
-    caller declares each identifier it takes (``declare``), explicit or not.
+    caller declares each identifier it takes (``declare``), explicit or not,
+    and reads the declarations of each identifier back (``anchors``).
 
     Probing every suffix for each heading would be quadratic in a document of
     many headings with one title (#94). Two things avoid it:
@@ -480,15 +474,21 @@ class _FreeIdentifiers:
       exclusive with the heading's own on any question, every suffix with a
       declaration is taken, and the lowest free one is the first with none.
 
-    What remains quadratic is a heading that some declarations exclude and
+    What remains superlinear: a heading that some declarations exclude and
     others do not, over many suffixes, such as ``p_k ∧ q`` and ``p_k ∧ !q``
-    for every k: each is probed against the suffixes before it. A question's
-    declared choices bound the other cases.
+    for every k, is probed against the suffixes before it; and headings with
+    one choice question's many values (``c:v_k`` for n values) are probed
+    against each other, as every pair of values is exclusive, in n² cheap
+    tests (a condition test costs no more than the conditions in it, however
+    many choices the question has).
     """
 
-    def __init__(self, explicit_ids: set[str], anchors: dict[str, list[Presence]], questions: Any) -> None:
-        self._explicit_ids = explicit_ids
-        self._anchors = anchors  # the declarations of each identifier
+    def __init__(self, explicit_ids: Collection[str], questions: Any) -> None:
+        self._explicit_ids = frozenset(explicit_ids)  # the pointers below rely on its not changing
+        self._declarations: dict[str, list[Presence]] = {}
+        #: The declarations of each identifier, by presence. Read-only: they
+        #: are made by ``declare``, which the indexes below follow.
+        self.anchors: Mapping[str, list[Presence]] = MappingProxyType(self._declarations)
         self._questions = questions
         #: How many leading suffixes of a base are taken for a presence.
         self._taken: dict[tuple[str, Presence], int] = {}
@@ -509,13 +509,13 @@ class _FreeIdentifiers:
 
     def declare(self, identifier: str, presence: Presence) -> None:
         """Record that *identifier* is declared with *presence*."""
-        self._anchors.setdefault(identifier, []).append(presence)
+        self._declarations.setdefault(identifier, []).append(presence)
         if not self._can_appear(presence):
             return  # it clashes with nothing
         self._occupants[identifier] = self._occupants.get(identifier, 0) + 1
         suffixed = _SUFFIXED_RE.fullmatch(identifier)
         bases = (identifier, suffixed.group(1)) if suffixed else (identifier,)
-        for question, conditions in _conditions_by_question(presence).items():
+        for question, conditions in by_question(presence).items():
             for base in bases:
                 self._seen.setdefault((base, question), set()).add(conditions)
 
@@ -525,7 +525,7 @@ class _FreeIdentifiers:
         empty = self._first(self._lowest_empty, base, occupied=True)
         if not any(
             self._exclude(conditions, seen)
-            for question, conditions in _conditions_by_question(presence).items()
+            for question, conditions in by_question(presence).items()
             for seen in self._seen.get((base, question), ())
         ):
             return self._suffixed(base, empty)  # every suffix with a declaration is taken
@@ -534,7 +534,7 @@ class _FreeIdentifiers:
         while suffix < empty:
             candidate = self._suffixed(base, suffix)
             if candidate not in self._explicit_ids and not _clashes(
-                presence, self._anchors.get(candidate, []), self._questions
+                presence, self._declarations.get(candidate, []), self._questions
             ):
                 return candidate
             self._taken[key] = suffix
@@ -564,7 +564,7 @@ class _FreeIdentifiers:
     def _exclude(self, first: Presence, second: Presence) -> bool:
         key = (first, second)
         if key not in self._excludes:
-            self._excludes[key] = not satisfiable(first | second, self._questions)
+            self._excludes[key] = exclusive(first, second, self._questions)
         return self._excludes[key]
 
 
@@ -1129,11 +1129,10 @@ def _validate(
         | {found.marker.identifier for found in placed_anchors}
         | attachment_ids
     )
+    free_identifier = _FreeIdentifiers(explicit_ids, questions)
     # Each anchor's declarations, by presence. While sections are numbered,
     # it holds only earlier headings' identifiers.
-    anchors: dict[str, list[Presence]] = {}
-
-    free_identifier = _FreeIdentifiers(explicit_ids, anchors, questions)
+    anchors = free_identifier.anchors
 
     counters = [0] * 7
     # Numbers count from the shallowest heading level: a document whose

@@ -7,8 +7,10 @@ document: its own condition and those of every unit enclosing it.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
+from types import MappingProxyType
 from typing import Any
 
 from .templates import question_type
@@ -69,23 +71,60 @@ def condition_problem(text: str, questions: Any) -> str | None:
     return None
 
 
-def _answers(question: str, questions: Any) -> list[Any]:
+_BOOLEAN_ANSWERS = (True, False)
+
+
+def _answers(question: str, questions: Any) -> Collection[Any]:
     """Every answer *question* can have: true and false, or its choices."""
     if question_type(questions, question) == "boolean":
-        return [True, False]
+        return _BOOLEAN_ANSWERS
     choices = questions[question].get("choices")
-    return list(choices) if isinstance(choices, dict) else []
+    return choices if isinstance(choices, dict) else ()  # a dict is read as its keys
+
+
+def _grouped(presence: Iterable[Condition]) -> dict[str, list[Condition]]:
+    grouped: dict[str, list[Condition]] = {}
+    for condition in presence:
+        grouped.setdefault(condition.question, []).append(condition)
+    return grouped
+
+
+@lru_cache(maxsize=4096)
+def _cached_grouped(presence: Presence) -> Mapping[str, Presence]:
+    return MappingProxyType({question: frozenset(conditions) for question, conditions in _grouped(presence).items()})
+
+
+def by_question(presence: Presence) -> Mapping[str, Presence]:
+    """The conditions of *presence* on each question it mentions. Cached per
+    presence (it is immutable), so asking again is a lookup: for a presence
+    that is kept, not for the unions ``satisfiable`` is asked about once."""
+    return _cached_grouped(presence)
+
+
+def _some_answer_holds(conditions: Iterable[Condition], answers: Collection[Any]) -> bool:
+    """True if some answer in *answers* makes every one of *conditions*
+    (all on one question) hold, without trying each. A condition holds for
+    the answer equal to its value, or for every answer but that one when it
+    is negated (``Condition.holds``): so the answers are those equal to the
+    one positive value, if there is one, less the negated values."""
+    wanted: set[Any] = set()
+    refused: set[Any] = set()
+    for condition in conditions:
+        (refused if condition.negated else wanted).add(True if condition.value is None else condition.value)
+    if len(wanted) > 1:
+        return False
+    if wanted:
+        (value,) = wanted
+        return value in answers and value not in refused
+    return len(answers) > sum(1 for value in refused if value in answers)
 
 
 def satisfiable(presence: Iterable[Condition], questions: Any) -> bool:
     """True if some answers make every condition in *presence* hold — decided
     per question, as §15.4 describes. Defaults play no part."""
-    by_question: dict[str, list[Condition]] = {}
-    for condition in presence:
-        by_question.setdefault(condition.question, []).append(condition)
     return all(
-        any(all(c.holds(answer) for c in conditions) for answer in _answers(question, questions))
-        for question, conditions in by_question.items()
+        _some_answer_holds(conditions, _answers(question, questions))
+        for question, conditions in _grouped(presence).items()
     )
 
 

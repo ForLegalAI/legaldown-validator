@@ -146,7 +146,7 @@ def test_headings_of_one_title_under_conditions_decide_in_linear_work(shape, mon
     clashes = _Counter(monkeypatch, core, "_clashes")
     decisions = _Counter(monkeypatch, core, "satisfiable")
     decisions_in_exclusive = _Counter(monkeypatch, conditions_module, "satisfiable")
-    pool = core._FreeIdentifiers(set(), {}, questions)
+    pool = core._FreeIdentifiers(set(), questions)
     for presence in presences[shape]:
         pool.declare(pool("same", presence), presence)
     assert clashes.calls <= 2 * n
