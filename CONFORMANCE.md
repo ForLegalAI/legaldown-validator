@@ -182,8 +182,9 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
   (`?…`, `#…`, the first of either) is not part of the path (`x.png?p=/../..` stays in the root), and **it is
   also read percent-decoded**: `%2Fetc` is not relative and `%2E%2E/%2E%2E/x.png` leaves a root, since a tool
   that opens the file decodes the URL first; a `%` not followed by two hex digits stays as written. Only
-  a `/` or `\` that decoding yields at the start, or a drive (`C%3A/x`, `C%3A%5Cx`), makes a path absolute:
-  a scheme is the one written, so `a%3Ab.png` is a file named `a:b.png`. No other reference is percent-decoded or loses a query.
+  a `/` or `\` that decoding yields at the start, or a drive (`C%3A/x`, `c%3A%5Cx`, and `C%3Ax` for a capital
+  letter, as `C:x` written is), makes a path absolute: a scheme is the one written, so `a%3Ab.png` is a file
+  named `a:b.png`, and so is `ab%3Ax`. No other reference is percent-decoded or loses a query.
   Not an image: one in a code span, fenced or indented code, a comment or a raw HTML block, `\![a](x)`
   (a link after a literal `!`), a link or autolink (valid, §8.7), `<img src>` (that is `raw-html`),
   and a reference-style image (`![a][r]`, `[r]: path`), which waits for link reference definitions in the
@@ -193,7 +194,9 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
   decide already: one that begins with a scheme or a `/` or `\` (`![a](/abs/{{placeholder: p}}.png)`) is
   `path-not-relative` whatever is filled in. The rest is not judged for being relative, and for the root only the
   names before the last separator of that text are (`../../../{{placeholder: p}}.png` leaves the root; the
-  name before the directive is partial, as `..` may be `..x` once filled in). A directive in the alt text is no matter.
+  name before the directive is partial, as `..` may be `..x` once filled in) unless a `?` or `#` ends the
+  path before the directive (`..?{{placeholder: p}}` leaves it). A destination of directives alone, or whose
+  path is a query or fragment only (`?{{placeholder: p}}`), names no file: `![a]({{placeholder: p}}.png)` does. A directive in the alt text is no matter.
 - In a fragment (`validate(fragment=True)`) the include and image paths are its own, whoever includes it:
   they are checked and never `host_dependent`. Its frontmatter is never read, so none of its keys is checked.
   A document whose frontmatter cannot be read is validated by its body alone, as for the other rules.

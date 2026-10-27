@@ -353,15 +353,19 @@ def test_a_nul_in_the_text_is_not_a_directive(tmp_path):
     assert _found(both) == [("path-outside-root", 7)]
 
 
-@pytest.mark.parametrize("destination", ["C%3A%5CWindows%5Cx.png", "C%3A/x.png", "c%3a%5cx", "z%3A%2Fx"])
+@pytest.mark.parametrize(
+    "destination", ["C%3A%5CWindows%5Cx.png", "C%3A/x.png", "c%3a%5cx", "z%3A%2Fx", "C%3Ax.png", "C%3A"]
+)
 def test_a_percent_encoded_drive_is_absolute(destination):
     result = validate(_body(f"![a]({destination})"))
     assert _found(result) == [("path-not-relative", 7)] and "once percent-decoded" in _messages(result)[0]
     assert _found(validate(_body(f"![a]({destination})"), document_root="/r")) == [("path-not-relative", 7)]
 
 
-@pytest.mark.parametrize("destination", ["a%3Ab.png", "C%3Ax.png", "a%3A", "1%3A/x", "ab%3Ax"])
+@pytest.mark.parametrize("destination", ["a%3Ab.png", "c%3Ax.png", "a%3A", "1%3A/x", "ab%3Ax", "CD%3Ax"])
 def test_a_decoded_colon_that_is_no_drive_is_a_character_of_the_name(destination):
+    """A drive-relative ``C%3Ax`` is a drive, as written ``C:x`` is; a lowercase letter needs a separator after
+    it, since ``a%3Ab.png`` may well be a file named so."""
     assert _found(validate(_body(f"![a]({destination})"))) == []
 
 
@@ -900,3 +904,44 @@ def test_a_document_in_a_subdirectory_with_the_parent_as_root_may_climb_one_leve
     assert _found(validate(document, document_root=".")) == [("path-outside-root", 7), ("path-outside-root", 7)]
     # A document that was parsed is at the root, so ``../x.lgd`` leaves it.
     assert _found(validate(parse(path.read_text(encoding="utf-8")), document_root="..")) == [("path-outside-root", 7)] * 2
+
+
+# Where the known text ends, and what a path of directives names ---------------------
+
+
+def test_a_query_or_a_fragment_before_the_directive_ends_the_path_so_its_last_name_is_whole(tmp_path):
+    root = _root(tmp_path)
+    for body in ("![a](..?{{placeholder: p}})", "![a](x/../..#{{placeholder: p}})", "![a](../..?x={{placeholder: p}})"):
+        result = validate(_body(body), document_root=root)
+        assert _found(result) == [("path-outside-root", 7)], body
+        assert "without its query or fragment" in _messages(result)[0]
+    # ... while a name before the directive, with nothing to end it, may be anything once filled in.
+    assert _found(validate(_body("![a](x/..{{placeholder: p}})"), document_root=root)) == []
+    assert _found(validate(_body("![a](x?{{placeholder: p}})"), document_root=root)) == []
+
+
+def test_a_destination_of_directives_names_no_file_but_one_with_more_than_a_query_does(tmp_path):
+    root = _root(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    path = tmp_path / "elsewhere" / "doc.lgd"
+
+    def reported(destinations: str) -> list[tuple[str, int | None]]:
+        path.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n{destinations}\n", encoding="utf-8")
+        return _found(validate(load(path), document_root=root))
+
+    for none in ("![a]({{placeholder: p}})", "![a]({{placeholder: p}}{{placeholder: q}})", "![a](?{{placeholder: p}})",
+                 "![a](#{{placeholder: p}})", "![a]({{placeholder: p}}?x=1)", "![a]({{placeholder: p}}#top)",
+                 "![a](<  {{placeholder: p}}  >)"):
+        assert reported(none) == [], none
+    for some in ("![a]({{placeholder: p}}.png)", "![a]({{placeholder: p}}/x)", "![a](x{{placeholder: p}})",
+                 "![a]({{placeholder: p}}x{{placeholder: q}})", "![a]({{placeholder: p}}{{placeholder: q}}.png)"):
+        assert reported(some) == [("path-outside-root", 1)], some
+    assert reported("![a]({{placeholder: p}}) ![b]({{placeholder: p}}.png) ![c](?x)") == [("path-outside-root", 1)]
+
+
+def test_a_finding_on_a_literal_start_shows_the_names_that_were_judged(tmp_path):
+    root = _root(tmp_path)
+    message = _messages(validate(_body("![a](%2E%2E/a/b{{placeholder: p}})"), document_root=root))[0]
+    assert "read as '../a/' once percent-decoded" in message and "'%2E%2E/a/b{{placeholder: p}}'" in message
+    message = _messages(validate(_body("![a](%2E%2E/a/b?{{placeholder: p}})"), document_root=root))[0]
+    assert "without its query or fragment, read as '../a/b' once percent-decoded" in message

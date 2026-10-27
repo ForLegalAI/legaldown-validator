@@ -20,7 +20,7 @@ from functools import cache, partial
 from typing import NamedTuple
 from urllib.parse import unquote
 
-from ..directives import Lexed, is_escaped, mask_directives
+from ..directives import Directive, Lexed, is_escaped, mask_directives
 from ..files import is_absolute_reference, leaves_root, names_below
 from ..models import Amends, Document, Metadata
 from ..positions import Locator
@@ -36,10 +36,12 @@ class _Reference(NamedTuple):
     line: Line
     url: bool
     literal: str | None
+    rest: bool
 
 
-#: A drive letter with a separator after it: ``C:\\x``, ``C:/x``.
-_DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]")
+#: A drive, ``C:\\x`` or ``C:/x`` for a letter of either case, and ``C:x`` for a capital: a decoded
+#: ``a:b.png`` is as likely a file named so (``a%3Ab.png``) as a drive-relative path.
+_DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]|[A-Z]:")
 
 
 def _whole_names(path: str) -> str:
@@ -80,7 +82,6 @@ class FileReferences:
         if self._root is not None:
             self._depth = names_below(self._root if base is None else base, self._root)
         self._met: list[_Reference] = []
-        self._said_outside = False
 
     def check(
         self,
@@ -91,6 +92,7 @@ class FileReferences:
         at: tuple[int, ...] = (),
         url: bool = False,
         literal: str | None = None,
+        rest: bool = True,
     ) -> None:
         """Record *path*, which *what* names (``attachments[0].file``, ``image``),
         found at *line* and at place *at* in the document: the frontmatter's
@@ -104,25 +106,31 @@ class FileReferences:
         written, since ``%3A`` in ``a%3Ab.png`` is a character of the name. With
         *literal*, only that start of *path* is known, since a directive follows
         it: it is judged for being absolute, and for the names of it that are
-        whole leaving the root. A path that is empty is not this rule's concern
-        (``attachment-file-missing``)."""
+        whole leaving the root; *rest* is whether more than directives (and a
+        query or fragment) follows it, which a path of directives alone has not.
+        A path that is empty is not this rule's concern (``attachment-file-missing``)."""
         if path.strip():
-            self._met.append(_Reference(at, path.strip(), what, line, url, literal))
+            self._met.append(_Reference(at, path.strip(), what, line, url, literal, rest))
 
     def finish(self) -> None:
         """Judge the references recorded, in the order of the document."""
-        self._said_outside = False
+        said_outside = False
         for reference in sorted(self._met, key=lambda met: met.at):
-            self._judge(reference)
+            said_outside = self._judge(reference, said_outside)
         self._met = []
 
-    def _judge(self, reference: _Reference) -> None:
-        """Record what is wrong with *reference*."""
-        _at, written, what, line, url, literal = reference
+    def _judge(self, reference: _Reference, said_outside: bool) -> bool:
+        """Record what is wrong with *reference*; True once a document outside
+        the root has been said to be (*said_outside*)."""
+        _, written, what, line, url, literal, rest = reference
         known = written if literal is None else literal.strip()
         judged = known.split("?", 1)[0].split("#", 1)[0] if url else known
-        if not judged and literal is None:
-            return  # a query or a fragment alone names no file
+        # What is known is the whole path when there is no directive, or when a
+        # query or a fragment ends it before the directive: else its last name is
+        # partial, as ``..`` may be ``..x`` once filled in.
+        whole = literal is None or judged != known
+        if not judged and (whole or not rest):
+            return said_outside  # a query or a fragment alone, or a directive alone, names no file
         decoded = unquote(judged) if url and "%" in judged else judged
         # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
         absolute = judged if is_absolute_reference(judged) else (
@@ -136,40 +144,42 @@ class FileReferences:
                 f"Error. Write a path relative to the document (§2.3).",
                 line=line,
             )
-            return  # not also outside the root: one finding for one path
+            return said_outside  # not also outside the root: one finding for one path
         if self._root is None:
-            return
+            return said_outside
         depth = self._depth
         if depth is None:
-            if not self._said_outside:
-                self._said_outside = True
+            if not said_outside:
                 self._result.error(
                     "path-outside-root",
                     f"The document is outside the document root '{self._root}', so none of the files it names "
                     f"lies within it (§2.3), such as '{written}' ({what}).",
                     line=self._line,
                 )
-            return
+            return True
         for form in (judged, decoded):
-            if leaves_root(form if literal is None else _whole_names(form), depth):
+            names = form if whole else _whole_names(form)  # what is judged, and what a finding says
+            if leaves_root(names, depth):
                 self._result.error(
                     "path-outside-root",
-                    f"File reference '{written}' ({what}{_reading(known, judged, form)}) leads out of the "
+                    f"File reference '{written}' ({what}{_reading(known, judged, form, names)}) leads out of the "
                     f"document root '{self._root}' (§2.3).",
                     line=line,
                 )
-                return
+                return said_outside
+        return said_outside
 
 
-def _reading(known: str, judged: str, form: str) -> str:
+def _reading(known: str, judged: str, form: str, shown: str | None = None) -> str:
     """What a finding says of a path read other than as written: *known* is what
     is written of it, *judged* is that without its query or fragment, *form* is
-    the form of that which the finding is about."""
+    the form of that which the finding is about, and *shown* the part of it that
+    was judged, if not all."""
     notes = []
     if judged != known:
         notes.append("without its query or fragment")
     if form != judged:
-        notes.append(f"read as '{form}' once percent-decoded")
+        notes.append(f"read as '{form if shown is None else shown}' once percent-decoded")
     return "".join(f", {note}" for note in notes)
 
 
@@ -197,12 +207,15 @@ class Image(NamedTuple):
     and the offsets in the text of the image from ``!`` to ``)``. When a directive
     is in the destination its path is not known until it is filled in: *path* is
     as written, and *literal* is the (decoded) text before the first directive,
-    which is known; it is None for a destination with none."""
+    which is known; it is None for a destination with none. *rest* is then whether
+    more than directives follows that text, apart from a query or fragment: a
+    destination of directives alone names no file we can tell."""
 
     path: str
     start: int
     end: int
     literal: str | None = None
+    rest: bool = True
 
 
 #: A backslash escape of an ASCII punctuation character, or a character reference.
@@ -323,11 +336,28 @@ def images(text: str, lexed: Lexed) -> list[Image]:
                 # Whether a directive is in it is the lexer's to say: a NUL in the text is only a character.
                 first = bisect_left(starts, start)
                 if first < len(starts) and starts[first] < stop:
-                    found.append(Image(text[start:stop], at, after, _decoded(text[start:starts[first]])))
+                    found.append(Image(
+                        text[start:stop], at, after, _decoded(text[start:starts[first]]),
+                        _more_than_directives(text, lexed.directives[first:], stop),
+                    ))
                 else:
                     found.append(Image(_decoded(text[start:stop]), at, after))
         at = view.find("![", at + 2)
     return found
+
+
+def _more_than_directives(text: str, directives: list[Directive], stop: int) -> bool:
+    """True if the text up to *stop*, after the first of *directives* (which begins
+    in it), holds more than directives and a query or fragment."""
+    pieces = []
+    at = directives[0].start
+    for directive in directives:
+        if directive.start >= stop:
+            break
+        pieces.append(text[at:directive.start])
+        at = directive.end
+    pieces.append(text[at:stop])
+    return bool("".join(pieces).split("?", 1)[0].split("#", 1)[0].strip())
 
 
 def check_heading_images(
@@ -340,7 +370,7 @@ def check_heading_images(
             for image in images(title, lex_fragment(title)):
                 references.check(
                     image.path, "image", where.heading(index), at=(index, -1, 0, image.start), url=True,
-                    literal=image.literal,
+                    literal=image.literal, rest=image.rest,
                 )
 
 
@@ -376,6 +406,7 @@ def check_fragment_images(
         references.check(
             image.path, "image", partial(_below, first_line, breaks),
             at=(-1 if section is None else section, block, fragment, image.start), url=True, literal=image.literal,
+            rest=image.rest,
         )
 
 
