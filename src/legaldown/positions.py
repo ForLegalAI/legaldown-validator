@@ -46,16 +46,23 @@ def document_shape(document: Document) -> tuple[Any, ...]:
 MERGE = object()
 
 
-def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], int]:
+def frontmatter_keys(root: yaml.Node, block: str, first_line: int) -> dict[tuple[Any, ...], int]:
     """The line of each node in the frontmatter's YAML *root*, by its path:
     a mapping key's line, and a sequence entry's (its ``-`` line). A
     sequence's entries are counted as the model counts them, mappings only
     (``models``: a side, a party, an attachment, a representative or a
     custom field that is not a mapping is left out), so a path indexes the
-    model's lists. *first_line* is the file line of the YAML's first line.
+    model's lists. *block* is the YAML's text and *first_line* the file line
+    of its first line. Lines are counted from the character index of a mark
+    in *block*, at each LF: YAML also ends a line at CR, NEL, LS and PS,
+    which the format does not, so ``mark.line`` would shift what follows one.
     A merged or aliased node is where it is written, not where it is used;
     a mapping that merges keys in has ``(*path, MERGE)`` too."""
     keys: dict[tuple[Any, ...], int] = {}
+    breaks = [index for index, char in enumerate(block) if char == "\n"]
+
+    def line_of(mark: yaml.Mark) -> int:
+        return first_line + bisect.bisect_left(breaks, mark.index)  # the line feeds before it
 
     def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
         if id(node) in seen:
@@ -66,10 +73,10 @@ def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], 
             for key, value in node.value:
                 if isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge":
                     merged.append(value)  # its keys are this mapping's, below its own
-                    keys.setdefault((*path, MERGE), key.start_mark.line + first_line)
+                    keys.setdefault((*path, MERGE), line_of(key.start_mark))
                 elif isinstance(key, yaml.ScalarNode):
                     inner = (*path, key.value)
-                    keys.setdefault(inner, key.start_mark.line + first_line)
+                    keys.setdefault(inner, line_of(key.start_mark))
                     walk(value, inner, seen)
             for value in merged:
                 for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
@@ -78,7 +85,7 @@ def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], 
             entries = [entry for entry in node.value if isinstance(entry, yaml.MappingNode)]
             for index, entry in enumerate(entries):
                 inner = (*path, index)
-                keys.setdefault(inner, entry.start_mark.line + first_line)
+                keys.setdefault(inner, line_of(entry.start_mark))
                 walk(entry, inner, seen)
 
     walk(root, (), frozenset())

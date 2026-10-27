@@ -32,7 +32,7 @@ from . import SPEC_VERSION, __version__
 from .assembly import AssemblyResult, frontmatter_diagnostic
 from .files import within, write_atomically
 from .parser import FrontmatterError, load
-from .template import AnswersError, Form, Template, load_answers, load_template
+from .template import AnswersError, Form, Template, _diagnostic_dict, load_answers, load_template
 from .validator import validate
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
@@ -425,8 +425,7 @@ def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict
     except FrontmatterError as exc:
         diagnostic = frontmatter_diagnostic(exc)
         # No host_dependent: assembly output is never a fragment-mode result (#39).
-        return None, None, [{"rule": diagnostic.rule, "level": diagnostic.level,
-                             "message": diagnostic.message, "line": diagnostic.line}], None
+        return None, None, [_diagnostic_dict(diagnostic)], None
     except (OSError, UnicodeDecodeError) as exc:
         return None, None, [], f"cannot read {path}: {exc}"
     except Exception as exc:
@@ -454,7 +453,9 @@ def _format_form(form: Form) -> str:
     if others:
         lines.append(f"  ({others} more, not asked yet or not at all with these answers)")
     for d in data["problems"]:
-        lines.append(f"problem: [{d['rule']}] {d['message']}")
+        # A problem in a fragment or attachment file says which, and where.
+        where = f"{d['file']}:{d['line']}: " if d["file"] and d["line"] else f"{d['file']}: " if d["file"] else ""
+        lines.append(f"problem: {where}[{d['rule']}] {d['message']}")
     for d in data["diagnostics"]:
         lines.append(f"{d['level']}: [{d['rule']}] {d['message']}")
     lines.append("complete" if data["complete"] else "ready, with blanks left" if data["ready"] else "not ready")
@@ -473,7 +474,8 @@ def _run_questions(args: argparse.Namespace) -> int:
                           errors="backslashreplace")
         else:
             for d in problems:
-                print(f"{args.template}: {d['level']}: [{d['rule']}] {d['message']}", file=sys.stderr)
+                where = f"{args.template}:{d['line']}" if d["line"] else args.template
+                print(f"{where}: {d['level']}: [{d['rule']}] {d['message']}", file=sys.stderr)
         return EXIT_DIAGNOSTICS
     try:
         form = template.form(template.coerce(answers))

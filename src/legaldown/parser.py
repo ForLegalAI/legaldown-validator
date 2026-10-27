@@ -221,6 +221,7 @@ def _split_frontmatter(
     if not match:
         return [], {}, source, True, {}, None
     loader = None
+    node = None
     try:
         # Inside the try: a character YAML does not allow fails the reader here.
         loader = _StrDateSafeLoader(match.group(1) or "")
@@ -240,7 +241,7 @@ def _split_frontmatter(
         # written, before merges inside it reorder its keys.
         loader.flatten_mapping(node)
         # The YAML starts on the line after the opening `---` (line 1).
-        keys = {(): 1, **frontmatter_keys(node, 2)}
+        keys = {(): 1, **frontmatter_keys(node, match.group(1) or "", 2)}
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
@@ -254,7 +255,7 @@ def _split_frontmatter(
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or ""))
+        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or "", node))
         if not keep_error:
             raise error from exc
         error.__cause__ = exc  # as `raise ... from` sets it
@@ -276,26 +277,12 @@ def _file_line(block: str, mark: yaml.Mark) -> int:
     return block.count("\n", 0, mark.index) + 2
 
 
-def _error_node(exc: BaseException) -> yaml.Node | None:
-    """The node the YAML reader was constructing when it failed with *exc*, for
-    an error that says nothing of where it is (a `KeyError` from a tag): the
-    innermost frame of its traceback that has a node. Found only after the
-    fact, so that parsing a document that can be read costs nothing."""
-    found = None
-    tb = exc.__traceback__
-    while tb is not None:
-        node = tb.tb_frame.f_locals.get("node")
-        if isinstance(node, yaml.Node):
-            found = node
-        tb = tb.tb_next
-    return found
-
-
-def _error_line(exc: BaseException, block: str) -> int:
+def _error_line(exc: BaseException, block: str, root: yaml.Node | None = None) -> int:
     """The file line of a YAML error in the frontmatter *block*: where the
     problem is — or, for a quoted scalar or a flow collection left open, where
-    it opens, which the problem is only found far past. For an error that
-    names no place, the node being constructed; else the opening line."""
+    it opens, which the problem is only found far past. An error that names no
+    place (a value its tag cannot hold) is at the first key of the mapping
+    *root* the YAML was read to, else at the opening line."""
     context = getattr(exc, "context", None) or ""
     context_mark = getattr(exc, "context_mark", None)
     problem_mark = getattr(exc, "problem_mark", None)
@@ -305,8 +292,9 @@ def _error_line(exc: BaseException, block: str) -> int:
         return _file_line(block, mark)
     if isinstance(exc, yaml.reader.ReaderError) and isinstance(exc.position, int):
         return block.count("\n", 0, exc.position) + 2  # the reader names a character
-    node = _error_node(exc)
-    return _file_line(block, node.start_mark) if node is not None else 1
+    if isinstance(root, yaml.MappingNode) and root.value:
+        return _file_line(block, root.value[0][0].start_mark)
+    return 1
 
 
 def _has_flow_style(node: yaml.Node) -> bool:

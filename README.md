@@ -795,7 +795,10 @@ the `question` it is about), and `questions` — those reached first, in order, 
 words and `accepts` as data: the words of a
 boolean, the choices, the currency or unit the placeholders fix, the units there are.
 `question.to_text(answer)` is what a person would type for an answer (`yes`, `5000 EUR`, `30 D`),
-to show a default or fill in an input; `answer_text` and `default_text` hold it in the data.
+to show a default or fill in an input; `answer_text` and `default_text` hold it in the data. Each problem
+and diagnostic has `rule`, `level`, `message`, `line` and `file`: the fragment or attachment file it is
+in, relative to the template, or `""` for the template itself (so is the `problems` list of
+`legaldown questions --format json`).
 
 **What stops a template.** `template.problems` are the reasons a template cannot be assembled
 whatever the answers: a file it includes that cannot be read, a placeholder written across lines, a

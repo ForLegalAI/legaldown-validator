@@ -912,8 +912,9 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     wanted += [(item.file, "attachment") for item in items if item.file]
     subs: dict[str, _Source] = {}
     problems: list[Diagnostic] = []
+    unreadable: set[str] = set()  # reported once, however often it is referenced
     for path, kind in wanted:
-        if path in subs:
+        if path in subs or path in unreadable:
             continue
         # Only a path within the template's directory (§2.3) is asked for: a loader is
         # not handed ``../x``, an absolute path or a drive letter to open.
@@ -927,8 +928,12 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
         try:
             sub_document = parse(text)
         except FrontmatterError as exc:
-            # The same diagnostic as validate's, in the file it is in.
-            problems.append(frontmatter_diagnostic(exc, file=relative_path(path) or path))
+            # What plain `validate` reports of a document with this frontmatter, with
+            # its message and line, in the file it is in. (`validate(fragment=True)`
+            # reports include-has-frontmatter instead, by design: a fragment must
+            # have none.) A text was read only for a path that `relative_path` accepts.
+            unreadable.add(path)
+            problems.append(frontmatter_diagnostic(exc, file=relative_path(path)))
             continue
         sub_front, body = _split(text, sub_document)
         subs[path] = _read_body(path, body, sub_document, declared, template=template)
@@ -1799,13 +1804,13 @@ def assemble(
     return _emit_result(t, resolved, decision, diagnostics)
 
 
-def frontmatter_diagnostic(exc: FrontmatterError, file: str = "") -> Diagnostic:
+def frontmatter_diagnostic(exc: FrontmatterError, file: str | None = None) -> Diagnostic:
     """The error assembly reports for frontmatter that cannot be read: the one
     ``validate`` reports for it, with the same message and line (#43). *file* is
     the normalised path of the include fragment or attachment file it is in,
     when it is not the template's own."""
     return Diagnostic(
-        "frontmatter-invalid-yaml", "error", frontmatter_message(exc), line=getattr(exc, "line", None) or 1, file=file
+        "frontmatter-invalid-yaml", "error", frontmatter_message(exc), line=exc.line or 1, file=file or ""
     )
 
 

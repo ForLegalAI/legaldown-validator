@@ -449,18 +449,20 @@ def test_a_kept_error_holds_no_frames(block):
     assert (error.__cause__ is None) == (block == "!!set {a, b}")
 
 
-def test_a_value_its_tag_cannot_hold_says_so_and_where():
-    error = _kept("---\ntitle: T\nquestions:\n  q:\n    default: !!bool maybe\n---\n# A\n").frontmatter_error
-    assert (str(error), error.line) == ("a value its tag cannot hold: 'maybe'", 5)
+def test_a_value_its_tag_cannot_hold_says_so_and_is_at_the_first_key():
+    # The error names no place; the first key of the mapping is as near as it is known, without frames.
+    block = "# A comment\ntitle: T\nquestions:\n  q:\n    default: !!bool maybe\n"
+    error = _kept(f"---\n{block}---\n# A\n").frontmatter_error
+    assert (str(error), error.line) == ("a value its tag cannot hold: 'maybe'", 3)
     assert isinstance(error.__cause__, KeyError)
     error = _kept("---\ntitle: T\nquestions:\n  q:\n    default: " + "9" * 5000 + "\n---\n# A\n").frontmatter_error
-    assert error.line == 5 and str(error).startswith("a value its tag cannot hold: ")
+    assert error.line == 2 and str(error).startswith("a value its tag cannot hold: ")
     assert "\n" not in str(error)
 
 
-def test_a_value_its_tag_cannot_hold_is_reported_at_its_line_by_validate():
+def test_a_value_its_tag_cannot_hold_is_reported_by_validate():
     document = _kept("---\ntitle: T\nquestions:\n  q:\n    default: !!bool maybe\n---\n# A\n")
-    assert _rows(document)[0] == ("frontmatter-invalid-yaml", "error", 5)
+    assert _rows(document)[0] == ("frontmatter-invalid-yaml", "error", 2)
 
 
 @pytest.mark.parametrize("ending", ["\x85", "\u2028", "\u2029"])
@@ -469,7 +471,6 @@ def test_the_line_counts_line_feeds_only_as_the_format_does(ending):
     cases = [
         (f"title: \"A{ending}B\"\nbad: [unclosed", 3),  # a parser error, found after the break
         (f"title: \"A{ending}B\"\nlanguage: \x01", 3),  # a character the reader refuses
-        (f"title: \"A{ending}B\"\nquestions:\n  q:\n    default: !!bool maybe", 5),  # a value its tag cannot hold
         (f"title: \"A{ending}B\"\nsubtitle: 'open\nlanguage: en", 3),  # a quote, where it opens
     ]
     for block, line in cases:
@@ -530,3 +531,47 @@ def test_the_command_line_names_the_fragment_file_and_its_line(tmp_path, capsys)
     (tmp_path / "t.lgd").write_text("---\n@x\n---\n\n# A\n", encoding="utf-8")
     assert main(["assemble", str(tmp_path / "t.lgd")]) == EXIT_DIAGNOSTICS
     assert f"{tmp_path / 't.lgd'}:2: error: [frontmatter-invalid-yaml]" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("ending", ["\x85", "\u2028", "\u2029"])
+def test_the_lines_of_the_keys_are_counted_in_line_feeds_too(ending):
+    # A key after a value holding a line break YAML knows and the format does not: the key's own line,
+    # for a diagnostic about the key, in a block that can be read.
+    document = parse(f'---\ntitle: "A{ending}B"\ndocument_type: nonsense\n---\n\n# A\n')
+    assert document.source_map.keys[("document_type",)] == 3
+    assert [d.line for d in validate(document).diagnostics if d.rule == "document-type-invalid"] == [3]
+
+
+def test_a_template_that_includes_a_broken_fragment_twice_is_told_once():
+    broken = "---\n@x\n---\n\nText.\n"
+    template = "---\ntitle: T\n---\n\n# A\n\n{{include: f.lgd}}\n\n{{include: f.lgd}}\n\n{{include: ./f.lgd}}\n"
+    problems = parse_template(template, resolve=lambda path: broken).problems
+    assert [(d.rule, d.file, d.line) for d in problems] == [("frontmatter-invalid-yaml", "f.lgd", 2)]
+
+
+def test_a_fragment_that_is_included_and_attached_is_told_once():
+    front = "attachments:\n  - id: annex\n    title: Annex\n    file: f.lgd\n"
+    template = f"---\ntitle: T\n{front}---\n\n# A\n\n{{{{include: f.lgd}}}}\n"
+    problems = parse_template(template, resolve=lambda path: "---\n@x\n---\n\nText.\n").problems
+    assert [d.rule for d in problems] == ["frontmatter-invalid-yaml"]
+
+
+def test_questions_says_which_fragment_is_broken_and_where(tmp_path, capsys):
+    (tmp_path / "t.lgd").write_text(_ASSEMBLED, encoding="utf-8")
+    (tmp_path / "f.lgd").write_text("---\ntitle: T\n  bad: [x\n---\n\nText.\n", encoding="utf-8")
+    main(["questions", str(tmp_path / "t.lgd")])
+    shown = capsys.readouterr().out
+    assert "problem: f.lgd:3: [frontmatter-invalid-yaml] The frontmatter cannot be read: " in shown
+    main(["questions", str(tmp_path / "t.lgd"), "--format", "json"])
+    problem = json.loads(capsys.readouterr().out)["problems"][0]
+    assert (problem["file"], problem["line"]) == ("f.lgd", 3)
+
+
+def test_the_problems_of_the_template_itself_have_an_empty_file_and_the_line(tmp_path, capsys):
+    path = tmp_path / "t.lgd"
+    path.write_text("---\n@x\n---\n\n# A\n", encoding="utf-8")
+    main(["questions", str(path), "--format", "json"])
+    problem = json.loads(capsys.readouterr().out)["problems"][0]
+    assert (problem["file"], problem["line"], problem["rule"]) == ("", 2, "frontmatter-invalid-yaml")
+    main(["questions", str(path)])
+    assert capsys.readouterr().err.startswith(f"{path}:2: error: [frontmatter-invalid-yaml]")
