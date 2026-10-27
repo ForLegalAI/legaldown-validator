@@ -70,6 +70,7 @@ from .parser import (
 from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
+from .validator.fragments import Fragment, FragmentKind, fragment_findings
 from .validator.helpers import is_positive_numeric, is_valid_money_amount
 from .validator.patterns import DURATION_UNITS, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
 from .validator.result import Diagnostic
@@ -907,7 +908,7 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     """Read every include fragment and LegalDown attachment file — the absent
     ones too: their placeholders are the template's (answer-unknown) and their
     headings take part in identifier generation (step 7)."""
-    wanted = [(include.path, "include") for include in main.includes]
+    wanted: list[tuple[str, FragmentKind]] = [(include.path, "include") for include in main.includes]
     items = front.items if front else []
     wanted += [(item.file, "attachment") for item in items if item.file]
     subs: dict[str, _Source] = {}
@@ -936,57 +937,41 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
             unreadable.add(relative)
             problems.append(frontmatter_diagnostic(exc, file=relative))
             continue
-        sub_front, body = _split(text, sub_document)
+        _front, body = _split(text, sub_document)
         subs[path] = _read_body(path, body, sub_document, declared, template=template)
         subs[path].newline = newline
-        problems += _file_problems(path, kind, subs[path], sub_front, sub_document, template)
+        problems += _file_problems(path, kind, subs[path], sub_document, template)
     return subs, problems
 
 
-def _file_problems(path: str, kind: str, source: _Source, front: _Frontmatter | None,
-                   document: Document, template: bool) -> list[Diagnostic]:
+def _file_problems(path: str, kind: FragmentKind, source: _Source, document: Document, template: bool) -> list[Diagnostic]:
     """The Full checks on a loaded file (§16.10, §16.11, §16.12) that the
     assembled output depends on; the file is read here, so they are made
-    here rather than left to a validator that may not read it."""
+    here rather than left to a validator that may not read it. They are the
+    validator's own (``fragment_findings``, #35), one for each offender, at
+    its line in the file: this refuses the template, the validator reports them."""
     what = "fragment" if kind == "include" else "attachment file"
-    problems = []
-
-    def error(rule: str, message: str) -> None:
-        problems.append(Diagnostic(rule, "error", f"The {what} '{path}' {message}"))
-
-    if front is not None:
-        error(f"{kind}-has-frontmatter", "has frontmatter, which it cannot have; the template is "
-                                         "not assembled.")
-    if any(section.level == 1 for section in document.sections):
-        error(f"{kind}-has-h1", "has a level 1 heading, which it cannot have; the template is "
-                                "not assembled.")
-    # Outside a template, an include in a drafting note is removed with it,
-    # unread (§15.6); in one, it is template-fragment-invalid wherever it is.
-    if any(template or line not in source.notes for line in source.include_lines):
-        if template:
-            error("template-fragment-invalid", "holds an {{include:}}; in a template an include "
-                                               "belongs in the template's own body (§15.3).")
-        else:
-            error("include-file-missing", "holds an {{include:}}; an include in an included or "
-                                          "attached file is not assembled, so the template is not "
-                                          "assembled.")
-    if template and kind == "include":
-        # §15.3: a fragment holds no conditions or drafting notes and gives
-        # every heading an explicit identifier. An attachment file may hold
-        # conditions: its own, beneath its attachment's `when`.
-        conditions = any(section.condition for section in document.sections) or any(
-            marker.marker is not None and marker.marker.condition and marker.placed(True)
-            for marker in find_markers(document, cache(lex))
+    problems = [
+        Diagnostic(
+            finding.rule, "error",
+            # Frontmatter and a level 1 heading are why the file is not read, and so
+            # why the template is not assembled; the others say what to do.
+            finding.message if finding.rule == "template-fragment-invalid"
+            else f"{finding.message} The template is not assembled.",
+            line=finding.line, file=path,
         )
-        if conditions:
-            error("template-fragment-invalid", "holds a condition; to make a fragment conditional, "
-                                               "put the condition on its {{include:}} paragraph (§15.3).")
-        if source.notes:
-            error("template-fragment-invalid", "holds a drafting note, which belongs in the "
-                                               "template's own body (§15.3).")
-        if any(not section.identifier for section in document.sections):
-            error("template-fragment-invalid", "has a heading without an explicit identifier, "
-                                               "which every heading of a fragment has (§15.3).")
+        for finding in fragment_findings(Fragment(path, document), kind=kind, template=template)
+    ]
+    # Outside a template, an include in a drafting note is removed with it,
+    # unread (§15.6); in one, it is template-fragment-invalid wherever it is
+    # (reported above).
+    if not template and any(line not in source.notes for line in source.include_lines):
+        problems.append(Diagnostic(
+            "include-file-missing", "error",
+            f"The {what} '{path}' holds an {{{{include:}}}}; an include in an included or attached "
+            f"file is not assembled, so the template is not assembled.",
+            line=None, file=path,
+        ))
     return problems
 
 

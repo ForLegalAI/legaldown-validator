@@ -144,6 +144,29 @@ def blank_from(text: str) -> Callable[[int], bool]:
     return rest_blank
 
 
+def include_paragraph(text: str, lexed: Lexed) -> Directive | None:
+    """The ``{{include:}}`` of a paragraph that holds only it and, at most, its
+    marker (§12.2): *text* is the paragraph, *lexed* its lexing. Anything else
+    — an include in a sentence or a list item, a second directive, text — is
+    not an include paragraph and is not replaced by a fragment. A marker that
+    is no marker (``{#id class=x}``) is text, as assembly reads it."""
+    if "{{include" not in text:
+        return None
+    head = text
+    if "{" in text and ("#" in text or "when=" in text):
+        blank = blank_from(text)
+        # Only the last marker can end the paragraph.
+        last = None
+        for match in marker_matches(text, lexed):
+            if blank(match.end()):
+                last = match
+        if last is not None and parse_marker(last.group(0)) is not None:
+            head = text[: last.start()]
+    if not is_include_only(head, lexed.directives):
+        return None
+    return next(d for d in lexed.directives if d.name == "include" and d.end <= len(head))
+
+
 def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex) -> list[FoundMarker]:
     """Every marker and look-alike in the document's body text, outside code,
     comments, directives, and escapes (§11.4), with its place: placed or not.

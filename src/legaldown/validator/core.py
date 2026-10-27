@@ -29,7 +29,7 @@ from ..directives import (
     lex,
     mask_directives,
 )
-from ..files import LoadFile, file_loader, relative_path, within
+from ..files import LoadFile, file_loader, relative_path
 from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
@@ -48,6 +48,7 @@ from .conditions import (
     satisfiable,
     satisfiable_in,
 )
+from .fragments import Files, FragmentKind, check_includes, content_findings, shape_findings
 from .helpers import (
     format_section_number,
     generate_identifier,
@@ -906,13 +907,16 @@ class _Mode:
     own (§12.2, §12.4): its findings with a reason are ``host_dependent``.
     ``template``: whether the document is a template, when the caller knows
     (the fragment's host is one, or is not); None leaves it to the document
-    (``is_template``)."""
+    (``is_template``). ``kind``: what the fragment is to its host, an include
+    fragment or a LegalDown attachment file (#35): the ids of the findings on its
+    shape, and what §15.3 asks of it in a template."""
     empty_metadata: bool = False
     suppress: frozenset[Depends] = frozenset()
     report_frontmatter_absent: bool = True
     check_first_heading: bool = False
     fragment: bool = False
     template: bool | None = None
+    kind: FragmentKind = "include"
 
 
 #: A complete document.
@@ -935,6 +939,7 @@ def validate(
     *,
     final: bool = False,
     fragment: bool = False,
+    fragment_kind: FragmentKind | None = None,
     template: bool | None = None,
     resolve: LoadFile | None = None,
     document_root: str | os.PathLike[str] | None = None,
@@ -971,38 +976,67 @@ def validate(
         a finding to set aside when the host is not known, and to take
         seriously once the fragment is validated in it. What is wrong with the
         fragment itself is not marked. Frontmatter in the fragment is
-        include-has-frontmatter (§16.11) and a level-1 heading include-has-h1;
-        the metadata is then not read, so nothing is checked of it. A
+        include-has-frontmatter (§16.11) and a level-1 heading include-has-h1
+        (attachment-has-frontmatter and attachment-has-h1 for an attachment
+        file, *fragment_kind*); the metadata is then not read, so nothing is
+        checked of it. The fragment's own includes are not read: *resolve*
+        belongs to the document that includes it. A
         definition the fragment declares and does not reference is still
         reported (def-unreferenced), as ``host_dependent``: the host may
         reference it (§12.2). Default False: a complete document, as before.
+    fragment_kind:
+        Only with *fragment*: what the file is to the document that uses it,
+        ``"include"`` (an ``{{include:}}`` fragment, §12.2) or ``"attachment"`` (a
+        LegalDown attachment file, ``attachments[].file``, §12.4). They share
+        a file model, but their findings have other ids: the frontmatter or
+        level-1 heading of an attachment file is attachment-has-frontmatter or
+        attachment-has-h1 (§16.10), of a fragment include-has-frontmatter or
+        include-has-h1 (§16.11). And with ``template=True`` an include fragment is
+        held to what §15.3 asks of a template's fragments, as assembly asks it: no
+        condition, no drafting note, no ``{{include:}}``, and an explicit identifier
+        on every heading (template-fragment-invalid, §16.12), while an attachment
+        file may hold conditions and notes of its own, and only an ``{{include:}}``
+        in it is reported. Those checks are made for ``template=True`` only: a
+        fragment's host is not known to be a template otherwise. By default
+        (None) the file is an include fragment, as before. Raises ``ValueError``
+        without *fragment*, or for any other value.
     template:
         Only with *fragment*: whether the document that includes the fragment
         is a template (§15.1), which a fragment cannot tell by itself (a
         blank or a drafting note is legal in any document). True checks it as
         part of a template: the checks only a template has are made (a
-        blank whose id YAML reads as a boolean or null,
-        ``template-fragment-invalid``) and a preamble paragraph's condition is
-        placed (§5.7, §15.3). False says it is not one, so it declares no
+        blank whose id YAML reads as a boolean or null; what §15.3 asks of a
+        template's fragment, ``template-fragment-invalid``, per *fragment_kind*)
+        and a preamble paragraph's condition is placed (§5.7, §15.3). False says it is not one, so it declares no
         questions either: a condition or ``{{choose:}}`` naming a question is
         then ``condition-invalid`` / ``choose-invalid`` without being
         ``host_dependent``, and the fragment is no template. By default
         (None) a fragment is a template exactly when it holds a condition or a
-        ``{{choose:}}``, as any document does; ``DocumentIndex.is_template``
-        and ``placed_markers`` follow the decision. Raises ``ValueError``
-        without *fragment*.
+        ``{{choose:}}``, as any document does, but is then not held to what §15.3
+        asks of a template's fragments, for it is not known to be in one;
+        ``DocumentIndex.is_template`` and ``placed_markers`` follow the
+        decision. Raises ``ValueError`` without *fragment*.
     resolve:
-        Reads a file the document refers to — the document it amends
-        (``amends.file``, §7.5) and its LegalDown attachment files (§12.4) —
-        for the definitions they declare: ``(relative_path) -> text | None``,
-        with ``None`` for a file that is not there or cannot be read. By
-        default the files are read from the directory of ``document.path``
-        (``file_loader``), as far as that is within it (§2.3); a document
-        without a ``path`` (from ``parse``) has none, so the checks that need
-        them are skipped, as they are with ``resolve=lambda path: None``, for
-        a loaded document that is to be validated without reading anything.
-        Only the referenced file's own definitions are read, not those it
-        refers to in turn.
+        Reads a file the document refers to: ``(relative_path) -> text | None``,
+        with ``None`` for a file that is not there or cannot be read. These are
+        the document it amends (``amends.file``, §7.5) and its LegalDown
+        attachment files (§12.4), for the definitions they declare, and its
+        include fragments (§12.2), which are checked: ``include-file-missing`` at
+        the include of one that is not there, and, at their own lines and with
+        ``Diagnostic.file`` the fragment's path, ``include-has-frontmatter``,
+        ``include-has-h1`` and ``include-heading-skip`` (§16.11), and, in a
+        template, the parts of ``template-fragment-invalid`` that read a file
+        (§15.3, §16.12). By default the files are read from the directory of
+        ``document.path`` (``file_loader``), as far as that is within it (§2.3);
+        a document without a ``path`` (from ``parse``) has none, so nothing is
+        read and the checks that need a file are not made. ``resolve=lambda path:
+        None`` says every file is missing, which ``include-file-missing`` reports:
+        to validate a loaded document without reading its files, validate it
+        without its path (``dataclasses.replace(document, path=None)``). A path
+        a loader is not asked for (``relative_path``: one that leads out of the
+        document's directory) is not read. Only the referenced file's own
+        definitions are read, not those it refers to in turn; an include a
+        fragment holds is not followed (``include-cycle`` is not implemented).
     document_root:
         The directory every file the document refers to must lie within
         (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
@@ -1027,8 +1061,12 @@ def validate(
     """
     if template is not None and not fragment:
         raise ValueError("validate(template=) is only meaningful with fragment=True")
+    if fragment_kind is not None and not fragment:
+        raise ValueError("validate(fragment_kind=) is only meaningful with fragment=True")
+    if fragment_kind not in (None, "include", "attachment"):
+        raise ValueError(f"fragment_kind must be 'include' or 'attachment', not {fragment_kind!r}")
     resolve = _resolver(document, resolve, import_definitions, import_attachment_definitions, stacklevel=3)
-    mode = replace(_FRAGMENT, template=template) if fragment else _DOCUMENT
+    mode = replace(_FRAGMENT, template=template, kind=fragment_kind or "include") if fragment else _DOCUMENT
     return _validate(
         document, final, resolve, import_definitions, import_attachment_definitions, mode, document_root=document_root
     )
@@ -1079,64 +1117,27 @@ def _resolver(
     return resolve
 
 
-def _check_fragment_shape(document: Document, where: Locator, result: _Recorder) -> None:
-    """What §12.2 and §12.4 require of a fragment's own text: it has no
-    frontmatter and no level-1 heading (include-has-frontmatter,
-    include-has-h1, §16.11). *document* is the fragment as given. These two
-    are the only checks of its shape that need no file but the fragment itself.
-    A fragment is validated as an include whichever way its host includes it
-    (an attachment file's ids, attachment-has-*, §16.10, are the same two
-    checks under another name)."""
-    # A parsed one that opens with the block, empty or not (the Locator knows,
-    # while the document still fits its source), or one built in code with any
-    # metadata.
-    if not document.metadata.frontmatter_absent and (where.has() or document.metadata != Metadata()):
-        # A block that could not be read (#43) has no key to name: the line of
-        # the problem in it. frontmatter-invalid-yaml is not drawn as well: the
-        # fragment must not have the block, readable or not, which this says.
-        error = document.frontmatter_error
-        result.error(
-            "include-has-frontmatter",
-            "The fragment has frontmatter, which a fragment cannot have: the document that "
-            "includes it supplies the metadata (§12.2). It is not read here.",
-            line=(error.line or 1) if error is not None else where.first_key(),
-        )
-    for index, section in enumerate(document.sections):
-        if section.level == 1:
-            result.error(
-                "include-has-h1",
-                f"The fragment has a level 1 heading, '{section.title}', which a fragment "
-                f"cannot have: the including document writes the heading around it (§12.2).",
-                line=where.heading(index),
-            )
-
-
-def _definitions_in(document: Document, resolve: LoadFile | None, path: str) -> dict[str, str] | None:
+def _definitions_in(document: Document, files: Files | None, path: str) -> dict[str, str] | None:
     """The definitions the file at *path* declares (``{id: term}``), or None
-    when it cannot be read as a LegalDown document: not there, no *resolve*,
-    or frontmatter that cannot be read (that file's problem, not this
-    document's). Any other exception is the parser's fault, as it is anywhere."""
+    when it cannot be read as a LegalDown document: not there, no *files* (the
+    validation has no ``resolve``), or frontmatter that cannot be read (that
+    file's problem, not this document's). Any other exception is the parser's
+    fault, as it is anywhere."""
     # Imported here for the reason given in ``_validate``.
     from ..definitions import collect_definitions, definition_lookup
-    from ..parser import FrontmatterError, parse
 
     # Asked for as assembly asks (§15.7): normalized, and only a path within
     # the document's directory (§2.3).
     relative = relative_path(path)
-    if resolve is None or relative is None:
+    if files is None or relative is None:
         return None
-    path = relative
     # A document that names itself has nothing to add to itself.
-    if document.path is not None and within(document.path.parent, path) == document.path.resolve():
+    if files.is_own(relative):
         return None
-    text = resolve(path)
-    if text is None:
+    other = files.read(relative)
+    if other is None or other.document.frontmatter_error is not None:
         return None
-    try:
-        other = parse(text)
-    except FrontmatterError:
-        return None
-    return definition_lookup(collect_definitions(other))
+    return definition_lookup(collect_definitions(other.document))
 
 
 def _validate(
@@ -1165,6 +1166,10 @@ def _validate(
         document = replace(document, metadata=Metadata(frontmatter_absent=True))
     # Where each part is, for the line of each diagnostic (§16.9).
     where = Locator(document)
+    # The files the document refers to, each read and parsed once: the original it
+    # amends, its attachment files, and its include fragments (#35). A fragment
+    # validated on its own reads none: its own includes are the host's concern.
+    files = Files(resolve, document) if resolve is not None else None
     # The paths the document names (§2.3, #104), from the directory it is in.
     file_references = FileReferences(
         result, document_root, document.path.parent if document.path is not None else None, where.start()
@@ -1199,7 +1204,10 @@ def _validate(
             line=where.start(),
         )
     if mode.fragment:
-        _check_fragment_shape(original, where, result)
+        # The file's own text has no frontmatter and no level-1 heading, whatever it is
+        # used for (§12.2, §12.4): an include fragment's ids, or an attachment file's.
+        for finding in shape_findings(original, where, mode.kind):
+            result.error(finding.rule, finding.message, line=finding.line)
     title = document.metadata.title.strip()
     if not title and not frontmatter_absent:
         result.error("title-missing", "The document title is required.", line=where.field("title"))
@@ -1491,9 +1499,8 @@ def _validate(
     # which has no level-1 heading and to which §4.1 does not apply alone
     # (§12): its first heading sets the level. Not so when the frontmatter is
     # there but is not read (#43): it still is a main document's.
-    last_level: int | None = (
-        None if document.metadata.frontmatter_absent and not mode.check_first_heading else 0
-    )
+    first_level: int | None = None if document.metadata.frontmatter_absent and not mode.check_first_heading else 0
+    last_level = first_level
     # The last section at each open level: (identifier, presence). An
     # alternative to it shares its number (§15.8).
     previous_sibling: dict[int, tuple[str, Presence]] = {}
@@ -1763,7 +1770,7 @@ def _validate(
             if import_definitions is not None:
                 imported = import_definitions(amends_file, document.filename)
             else:
-                imported = _definitions_in(document, resolve, amends_file)
+                imported = _definitions_in(document, files, amends_file)
             if imported is not None:
                 _amends_import_succeeded = True
                 _imported_definitions = imported
@@ -1791,7 +1798,7 @@ def _validate(
         if import_attachment_definitions is not None:
             att_defs = import_attachment_definitions(att.file)
         else:
-            att_defs = _definitions_in(document, resolve, att.file)
+            att_defs = _definitions_in(document, files, att.file)
         if not att_defs:
             continue
         # Its definitions are present when the attachment is (§15.3).
@@ -2164,7 +2171,8 @@ def _validate(
         | {directive.positional for directive, _line in chooses if directive.positional}
     )
     # A question may be used in an include fragment or a LegalDown attachment
-    # file, which a single-document validator does not read (Full, §17.4).
+    # file. The files are read for their shape and what a template may hold in
+    # them (#35), not for the questions they use, so none is unused for certain.
     reads_other_files = "include" in body_directives or any(
         att.file.endswith(LEGALDOWN_EXTENSIONS) for att in meta.attachments
     )
@@ -2186,12 +2194,26 @@ def _validate(
         not_line_editable=meta.not_line_editable,
         where=where,
     )
-    notes = check_template_body(document, lex_fragment, result, template=template, where=where)
+    body = check_template_body(document, lex_fragment, result, template=template, where=where)
     _check_raw_html(document, lex_fragment, result, where)
     check_heading_images(document, lex_fragment, file_references, where)
     file_references.finish()
+    # A fragment on its own is asked what a template's fragment must hold, when its host is
+    # one (§15.3, §16.12); the shape of its own text was checked at the start.
+    if mode.fragment and mode.template is True:
+        for finding in content_findings(document, where, body, markers, mode.kind, noted=True):
+            result.error(finding.rule, finding.message, line=finding.line)
+    # ── Includes (§12.2, §16.11) ──
+    check_includes(
+        document, body.includes, result, where,
+        judged=file_references.reported,
+        files=None if mode.fragment else files,
+        template=template,
+        first_level=first_level,
+        lex_fragment=lex_fragment,
+    )
     if final:
-        _check_final(placeholders, chooses, notes, conditions, questions, result, where.key("questions"))
+        _check_final(placeholders, chooses, body.notes, conditions, questions, result, where.key("questions"))
 
     # Warn about declared but unreferenced attachments (§16.10): once per id,
     # which alternatives share (§15.3).
@@ -2228,8 +2250,9 @@ def _validate(
     result.index.is_template = template
     result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
 
+    # A finding in a fragment the document includes has its file already (#35).
     if document.filename:
-        result.diagnostics = [replace(d, file=document.filename) for d in result.diagnostics]
+        result.diagnostics = [d if d.file else replace(d, file=document.filename) for d in result.diagnostics]
     return result.result()
 
 

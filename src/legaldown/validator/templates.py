@@ -561,6 +561,42 @@ def check_choose(
 _INSERTIONS = ("placeholder", "choose")
 
 
+@dataclass(frozen=True, slots=True)
+class IncludeDirective:
+    """An ``{{include:}}`` in a document's body (§12.2), wherever it is."""
+    #: The path as the document writes it, and normalised (``posixpath.normpath``):
+    #: the key assembly and the validator read a fragment by.
+    written: str
+    path: str
+    line: Line
+    #: Where it is: the section (None in the preamble), the block, the fragment of
+    #: the block's text and the offset in it, as ``FileReferences.check`` places it.
+    section: int | None
+    block: int
+    fragment: int
+    offset: int
+    #: Whether it is in a drafting note, which assembly removes unread (§15.6).
+    in_note: bool
+    #: Whether its paragraph holds only it and at most its marker (§12.2): the one
+    #: kind of include a fragment replaces, and so the only one that is read. Any
+    #: other is text that the include rules do not look at.
+    paragraph: bool
+
+    @property
+    def at(self) -> tuple[int, int, int, int]:
+        """Its place as ``FileReferences.check`` was given it."""
+        return (-1 if self.section is None else self.section, self.block, self.fragment, self.offset)
+
+
+@dataclass(frozen=True, slots=True)
+class BodyScan:
+    """What ``check_template_body`` met in a document's body besides what it
+    reported: its drafting notes, each with its line, and every
+    ``{{include:}}`` (``IncludeDirective``), in document order."""
+    notes: list[tuple[Quote, Line]]
+    includes: list[IncludeDirective]
+
+
 def check_template_body(
     document: Document,
     lex_fragment: Callable[[str], Lexed],
@@ -568,16 +604,18 @@ def check_template_body(
     *,
     template: bool,
     where: Locator | None = None,
-) -> list[tuple[Quote, Line]]:
+) -> BodyScan:
     """Report what §16.12 checks in the body of a document: drafting notes
     (drafting-note-unrecognized, drafting-note-def), a blank or choice in a
     defined term (def-term-variable) or against template text
     (insertion-boundary), and, in a *template*, the Core parts of
-    template-fragment-invalid. Return the document's drafting notes, each
-    with its line. *where* gives the lines."""
+    template-fragment-invalid. Return what it met (``BodyScan``): the
+    document's drafting notes, each with its line, and its includes. *where*
+    gives the lines."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, text_fragments
+    from .units import include_paragraph  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
              nth: int = 0) -> Line:
@@ -597,7 +635,7 @@ def check_template_body(
                 )
                 line = where.heading(heading) if where is not None else None
                 _check_insertion(scan, directive, result, line)
-    includes: list[tuple[str, Line]] = []
+    includes: list[IncludeDirective] = []
     all_notes: list[tuple[Quote, Line]] = []
     for block_section, block_index, block in document.iter_indexed_blocks():
         notes: list[Quote] = []
@@ -621,6 +659,9 @@ def check_template_body(
             lexed = lex_fragment(fragment)
             scan = None  # the fragment's, for its first insertion
             in_note = in_drafting_note(notes, index)
+            # The include of a paragraph that holds only it (§12.2): only a top-level
+            # paragraph is one, an include in a quote, a list or a table is text.
+            only = include_paragraph(fragment, lexed) if block.kind == "paragraph" and index == 0 else None
             for directive in lexed.directives:
                 if directive.malformed:
                     continue
@@ -633,9 +674,11 @@ def check_template_body(
                         line=line,
                     )
                 if directive.name == "include" and directive.positional:
-                    if not in_note:
-                        includes.append((posixpath.normpath(directive.positional), line))
-                    elif template:
+                    includes.append(IncludeDirective(
+                        directive.positional, posixpath.normpath(directive.positional), line,
+                        block_section, block_index, index, directive.start, in_note, only is directive,
+                    ))
+                    if in_note and template:
                         result.error(
                             "template-fragment-invalid",
                             f"'{directive.source}' is inside a drafting note; in a template an "
@@ -664,8 +707,8 @@ def check_template_body(
                             line=find(block_section, block_index, directive.source, index, directive.start),
                         )
     if template:
-        _check_fragments(document, includes, result, where)
-    return all_notes
+        _check_fragments(document, [(i.path, i.line) for i in includes if not i.in_note], result, where)
+    return BodyScan(all_notes, includes)
 
 
 def _check_insertion(scan: _InsertionScan, insertion: Directive, result: _Recorder, line: Line = None) -> None:

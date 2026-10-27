@@ -47,9 +47,10 @@ __all__ = ["AnswersError", "Form", "Template", "load_answers", "load_template", 
 #: The rules of the validator that a template must satisfy for assembly
 #: (§15.7.2 gives assembly a template that validates without Errors): those of
 #: questions, conditions, ``{{choose:}}``, placeholders and insertions. Any
-#: other Error of ``Template.validation`` is advice — the validator reads a
-#: template alone, without the files it includes, so a reference to a section
-#: of a fragment is ``ref-broken`` to it while assembly reads the fragment.
+#: other Error of ``Template.validation`` is advice — the validator reads the
+#: files a template includes only for what they must hold (§12.2, §15.3), and
+#: does not resolve a reference into one, so a reference to a section of a
+#: fragment is ``ref-broken`` to it while assembly reads the fragment.
 TEMPLATE_RULES: frozenset[str] = frozenset({
     "question-invalid",
     "condition-invalid",
@@ -241,8 +242,9 @@ class Template:
 
     @cached_property
     def validation(self) -> ValidationResult:
-        """What ``validate`` says of the template read alone. Advice: only the
-        rules in ``problems`` stop assembly."""
+        """What ``validate`` says of the template, and of the fragments and
+        attachment files it reads (``Diagnostic.file`` names the file, #35).
+        Advice: only the rules in ``problems`` stop assembly."""
         return validate(self._t.document, resolve=self._resolve)
 
     @cached_property
@@ -256,7 +258,14 @@ class Template:
         if self._check:
             includes = any(include.path in t.subs for include in t.main.includes)
             rules = TEMPLATE_RULES if includes else TEMPLATE_RULES | _ALONE_ONLY
-            problems += [d for d in self.validation.diagnostics if d.level == "error" and d.rule in rules]
+            # The validator reads the fragments and attachment files as well, and says what
+            # is wrong with them where it is (#35). Assembly has read the same files and
+            # reports the same findings in `t.problems`, so those are not counted twice:
+            # template-fragment-invalid is the one rule of both (`TEMPLATE_RULES`).
+            problems += [
+                d for d in self.validation.diagnostics
+                if d.level == "error" and d.rule in rules and d.file not in t.subs
+            ]
             problems += _placeholder_problems(t)
         return tuple(problems)
 

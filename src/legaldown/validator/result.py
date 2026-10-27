@@ -41,6 +41,12 @@ class Diagnostic:
     and one built from a dict has not (None). Compare diagnostics by their
     fields, not with one built without a line.
 
+    ``file`` is the name of the document the finding is in (``Document.filename``),
+    or, for a finding in an include fragment or attachment file that the validation
+    read (``resolve=``, #35), the file's path from the directory of the document,
+    normalised (``part.lgd``, ``schedules/a.lgd``). It is ``""`` for a document
+    without a name.
+
     ``host_dependent`` is True only in a result of ``validate(fragment=True)``,
     for a finding that the document including the fragment may resolve by
     declaring or defining what the fragment uses (§12.2, §12.4): a party, a
@@ -260,7 +266,9 @@ class _Recorder(ValidationResult):
         finally:
             self._lines.pop()
 
-    def _record(self, rule: str, level: str, message: str, line: Line, depends: Depends | None) -> None:
+    def _record(
+        self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = ""
+    ) -> None:
         if depends is not None and depends in self.suppress:
             return  # before the line is looked for: a finding dropped costs nothing
         if line is None and self._lines:
@@ -268,24 +276,36 @@ class _Recorder(ValidationResult):
         if callable(line):
             line = line()
         self.diagnostics.append(Diagnostic(
-            rule=rule, level=level, message=message, line=line,
+            rule=rule, level=level, message=message, line=line, file=file,
             host_dependent=self.fragment and depends is not None,
         ))
 
-    def error(self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None) -> None:
+    def error(
+        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
+    ) -> None:
         """Record an Error-level diagnostic under stable rule id *rule*, at
-        *line* (``at``); *depends* is what it needs from outside the document."""
-        self._record(rule, "error", message, line, depends)
+        *line* (``at``); *depends* is what it needs from outside the document;
+        *file* is the file it is in when that is not the document's own (a
+        fragment the document includes, #35)."""
+        self._record(rule, "error", message, line, depends, file)
 
-    def warning(self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None) -> None:
+    def warning(
+        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
+    ) -> None:
         """Record a Warning-level diagnostic under stable rule id *rule*, at
-        *line* (``at``); *depends* is what it needs from outside the document."""
-        self._record(rule, "warning", message, line, depends)
+        *line* (``at``); *depends* is what it needs from outside the document;
+        *file* is the file it is in when that is not the document's own (a
+        fragment the document includes, #35)."""
+        self._record(rule, "warning", message, line, depends, file)
 
-    def info(self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None) -> None:
+    def info(
+        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
+    ) -> None:
         """Record an Info-level diagnostic under stable rule id *rule*, at
-        *line* (``at``); *depends* is what it needs from outside the document."""
-        self._record(rule, "info", message, line, depends)
+        *line* (``at``); *depends* is what it needs from outside the document;
+        *file* is the file it is in when that is not the document's own (a
+        fragment the document includes, #35)."""
+        self._record(rule, "info", message, line, depends, file)
 
     def result(self) -> ValidationResult:
         """What was recorded, as the plain ``ValidationResult``."""

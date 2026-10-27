@@ -146,8 +146,9 @@ def test_a_definition_the_fragment_leaves_unreferenced_is_host_dependent():
     ]
 
 
-_BLANK = "## Scope\n\nPay {{placeholder: no}}.\n"
-_NOTE_INCLUDE = "## Scope\n\n> [!DRAFTING]\n> See {{include: part.lgd}}\n"
+# A template's fragment gives every heading an identifier (§15.3, #35): these are fit for one.
+_BLANK = "## Scope {#scope}\n\nPay {{placeholder: no}}.\n"
+_NOTE_INCLUDE = "## Scope {#scope}\n\n> [!DRAFTING]\n> See {{include: part.lgd}}\n"
 
 
 def test_a_blank_or_a_drafting_note_alone_does_not_make_a_fragment_a_template():
@@ -165,10 +166,18 @@ def test_a_fragment_whose_host_is_a_template_is_checked_as_part_of_one():
     fragment = _fragment(_BLANK, template=True)
     assert [(d.rule, d.line, d.host_dependent) for d in fragment.diagnostics] == [("question-invalid", 3, False)]
     assert fragment.index.is_template
+    # The include in the note is the template's own check (Core, §15.3), reported once; the note
+    # itself is the fragment's (#35).
     included = _fragment(_NOTE_INCLUDE, template=True)
-    assert [(d.rule, d.line, d.host_dependent) for d in included.diagnostics] == [("template-fragment-invalid", 4, False)]
-    twice = _fragment("## Scope\n\n{{include: p.lgd}}\n\n{{include: p.lgd}}\n", template=True)
-    assert [(d.rule, d.host_dependent) for d in twice.diagnostics] == [("template-fragment-invalid", False)]
+    assert [(d.rule, d.line, d.host_dependent) for d in included.diagnostics] == [
+        ("template-fragment-invalid", 4, False), ("template-fragment-invalid", 3, False)
+    ]
+    # A fragment holds no include in a template, and is included once: both are said, for each include.
+    twice = _fragment("## Scope {#scope}\n\n{{include: p.lgd}}\n\n{{include: p.lgd}}\n", template=True)
+    assert [(d.rule, d.line, d.host_dependent) for d in twice.diagnostics] == [
+        ("template-fragment-invalid", 5, False), ("template-fragment-invalid", 3, False),
+        ("template-fragment-invalid", 5, False),
+    ]
     assert _fragment("## Scope\n\n{{include: p.lgd}}\n\n{{include: p.lgd}}\n").diagnostics == []
 
 
@@ -179,7 +188,7 @@ def test_the_template_decision_is_one_for_the_index_and_the_markers():
     assert [d.rule for d in plain.diagnostics] == ["anchor-misplaced"]
     assert plain.index.placed_markers == [] and not plain.index.is_template
     # The host is a template: it is placed, and the question is the host's to declare.
-    hosted = _fragment(body, template=True)
+    hosted = _fragment(body, template=True, fragment_kind="attachment")
     assert [(d.rule, d.host_dependent) for d in hosted.diagnostics] == [("condition-invalid", True)]
     assert hosted.index.is_template
     assert [(m.condition, m.line) for m in hosted.index.placed_markers] == [("vat", 1)]
@@ -228,7 +237,7 @@ def test_the_template_decision_of_a_fragment_is_that_of_its_body_alone():
 
 def test_the_line_of_a_yaml_keyword_blank_is_the_blank_whatever_questions_are_written():
     framed = _fragment(
-        "---\ntitle: T\nquestions:\n  vat:\n    type: boolean\n---\n\n## A\n\nPay {{placeholder: no}}.\n",
+        "---\ntitle: T\nquestions:\n  vat:\n    type: boolean\n---\n\n## A {#a}\n\nPay {{placeholder: no}}.\n",
         template=True,
     )
     assert [(d.rule, d.line) for d in framed.diagnostics] == [("include-has-frontmatter", 2), ("question-invalid", 10)]
@@ -250,9 +259,13 @@ def test_a_blank_in_a_drafting_note_is_never_checked_for_a_yaml_keyword_id():
     # One occurrence outside a note is enough, and it is the one pointed at.
     both = _TEMPLATE + "> [!DRAFTING]\n> Pay {{placeholder: no}}.\n\nPay {{placeholder: no}}.\n"
     assert _question_invalid(both) == [("question-invalid", 13)]
-    fragment = _fragment("## A\n\n> [!DRAFTING]\n> Pay {{placeholder: no}}.\n", template=True)
+    # (An attachment file may hold a drafting note in a template; a fragment may not, §15.3.)
+    fragment = _fragment("## A\n\n> [!DRAFTING]\n> Pay {{placeholder: no}}.\n", template=True, fragment_kind="attachment")
     assert fragment.diagnostics == []
-    only_outside = _fragment("## A\n\n> [!DRAFTING]\n> Pay {{placeholder: no}}.\n\nPay {{placeholder: no}}.\n", template=True)
+    only_outside = _fragment(
+        "## A\n\n> [!DRAFTING]\n> Pay {{placeholder: no}}.\n\nPay {{placeholder: no}}.\n",
+        template=True, fragment_kind="attachment",
+    )
     assert [(d.rule, d.line) for d in only_outside.diagnostics] == [("question-invalid", 6)]
 
 

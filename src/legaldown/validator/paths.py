@@ -83,6 +83,10 @@ class FileReferences:
         if self._root is not None:
             self._depth = names_below(self._root if base is None else base, self._root)
         self._met: list[_Reference] = []
+        #: The places (*at*) of the references found wrong, once ``finish`` has judged
+        #: them: a path that is reported is not also reported for the file it names
+        #: (``include-file-missing``, #35).
+        self.reported: set[tuple[int, ...]] = set()
 
     def check(
         self,
@@ -123,7 +127,7 @@ class FileReferences:
     def _judge(self, reference: _Reference, said_outside: bool) -> bool:
         """Record what is wrong with *reference*; True once a document outside
         the root has been said to be (*said_outside*)."""
-        _, written, what, line, url, literal, rest = reference
+        at, written, what, line, url, literal, rest = reference
         known = written if literal is None else literal.strip()
         judged = known.split("?", 1)[0].split("#", 1)[0] if url else known
         # What is known is the whole path when there is no directive, or when a
@@ -145,11 +149,13 @@ class FileReferences:
                 f"Error. Write a path relative to the document (§2.3).",
                 line=line,
             )
+            self.reported.add(at)
             return said_outside  # not also outside the root: one finding for one path
         if self._root is None:
             return said_outside
         depth = self._depth
         if depth is None:
+            self.reported.add(at)  # every path of the document leads out of the root
             if not said_outside:
                 self._result.error(
                     "path-outside-root",
@@ -167,6 +173,7 @@ class FileReferences:
                     f"document root '{self._root}' (§2.3).",
                     line=line,
                 )
+                self.reported.add(at)
                 return said_outside
         return said_outside
 

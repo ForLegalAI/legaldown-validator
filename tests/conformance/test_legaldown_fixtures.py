@@ -31,6 +31,7 @@ import pytest
 import yaml
 
 from legaldown import CAPABILITIES, Template, assemble, parse_template
+from legaldown.files import file_loader
 from legaldown.parser import parse
 from legaldown.validator import validate
 
@@ -67,7 +68,9 @@ IMPLEMENTED_RULES = {
     "duration-invalid-unit", "duration-invalid-value",
     "field-type-key-format", "field-type-key-reserved", "field-type-missing",
     "field-type-undeclared", "frontmatter-invalid-yaml",
-    "heading-depth", "heading-hardcoded-number", "heading-skip", "insertion-boundary",
+    "heading-depth", "heading-hardcoded-number", "heading-skip",
+    "include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
+    "include-not-legaldown", "insertion-boundary",
     "issuer-side-required", "legaldown-version-newer", "metadata-date-invalid",
     "money-invalid-amount", "money-missing-currency", "money-unknown-currency",
     "note-invalid", "parties-minimum",
@@ -82,6 +85,16 @@ IMPLEMENTED_RULES = {
     "side-name-duplicate", "side-name-malformed", "side-party-name-format",
     "side-unknown", "sides-absent", "sides-minimum", "supersedes-title-empty",
     "template-construct-present", "template-fragment-invalid", "term-undefined", "title-missing",
+}
+
+
+# The Full rules a validator that reads the include fragments through a loader reports
+# (#35): their cases are multi-file, so they are run with the loader of their directory,
+# and judged by file as well as by line. The others of the Includes group stay unimplemented
+# (include-cycle, include-anchor-duplicate); include-not-legaldown is Core and runs as any case.
+_FULL_WITH_A_LOADER = {
+    "include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
+    "template-fragment-invalid",
 }
 
 
@@ -170,6 +183,13 @@ def _assemble_case_with_a_form(template: Path, answers: Path):
     return form, form.assemble()
 
 
+def _validate_with_a_loader(path: Path):
+    """Validate a multi-file case's entry with a loader for the files beside it, as ``legaldown
+    validate`` reads them."""
+    document = parse(path.read_text(encoding="utf-8"), filename=path.name, on_frontmatter_error="keep")
+    return validate(document, resolve=file_loader(path.parent))
+
+
 def _validate_file(path: Path, config: dict):
     """Validate *path*; with an answers set, assemble it instead, which
     reports the answer rules (§16.12)."""
@@ -216,17 +236,18 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
     rule_id = (case if case.is_dir() else case.parent).name
     if rule_id not in IMPLEMENTED_RULES:
         pytest.skip(f"rule {rule_id} not implemented")
-    if expected.get("requires_level", "core") != "core":
+    with_a_loader = rule_id in _FULL_WITH_A_LOADER
+    if expected.get("requires_level", "core") != "core" and not with_a_loader:
         pytest.skip(f"requires conformance level {expected['requires_level']}")
     if expected.get("requires_capability") not in (None, *CAPABILITIES):
         pytest.skip(f"requires the {expected['requires_capability']} capability")
     config = expected.get("requires_config") or {}
     if not set(config) <= _SUPPORTED_CONFIG:
         pytest.skip("requires runner configuration")
-    if case.is_dir() and len(list(case.glob("*.lgd"))) > 1:
+    if case.is_dir() and len(list(case.glob("*.lgd"))) > 1 and not with_a_loader:
         pytest.skip("multi-file case (single-document harness)")
 
-    result = _validate_file(entry, config)
+    result = _validate_with_a_loader(entry) if with_a_loader else _validate_file(entry, config)
     produced = {(d.rule, d.level) for d in result.diagnostics}
     located = {(d.rule, d.level, d.line) for d in result.diagnostics}
     for diag in expected.get("diagnostics", []):
@@ -244,6 +265,14 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
             assert (*want, line) in located, (
                 f"expected {want} at line {line}; got it at "
                 f"{sorted(d.line or 0 for d in result.diagnostics if (d.rule, d.level) == want)}"
+            )
+        # The file too (§16.9) for the cases that name a fragment's: the entry's own name for
+        # what is in the entry, else the fragment's.
+        file = diag.get("file")
+        if file is not None and line is not None and (with_a_loader or rule_id == "include-not-legaldown"):
+            assert (*want, line, file) in {(d.rule, d.level, d.line, d.file) for d in result.diagnostics}, (
+                f"expected {want} at {file}:{line}; got "
+                f"{sorted((d.file, d.line or 0) for d in result.diagnostics if (d.rule, d.level) == want)}"
             )
 
 

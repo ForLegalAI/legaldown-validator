@@ -13,6 +13,7 @@ Usage::
     legaldown validate --fragment clauses/*.lgd
     legaldown validate --fragment --template clauses/*.lgd
     legaldown validate --fragment --no-template clauses/*.lgd
+    legaldown validate --fragment --fragment-kind attachment --template schedules/*.lgd
     legaldown assemble template.lgd --answers answers.yaml -o out/
     legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/
     legaldown questions template.lgd --answers answers.yaml --format json
@@ -34,6 +35,7 @@ from .files import within, write_atomically
 from .parser import FrontmatterError, load
 from .template import AnswersError, Form, Template, diagnostic_dict, load_answers, load_template
 from .validator import validate
+from .validator.fragments import FragmentKind
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
 EXIT_OK = 0
@@ -48,6 +50,7 @@ def _validate_path(
     *,
     final: bool = False,
     fragment: bool = False,
+    fragment_kind: FragmentKind | None = None,
     template: bool | None = None,
     document_root: str | None = None,
 ) -> tuple[list[dict], str | None]:
@@ -67,7 +70,14 @@ def _validate_path(
         )
 
     try:
-        result = validate(document, final=final, fragment=fragment, template=template, document_root=document_root)
+        result = validate(
+            document,
+            final=final,
+            fragment=fragment,
+            fragment_kind=fragment_kind,
+            template=template,
+            document_root=document_root,
+        )
     except Exception as exc:
         # As above: validating reads the files the document refers to, too.
         return [], (
@@ -76,7 +86,9 @@ def _validate_path(
         )
     return [
         {
-            "file": str(path),
+            # The file the finding is in: the document, or a fragment it includes, which
+            # is named by its path from the document's directory (#35).
+            "file": str(path.parent / d.file) if d.file else str(path),
             "rule": d.rule,
             "level": d.level,
             "line": d.line,
@@ -132,6 +144,7 @@ def _run_validate(args: argparse.Namespace) -> int:
                 target,
                 final=args.final,
                 fragment=args.fragment,
+                fragment_kind=args.fragment_kind,
                 template=args.host_template,
                 document_root=args.document_root,
             )
@@ -554,11 +567,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--fragment",
         action="store_true",
         help=(
-            "Validate each file as an include fragment or attachment file on its own (§12.2, §12.4): "
-            "no frontmatter is expected, and what only the including document can settle (a party, "
+            "Validate each file as an include fragment or attachment file on its own (§12.2, §12.4; "
+            "--fragment-kind says which): no frontmatter is expected, and what only the including document can settle (a party, "
             "side, attachment or question it declares, a section or term it defines) is reported "
             "with \"host_dependent\": true in JSON and \"(host-dependent)\" in text, and does not "
             "affect the exit status."
+        ),
+    )
+    validate.add_argument(
+        "--fragment-kind",
+        choices=("include", "attachment"),
+        default=None,
+        help=(
+            "With --fragment: what the files are to the document that uses them, include (the "
+            "default; an {{include:}} fragment, §12.2) or attachment (a LegalDown attachment file, "
+            "§12.4). An attachment file's frontmatter or level 1 heading is attachment-has-frontmatter "
+            "or attachment-has-h1 (§16.10); with --template, an include fragment is held to what a "
+            "template's fragment may hold (no condition, drafting note or include, and an explicit "
+            "identifier on every heading, §15.3), and an attachment file only to holding no include."
         ),
     )
     host = validate.add_mutually_exclusive_group()
@@ -682,6 +708,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if getattr(args, "host_template", None) is not None and not args.fragment:
         parser.error("--template and --no-template are only valid with --fragment")
+    if getattr(args, "fragment_kind", None) is not None and not args.fragment:
+        parser.error("--fragment-kind is only valid with --fragment")
     return args.func(args)
 
 
