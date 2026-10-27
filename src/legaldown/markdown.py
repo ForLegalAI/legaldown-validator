@@ -13,6 +13,7 @@ from bisect import bisect_left
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
 
     from .models import Block
 
@@ -339,18 +340,19 @@ def item_content_column(line: str) -> int:
     return found.column if found is not None else indent_width(line) + 2  # never: *line* is an item
 
 
-def nested_content(first: str, column: int = 0) -> tuple[int, int]:
+def nested_content(first: str, column: int = 0, is_rule: Callable[[int], bool] | None = None) -> tuple[int, int]:
     """``(columns, characters)``: how much further in than a list item's
     content its innermost content starts, when its text *first* opens with
     items nested on its line (``1. y`` in ``- 1. y``), in columns and in
     characters of *first*, which differ where a tab is spacing: its later
     content is measured from there (CommonMark). *column*: where *first*
-    starts in its line."""
+    starts in its line. *is_rule*: whether *first* from a position on is a
+    thematic break, which holds no item (``1. * * *``)."""
     columns = characters = position = 0
     while (found := item_marker_at(first, position, column)) is not None:
         after = first[found.end:found.end + 1]
-        if found.lead or not found.gap or not after or after.isspace():
-            break  # an item nested on the line has spacing and text
+        if found.lead or not found.gap or not after or after.isspace() or (is_rule and is_rule(position)):
+            break  # an item nested on the line has spacing and text, and is no thematic break
         columns += found.column - column
         characters += found.cut - position
         if found.gap > 4:

@@ -28,6 +28,7 @@ from .markdown import (
     HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
     LIST_ITEM_PATTERN,
+    advance_column,
     closes_fence,
     dedent,
     fence_end,
@@ -430,14 +431,15 @@ def _skip_markers(content: str, *, quotes: bool = False, is_rule: _Rule | None =
     end of the line (``_Rule``): a line of markers (``- - - - a``) is not
     copied, or read, once per marker."""
     is_rule = is_rule or _Rule(content)
-    position = 0
+    position = column = 0  # *column*: where the text at *position* is in its line, which tabs count
     while True:
         if quotes:
-            position = _QUOTE_MARKERS_RE.match(content, position).end()
-        marker = item_marker_at(content, position, position)  # the prefix has no tab
+            skipped = _QUOTE_MARKERS_RE.match(content, position).end()
+            column, position = advance_column(column, content[position:skipped]), skipped
+        marker = item_marker_at(content, position, column)
         if marker is None or is_rule(position):
             return position, False
-        position = marker.end
+        position, column = marker.end, marker.end_column
         if marker.gap > 4 and not marker.blank:
             return position, True
 
@@ -469,7 +471,7 @@ class _Walks:
         """``nested_content(content)``."""
         found = self.nested.pop(content, None)
         if found is None:
-            found = nested_content(content)
+            found = nested_content(content, 0, _Rule(content))
         columns, characters = found
         if characters and "\t" not in content:  # a tab's columns depend on where the text starts
             first = item_marker_at(content)  # which the walk went through
@@ -777,7 +779,7 @@ def _scan_list(
                 and _starts_item(_marker(line), chain, margin, width)
             )
             if not starts and (is_blank(line) or width >= (fence_column or (chain[0] if chain else 2))):
-                code = dedent(line, content_indent, expand=True)
+                code = dedent(line, fence_column or content_indent, expand=True)
                 end += 1
                 if closes_fence(code, fence):
                     fence = None

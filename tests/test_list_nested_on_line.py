@@ -16,7 +16,7 @@ import pytest
 
 from legaldown import parse
 from legaldown.markdown import item_marker_at, nested_content
-from legaldown.parser import quote_blocks
+from legaldown.parser import _Rule, quote_blocks
 
 P, C = ("p",), ("c",)
 
@@ -50,6 +50,13 @@ def _read(source: str) -> list:
         pytest.param("- 1. ```\n     > a\nb\n", [("un", [[("or", [[C]])]]), P], id="fence-goes-on-at-its-content"),
         pytest.param("- 1.\t```\n\t> a\nb\n", [("un", [[("or", [[C]]), ("q", [P])]])], id="fence-ends-short-of-a-tab"),
         pytest.param(
+            "- 1. ```\n      code\n      ```\n\n     para\nlazy\n",
+            [("un", [[("or", [[C, P]])]])],
+            id="fence-closed-in-the-nested-item",
+        ),
+        pytest.param("- 1. ```\n   code\n  ```\nb\n", [("un", [[("or", [[C]]), P, C]]), P], id="closer-short-of-the-nested-item"),
+        pytest.param("1. * * *\n       x\ny\n", [("or", [[("rule",), C]]), P], id="a-thematic-break-nests-no-item"),
+        pytest.param(
             "-1.\t1. \n- 1.\t```- \n\t> a \na1.\t- \n",
             [P, ("un", [[("or", [[C]]), ("q", [P])]])],
             id="the-fuzz-document",
@@ -65,6 +72,13 @@ def test_nested_content_stops_at_a_marker_with_more_than_four_columns_of_spacing
     assert nested_content("- 1.      - x") == (5, 5)
     assert nested_content("- 1.    - x") == (10, 10)  # four columns of spacing: the next item nests
     assert nested_content("-\t- x") == (6, 4)  # the tab is three columns, one character
+
+
+def test_nested_content_stops_at_a_thematic_break_it_is_told_of() -> None:
+    assert nested_content("* * *") == (4, 4)  # without: two items, as the rest of a line of markers
+    assert nested_content("* * *", 0, _Rule("* * *")) == (0, 0)
+    assert nested_content("* * a", 0, _Rule("* * a")) == (4, 4)
+    assert nested_content("1. * * *", 0, _Rule("1. * * *")) == (3, 3)  # the break begins after the first marker
 
 
 def test_an_item_marker_before_a_line_ending_is_empty() -> None:
