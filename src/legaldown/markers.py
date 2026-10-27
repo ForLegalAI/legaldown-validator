@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .markdown import HTML_COMMENT_RE
+from .markdown import strip_comments
 
 # A candidate marker: braces on one line opening with ``#`` or ``when=``.
 # Whether it looks like a marker is decided by is_look_alike, and whether it
@@ -96,7 +96,7 @@ def split_heading(text: str) -> tuple[str, Marker]:
     when there is none). Comments after the marker stay in the text, before
     it. A trailing look-alike that is not a marker stays in the text, where
     the validator reports it (anchor-misplaced)."""
-    view = HTML_COMMENT_RE.sub(lambda comment: " " * len(comment.group()), text)
+    view = strip_comments(text, blank=True)
     trailing = _TRAILING_MARKER_RE.search(view)
     if trailing:
         marker = parse_marker(trailing.group(1))

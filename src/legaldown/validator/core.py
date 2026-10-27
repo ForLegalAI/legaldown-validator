@@ -27,7 +27,7 @@ from ..directives import (
     mask_directives,
 )
 from ..files import LoadFile, file_loader, relative_path, within
-from ..markdown import HTML_COMMENT_RE, INLINE_HTML_RE, is_comment_only
+from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
 from ..models import LIST_KINDS, Amends, Document
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
@@ -437,6 +437,38 @@ def _clashes(presence: Presence, others: list[Presence], questions: Any) -> bool
     return any(not exclusive(presence, other, questions) for other in others)
 
 
+class _FreeIdentifiers:
+    """The identifiers headings get when theirs is missing or taken (§5.5).
+
+    Called with a heading's base identifier and presence, it returns the
+    lowest suffix of the base — none, -2, -3, … — not taken by an explicit
+    identifier or by an earlier heading that can appear with this one. A
+    suffix taken for a presence stays taken, as ``anchors`` only grows, so a
+    later call for the same base and presence resumes after the suffixes
+    known to be taken: *n* headings of one title cost *n* probes, not *n*²
+    (#94).
+    """
+
+    def __init__(self, explicit_ids: set[str], anchors: dict[str, list[Presence]], questions: Any) -> None:
+        self._explicit_ids = explicit_ids
+        self._anchors = anchors  # the caller adds to it; it is read, not copied
+        self._questions = questions
+        #: How many leading suffixes of a base are taken for a presence.
+        self._taken: dict[tuple[str, Presence], int] = {}
+
+    def __call__(self, base: str, presence: Presence) -> str:
+        key = (base, presence)
+        suffix = self._taken.get(key, 0) + 1
+        candidate = base if suffix == 1 else f"{base}-{suffix}"
+        while candidate in self._explicit_ids or _clashes(
+            presence, self._anchors.get(candidate, []), self._questions
+        ):
+            self._taken[key] = suffix
+            suffix += 1
+            candidate = f"{base}-{suffix}"
+        return candidate
+
+
 # A link's pointy-bracket destination, ``](<…>)``, then an optional title and
 # the closing parenthesis: no raw HTML (CommonMark).
 _LINK_DESTINATION_RE = re.compile(r"""<[^<>\n]*>[ \t]*(?:(?:"[^"]*"|'[^']*'|\([^()]*\))[ \t]*)?\)""")
@@ -505,7 +537,7 @@ def _check_raw_html(
     for section_index, block_index, top in document.iter_indexed_blocks():
         for block in nested_blocks(top):
             if block.kind == "html" and not is_comment_only(block.text):
-                source = HTML_COMMENT_RE.sub("", block.text)
+                source = strip_comments(block.text)
                 first = source.strip().split("\n", 1)[0]
                 warn("block", source, where.find(section_index, block_index, first))
         for fragment_index, (text, _position) in enumerate(block_fragments(top)):
@@ -1002,15 +1034,7 @@ def _validate(
     # it holds only earlier headings' identifiers.
     anchors: dict[str, list[Presence]] = {}
 
-    def free_identifier(base: str, presence: Presence) -> str:
-        """The lowest suffix of *base* — none, -2, -3, … — not taken by an
-        explicit identifier or by an earlier heading that can appear with
-        this one (§5.5)."""
-        candidate, suffix = base, 1
-        while candidate in explicit_ids or _clashes(presence, anchors.get(candidate, []), questions):
-            suffix += 1
-            candidate = f"{base}-{suffix}"
-        return candidate
+    free_identifier = _FreeIdentifiers(explicit_ids, anchors, questions)
 
     counters = [0] * 7
     # Numbers count from the shallowest heading level: a document whose

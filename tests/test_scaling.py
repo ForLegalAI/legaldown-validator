@@ -1,0 +1,157 @@
+"""Linear time on untrusted input (#94, validator side).
+
+Each shape below took quadratic time on text an attacker or a careless
+generator can produce: many markers or directives in one paragraph, a
+thousand sections of one title, thousands of blanks on one line, unclosed
+comments. Each is checked twice. The first check counts calls, which is
+deterministic: the work the old code repeated per item is done once. The
+second is one generous time budget at a size where the old code took more
+than ten times as long as the budget; it fails only on a gross regression,
+never on a slow machine.
+"""
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from legaldown import directives as directives_module
+from legaldown import markdown
+from legaldown.directives import lex
+from legaldown.parser import parse
+from legaldown.validator import core, templates, validate
+from legaldown.validator import units as units_module
+from legaldown.validator.units import find_markers
+
+_SIDES = """sides:
+  - name: providers
+    parties:
+      - name: acme
+        type: legal_entity
+  - name: clients
+    parties:
+      - name: beta
+        type: legal_entity
+"""
+_QUESTIONS = "questions:\n  a:\n    type: text\n"
+
+
+def _document(body: str, frontmatter: str = ""):
+    return parse(f"---\ntitle: Fixture\n{_SIDES}{frontmatter}---\n\n# Terms {{#terms}}\n\n{body}\n", filename="t.lgd")
+
+
+def _seconds(call, *args) -> float:
+    start = time.perf_counter()
+    call(*args)
+    return time.perf_counter() - start
+
+
+class _Counter:
+    """Counts the calls of a function it wraps."""
+
+    def __init__(self, monkeypatch, owner, name):
+        self.calls = 0
+        wrapped = getattr(owner, name)
+
+        def counted(*args, **kwargs):
+            self.calls += 1
+            return wrapped(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, counted)
+
+
+class _CountedPattern:
+    """A compiled pattern whose ``match`` calls are counted."""
+
+    def __init__(self, monkeypatch, owner, name):
+        self.calls = 0
+        self._pattern = getattr(owner, name)
+        monkeypatch.setattr(owner, name, self)
+
+    def match(self, *args):
+        self.calls += 1
+        return self._pattern.match(*args)
+
+
+# ── Markers in one paragraph (find_markers) ───────────────────────
+
+_MARKER_BODIES = {
+    "when": "a {when=x} ",
+    "placeholder and anchor": "{{placeholder: p}} {#a} ",
+}
+
+
+@pytest.mark.parametrize("shape", _MARKER_BODIES)
+def test_markers_in_one_paragraph_share_one_scan(shape, monkeypatch):
+    builds = _Counter(monkeypatch, units_module, "blank_from")
+    document = _document(_MARKER_BODIES[shape] * 3000)
+    found = find_markers(document)
+    assert len(found) == 3000
+    assert builds.calls == 1  # the tail test is built once per paragraph, not once per marker
+
+
+@pytest.mark.parametrize("shape", _MARKER_BODIES)
+def test_markers_in_one_paragraph_in_a_time_budget(shape):
+    document = _document(_MARKER_BODIES[shape] * 20000)
+    assert _seconds(find_markers, document) < 3.0  # 0.2 s now; the old scan took a minute
+
+
+# ── Sections of one title (free_identifier) ───────────────────────
+
+
+def test_sections_of_one_title_probe_each_suffix_once(monkeypatch):
+    n = 1500
+    clashes = _Counter(monkeypatch, core, "_clashes")
+    result = validate(parse("# Same\n\ntext\n\n" * n, filename="t.lgd"))
+    assert len(result.index.sections) == n
+    assert clashes.calls <= 4 * n  # 3 per section; the old probe made about n² / 2
+
+
+def test_sections_of_one_title_in_a_time_budget():
+    document = parse("# Same\n\ntext\n\n" * 10000, filename="t.lgd")
+    assert _seconds(validate, document) < 5.0  # 1.4 s now; the old probe took a minute
+
+
+# ── Blanks on one line (insertion-boundary) ───────────────────────
+
+
+def test_blanks_on_one_line_share_one_index(monkeypatch):
+    scans = _Counter(monkeypatch, templates, "_InsertionScan")
+    containers = _CountedPattern(monkeypatch, templates, "_CONTAINER_RE")
+    references = _CountedPattern(monkeypatch, templates, "_LINK_REFERENCE_RE")
+    result = validate(_document("{{placeholder: a}}" * 2000, _QUESTIONS))
+    assert result.diagnostics == []
+    assert scans.calls == 1  # one index for the paragraph, however many blanks
+    assert containers.calls == 1  # its line's container markers are read once
+    assert references.calls == 1
+
+
+def test_blanks_on_one_line_in_a_time_budget():
+    document = _document("{{placeholder: a}}" * 40000, _QUESTIONS)
+    assert _seconds(validate, document) < 3.0  # 0.8 s now; the old checks took minutes
+
+
+# ── Unclosed comments ─────────────────────────────────────────────
+
+
+def test_the_lexer_reads_each_unclosed_opener_once(monkeypatch):
+    ends = _Counter(monkeypatch, directives_module, "comment_end")
+    lexed = lex("x <!-- a " * 5000)
+    assert lexed.literals == []
+    assert ends.calls == 5000  # no opener is scanned for a closer past the last one
+
+
+def test_comment_spans_read_each_unclosed_opener_once(monkeypatch):
+    ends = _Counter(monkeypatch, markdown, "comment_end")
+    assert markdown.comment_spans("<!-- a " * 5000) == []
+    assert ends.calls == 5000
+
+
+def test_a_paragraph_of_unclosed_comments_in_a_time_budget():
+    document = _document("x <!-- a " * 40000)
+    assert _seconds(validate, document) < 2.0  # 0.1 s now; the old scan took a minute
+
+
+def test_an_html_block_of_unclosed_comments_in_a_time_budget():
+    document = _document("<!-- a " * 40000)
+    assert _seconds(validate, document) < 2.0  # 0.01 s now; the old scan took 48 s

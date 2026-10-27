@@ -17,7 +17,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from .markdown import FENCE_OPEN_RE, HTML_COMMENT_RE, fence_end
+from .markdown import FENCE_OPEN_RE, comment_end, fence_end
 
 # Named parameters each directive defines (§6, §7, §10, §12, §15.5). ``note`` is
 # defined for every field spec (§10.1). Placeholder ``currency`` and ``unit``
@@ -350,19 +350,23 @@ def lex(text: str) -> Lexed:
     stray_braces: list[int] = []
     literals: list[tuple[str, int, int]] = []
     pos = 0
+    # Where the last ``-->`` is: a comment opening after it cannot close, and
+    # is not scanned for a closer (#94). Blanking changes only text before
+    # ``pos``, so the closers after it are those of *text*.
+    last_close = view.rfind("-->")
     while token := _INLINE_START_RE.search(view, pos):
         start = token.start()
         if is_escaped(view, start):
             pos = start + 1
             continue
         if token.group(0) == "<!--":
-            comment = HTML_COMMENT_RE.match(view, start)
-            if comment is None:
+            end = comment_end(view, start, last_close)
+            if end is None:
                 pos = start + 4  # an unclosed comment is literal text
             else:
-                view = _blank(view, start, comment.end())
-                literals.append(("comment", start, comment.end()))
-                pos = comment.end()
+                view = _blank(view, start, end)
+                literals.append(("comment", start, end))
+                pos = end
             continue
         if token.group(0).startswith("`"):
             ticks = len(token.group(0))

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -344,6 +345,7 @@ _AFTER_INSERTION = frozenset(".,;:)!?\"'”’»/-")
 _COMBINING = "&<\\"
 # A line's container markers: block quote markers, then a list item marker.
 _CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?")
+_NON_BLANK_RE = re.compile(r"\S")
 # A link reference definition: its label, destination, and optional title.
 _LINK_REFERENCE_RE = re.compile(
     r" {0,3}\[[^\]]+\]:[ \t]*\S*(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
@@ -357,6 +359,108 @@ def template_text(text: str, directives: list[Directive]) -> str:
     return mask_directives(text, directives)
 
 
+class _InsertionScan:
+    """The text of one fragment and what its insertions' boundaries (§15.7.3)
+    are judged by. A fragment can hold thousands of insertions on one line, so
+    the places that a check looks back or ahead for are indexed once, and
+    found by bisect: a scan of the line for each insertion would be
+    quadratic (#94).
+
+    *directives* are all the directives lexed from *text*, and *template* is
+    ``template_text(text, directives)``."""
+
+    def __init__(self, text: str, template: str, directives: list[Directive]) -> None:
+        self.text = text
+        self.template = template
+        self._newlines = _offsets(text, "\n")
+        self._directive_ends = {directive.end for directive in directives}
+        self._blanks = _offsets(template, " ", "\t")
+        self._combining = _offsets(template, *_COMBINING)
+        self._destination_starts = _offsets(template, "](")
+        self._closing_parentheses = _offsets(template, ")")
+        # Per line, which the insertions of a line share: where its content
+        # begins, and what its link reference definition covers.
+        self._content_starts: dict[int, int] = {}
+        self._references: dict[int, int] = {}
+
+    def _line_content(self, line_start: int) -> int:
+        """Where the content of the line at *line_start* begins: after its
+        container markers."""
+        if line_start not in self._content_starts:
+            self._content_starts[line_start] = _CONTAINER_RE.match(self.text, line_start).end()
+        return self._content_starts[line_start]
+
+    def _reference_end(self, content_start: int) -> int:
+        """Where the link reference definition at *content_start* ends, or -1."""
+        if content_start not in self._references:
+            reference = _LINK_REFERENCE_RE.match(self.template, content_start)
+            self._references[content_start] = reference.end() if reference else -1
+        return self._references[content_start]
+
+    def problem(self, insertion: Directive) -> str | None:
+        """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in the
+        text — is not kept apart from template text as §15.7.3 requires, or
+        None."""
+        text, template = self.text, self.template
+        start, end = insertion.start, insertion.end
+        before_start = bisect_left(self._newlines, start)  # the newlines before it
+        line_start = self._newlines[before_start - 1] + 1 if before_start else 0
+        after_end = bisect_left(self._newlines, end)  # the first newline from its end on
+        line_end = self._newlines[after_end] if after_end < len(self._newlines) else len(text)
+        # The line's content begins after its container markers.
+        content_start = min(self._line_content(line_start), start)
+
+        if start > content_start:
+            before = text[start - 1]
+            if not (
+                before.isalnum()
+                or before in " \t"
+                or start in self._directive_ends
+                or (before in _BEFORE_INSERTION and not (before == "(" and text[start - 2:start - 1] == "]"))
+            ):
+                return f"'{before}' directly before it"
+            # The run of text just before it begins after the last space or tab.
+            last_blank = bisect_left(self._blanks, start) - 1
+            run_start = content_start
+            if last_blank >= 0 and self._blanks[last_blank] >= content_start:
+                run_start = self._blanks[last_blank] + 1
+            first_combining = bisect_left(self._combining, run_start)
+            if first_combining < len(self._combining) and self._combining[first_combining] < start:
+                return f"'{template[self._combining[first_combining]]}' in the text just before it"
+        if end < line_end:
+            after = text[end]
+            if not (
+                after.isalnum()
+                or after in " \t"
+                or text.startswith("{{", end)
+                or after in _AFTER_INSERTION
+            ):
+                return f"'{after}' directly after it"
+        reference_end = self._reference_end(content_start)
+        # A definition is the whole line; text after it on the line makes the
+        # line a paragraph's. (One a later line follows is still a definition:
+        # a paragraph keeps its lines.)
+        if (
+            reference_end >= 0
+            and start < reference_end
+            and _NON_BLANK_RE.search(template, reference_end, line_end) is None
+        ):
+            return "it is in a link reference definition"
+        # The last ``](`` before it, with no ``)`` between.
+        last_destination = bisect_right(self._destination_starts, start - 2) - 1
+        if last_destination >= 0 and self._destination_starts[last_destination] >= line_start:
+            destination = self._destination_starts[last_destination]
+            closing = bisect_left(self._closing_parentheses, destination + 2)
+            if closing == len(self._closing_parentheses) or self._closing_parentheses[closing] >= start:
+                return "it is inside a link or image destination"
+        return None
+
+
+def _offsets(text: str, *needles: str) -> list[int]:
+    """The offsets in *text* of each of *needles*, in order."""
+    return sorted(m.start() for m in re.finditer("|".join(map(re.escape, needles)), text))
+
+
 def insertion_boundary_problem(
     text: str, template: str, insertion: Directive, directives: list[Directive]
 ) -> str | None:
@@ -364,49 +468,7 @@ def insertion_boundary_problem(
     *text* — is not kept apart from template text as §15.7.3 requires, or
     None. *directives* are all the directives lexed from *text*, and
     *template* is ``template_text(text, directives)``."""
-    start, end = insertion.start, insertion.end
-    line_start = text.rfind("\n", 0, start) + 1
-    line_end = text.find("\n", end)
-    line_end = len(text) if line_end < 0 else line_end
-    # The line's content begins after its container markers.
-    content_start = min(_CONTAINER_RE.match(text, line_start).end(), start)
-
-    if start > content_start:
-        before = text[start - 1]
-        if not (
-            before.isalnum()
-            or before in " \t"
-            or any(directive.end == start for directive in directives)
-            or (before in _BEFORE_INSERTION and not (before == "(" and text[start - 2:start - 1] == "]"))
-        ):
-            return f"'{before}' directly before it"
-        run_start = max(
-            template.rfind(" ", content_start, start),
-            template.rfind("\t", content_start, start),
-            content_start - 1,
-        ) + 1
-        combining = next((ch for ch in template[run_start:start] if ch in _COMBINING), None)
-        if combining:
-            return f"'{combining}' in the text just before it"
-    if end < line_end:
-        after = text[end]
-        if not (
-            after.isalnum()
-            or after in " \t"
-            or text.startswith("{{", end)
-            or after in _AFTER_INSERTION
-        ):
-            return f"'{after}' directly after it"
-    reference = _LINK_REFERENCE_RE.match(template, content_start)
-    # A definition is the whole line; text after it on the line makes the
-    # line a paragraph's. (One a later line follows is still a definition:
-    # a paragraph keeps its lines.)
-    if reference and start < reference.end() and not template[reference.end():line_end].strip():
-        return "it is in a link reference definition"
-    destination = template.rfind("](", line_start, start)
-    if destination >= 0 and template.find(")", destination + 2, start) < 0:
-        return "it is inside a link or image destination"
-    return None
+    return _InsertionScan(text, template, directives).problem(insertion)
 
 
 # ── Inline choices (§15.5) ────────────────────────────────────────
@@ -507,11 +569,14 @@ def check_template_body(
 
     for heading, section in enumerate(document.sections):  # headings are body text too
         lexed = lex_fragment(section.title)
+        scan: _InsertionScan | None = None  # the title's, for its first insertion
         for directive in lexed.directives:
             if directive.name in _INSERTIONS and not directive.malformed:
-                masked = template_text(section.title, lexed.directives)
+                scan = scan or _InsertionScan(
+                    section.title, template_text(section.title, lexed.directives), lexed.directives
+                )
                 line = where.heading(heading) if where is not None else None
-                _check_insertion(section.title, masked, directive, lexed.directives, result, line)
+                _check_insertion(scan, directive, result, line)
     includes: list[tuple[str, Line]] = []
     all_notes: list[tuple[Quote, Line]] = []
     for block_section, block_index, block in document.iter_indexed_blocks():
@@ -534,7 +599,7 @@ def check_template_body(
                 all_notes.append((quote, line))
         for index, fragment in enumerate(text_fragments(block)):
             lexed = lex_fragment(fragment)
-            masked: str | None = None  # template text, for the fragment's first insertion
+            scan = None  # the fragment's, for its first insertion
             in_note = any(index in note.fragments for note in notes)
             for directive in lexed.directives:
                 if directive.malformed:
@@ -560,8 +625,10 @@ def check_template_body(
                 # A drafting note is removed before anything is inserted
                 # (§15.7.2 step 2), so a blank in one is never filled.
                 if directive.name in _INSERTIONS and not in_note:
-                    masked = masked or template_text(fragment, lexed.directives)
-                    _check_insertion(fragment, masked, directive, lexed.directives, result, line)
+                    scan = scan or _InsertionScan(
+                        fragment, template_text(fragment, lexed.directives), lexed.directives
+                    )
+                    _check_insertion(scan, directive, result, line)
             for anchor in find_definition_anchors(
                 fragment, language=document.metadata.language, lexed=lexed
             ):
@@ -581,16 +648,9 @@ def check_template_body(
     return all_notes
 
 
-def _check_insertion(
-    text: str,
-    masked: str,
-    insertion: Directive,
-    directives: list[Directive],
-    result: _Recorder,
-    line: Line = None,
-) -> None:
+def _check_insertion(scan: _InsertionScan, insertion: Directive, result: _Recorder, line: Line = None) -> None:
     """Report *insertion*, at *line*, if it is not kept apart from template text."""
-    problem = insertion_boundary_problem(text, masked, insertion, directives)
+    problem = scan.problem(insertion)
     if problem:
         result.error(
             "insertion-boundary",

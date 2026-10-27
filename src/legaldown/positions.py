@@ -182,7 +182,9 @@ class SourceMap:
 
     def heading(self, section: int) -> int:
         """The first line of section *section*'s heading."""
-        return self.body_start + self.layout.headings[section].start + 1
+        # Not ``layout.headings[section]``, which lists every heading for each
+        # call: a document of thousands of duplicate titles would be quadratic (#94).
+        return self.body_start + self.layout.sections[section][0].start + 1
 
     def span(self, section: int | None, index: int) -> Any:
         """Where top-level block *index* of the preamble (*section* None) or

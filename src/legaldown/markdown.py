@@ -122,6 +122,62 @@ def split_lone_tag(text: str) -> str | None:
 # not containing ``-->``, and ``-->``. The empty forms end at their own ``>``.
 HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)
 
+
+# HTML_COMMENT_RE is quadratic on text with many unclosed ``<!--``: each
+# opener's ``.*?-->`` rescans to the end of the text before failing (#94).
+# These read a comment the way the regex does, but remember where the last
+# ``-->`` is, so that an opener after it fails without a scan, and find a
+# closer with ``str.find``, which a forward pass never repeats.
+
+
+def comment_end(text: str, start: int, last_close: int) -> int | None:
+    """Where the comment that ``HTML_COMMENT_RE`` matches at *start* ends, or
+    None when it matches nothing there. *start* is at ``<!--``, and
+    *last_close* is ``text.rfind("-->")``."""
+    body = start + 4
+    if text.startswith(">", body):
+        return body + 1  # ``<!-->``
+    if text.startswith("->", body):
+        return body + 2  # ``<!--->``
+    if last_close < body:
+        return None  # unclosed: it is literal text
+    return text.find("-->", body) + 3
+
+
+def comment_spans(text: str) -> list[tuple[int, int]]:
+    """The ``(start, end)`` of each comment in *text*, as
+    ``HTML_COMMENT_RE.finditer`` finds them, in linear time."""
+    spans: list[tuple[int, int]] = []
+    last_close = text.rfind("-->")
+    pos = 0
+    while (start := text.find("<!--", pos)) >= 0:
+        end = comment_end(text, start, last_close)
+        if end is None:
+            pos = start + 4
+        else:
+            spans.append((start, end))
+            pos = end
+    return spans
+
+
+def strip_comments(text: str, *, blank: bool = False) -> str:
+    """*text* without its comments: ``HTML_COMMENT_RE.sub("", text)``. With
+    *blank*, each comment is replaced by as many spaces, so that offsets are
+    kept."""
+    spans = comment_spans(text)
+    if not spans:
+        return text
+    kept: list[str] = []
+    pos = 0
+    for start, end in spans:
+        kept.append(text[pos:start])
+        if blank:
+            kept.append(" " * (end - start))
+        pos = end
+    kept.append(text[pos:])
+    return "".join(kept)
+
+
 # Inline raw HTML other than a comment (CommonMark 0.31 §6.6, as cmark-gfm
 # reads it): an open tag, whose ``/`` is directly before its ``>``; a closing
 # tag, which takes no attributes; a processing instruction; a declaration,
@@ -140,7 +196,7 @@ INLINE_HTML_RE = re.compile(
 def is_comment_only(html: str) -> bool:
     """True if raw HTML block text *html* holds nothing but comments (§8.6)
     and whitespace: an unclosed ``<!--`` runs to its end."""
-    rest = HTML_COMMENT_RE.sub("", html)
+    rest = strip_comments(html)
     opened = rest.find("<!--")
     return not (rest[:opened] if opened >= 0 else rest).strip()
 
