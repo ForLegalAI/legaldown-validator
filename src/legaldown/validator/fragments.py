@@ -45,7 +45,7 @@ class Finding:
     line: int | None
 
 
-class Fragment:
+class FragmentFile:
     """A file read as a fragment: its normalised relative *path* (the name the
     document refers to it by, ``relative_path``) and its *document*, parsed with
     the frontmatter it should not have kept as an error, not raised (#43)."""
@@ -70,7 +70,7 @@ class Files:
     def __init__(self, resolve: LoadFile, document: Document) -> None:
         self._resolve = resolve
         self._path = document.path
-        self._read: dict[str, Fragment | None] = {}
+        self._read: dict[str, FragmentFile | None] = {}
         self._own: dict[str, bool] = {}
 
     def is_own(self, relative: str) -> bool:
@@ -83,7 +83,7 @@ class Files:
             self._own[relative] = within(self._path.parent, relative) == self._path.resolve()
         return self._own[relative]
 
-    def read(self, path: str) -> Fragment | None:
+    def read(self, path: str) -> FragmentFile | None:
         """The file at *path*, or None when it cannot be asked for (``relative_path``:
         not relative, or out of the document's directory, §2.3) or is not there. The
         loader is asked once for each file."""
@@ -96,7 +96,7 @@ class Files:
             from ..parser import parse
 
             text = self._resolve(relative)
-            self._read[relative] = None if text is None else Fragment(
+            self._read[relative] = None if text is None else FragmentFile(
                 relative, parse(text, on_frontmatter_error="keep")
             )
         return self._read[relative]
@@ -219,7 +219,7 @@ def content_findings(
 
 
 def fragment_findings(
-    fragment: Fragment,
+    fragment: FragmentFile,
     *,
     kind: FragmentKind,
     template: bool,
@@ -230,15 +230,16 @@ def fragment_findings(
     unless *shape* is False, and, when the document is a *template*, what §15.3
     requires of it (``content_findings``). Nothing is reported of a file that is
     not in a template beyond its shape: its nested includes are allowed (§12.2)
-    and not followed here. The checks of the file's own body that
-    ``check_template_body`` makes are not findings on *this* use of it, and are
-    left out: the file is validated on its own with ``validate(fragment=True)``."""
+    and not followed here. Nor is anything the file's own body draws in
+    ``validate(fragment=True)`` (``insertion-boundary`` and the like): this is a
+    check of what the file may hold, not a validation of it."""
     document = fragment.document
     found = shape_findings(document, fragment.where, kind, path=fragment.path) if shape else []
     if template:
         # The throwaway recorder takes what the body check says of the file for itself
-        # (insertion-boundary, drafting-note-def, ...): the file is not validated here,
-        # and those rules would newly stop the assembly of a template that is fine.
+        # (insertion-boundary, drafting-note-def, def-term-variable, ...): the file is not
+        # validated here, and those are template rules (TEMPLATE_RULES) that would newly
+        # stop the assembly of a template through a fragment's own finding.
         scan = check_template_body(document, lex_fragment, _Recorder(), template=False, where=fragment.where)
         found += content_findings(
             document, fragment.where, scan, find_markers(document, lex_fragment), kind, path=fragment.path
@@ -269,7 +270,7 @@ class HeadingSkip:
 def include_heading_skips(
     document: Document,
     where: Locator,
-    splices: dict[int | None, list[Fragment]],
+    splices: dict[int | None, list[FragmentFile]],
     first: int | None,
 ) -> list[HeadingSkip]:
     """The headings that skip a level when every fragment is spliced in where its
@@ -288,7 +289,7 @@ def include_heading_skips(
     last = first  # the level of the heading before, in the combined document
     from_fragment = False  # whether that heading is a fragment's
 
-    def splice(fragments: list[Fragment]) -> None:
+    def splice(fragments: list[FragmentFile]) -> None:
         nonlocal last, from_fragment
         for fragment in fragments:
             for index, section in enumerate(fragment.document.sections):
@@ -359,7 +360,7 @@ def check_includes(
     ``FileReferences.reported``) draws that finding alone (path-not-relative, an
     absolute path or one with a URI scheme; path-outside-root): the same path is
     not also missing, or not LegalDown."""
-    splices: dict[int | None, list[Fragment]] = {}
+    splices: dict[int | None, list[FragmentFile]] = {}
     seen: set[str] = set()
     for include in includes:
         if not include.paragraph or include.at in judged:
@@ -405,7 +406,8 @@ def check_includes(
         attached: set[str] = set()
         for attachment in document.metadata.attachments:
             relative = relative_path(attachment.file) if attachment.file.endswith(LEGALDOWN_EXTENSIONS) else None
-            if relative is None or relative in attached:
+            # (A file that is also an include was checked above, and is a finding of its own.)
+            if relative is None or relative in attached or relative in seen:
                 continue
             attached.add(relative)
             fragment = files.read(relative)

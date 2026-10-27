@@ -15,7 +15,7 @@ import pytest
 from legaldown import Template, load, parse, validate
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.files import file_loader
-from legaldown.validator.fragments import Files, Fragment, fragment_findings
+from legaldown.validator.fragments import Files, FragmentFile, fragment_findings
 
 # The frontmatter of the corpus's include cases: 17 lines, so a body begins at line 19.
 _FRONT = (
@@ -76,7 +76,7 @@ _SCOPE = "# Scope {#scope}\n\n"
     (_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": "# Not allowed {#part-heading}\n\nFragment body.\n"},
      [("include-has-h1", "part.lgd", 1)]),
     (_FRONT + _SCOPE + "{{include: part.lgd}}\n",
-     {"part.lgd": "Fragment body.\n\n### Too deep {#too-deep}\n\nSkips level 2 at the splice point.\n"},
+     {"part.lgd": "FragmentFile body.\n\n### Too deep {#too-deep}\n\nSkips level 2 at the splice point.\n"},
      [("include-heading-skip", "part.lgd", 3)]),
     (_TEMPLATE_FRONT + "# Support {#support}\n\nStandard.\n\n{{include: extended.lgd}} {when=x}\n",
      {"extended.lgd": "## Extended Support\n\nOutside business hours.\n"},
@@ -388,7 +388,7 @@ def test_assembly_and_validation_report_a_file_with_the_same_findings(part, kind
     template = Template(front + "# A {#a}\n\n" + body, resolve=files.get)
     from_assembly = [(d.rule, d.file, d.line) for d in template.problems if d.rule != "include-file-missing"]
     document = parse(part, on_frontmatter_error="keep")
-    findings = fragment_findings(Fragment("part.lgd", document), kind=kind, template=True)
+    findings = fragment_findings(FragmentFile("part.lgd", document), kind=kind, template=True)
     assert from_assembly == [(f.rule, "part.lgd", f.line) for f in findings]
     # Each finding once in the template's problems, although the validator reports its own as well.
     assert len(set(from_assembly)) == len(from_assembly)

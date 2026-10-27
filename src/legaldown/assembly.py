@@ -70,7 +70,7 @@ from .parser import (
 from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
-from .validator.fragments import Fragment, FragmentKind, fragment_findings
+from .validator.fragments import FragmentFile, FragmentKind, fragment_findings
 from .validator.helpers import is_positive_numeric, is_valid_money_amount
 from .validator.patterns import DURATION_UNITS, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
 from .validator.result import Diagnostic
@@ -960,7 +960,7 @@ def _file_problems(path: str, kind: FragmentKind, source: _Source, document: Doc
             else f"{finding.message} The template is not assembled.",
             line=finding.line, file=path,
         )
-        for finding in fragment_findings(Fragment(path, document), kind=kind, template=template)
+        for finding in fragment_findings(FragmentFile(path, document), kind=kind, template=template)
     ]
     # Outside a template, an include in a drafting note is removed with it,
     # unread (§15.6); in one, it is template-fragment-invalid wherever it is
