@@ -38,7 +38,7 @@ def is_absolute_reference(path: str) -> bool:
     """True if *path*, as a document names a file (§2.3), is not a relative path: it
     begins with a URI scheme, or with ``/`` or ``\\`` (an absolute path, ``//host``,
     ``\\\\host``). Judged by its text alone: no file is looked at, and ``../x``
-    is relative (``resolves_within`` tells where it leads)."""
+    is relative (``leaves_root`` tells where it leads)."""
     return has_uri_scheme(path) or path[:1] in ("/", "\\")
 
 
@@ -64,20 +64,6 @@ def leaves_root(path: str, depth: int) -> bool:
         elif name not in ("", "."):
             depth += 1
     return False
-
-
-def resolves_within(path: str, base: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
-    """True if the relative *path*, read from directory *base*, leads to a place at
-    or below directory *root* (§2.3). Lexical, as ``leaves_root``: no file is
-    looked at, so a symbolic link is not followed (``within`` does, to decide what
-    is read). A *base* that is not within *root* has no path within it."""
-    depth = names_below(base, root)
-    return depth is not None and not leaves_root(path, depth)
-
-
-def is_within_root(directory: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
-    """True if *directory* is *root* or below it, by their text alone."""
-    return names_below(directory, root) is not None
 
 
 def relative_path(path: str) -> str | None:

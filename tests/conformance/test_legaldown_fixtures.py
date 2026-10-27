@@ -184,7 +184,9 @@ def _validate_file(path: Path, config: dict):
         # file is, as it is for a loaded one, so its paths are read from there.
         root = path.parent / config["document_root"]
         document = replace(document, path=path.absolute())
-    return validate(document, final=bool(config.get("final")), document_root=root)
+    # Reads nothing, as for a document without a path: one with a path would be
+    # given the files beside it, and the cases are validated alone.
+    return validate(document, final=bool(config.get("final")), document_root=root, resolve=lambda _path: None)
 
 
 @pytest.mark.parametrize("case", list(_iter_valid_cases()))

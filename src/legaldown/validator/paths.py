@@ -14,6 +14,7 @@ import html
 import os
 import re
 import string
+from bisect import bisect_left
 from collections.abc import Callable
 from functools import cache, partial
 from typing import NamedTuple
@@ -26,6 +27,27 @@ from ..positions import Locator
 from .result import Line, _Recorder
 
 
+class _Reference(NamedTuple):
+    """A file reference met, to be judged in document order (``FileReferences.finish``)."""
+
+    at: tuple[int, ...]
+    path: str
+    what: str
+    line: Line
+    url: bool
+    literal: str | None
+
+
+#: A drive letter with a separator after it: ``C:\\x``, ``C:/x``.
+_DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]")
+
+
+def _whole_names(path: str) -> str:
+    """*path* up to its last separator: the names of it that a directive after it
+    cannot change. ``../x/`` of ``../x/``, ``../x`` of ``../x/y``, ``..`` of ``..``."""
+    return path[: max(path.rfind("/"), path.rfind("\\")) + 1]
+
+
 class FileReferences:
     """Checks the file references of one document against §2.3, recording
     path-not-relative and path-outside-root in *result*.
@@ -34,7 +56,12 @@ class FileReferences:
     run, and ``../shared/definitions.lgd`` is valid, §2.3). *base* is the directory
     the paths are relative to: that of a loaded document; a parsed string has
     none and is assumed to sit at the root, so a leading ``..`` leaves it. *line*
-    is where a document outside the root is reported."""
+    is where a document outside the root is reported.
+
+    References are met as the document is walked, in no order that reads well, and
+    recorded by ``check`` with their place in the document (*at*); ``finish`` judges
+    them in document order, so the findings and the one that names a path as an
+    example (a document outside the root) are in it too."""
 
     def __init__(
         self,
@@ -52,40 +79,65 @@ class FileReferences:
         self._depth: int | None = None
         if self._root is not None:
             self._depth = names_below(self._root if base is None else base, self._root)
+        self._met: list[_Reference] = []
         self._said_outside = False
 
     def check(
-        self, path: str, what: str, line: Line, *, url: bool = False, literal: str | None = None
+        self,
+        path: str,
+        what: str,
+        line: Line,
+        *,
+        at: tuple[int, ...] = (),
+        url: bool = False,
+        literal: str | None = None,
     ) -> None:
-        """Check *path*, which *what* names (``attachments[0].file``, ``image``),
-        found at *line*. With *url* it is an image destination (§8.7), which is
-        read as a URL is: without a query or fragment (``x.png?p=/../..`` is
-        ``x.png``), and also percent-decoded, as a tool opening the file would
-        read it, with ``%2F`` as ``/`` and ``%2E%2E`` as ``..``. A decoded path
-        is absolute when it begins with ``/`` or ``\\``; a scheme is only the one
+        """Record *path*, which *what* names (``attachments[0].file``, ``image``),
+        found at *line* and at place *at* in the document: the frontmatter's
+        before the body's, the body's by (section, block, fragment, offset), a
+        section's heading before its blocks. With *url* it is an image
+        destination (§8.7), which is read as a URL is: without a query or
+        fragment (``x.png?p=/../..`` is ``x.png``), and also percent-decoded, as
+        a tool opening the file would read it, with ``%2F`` as ``/`` and
+        ``%2E%2E`` as ``..``. A decoded path is absolute when it begins with
+        ``/`` or ``\\`` or a drive (``C%3A/x``); a scheme is only the one
         written, since ``%3A`` in ``a%3Ab.png`` is a character of the name. With
         *literal*, only that start of *path* is known, since a directive follows
-        it: it is judged for being absolute and its containment is not, as the
-        rest of the path is not known. A path that is empty is not this rule's
-        concern (``attachment-file-missing``)."""
-        written = path.strip()
+        it: it is judged for being absolute, and for the names of it that are
+        whole leaving the root. A path that is empty is not this rule's concern
+        (``attachment-file-missing``)."""
+        if path.strip():
+            self._met.append(_Reference(at, path.strip(), what, line, url, literal))
+
+    def finish(self) -> None:
+        """Judge the references recorded, in the order of the document."""
+        self._said_outside = False
+        for reference in sorted(self._met, key=lambda met: met.at):
+            self._judge(reference)
+        self._met = []
+
+    def _judge(self, reference: _Reference) -> None:
+        """Record what is wrong with *reference*."""
+        _at, written, what, line, url, literal = reference
         known = written if literal is None else literal.strip()
-        if url:
-            known = known.split("?", 1)[0].split("#", 1)[0]
-        if not known:
-            return
-        decoded = unquote(known) if url and "%" in known else known
-        if is_absolute_reference(known) or decoded[:1] in ("/", "\\"):
+        judged = known.split("?", 1)[0].split("#", 1)[0] if url else known
+        if not judged and literal is None:
+            return  # a query or a fragment alone names no file
+        decoded = unquote(judged) if url and "%" in judged else judged
+        # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
+        absolute = judged if is_absolute_reference(judged) else (
+            decoded if decoded[:1] in ("/", "\\") or _DRIVE_RE.match(decoded) else None
+        )
+        if absolute is not None:
             self._result.error(
                 "path-not-relative",
-                f"File reference '{written}' ({what}{_read_as(known, known if is_absolute_reference(known) else decoded)}"
-                f") is not relative: an absolute "
-                f"path, or one beginning with a URI scheme (https://, file://, a drive letter), is an Error. "
-                f"Write a path relative to the document (§2.3).",
+                f"File reference '{written}' ({what}{_reading(known, judged, absolute)}) is not relative: an "
+                f"absolute path, or one beginning with a URI scheme (https://, file://, a drive letter), is an "
+                f"Error. Write a path relative to the document (§2.3).",
                 line=line,
             )
             return  # not also outside the root: one finding for one path
-        if self._root is None or literal is not None:
+        if self._root is None:
             return
         depth = self._depth
         if depth is None:
@@ -98,20 +150,27 @@ class FileReferences:
                     line=self._line,
                 )
             return
-        for form in (known, decoded):
-            if leaves_root(form, depth):
+        for form in (judged, decoded):
+            if leaves_root(form if literal is None else _whole_names(form), depth):
                 self._result.error(
                     "path-outside-root",
-                    f"File reference '{written}' ({what}{_read_as(known, form)}) leads out of the document root "
-                    f"'{self._root}' (§2.3).",
+                    f"File reference '{written}' ({what}{_reading(known, judged, form)}) leads out of the "
+                    f"document root '{self._root}' (§2.3).",
                     line=line,
                 )
                 return
 
 
-def _read_as(known: str, form: str) -> str:
-    """What a finding says of a path read other than as written."""
-    return "" if form == known else f", read as '{form}' once percent-decoded"
+def _reading(known: str, judged: str, form: str) -> str:
+    """What a finding says of a path read other than as written: *known* is what
+    is written of it, *judged* is that without its query or fragment, *form* is
+    the form of that which the finding is about."""
+    notes = []
+    if judged != known:
+        notes.append("without its query or fragment")
+    if form != judged:
+        notes.append(f"read as '{form}' once percent-decoded")
+    return "".join(f", {note}" for note in notes)
 
 
 def check_frontmatter_paths(meta: Metadata, where: Locator, references: FileReferences) -> None:
@@ -222,7 +281,7 @@ def _destination(raw: str, opening: int) -> tuple[int, int, int] | None:
             end += 1
         if depth:
             return None
-        start, stop, at = at, min(end, size), end
+        start, stop, at = at, end, end
     at = _skip_space(raw, at)
     if raw[at:at + 1] in ('"', "'", "("):
         closer = ")" if raw[at] == "(" else raw[at]
@@ -252,6 +311,7 @@ def images(text: str, lexed: Lexed) -> list[Image]:
     view = mask_directives(lexed.view, lexed.directives)
     raw = mask_directives(text, lexed.directives)
     closing = _closing_brackets(view)
+    starts = [directive.start for directive in lexed.directives]
     found: list[Image] = []
     at = view.find("![")
     while at >= 0:
@@ -260,11 +320,12 @@ def images(text: str, lexed: Lexed) -> list[Image]:
             link = _destination(raw, close + 1)
             if link is not None:
                 start, stop, after = link
-                unknown = raw.find("\0", start, stop)
-                if unknown < 0:
-                    found.append(Image(_decoded(text[start:stop]), at, after))
+                # Whether a directive is in it is the lexer's to say: a NUL in the text is only a character.
+                first = bisect_left(starts, start)
+                if first < len(starts) and starts[first] < stop:
+                    found.append(Image(text[start:stop], at, after, _decoded(text[start:starts[first]])))
                 else:
-                    found.append(Image(text[start:stop], at, after, _decoded(text[start:unknown])))
+                    found.append(Image(_decoded(text[start:stop]), at, after))
         at = view.find("![", at + 2)
     return found
 
@@ -277,7 +338,10 @@ def check_heading_images(
         title = section.title
         if "![" in title:
             for image in images(title, lex_fragment(title)):
-                references.check(image.path, "image", where.heading(index), url=True, literal=image.literal)
+                references.check(
+                    image.path, "image", where.heading(index), at=(index, -1, 0, image.start), url=True,
+                    literal=image.literal,
+                )
 
 
 def check_fragment_images(
@@ -309,7 +373,10 @@ def check_fragment_images(
     for image in found:
         breaks += text.count("\n", previous, image.start)
         previous = image.start
-        references.check(image.path, "image", partial(_below, first_line, breaks), url=True, literal=image.literal)
+        references.check(
+            image.path, "image", partial(_below, first_line, breaks),
+            at=(-1 if section is None else section, block, fragment, image.start), url=True, literal=image.literal,
+        )
 
 
 def _below(first: Callable[[], int | None], lines: int) -> int | None:

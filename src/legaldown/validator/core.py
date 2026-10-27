@@ -2011,7 +2011,11 @@ def _validate(
                     with result.at(line):
                         check_choose(directive, questions, result, host_declares=host_declares)
                 elif name == "include":
-                    file_references.check(value, "{{include:}}", line)  # §2.3: a path of the fragment's own, whoever includes it
+                    # §2.3: a path of the fragment's own, whoever includes it
+                    file_references.check(
+                        value, "{{include:}}", line,
+                        at=(-1 if section_index is None else section_index, block_index, fragment_index, directive.start),
+                    )
                 elif name == "attach":
                     referenced_attachments.add(value)
                     if value not in attachment_ids:
@@ -2185,6 +2189,7 @@ def _validate(
     notes = check_template_body(document, lex_fragment, result, template=template, where=where)
     _check_raw_html(document, lex_fragment, result, where)
     check_heading_images(document, lex_fragment, file_references, where)
+    file_references.finish()
     if final:
         _check_final(placeholders, chooses, notes, conditions, questions, result, where.key("questions"))
 

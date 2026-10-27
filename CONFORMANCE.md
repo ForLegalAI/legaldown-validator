@@ -182,8 +182,8 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
   (`?…`, `#…`, the first of either) is not part of the path (`x.png?p=/../..` stays in the root), and **it is
   also read percent-decoded**: `%2Fetc` is not relative and `%2E%2E/%2E%2E/x.png` leaves a root, since a tool
   that opens the file decodes the URL first; a `%` not followed by two hex digits stays as written. Only
-  the `/` and `\` that decoding yields make a path absolute: a scheme is the one written, so `a%3Ab.png`
-  is a file named `a:b.png`. No other reference is percent-decoded or loses a query.
+  a `/` or `\` that decoding yields at the start, or a drive (`C%3A/x`, `C%3A%5Cx`), makes a path absolute:
+  a scheme is the one written, so `a%3Ab.png` is a file named `a:b.png`. No other reference is percent-decoded or loses a query.
   Not an image: one in a code span, fenced or indented code, a comment or a raw HTML block, `\![a](x)`
   (a link after a literal `!`), a link or autolink (valid, §8.7), `<img src>` (that is `raw-html`),
   and a reference-style image (`![a][r]`, `[r]: path`), which waits for link reference definitions in the
@@ -191,8 +191,9 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
   an image's destination (`![a](https://{{placeholder: host}}/x.png)`) leaves its path unknown until it is
   filled in (assembly's output is validated again, §15.7.4), but the text before the first directive may
   decide already: one that begins with a scheme or a `/` or `\` (`![a](/abs/{{placeholder: p}}.png)`) is
-  `path-not-relative` whatever is filled in. The rest is not judged, and the containment never is, since
-  `../../{{placeholder: p}}` may be filled in as anything. A directive in the alt text is no matter.
+  `path-not-relative` whatever is filled in. The rest is not judged for being relative, and for the root only the
+  names before the last separator of that text are (`../../../{{placeholder: p}}.png` leaves the root; the
+  name before the directive is partial, as `..` may be `..x` once filled in). A directive in the alt text is no matter.
 - In a fragment (`validate(fragment=True)`) the include and image paths are its own, whoever includes it:
   they are checked and never `host_dependent`. Its frontmatter is never read, so none of its keys is checked.
   A document whose frontmatter cannot be read is validated by its body alone, as for the other rules.

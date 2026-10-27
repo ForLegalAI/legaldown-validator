@@ -20,9 +20,9 @@ from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.files import (
     has_uri_scheme,
     is_absolute_reference,
-    is_within_root,
+    leaves_root,
+    names_below,
     relative_path,
-    resolves_within,
 )
 from legaldown.validator import paths as paths_module
 
@@ -308,13 +308,96 @@ def test_an_image_whose_destination_holds_a_directive_is_judged_by_what_precedes
         assert f"'{shown}' (image" in _messages(result)[0], body
 
 
-def test_a_destination_with_a_directive_is_not_judged_for_the_root(tmp_path):
-    """Only its start is known: ``../../{{placeholder: p}}`` may be filled in as anything."""
+def test_a_destination_with_a_directive_is_judged_for_the_root_by_its_whole_names_only(tmp_path):
+    """``../../{{placeholder: p}}`` may be filled in as anything, but the names before the last separator are written."""
     root = _root(tmp_path)
-    for body in ("![a](../../../{{placeholder: p}})", "![a](../../../x/{{placeholder: p}}.png)",
-                 "![a](<../../../{{placeholder: p}}>)"):
+    for body in ("![a](../../../{{placeholder: p}}.png)", "![a](../../../x/{{placeholder: p}}.png)",
+                 "![a](<../../../{{placeholder: p}}>)", "![a](x/../../{{placeholder: p}})",
+                 "![a](%2E%2E/%2E%2E/{{placeholder: p}})", "![a](..%5C..%5C{{placeholder: p}})"):
+        result = validate(_body(body), document_root=root)
+        assert _found(result) == [("path-outside-root", 7)], body
+        assert "{{placeholder: p}}" in _messages(result)[0]
+    # The last name is partial, whatever it looks like: ``..`` may be ``...`` or ``..x`` once filled in.
+    for body in ("![a](x/..{{placeholder: p}})", "![a](a/../..{{placeholder: p}})",
+                 "![a](x/{{placeholder: p}}/../../../y)", "![a]({{placeholder: p}}../../..)", "![a](x/{{placeholder: p}})"):
         assert _found(validate(_body(body), document_root=root)) == [], body
     assert _found(validate(_body("![a](/{{placeholder: p}})"), document_root=root)) == [("path-not-relative", 7)]
+    assert _found(validate(_body("![a](../../../{{placeholder: p}}.png)"))) == []  # no root
+
+
+def test_a_document_outside_the_root_with_only_destinations_that_hold_directives_is_still_reported_once(tmp_path):
+    root = _root(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    path = tmp_path / "elsewhere" / "doc.lgd"
+    path.write_text(
+        f"{_ROOT_FRONT}# A {{#a}}\n\n![a]({{{{placeholder: p}}}}.png) ![b](x/{{{{placeholder: q}}}}) ![c](./{{{{placeholder: r}}}})\n",
+        encoding="utf-8",
+    )
+    result = validate(load(path), document_root=root)
+    assert _found(result) == [("path-outside-root", 1)]
+    assert "The document is outside the document root" in _messages(result)[0]
+    # A destination that is only a query names no file; the document names none.
+    path.write_text(f"{_ROOT_FRONT}# A {{#a}}\n\n![a](?x=1) ![b](#top)\n", encoding="utf-8")
+    assert _found(validate(load(path), document_root=root)) == []
+
+
+def test_a_nul_in_the_text_is_not_a_directive(tmp_path):
+    root = _root(tmp_path)
+    result = validate(_body("![a](../../../x\x00.png)"), document_root=root)
+    assert _found(result) == [("path-outside-root", 7)] and "x\x00.png" in _messages(result)[0]
+    # ... and does not hide what follows it from the judgement, or what precedes it from being a path.
+    assert _found(validate(_body("![a](x\x00/../../..)"), document_root=root)) == [("path-outside-root", 7)]
+    assert _found(validate(_body("![a](\x00/etc)"))) == []
+    assert _found(validate(_body("![a](/\x00)"))) == [("path-not-relative", 7)]
+    both = validate(_body("![a](../../../{{placeholder: p}}\x00)"), document_root=root)
+    assert _found(both) == [("path-outside-root", 7)]
+
+
+@pytest.mark.parametrize("destination", ["C%3A%5CWindows%5Cx.png", "C%3A/x.png", "c%3a%5cx", "z%3A%2Fx"])
+def test_a_percent_encoded_drive_is_absolute(destination):
+    result = validate(_body(f"![a]({destination})"))
+    assert _found(result) == [("path-not-relative", 7)] and "once percent-decoded" in _messages(result)[0]
+    assert _found(validate(_body(f"![a]({destination})"), document_root="/r")) == [("path-not-relative", 7)]
+
+
+@pytest.mark.parametrize("destination", ["a%3Ab.png", "C%3Ax.png", "a%3A", "1%3A/x", "ab%3Ax"])
+def test_a_decoded_colon_that_is_no_drive_is_a_character_of_the_name(destination):
+    assert _found(validate(_body(f"![a]({destination})"))) == []
+
+
+def test_the_findings_of_the_paths_are_in_document_order():
+    document = parse(
+        f"{_ROOT_FRONT}# A ![i](/h.png) {{#a}}\n\n![b](/b.png) {{{{include: /c.lgd}}}} ![d](/d.png)\n\n"
+        "## B ![e](/e.png) {#b}\n\n![f](/f.png)\n",
+        filename="t.lgd",
+    )
+    result = validate(document)
+    assert [(d.line, d.message.split("'")[1]) for d in result.diagnostics if d.rule in _RULES] == [
+        (5, "/h.png"), (7, "/b.png"), (7, "/c.lgd"), (7, "/d.png"), (9, "/e.png"), (11, "/f.png"),
+    ]
+
+
+def test_the_example_of_a_document_outside_the_root_is_the_first_reference_in_the_document(tmp_path):
+    root = _root(tmp_path)
+    (tmp_path / "elsewhere").mkdir()
+    path = tmp_path / "elsewhere" / "doc.lgd"
+    path.write_text(
+        f"{_ROOT_FRONT}# A ![i](h.png) {{#a}}\n\n![b](b.png) {{{{include: c.lgd}}}}\n", encoding="utf-8"
+    )
+    result = validate(load(path), document_root=root)
+    assert _found(result) == [("path-outside-root", 1)] and "such as 'h.png' (image)" in _messages(result)[0]
+    # A reference of the frontmatter comes before the body's.
+    path.write_text(f"{_ROOT_FRONT[:-5]}translations:\n  cs: cs.lgd\n---\n\n# A ![i](h.png)\n", encoding="utf-8")
+    assert "such as 'cs.lgd' (translations.cs)" in _messages(validate(load(path), document_root=root))[0]
+
+
+def test_a_finding_says_when_the_query_or_the_fragment_was_dropped_to_judge_the_path(tmp_path):
+    root = _root(tmp_path)
+    message = _messages(validate(_body("![a](../../x.png?p=1)"), document_root=root))[0]
+    assert "(image, without its query or fragment)" in message
+    message = _messages(validate(_body("![a](%2Fetc/x.png#top)")))[0]
+    assert "(image, without its query or fragment, read as '/etc/x.png' once percent-decoded)" in message
+    assert "(image) is not relative" in _messages(validate(_body("![a](/etc/x.png)")))[0]
 
 
 def test_a_directive_in_a_destination_leaves_the_line_of_the_next_image_alone():
@@ -510,12 +593,12 @@ def test_a_root_that_does_not_exist_is_a_root_all_the_same(tmp_path):
 
 
 def test_the_helpers_of_the_containment():
-    assert resolves_within("a/../b", "/r", "/r") and not resolves_within("../b", "/r", "/r")
-    assert resolves_within("../b", "/r/s", "/r") and not resolves_within("../../b", "/r/s", "/r")
-    assert not resolves_within("b", "/elsewhere", "/r")  # a base outside the root has no path within it
-    assert not resolves_within("b", "/r2", "/r")  # not a prefix of the text: of the names
-    assert resolves_within("", "/r", "/r") and not resolves_within("..\\x", "/r", "/r")
-    assert is_within_root("/r/s/t", "/r") and is_within_root("/r", "/r") and not is_within_root("/", "/r")
+    assert not leaves_root("a/../b", 0) and leaves_root("../b", 0) and leaves_root("a/../../b", 0)
+    assert not leaves_root("../b", 1) and leaves_root("../../b", 1)
+    assert not leaves_root("", 0) and leaves_root("..\\x", 0) and not leaves_root("./a//b", 0)
+    assert names_below("/r/s/t", "/r") == 2 and names_below("/r", "/r") == 0
+    assert names_below("/", "/r") is None and names_below("/elsewhere", "/r") is None
+    assert names_below("/r2", "/r") is None  # not a prefix of the text: of the names
 
 
 # Fragments (§12.2, §12.4) -------------------------------------------------------
