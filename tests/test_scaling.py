@@ -155,3 +155,52 @@ def test_a_paragraph_of_unclosed_comments_in_a_time_budget():
 def test_an_html_block_of_unclosed_comments_in_a_time_budget():
     document = _document("<!-- a " * 40000)
     assert _seconds(validate, document) < 2.0  # 0.01 s now; the old scan took 48 s
+
+
+# ── The lexer ─────────────────────────────────────────────────────
+
+
+class _CountedFindall:
+    """A compiled pattern whose ``finditer`` calls are counted."""
+
+    def __init__(self, monkeypatch, owner, name):
+        self.calls = 0
+        self._pattern = getattr(owner, name)
+        monkeypatch.setattr(owner, name, self)
+
+    def finditer(self, *args):
+        self.calls += 1
+        return self._pattern.finditer(*args)
+
+    def __getattr__(self, name):
+        return getattr(self._pattern, name)
+
+
+def test_the_lexer_indexes_the_text_once(monkeypatch):
+    """Unmatched backtick runs, malformed directives, and closed literals:
+    the backtick runs, the line ends and ``}}``, and the blanked view are each
+    made once for the text, not searched or rebuilt for each token."""
+    runs = _CountedFindall(monkeypatch, directives_module, "_BACKTICKS_RE")
+    finds = _Counter(monkeypatch, directives_module, "_find_all")
+    blanks = _Counter(monkeypatch, directives_module, "_blank_spans")
+    lexed = lex("`` x ` {{ref: a {{ref: \"b <!-- c --> `d` " * 3000)
+    assert lexed.directives and lexed.literals
+    assert runs.calls == 1
+    assert finds.calls == 2
+    assert blanks.calls == 1
+
+
+_LEXER_SHAPES = {
+    # shape: (the unit repeated, how many times, the budget in seconds)
+    "code spans": ("x `a` ", 200_000, 5.0),
+    "unmatched backtick runs": ("`` x ` ", 200_000, 5.0),
+    "closed comments": ("x <!-- a --> ", 200_000, 5.0),
+    "unclosed directives": ("{{ref: a", 150_000, 5.0),
+}
+
+
+@pytest.mark.parametrize("shape", _LEXER_SHAPES)
+def test_the_lexer_in_a_time_budget(shape):
+    unit, n, budget = _LEXER_SHAPES[shape]
+    text = unit * n
+    assert _seconds(lex, text) < budget  # about 0.5-1.5 s now; the old lexer took a minute or more

@@ -215,6 +215,40 @@ def test_is_comment_only_is_unchanged():
         assert is_comment_only(s) == old_is_comment_only(s), repr(s)
 
 
+def old_blank(text, start, end):
+    blanked = "".join("\n" if ch == "\n" else " " for ch in text[start:end])
+    return text[:start] + blanked + text[end:]
+
+
+def old_malformed_end(text, start, body):
+    line_end = text.find("\n", start)
+    if line_end < 0:
+        line_end = len(text)
+    close = text.find("}}", body, line_end)
+    end = close + 2 if close >= 0 else line_end
+    return next((pos for pos in range(body, end) if directives_module._opens_directive(text, pos)), end)
+
+
+def old_lex_directive(text, start, opener):
+    """``_lex_directive`` as of 0.4.0: its malformed end searched the line."""
+    d = directives_module
+    try:
+        positional, positional_span, params, param_spans, duplicates, unquoted, end = d._lex_arguments(
+            text, opener.end()
+        )
+    except d._Malformed as exc:
+        end = old_malformed_end(text, start, opener.end())
+        return d.Directive(
+            name=opener.group(1), positional=None, params={}, duplicates=(), malformed=str(exc),
+            start=start, end=end, source=text[start:end].rstrip(d._WS),
+        )
+    return d.Directive(
+        name=opener.group(1), positional=positional, params=params, duplicates=tuple(duplicates), malformed="",
+        start=start, end=end, source=text[start:end], unquoted=tuple(unquoted),
+        positional_span=positional_span, param_spans=param_spans,
+    )
+
+
 def old_lex(text):
     """``lex`` as of 0.4.0: a comment is read with the regex at each opener."""
     d = directives_module
@@ -231,7 +265,7 @@ def old_lex(text):
             if comment is None:
                 pos = start + 4
             else:
-                view = d._blank(view, start, comment.end())
+                view = old_blank(view, start, comment.end())
                 literals.append(("comment", start, comment.end()))
                 pos = comment.end()
             continue
@@ -244,7 +278,7 @@ def old_lex(text):
             if close is None:
                 pos = token.end()
             else:
-                view = d._blank(view, start, close.end())
+                view = old_blank(view, start, close.end())
                 literals.append(("code", start, close.end()))
                 pos = close.end()
             continue
@@ -253,10 +287,24 @@ def old_lex(text):
             stray_braces.append(start)
             pos = start + 1
             continue
-        directive = d._lex_directive(text, start, opener)
+        directive = old_lex_directive(text, start, opener)
         found.append(directive)
         pos = directive.end
     return d.Lexed(found, stray_braces, view, literals)
+
+
+def test_the_lexer_equals_the_old_one_on_malformed_directives_and_code_spans():
+    """Unclosed directives, quoted values, runs of backticks of every length,
+    and backslashes before braces and backticks: what the old lexer searched
+    the rest of the line or the text for."""
+    tokens = ["{{ref: a", "{{ref: a}}", "{{ref: \"", "{{x:", "{{", "}}", "}", ",", " ", "\n", "\n", "a", "b=",
+              "`", "``", "```", "\\", "\\`", "<!--", "-->", "\"", "{{placeholder: p, note=", "{{include: f.md}}"]
+    reached = 0
+    for s in _random_texts(tokens, 12000, 14, seed=981):
+        lexed = lex(s)
+        assert lexed == old_lex(s), repr(s)
+        reached += any(d.malformed for d in lexed.directives) and bool(lexed.literals)
+    assert reached > 300  # texts with both malformed directives and literals
 
 
 def test_the_lexer_reads_comments_as_the_regex_does():

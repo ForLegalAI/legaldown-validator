@@ -14,6 +14,7 @@ by the parser, serializer, definition collection, and validator.
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
@@ -74,10 +75,20 @@ _INLINE_START_RE = re.compile(r"\{\{|<!--|`+")
 _BACKTICKS_RE = re.compile(r"`+")
 
 
-def _blank(text: str, start: int, end: int) -> str:
-    """*text* with ``text[start:end]`` blanked, line breaks kept."""
-    blanked = "".join("\n" if ch == "\n" else " " for ch in text[start:end])
-    return text[:start] + blanked + text[end:]
+_NOT_LINE_BREAK_RE = re.compile(r"[^\n]")
+
+
+def _blank_spans(text: str, spans: list[tuple[str, int, int]]) -> str:
+    """*text* with each of the ordered, disjoint *spans* (``Lexed.literals``)
+    blanked, line breaks kept: one pass, however many there are."""
+    kept: list[str] = []
+    pos = 0
+    for _kind, start, end in spans:
+        kept.append(text[pos:start])
+        kept.append(_NOT_LINE_BREAK_RE.sub(" ", text[start:end]))
+        pos = end
+    kept.append(text[pos:])
+    return "".join(kept)
 
 
 def blank_fenced_code(text: str) -> str:
@@ -302,14 +313,46 @@ def _opens_directive(text: str, pos: int) -> bool:
     return bool(_OPENER_RE.match(text, pos)) and not is_escaped(text, pos)
 
 
-def _malformed_end(text: str, start: int, body: int) -> int:
+class _Landmarks:
+    """Where the line ends and the ``}}`` are in a text, found once. A text
+    of many malformed directives on one line would otherwise search to the end
+    of the line for each (#94)."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._line_ends: list[int] | None = None  # found at the first malformed directive
+        self._closers: list[int] = []
+
+    def line_end(self, start: int) -> int:
+        """The offset of the first line break from *start* on, or the text's end."""
+        if self._line_ends is None:
+            self._line_ends = _find_all(self._text, "\n")
+            self._closers = _find_all(self._text, "}}")
+        at = bisect_left(self._line_ends, start)
+        return self._line_ends[at] if at < len(self._line_ends) else len(self._text)
+
+    def close(self, body: int, line_end: int) -> int:
+        """``text.find("}}", body, line_end)``; after ``line_end``."""
+        at = bisect_left(self._closers, body)
+        return self._closers[at] if at < len(self._closers) and self._closers[at] + 2 <= line_end else -1
+
+
+def _find_all(text: str, needle: str) -> list[int]:
+    """The offsets of *needle* in *text*, overlapping ones too."""
+    found: list[int] = []
+    at = text.find(needle)
+    while at >= 0:
+        found.append(at)
+        at = text.find(needle, at + 1)
+    return found
+
+
+def _malformed_end(text: str, start: int, body: int, landmarks: _Landmarks) -> int:
     """End of a malformed directive opened at *start*, whose arguments begin
     at *body*: through the first ``}}`` on its line, but never past the next
     directive opener, which begins a directive of its own (§11.4)."""
-    line_end = text.find("\n", start)
-    if line_end < 0:
-        line_end = len(text)
-    close = text.find("}}", body, line_end)
+    line_end = landmarks.line_end(start)
+    close = landmarks.close(body, line_end)
     end = close + 2 if close >= 0 else line_end
     return next((pos for pos in range(body, end) if _opens_directive(text, pos)), end)
 
@@ -345,61 +388,70 @@ def lex(text: str) -> Lexed:
     value may hold backticks or ``<!--`` without opening anything. Any other
     unescaped ``{{`` is literal text that is usually a typo (a stray brace).
     """
-    view = text or ""
+    source = text or ""
     directives: list[Directive] = []
     stray_braces: list[int] = []
     literals: list[tuple[str, int, int]] = []
     pos = 0
-    # Where the last ``-->`` is: a comment opening after it cannot close, and
-    # is not scanned for a closer (#94). Blanking changes only text before
-    # ``pos``, so the closers after it are those of *text*.
-    last_close = view.rfind("-->")
-    while token := _INLINE_START_RE.search(view, pos):
+    # Everything is sought in the source as written, and the blanked view is
+    # built once at the end (#94): blanking a span changes only text before
+    # ``pos``, which no search looks at, and a backslash run that ends at
+    # ``pos`` is cut short by the span's last character (a ``>`` or a
+    # backtick), so ``is_escaped`` reads the same.
+    last_close = source.rfind("-->")  # a comment opening after it cannot close
+    backtick_runs: dict[int, list[int]] | None = None  # run length -> starts, at the first run
+    landmarks = _Landmarks(source)
+    while token := _INLINE_START_RE.search(source, pos):
         start = token.start()
-        if is_escaped(view, start):
+        if is_escaped(source, start):
             pos = start + 1
             continue
         if token.group(0) == "<!--":
-            end = comment_end(view, start, last_close)
+            end = comment_end(source, start, last_close)
             if end is None:
                 pos = start + 4  # an unclosed comment is literal text
             else:
-                view = _blank(view, start, end)
                 literals.append(("comment", start, end))
                 pos = end
             continue
         if token.group(0).startswith("`"):
             ticks = len(token.group(0))
-            close = next(
-                (m for m in _BACKTICKS_RE.finditer(view, token.end()) if len(m.group(0)) == ticks),
-                None,
-            )
-            if close is None:
+            if backtick_runs is None:
+                backtick_runs = {}
+                for run in _BACKTICKS_RE.finditer(source):
+                    backtick_runs.setdefault(len(run.group(0)), []).append(run.start())
+            # The first run of as many backticks as the opening one, after it.
+            # (The opening one may be the end of a longer run that an escape,
+            # a comment, or a directive cut short: its length may be no one's.)
+            starts = backtick_runs.get(ticks, [])
+            at = bisect_left(starts, token.end())
+            if at == len(starts):
                 pos = token.end()  # an unmatched backtick run is literal text
             else:
-                view = _blank(view, start, close.end())
-                literals.append(("code", start, close.end()))
-                pos = close.end()
+                end = starts[at] + ticks
+                literals.append(("code", start, end))
+                pos = end
             continue
-        opener = _OPENER_RE.match(view, start)
+        opener = _OPENER_RE.match(source, start)
         if opener is None:
             stray_braces.append(start)
             pos = start + 1
             continue
-        directive = _lex_directive(text, start, opener)
+        directive = _lex_directive(text, start, opener, landmarks)
         directives.append(directive)
         pos = directive.end
-    return Lexed(directives, stray_braces, view, literals)
+    return Lexed(directives, stray_braces, _blank_spans(source, literals), literals)
 
 
-def _lex_directive(text: str, start: int, opener: re.Match[str]) -> Directive:
-    """Lex the directive whose opener (``{{name:``) is *opener*."""
+def _lex_directive(text: str, start: int, opener: re.Match[str], landmarks: _Landmarks) -> Directive:
+    """Lex the directive whose opener (``{{name:``) is *opener*. *landmarks*
+    are the text's."""
     try:
         positional, positional_span, params, param_spans, duplicates, unquoted, end = _lex_arguments(
             text, opener.end()
         )
     except _Malformed as exc:
-        end = _malformed_end(text, start, opener.end())
+        end = _malformed_end(text, start, opener.end(), landmarks)
         return Directive(
             name=opener.group(1),
             positional=None,
