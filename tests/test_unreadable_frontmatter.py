@@ -449,20 +449,34 @@ def test_a_kept_error_holds_no_frames(block):
     assert (error.__cause__ is None) == (block == "!!set {a, b}")
 
 
-def test_a_value_its_tag_cannot_hold_says_so_and_is_at_the_first_key():
-    # The error names no place; the first key of the mapping is as near as it is known, without frames.
-    block = "# A comment\ntitle: T\nquestions:\n  q:\n    default: !!bool maybe\n"
+def test_a_value_its_tag_cannot_hold_says_so_and_is_where_it_is_written():
+    block = "title: T\nquestions:\n  q:\n    default: !!bool maybe\n"
     error = _kept(f"---\n{block}---\n# A\n").frontmatter_error
-    assert (str(error), error.line) == ("a value its tag cannot hold: 'maybe'", 3)
+    assert (str(error), error.line) == ("a value its tag cannot hold: 'maybe'", 5)
     assert isinstance(error.__cause__, KeyError)
     error = _kept("---\ntitle: T\nquestions:\n  q:\n    default: " + "9" * 5000 + "\n---\n# A\n").frontmatter_error
-    assert error.line == 2 and str(error).startswith("a value its tag cannot hold: ")
+    assert error.line == 5 and str(error).startswith("a value its tag cannot hold: ")
     assert "\n" not in str(error)
+
+
+@pytest.mark.parametrize(
+    ("block", "line"),
+    [
+        # Merged in, the value is where it is written, not where it is used.
+        ("questions:\n  q: &b\n    default: !!bool maybe\n  r:\n    <<: *b\n", 4),
+        # A merge at the root puts the merged keys first; the first key is not where the error is.
+        ("x: &b\n  questions:\n    q:\n      default: !!bool maybe\n<<: *b\n", 5),
+        ("# comment\ntitle: T\n\nquestions:\n  q:\n    default: !!bool maybe\n", 7),
+    ],
+)
+def test_the_line_of_a_value_its_tag_cannot_hold_is_that_of_the_value(block, line):
+    error = _kept(f"---\n{block}---\n# A\n").frontmatter_error
+    assert error.line == line and str(error) == "a value its tag cannot hold: 'maybe'"
 
 
 def test_a_value_its_tag_cannot_hold_is_reported_by_validate():
     document = _kept("---\ntitle: T\nquestions:\n  q:\n    default: !!bool maybe\n---\n# A\n")
-    assert _rows(document)[0] == ("frontmatter-invalid-yaml", "error", 2)
+    assert _rows(document)[0] == ("frontmatter-invalid-yaml", "error", 5)
 
 
 @pytest.mark.parametrize("ending", ["\x85", "\u2028", "\u2029"])
@@ -561,7 +575,7 @@ def test_questions_says_which_fragment_is_broken_and_where(tmp_path, capsys):
     (tmp_path / "f.lgd").write_text("---\ntitle: T\n  bad: [x\n---\n\nText.\n", encoding="utf-8")
     main(["questions", str(tmp_path / "t.lgd")])
     shown = capsys.readouterr().out
-    assert "problem: f.lgd:3: [frontmatter-invalid-yaml] The frontmatter cannot be read: " in shown
+    assert f"problem: {tmp_path / 'f.lgd'}:3: [frontmatter-invalid-yaml] The frontmatter cannot be read: " in shown
     main(["questions", str(tmp_path / "t.lgd"), "--format", "json"])
     problem = json.loads(capsys.readouterr().out)["problems"][0]
     assert (problem["file"], problem["line"]) == ("f.lgd", 3)
@@ -575,3 +589,28 @@ def test_the_problems_of_the_template_itself_have_an_empty_file_and_the_line(tmp
     assert (problem["file"], problem["line"], problem["rule"]) == ("", 2, "frontmatter-invalid-yaml")
     main(["questions", str(path)])
     assert capsys.readouterr().err.startswith(f"{path}:2: error: [frontmatter-invalid-yaml]")
+
+
+def test_the_text_of_questions_places_a_problem_or_a_diagnostic_as_assemble_does(tmp_path):
+    from types import SimpleNamespace
+
+    from legaldown.cli import _format_form
+
+    def row(rule, line, file=""):
+        return {"rule": rule, "level": "error", "message": "m", "line": line, "file": file}
+
+    data = {
+        "questions": [], "ready": False, "complete": False,
+        "problems": [row("a", 4), row("b", 2, "sub/f.lgd"), row("c", None, "f.lgd"), row("d", None)],
+        "diagnostics": [{**row("e", 7), "question": "q"}, {**row("f", None), "question": "q"}],
+    }
+    template = str(tmp_path / "t.lgd")
+    shown = _format_form(SimpleNamespace(as_dict=lambda: data), template)  # type: ignore[arg-type]
+    assert shown.splitlines()[:-1] == [
+        f"problem: {template}:4: [a] m",
+        f"problem: {tmp_path / 'sub/f.lgd'}:2: [b] m",
+        f"problem: {tmp_path / 'f.lgd'}: [c] m",
+        "problem: [d] m",
+        f"error: {template}:7: [e] m",
+        "error: [f] m",
+    ]

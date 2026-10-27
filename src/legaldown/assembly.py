@@ -918,7 +918,8 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
             continue
         # Only a path within the template's directory (§2.3) is asked for: a loader is
         # not handed ``../x``, an absolute path or a drive letter to open.
-        text = load_file(path) if load_file is not None and relative_path(path) is not None else None
+        relative = relative_path(path)
+        text = load_file(path) if load_file is not None and relative is not None else None
         if text is None:
             reason = "cannot be read" if load_file else "needs the Full level (§17.6)"
             message = f"'{path}' {reason}; the template is not assembled."
@@ -931,9 +932,9 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
             # What plain `validate` reports of a document with this frontmatter, with
             # its message and line, in the file it is in. (`validate(fragment=True)`
             # reports include-has-frontmatter instead, by design: a fragment must
-            # have none.) A text was read only for a path that `relative_path` accepts.
+            # have none.) A text was read only for a path that `relative_path` accepts: *relative*.
             unreadable.add(path)
-            problems.append(frontmatter_diagnostic(exc, file=relative_path(path)))
+            problems.append(frontmatter_diagnostic(exc, file=relative))
             continue
         sub_front, body = _split(text, sub_document)
         subs[path] = _read_body(path, body, sub_document, declared, template=template)

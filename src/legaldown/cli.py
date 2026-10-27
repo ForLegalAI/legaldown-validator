@@ -32,7 +32,7 @@ from . import SPEC_VERSION, __version__
 from .assembly import AssemblyResult, frontmatter_diagnostic
 from .files import within, write_atomically
 from .parser import FrontmatterError, load
-from .template import AnswersError, Form, Template, _diagnostic_dict, load_answers, load_template
+from .template import AnswersError, Form, Template, diagnostic_dict, load_answers, load_template
 from .validator import validate
 
 # Exit codes: 0 clean, 1 diagnostics found, 2 usage/IO failure.
@@ -425,14 +425,24 @@ def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict
     except FrontmatterError as exc:
         diagnostic = frontmatter_diagnostic(exc)
         # No host_dependent: assembly output is never a fragment-mode result (#39).
-        return None, None, [_diagnostic_dict(diagnostic)], None
+        return None, None, [diagnostic_dict(diagnostic)], None
     except (OSError, UnicodeDecodeError) as exc:
         return None, None, [], f"cannot read {path}: {exc}"
     except Exception as exc:
         return None, None, [], f"internal error while reading {path}: {type(exc).__name__}: {exc} (please report this)"
 
 
-def _format_form(form: Form) -> str:
+def _location(d: dict, template: str) -> str:
+    """Where a problem or diagnostic of *template* is, as ``assemble`` shows it:
+    the template, or the fragment or attachment file beside it, and the line;
+    nothing for one that has neither."""
+    if not d["file"] and not d["line"]:
+        return ""
+    name = str(Path(template).parent / d["file"]) if d["file"] else template
+    return f"{name}:{d['line']}: " if d["line"] else f"{name}: "
+
+
+def _format_form(form: Form, template: str) -> str:
     """The form as text: the questions reached, then what is wrong, then whether it is ready."""
     data = form.as_dict()
     lines = []
@@ -453,11 +463,9 @@ def _format_form(form: Form) -> str:
     if others:
         lines.append(f"  ({others} more, not asked yet or not at all with these answers)")
     for d in data["problems"]:
-        # A problem in a fragment or attachment file says which, and where.
-        where = f"{d['file']}:{d['line']}: " if d["file"] and d["line"] else f"{d['file']}: " if d["file"] else ""
-        lines.append(f"problem: {where}[{d['rule']}] {d['message']}")
+        lines.append(f"problem: {_location(d, template)}[{d['rule']}] {d['message']}")
     for d in data["diagnostics"]:
-        lines.append(f"{d['level']}: [{d['rule']}] {d['message']}")
+        lines.append(f"{d['level']}: {_location(d, template)}[{d['rule']}] {d['message']}")
     lines.append("complete" if data["complete"] else "ready, with blanks left" if data["ready"] else "not ready")
     return "\n".join(lines) + "\n"
 
@@ -482,7 +490,7 @@ def _run_questions(args: argparse.Namespace) -> int:
         if args.format == "json":
             text = json.dumps(form.as_dict(), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
         else:
-            text = _format_form(form)
+            text = _format_form(form, args.template)
         ready, problems_found = form.ready, bool(template.problems)
     except Exception as exc:
         # Not the template's fault: a bug in this validator, as in ``validate``.

@@ -46,6 +46,19 @@ def document_shape(document: Document) -> tuple[Any, ...]:
 MERGE = object()
 
 
+def line_breaks(text: str) -> list[int]:
+    """The index of each line feed in *text*: the only line end of this format
+    (YAML also ends a line at CR, NEL, LS and PS, so ``yaml.Mark.line`` is not
+    the file's)."""
+    return [index for index, char in enumerate(text) if char == "\n"]
+
+
+def line_at(breaks: list[int], index: int, first_line: int) -> int:
+    """The file line of character *index* of a text whose line feeds are
+    *breaks* (``line_breaks``), the text's first line being *first_line*."""
+    return first_line + bisect.bisect_left(breaks, index)
+
+
 def frontmatter_keys(root: yaml.Node, block: str, first_line: int) -> dict[tuple[Any, ...], int]:
     """The line of each node in the frontmatter's YAML *root*, by its path:
     a mapping key's line, and a sequence entry's (its ``-`` line). A
@@ -59,10 +72,10 @@ def frontmatter_keys(root: yaml.Node, block: str, first_line: int) -> dict[tuple
     A merged or aliased node is where it is written, not where it is used;
     a mapping that merges keys in has ``(*path, MERGE)`` too."""
     keys: dict[tuple[Any, ...], int] = {}
-    breaks = [index for index, char in enumerate(block) if char == "\n"]
+    breaks = line_breaks(block)
 
     def line_of(mark: yaml.Mark) -> int:
-        return first_line + bisect.bisect_left(breaks, mark.index)  # the line feeds before it
+        return line_at(breaks, mark.index, first_line)
 
     def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
         if id(node) in seen:

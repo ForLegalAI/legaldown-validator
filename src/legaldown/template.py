@@ -157,7 +157,9 @@ def _jsonable(value: Any, budget: list[int] | None = None, depth: int = 0) -> An
     return _text(value)
 
 
-def _diagnostic_dict(diagnostic: Diagnostic) -> dict[str, Any]:
+def diagnostic_dict(diagnostic: Diagnostic) -> dict[str, Any]:
+    """A template's problem or diagnostic as JSON-ready data, as ``Form.as_dict``
+    and ``legaldown questions`` give it."""
     # No host_dependent: assembly output is never a fragment-mode result (#39).
     # "file": the fragment or attachment file it is in, "" for the template itself (#43).
     return {
@@ -383,8 +385,8 @@ class Form:
         return {
             "ready": self.ready,
             "complete": self.complete,
-            "problems": [_diagnostic_dict(d) for d in self._template.problems],
-            "diagnostics": [{**_diagnostic_dict(d), "question": qid} for qid, d in self._pairs],
+            "problems": [diagnostic_dict(d) for d in self._template.problems],
+            "diagnostics": [{**diagnostic_dict(d), "question": qid} for qid, d in self._pairs],
             "questions": questions,
         }
 

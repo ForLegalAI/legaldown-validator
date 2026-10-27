@@ -42,7 +42,7 @@ from .markdown import (
 )
 from .markers import Marker, split_heading
 from .models import Block, Document, ListItem, document_from_dict
-from .positions import SourceMap, document_shape, frontmatter_keys
+from .positions import SourceMap, document_shape, frontmatter_keys, line_at, line_breaks
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -52,7 +52,17 @@ from .positions import SourceMap, document_shape, frontmatter_keys
 
 
 class _StrDateSafeLoader(yaml.SafeLoader):
-    pass
+    #: The node being constructed: after an error that names no place (a value
+    #: its tag cannot hold), the one it was found in (#43). Left as it was
+    #: when the error came, so not restored on the way out.
+    constructing: yaml.Node | None = None
+
+    def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
+        before = self.constructing
+        self.constructing = node
+        result = super().construct_object(node, deep)
+        self.constructing = before
+        return result
 
 
 _StrDateSafeLoader.add_constructor(
@@ -221,7 +231,6 @@ def _split_frontmatter(
     if not match:
         return [], {}, source, True, {}, None
     loader = None
-    node = None
     try:
         # Inside the try: a character YAML does not allow fails the reader here.
         loader = _StrDateSafeLoader(match.group(1) or "")
@@ -235,7 +244,7 @@ def _split_frontmatter(
             # meant as frontmatter, but holds no fields. (A block !!omap is
             # a sequence: not frontmatter.)
             raise FrontmatterError(
-                "Frontmatter must be a YAML mapping of fields.", _file_line(match.group(1) or "", node.start_mark)
+                "Frontmatter must be a YAML mapping of fields.", _file_line(match.group(1) or "", node.start_mark.index)
             )
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
@@ -255,7 +264,7 @@ def _split_frontmatter(
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or "", node))
+        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or "", loader.constructing if loader else None))
         if not keep_error:
             raise error from exc
         error.__cause__ = exc  # as `raise ... from` sets it
@@ -269,32 +278,30 @@ def _split_frontmatter(
     return not_line_editable, metadata, source[match.end():], False, keys, None
 
 
-def _file_line(block: str, mark: yaml.Mark) -> int:
-    """The file line of *mark*, a place in the frontmatter's YAML *block*,
-    which starts on line 2 (after the opening ``---``). Counted from the
-    character index, not from ``mark.line``: a line ends only at LF in this
-    format, where YAML also ends one at CR, NEL (U+0085), LS and PS."""
-    return block.count("\n", 0, mark.index) + 2
+def _file_line(block: str, index: int) -> int:
+    """The file line of character *index* of the frontmatter's YAML *block*,
+    which starts on line 2 (after the opening ``---``): a mark's ``index``, not
+    its ``line``, which counts the line ends YAML knows and the format does not
+    (``positions.line_breaks``)."""
+    return line_at(line_breaks(block), index, 2)
 
 
-def _error_line(exc: BaseException, block: str, root: yaml.Node | None = None) -> int:
+def _error_line(exc: BaseException, block: str, node: yaml.Node | None = None) -> int:
     """The file line of a YAML error in the frontmatter *block*: where the
     problem is — or, for a quoted scalar or a flow collection left open, where
     it opens, which the problem is only found far past. An error that names no
-    place (a value its tag cannot hold) is at the first key of the mapping
-    *root* the YAML was read to, else at the opening line."""
+    place (a value its tag cannot hold) is at *node*, the one being constructed
+    (``_StrDateSafeLoader.constructing``), else at the opening line."""
     context = getattr(exc, "context", None) or ""
     context_mark = getattr(exc, "context_mark", None)
     problem_mark = getattr(exc, "problem_mark", None)
     opened = context_mark is not None and ("quoted" in context or "flow" in context)
     mark = context_mark if opened else problem_mark or context_mark
     if mark is not None:
-        return _file_line(block, mark)
+        return _file_line(block, mark.index)
     if isinstance(exc, yaml.reader.ReaderError) and isinstance(exc.position, int):
-        return block.count("\n", 0, exc.position) + 2  # the reader names a character
-    if isinstance(root, yaml.MappingNode) and root.value:
-        return _file_line(block, root.value[0][0].start_mark)
-    return 1
+        return _file_line(block, exc.position)  # the reader names a character
+    return _file_line(block, node.start_mark.index) if node is not None else 1
 
 
 def _has_flow_style(node: yaml.Node) -> bool:
