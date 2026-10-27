@@ -422,9 +422,7 @@ def _render_list(
             # the marker cannot tell: the content starts on the next line,
             # after the bare marker.
             rows = ["", *rows]
-        needed = 0
-        if k == last and rows:
-            needed = max(needed, last_column)
+        needed = last_column if k == last and rows else 0
         if len(marker) < needed:
             spacing = needed - len(marker.rstrip())
             if spacing > 4:
