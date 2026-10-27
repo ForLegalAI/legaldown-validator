@@ -47,7 +47,7 @@ files other than the document itself.
 | Group | Rules |
 |---|---|
 | Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`, `path-not-relative`, `path-outside-root` |
-| Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip` |
+| Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip`; of these, `include-has-frontmatter` and `include-has-h1` are reported for a fragment validated on its own (`validate(fragment=True)`, below), which is not how their fixtures run them: they validate the including document, which does not read the fragment, so those cases stay skipped |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Rendering (§17.3) | `ref-not-enumerated` |
 | Other | `frontmatter-invalid-yaml` (reported by the CLI and assembly, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
@@ -69,9 +69,16 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
 - A template's include fragments and LegalDown attachment files are not read (Full, §17.4) — the
   attachment files only for the definitions they declare — so
   `question-unused` is not reported for a template that has either: a question may be used there.
-- A LegalDown attachment file or include fragment validated on its own is checked as a
-  standalone document: conditions, placeholders, and terms that refer to its template's
-  questions and definitions are reported as undeclared.
+- A LegalDown attachment file or include fragment validated on its own (`validate(fragment=True)`,
+  `legaldown validate --fragment`) is checked as a body-only fragment (§12.2, §12.4): no frontmatter,
+  title, parties or sides are expected, and a first heading at any level is accepted. What it
+  refers to in its host's frontmatter or body (a party, side, attachment or question it does not
+  declare, a `{{ref:}}` or `{{term:}}` it does not hold) is still reported, with the rule id and
+  level it has in a complete document, but with `Diagnostic.host_dependent` set: only the including
+  document can settle it. Rule ids and levels are unchanged, and without `fragment=True` nothing is
+  flagged and a document is checked as a complete one. The fragment's own frontmatter is
+  `include-has-frontmatter` and its level-1 heading `include-has-h1`, reported by this mode alone;
+  the rest of the Includes group, which reads files, is not implemented.
 
 `raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
 each HTML block that holds more than comments (text after a comment's `-->` on its line

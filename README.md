@@ -113,6 +113,7 @@ legaldown validate --format json contract.lgd        # machine-readable output
 legaldown validate --ignore def-unreferenced doc.lgd # mute one rule
 legaldown validate --warnings-as-errors doc.lgd      # tighten a CI gate
 legaldown validate --final signed-contract.lgd       # nothing left to fill in
+legaldown validate --fragment clauses/               # include fragments and attachment files, on their own
 ```
 
 | Option | Effect |
@@ -120,6 +121,7 @@ legaldown validate --final signed-contract.lgd       # nothing left to fill in
 | `--format {text,json}` | Output format (default `text`) |
 | `--ignore RULE_ID` | Suppress a rule by its stable id — repeatable |
 | `--final` | Check a document is ready for signature: a remaining placeholder, drafting note, or template construct is an error (§15.9) |
+| `--fragment` | Validate each file as an include fragment or attachment file on its own (§12.2, §12.4), as [`validate(fragment=True)`](#validating-a-fragment) does: what only the including document can settle is reported with `"host_dependent": true` in the JSON output |
 | `--warnings-as-errors` | Report warnings at error severity |
 | `--strict` | Exit non-zero on any diagnostic, not just errors |
 | `--quiet` | Drop the trailing summary line |
@@ -204,18 +206,24 @@ integrations, and dashboards:
       "rule": "ref-broken",
       "level": "error",
       "line": 24,
-      "message": "Broken section reference: 'payment-terms'."
+      "message": "Broken section reference: 'payment-terms'.",
+      "host_dependent": false
     },
     {
       "file": "contract.lgd",
       "rule": "money-missing-currency",
       "level": "warning",
       "line": 24,
-      "message": "Money directive without currency parameter."
+      "message": "Money directive without currency parameter.",
+      "host_dependent": false
     }
   ]
 }
 ```
+
+`host_dependent` is in every record, so the shape does not depend on the options: it is `false`
+unless `--fragment` found what the including document may settle ([below](#validating-a-fragment)).
+The text output does not show it.
 
 ### In CI
 
@@ -257,7 +265,8 @@ its diagnostics.
 `frontmatter-invalid-yaml` rule, which `validate`, given a parsed document, cannot report.
 
 `validate(document)` checks it and returns a `ValidationResult`; `validate(document, final=True)`
-is the signature-ready check (§15.9). A document that amends another (`amends.file`, §7.5) or
+is the signature-ready check (§15.9), and `validate(document, fragment=True)` checks an include
+fragment or attachment file on its own ([below](#validating-a-fragment)). A document that amends another (`amends.file`, §7.5) or
 declares LegalDown attachment files (§12.4) is checked against the definitions those files
 declare. They are read from beside the document — `document.path` is where `load` found it — and
 never from outside its directory (§2.3); only the definitions each file declares itself are read,
@@ -313,7 +322,7 @@ itself is what was found, kept nowhere but in `diagnostics`:
 
 | `result.…` | Contents |
 |---|---|
-| `diagnostics` | `Diagnostic(rule, level, message, line, file)` — the authoritative record |
+| `diagnostics` | `Diagnostic(rule, level, message, line, file, host_dependent)` — the authoritative record; `host_dependent` is true only for a finding of `validate(fragment=True)` that the including document may settle ([Validating a fragment](#validating-a-fragment)) |
 | `is_valid` | `True` when no Error-level diagnostic was reported |
 | `errors` / `warnings` / `infos` | Message strings by severity, taken from `diagnostics` |
 | `rules(level=None)` | Set of rule ids present, optionally filtered by severity |
@@ -332,6 +341,51 @@ itself is what was found, kept nowhere but in `diagnostics`:
 A renderer builds from these decisions rather than re-deriving them, reading the source with
 the validator's own helpers ([Tooling API](#tooling-api)).
 [`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way.
+
+### Validating a fragment
+
+An include fragment (§12.2) or a LegalDown attachment file (§12.4) is body-only: the document that
+includes it declares the parties, the sides, the attachments and the questions it uses, and defines
+the sections and terms it refers to. Validated as a complete document it draws `frontmatter-absent`
+and an Error for every one of those, and a reader cannot tell "the host has not declared it" from
+"the fragment is malformed". `fragment=True` tells them apart:
+
+```python
+from legaldown import load, validate
+
+result = validate(load("clauses/payment.lgd"), fragment=True)
+
+for d in result.diagnostics:
+    print(d.line, d.rule, "(host)" if d.host_dependent else "")
+```
+
+```python
+validate(document, *, final=False, fragment=False, resolve=None) -> ValidationResult
+Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
+```
+
+- Nothing is checked of the metadata: a fragment is not asked for a title, parties or sides, and
+  no `frontmatter-absent` is reported. Its first heading may be at any level (§4.1 applies to the
+  combined document); the skips after it are reported.
+- A finding that the including document may settle is reported with the rule id and the level it has
+  in a complete document, and has `host_dependent` set: a `{{party:}}`, `{{side:}}` or `{{attach:}}`
+  it does not declare, a condition or `{{choose:}}` on a question it does not declare
+  (`condition-invalid`, `choose-invalid`), a `{{ref:}}` to an identifier or a `{{term:}}` that the
+  fragment itself does not hold (`ref-broken`, `term-undefined`). Set those aside while the host is
+  not known; take them seriously when the fragment is validated in it.
+- Anything else is the fragment's own and is not marked: a malformed directive, a target that is not
+  an identifier (`{{ref: Bad Id}}`), a `{{ref:}}` with no target, a malformed condition, a heading that
+  skips a level, and so on. A `{{ref:}}` to a section or anchor of the fragment itself, and a
+  `{{term:}}` of its own `{{def:}}`, resolve and are not reported.
+- A fragment that has frontmatter draws `include-has-frontmatter` (§16.11), at the line of its first
+  key (the opening `---` when it has none), and a level-1 heading draws `include-has-h1`, at the
+  heading, each an Error. Its metadata is then not read at all, and the lines of everything else are
+  the file's. Whichever way the host includes it, the ids are the `include-*` ones.
+- A definition the fragment declares is not reported unreferenced (`def-unreferenced`): the host
+  references it.
+- `host_dependent` is `False` in every other result: for a complete document there is no host, and a
+  broken reference is simply an Error. It takes part in a `Diagnostic`'s equality. Assembly's
+  diagnostics never carry it.
 
 ### Reading and editing the document model
 
