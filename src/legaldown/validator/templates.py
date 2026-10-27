@@ -617,7 +617,7 @@ def check_template_body(
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, text_fragments
-    from .units import include_paragraph  # conditions -> templates -> units -> conditions
+    from .units import paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
              nth: int = 0) -> Line:
@@ -662,8 +662,8 @@ def check_template_body(
             scan = None  # the fragment's, for its first insertion
             in_note = in_drafting_note(notes, index)
             # The include of a paragraph that holds only it (§12.2): only a top-level
-            # paragraph is one, an include in a quote, a list or a table is text.
-            only = include_paragraph(fragment, lexed) if block.kind == "paragraph" and index == 0 else None
+            # paragraph's first fragment is one, an include in a quote, a list or a table is text.
+            only = paragraph_include(block, fragment, lexed) if index == 0 else None
             for directive in lexed.directives:
                 if directive.malformed:
                     continue

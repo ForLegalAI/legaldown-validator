@@ -707,10 +707,10 @@ def test_the_findings_of_one_document_are_never_collapsed(tmp_path, capsys):
     assert main(["validate", "--format", "json", doc]) == EXIT_DIAGNOSTICS
     records = json.loads(capsys.readouterr().out)["diagnostics"]
     assert [d["rule"] for d in records].count("ref-broken") == 2
-    # Nor the same document named twice: each is a target of its own.
+    # The same document named twice is one target: validated and reported once.
     assert main(["validate", "--format", "json", doc, doc]) == EXIT_DIAGNOSTICS
     records = json.loads(capsys.readouterr().out)["diagnostics"]
-    assert [d["rule"] for d in records].count("ref-broken") == 4 and [d["rule"] for d in records].count("include-file-missing") == 2
+    assert [d["rule"] for d in records].count("ref-broken") == 2 and [d["rule"] for d in records].count("include-file-missing") == 1
 
 
 def test_assembly_refuses_only_an_include_paragraph_of_a_plain_documents_fragment():
@@ -763,7 +763,18 @@ def test_a_block_with_no_text_is_no_include_paragraph():
         dataclasses.replace(section, blocks=[Block(kind="paragraph", text=""), *section.blocks])
     ])
     assert [source for source, _line in nested_includes(FragmentFile("part.lgd", document))] == ["{{include: g.lgd}}"]
-    assert validate(document, resolve=_Loader({})).diagnostics is not None
+    result = validate(document, resolve=_Loader({}))
+    # Only the include that is there is judged: it is missing; the empty paragraph draws nothing.
+    assert [d.rule for d in result.diagnostics if d.rule.startswith("include-")] == ["include-file-missing"]
+
+
+def test_assembly_refuses_an_include_paragraph_that_names_no_path_in_a_plain_documents_fragment():
+    part = "## P {#p}\n\n{{include:}}\n\nSee {{include:}} inline.\n"
+    template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": part}.get)
+    assert [(d.rule, d.file, d.line) for d in template.problems] == [("include-file-missing", "part.lgd", 3)]
+    from legaldown.validator.fragments import nested_includes
+
+    assert [source for source, _ in nested_includes(FragmentFile("part.lgd", parse(part)))] == ["{{include:}}"]
 
 
 def test_a_file_is_spliceable_when_it_has_neither_frontmatter_nor_a_level_one_heading():
@@ -823,3 +834,41 @@ def test_a_fragment_included_through_two_spellings_is_found_wrong_once(tmp_path,
     assert main(["validate", "--format", "json", str(tmp_path / "a.lgd")]) == EXIT_DIAGNOSTICS
     records = json.loads(capsys.readouterr().out)["diagnostics"]
     assert [d["rule"] for d in records].count("include-has-h1") == 1
+
+
+def test_a_fragment_reached_from_two_directories_is_found_wrong_once(tmp_path, capsys):
+    # The message names the fragment from each including document's directory, and differs.
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.lgd").write_text(_FRONT + _SCOPE + "{{include: sub/p.lgd}}\n", encoding="utf-8")
+    (tmp_path / "sub" / "b.lgd").write_text(_FRONT + _SCOPE + "{{include: p.lgd}}\n", encoding="utf-8")
+    (tmp_path / "sub" / "p.lgd").write_text("# H {#h}\n", encoding="utf-8")
+    for order in ((tmp_path / "a.lgd", tmp_path / "sub" / "b.lgd"), (tmp_path / "sub" / "b.lgd", tmp_path / "a.lgd")):
+        assert main(["validate", "--format", "json", *map(str, order)]) == EXIT_DIAGNOSTICS
+        records = json.loads(capsys.readouterr().out)["diagnostics"]
+        assert [d["file"] for d in records if d["rule"] == "include-has-h1"] == [str(tmp_path / "sub" / "p.lgd")]
+
+
+def test_a_file_reached_twice_as_a_target_is_validated_and_reported_once(tmp_path, capsys):
+    (tmp_path / "a.lgd").write_text(_FRONT + _SCOPE + "{{include: gone.lgd}}\n\nSee {{ref: nowhere}}.\n", encoding="utf-8")
+    spellings = [
+        [str(tmp_path), str(tmp_path / "a.lgd")],  # a directory, then a file in it
+        [str(tmp_path / "a.lgd"), str(tmp_path)],
+        [str(tmp_path / "a.lgd"), str(tmp_path / "." / "a.lgd")],
+    ]
+    for paths in spellings:
+        assert main(["validate", "--format", "json", *paths]) == EXIT_DIAGNOSTICS
+        rules = [d["rule"] for d in json.loads(capsys.readouterr().out)["diagnostics"]]
+        assert rules.count("include-file-missing") == 1 and rules.count("ref-broken") == 1
+
+
+def test_relative_path_problem_says_why_a_path_is_refused():
+    from legaldown.files import relative_path, relative_path_problem
+
+    cases = {
+        "a/b.lgd": None, "./a.lgd": None, "a/../b.lgd": None,
+        "../a.lgd": "leads-out", "a/../../b.lgd": "leads-out", "..": "leads-out",
+        "": "invalid", ".": "invalid", "a\\b.lgd": "invalid", "a\0b": "invalid", "/a.lgd": "invalid",
+        "C:/a.lgd": "invalid", "https://x/a.lgd": "invalid", "..\\a.lgd": "invalid",
+    }
+    assert {path: relative_path_problem(path) for path in cases} == cases
+    assert all((relative_path(path) is None) == (problem is not None) for path, problem in cases.items())

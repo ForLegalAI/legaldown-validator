@@ -15,19 +15,19 @@ frontmatter that cannot be read is a finding of its own, not an exception (#43).
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from functools import cache, cached_property
 from typing import Literal
 
 from ..directives import Lexed, lex
-from ..files import LoadFile, is_absolute_reference, relative_path, within
+from ..files import LoadFile, relative_path, relative_path_problem, within
 from ..models import Document, Metadata
 from ..positions import Locator
 from .patterns import LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
 from .templates import BodyScan, IncludeDirective, check_template_body
-from .units import FoundMarker, find_markers
+from .units import FoundMarker, find_markers, iter_include_paragraphs
 
 #: How a file is used by the document that names it: an include fragment
 #: (``{{include:}}``, §12.2) or a LegalDown attachment file (``attachments[].file``,
@@ -110,16 +110,6 @@ class Files:
                 relative, parse(text, on_frontmatter_error="keep")
             )
         return self._read[relative]
-
-
-def _leads_out(written: str, normalised: str) -> bool:
-    """True if a path that ``relative_path`` refuses is refused only because it leads out
-    of the document's directory (§2.3): ``../x.lgd``, as normalised. A path with a
-    backslash or a null byte, or an absolute one, is refused for its own reason."""
-    return (
-        "\\" not in written and "\0" not in written and not is_absolute_reference(written)
-        and (normalised == ".." or normalised.startswith("../"))
-    )
 
 
 def _line(line: Line) -> int | None:
@@ -283,26 +273,18 @@ def fragment_findings(
     return found
 
 
-def include_paragraphs(includes: Iterable[IncludeDirective]) -> list[IncludeDirective]:
-    """The include paragraphs among the ``{{include:}}`` of a body scan (§12.2): the
-    only ones a fragment replaces, so the only ones the include rules look at. An
-    ``{{include:}}`` in a sentence, a list item or a quote is text. The one place that
-    says so, for ``check_includes`` and ``nested_includes``."""
-    return [include for include in includes if include.paragraph]
-
-
 def nested_includes(
     fragment: FragmentFile, lex_fragment: Callable[[str], Lexed] | None = None
 ) -> list[tuple[str, int | None]]:
     """The include paragraphs a file holds, in order, each as written with its line:
     what is allowed outside a template (§12.2) and that assembly does not
-    assemble. A drafting note is a quote, so only a paragraph of its own counts."""
-    # The scan is the body check's own, so that what is an include paragraph is
-    # decided where the validator decides it; what it reports of the file is not wanted.
-    scan = check_template_body(
-        fragment.document, lex_fragment or cache(lex), _Recorder(), template=False, where=fragment.where
-    )
-    return [(include.source, _line(include.line)) for include in include_paragraphs(scan.includes)]
+    assemble. A drafting note is a quote, so only a paragraph of its own counts. A
+    paragraph with an ``{{include:}}`` that names no path is one too: assembly refuses
+    it, as it does any other (``iter_include_paragraphs`` is the validator's reading)."""
+    return [
+        (directive.source, fragment.where.find(section, index, directive.source, 0, directive.start))
+        for section, index, directive in iter_include_paragraphs(fragment.document, lex_fragment or cache(lex))
+    ]
 
 
 def skips(previous: int | None, level: int) -> bool:
@@ -446,7 +428,9 @@ def check_includes(
     splices: dict[int | None, list[FragmentFile]] = {}
     unread: set[int | None] = set()  # the sections with an include paragraph whose fragment is not known
     findings: dict[str, list[Finding]] = {}  # of each fragment, once
-    for include in include_paragraphs(includes):
+    for include in includes:
+        if not include.paragraph:
+            continue
         if include.at in judged:
             unread.add(include.section)
             continue
@@ -466,7 +450,7 @@ def check_includes(
         # does for a file that is not there. It is not path-not-relative (an absolute path or a
         # URI scheme, judged above), nor path-outside-root, which judges where it leads.
         relative = relative_path(include.written)
-        if relative is None and rooted and _leads_out(include.written, include.path):
+        if relative is None and rooted and relative_path_problem(include.written) == "leads-out":
             # Not judged above, so within the root: a valid path (§2.3) that this implementation
             # does not read, as it reads nothing outside the document's directory. A known
             # limitation (CONFORMANCE.md), and nothing to say. A backslash or a null byte is

@@ -127,12 +127,15 @@ def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
 def _own(d: dict, target: str) -> bool:
     """Whether finding *d* is in the file of the target that produced it, and not in a
     fragment it includes."""
-    return os.path.normpath(d["file"]) == os.path.normpath(target)
+    return os.path.abspath(d["file"]) == os.path.abspath(target)
 
 
 def _identity(d: dict) -> tuple[Any, ...]:
-    """What makes two findings one: the same file (however it is spelt), line, rule and message."""
-    return (os.path.normpath(d["file"]), d.get("line"), d["rule"], d["message"])
+    """What makes two findings one: the same file (by its absolute path, however it is
+    spelt), line and rule. Not the message: it names the fragment from the including
+    document's directory, so the same finding reached from two directories reads
+    differently."""
+    return (os.path.abspath(d["file"]), d.get("line"), d["rule"])
 
 
 def _run_validate(args: argparse.Namespace) -> int:
@@ -140,6 +143,7 @@ def _run_validate(args: argparse.Namespace) -> int:
     collected: list[dict] = []
     failures: list[str] = []
     reports: list[tuple[str, list[dict]]] = []  # the findings of each target, but those ignored
+    reached: set[str] = set()  # the targets validated, by absolute path
 
     for raw_path in args.paths:
         path = Path(raw_path)
@@ -152,6 +156,11 @@ def _run_validate(args: argparse.Namespace) -> int:
         else:
             targets = [path]
         for target in targets:
+            # A file named twice, or by a directory and by its own path, is one target: validated
+            # and reported once, at its first place.
+            if os.path.abspath(target) in reached:
+                continue
+            reached.add(os.path.abspath(target))
             diagnostics, failure = _validate_path(
                 target,
                 final=args.final,
@@ -166,11 +175,11 @@ def _run_validate(args: argparse.Namespace) -> int:
             reports.append((str(target), [d for d in diagnostics if d["rule"] not in ignored]))
 
     # A fragment several of the documents include is found wrong once, not once for each
-    # (#35): across all the targets of the run, a finding in a file other than the one
-    # that produced it is printed and counted once per identical (file, line, rule,
-    # message). The findings the targets have in themselves are seen first, so a fragment
-    # that is also a target is not reported twice whatever the order of the arguments, and
-    # are never collapsed: two alike in one document are two findings.
+    # (#35): across all the targets of the run, a finding in a file other than the one that
+    # produced it is printed and counted once per identical (file, line, rule), with the
+    # message of the first. The findings the targets have in themselves are seen first, so a
+    # fragment that is also a target is not reported twice whatever the order of the
+    # arguments; those are never collapsed: two alike in one document are two findings.
     seen = {_identity(d) for target, found in reports for d in found if _own(d, target)}
     for target, found in reports:
         for d in found:

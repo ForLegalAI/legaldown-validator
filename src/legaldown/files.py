@@ -15,6 +15,7 @@ import stat
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 #: Reads a file the document refers to, by its path as the document writes it
 #: (relative, ``/``-separated); ``None`` when there is no such file.
@@ -66,18 +67,31 @@ def leaves_root(path: str, depth: int) -> bool:
     return False
 
 
+def relative_path_problem(path: str) -> Literal["leads-out", "invalid"] | None:
+    """Why ``relative_path`` refuses *path*, the one place that holds its rules:
+    ``"leads-out"`` when it is a relative path that leads out of the document's
+    directory (``../x``, §2.3), which is valid as a path though not one a ``LoadFile``
+    is asked for; ``"invalid"`` when it is none (empty, absolute, with a URI scheme or
+    a drive letter, a backslash or a null byte, or the directory itself); None when it
+    is a path to read."""
+    if not path or "\\" in path or "\0" in path or is_absolute_reference(path):
+        return "invalid"
+    normalized = posixpath.normpath(path)
+    if normalized == ".":
+        return "invalid"
+    if normalized == ".." or normalized.startswith("../"):
+        return "leads-out"
+    return None
+
+
 def relative_path(path: str) -> str | None:
     """*path*, as a document names a file it refers to, normalized — ``/``-separated,
     within the directory of the document (§2.3) — or None when it is not such a path:
     empty, absolute, with a URI scheme (``https://x``, ``file:///x``, a drive letter),
-    a backslash or a null byte, or leading out of the directory. A ``LoadFile`` is
-    asked for these paths and no others."""
-    if not path or "\\" in path or "\0" in path or is_absolute_reference(path):
-        return None
-    normalized = posixpath.normpath(path)
-    if normalized in (".", "..") or normalized.startswith("../"):
-        return None
-    return normalized
+    a backslash or a null byte, or leading out of the directory
+    (``relative_path_problem`` says which). A ``LoadFile`` is asked for these paths
+    and no others."""
+    return None if relative_path_problem(path) else posixpath.normpath(path)
 
 
 def file_loader(base: str | os.PathLike[str]) -> LoadFile:

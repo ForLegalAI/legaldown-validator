@@ -582,7 +582,9 @@ def _read_paragraph(
     # The validator's own reading of an include paragraph, so that both agree (#35).
     include = include_paragraph(block.text, lex(block.text))
     if include is not None:
-        source.includes.append(_Include(span.start, span.end, posixpath.normpath(include.positional)))
+        # An include that names no path (``{{include:}}``) is the path "": a file that cannot be
+        # asked for, which is refused as missing, not a crash (#35).
+        source.includes.append(_Include(span.start, span.end, posixpath.normpath(include.positional or "")))
 
 
 def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:

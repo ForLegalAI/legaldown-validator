@@ -19,7 +19,7 @@ from typing import Any
 from ..directives import Directive, Lexed, is_escaped, lex
 from ..markdown import comment_closers, comment_end, find_all, strip_comments
 from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
-from ..models import Document
+from ..models import Block, Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 from .patterns import MAX_SECTION_LEVEL
 
@@ -165,6 +165,32 @@ def include_paragraph(text: str, lexed: Lexed) -> Directive | None:
     if not is_include_only(head, lexed.directives):
         return None
     return next(d for d in lexed.directives if d.name == "include" and d.end <= len(head))
+
+
+def paragraph_include(block: Block, text: str, lexed: Lexed) -> Directive | None:
+    """The ``{{include:}}`` of *block*, if it is an include paragraph (§12.2): a top-level
+    paragraph (one in a quote, a list or a table is text) whose first text fragment,
+    *text* (lexed as *lexed*), holds only it and, at most, its marker. The one place
+    that says what an include paragraph is, for the body check and for the files a
+    template refuses."""
+    return include_paragraph(text, lexed) if block.kind == "paragraph" else None
+
+
+def iter_include_paragraphs(
+    document: Document, lex_fragment: Callable[[str], Lexed] = lex
+) -> Iterator[tuple[int | None, int, Directive]]:
+    """The include paragraphs of *document*, in order, each as (section, block, directive):
+    a light walk that lexes only the first text fragment of each paragraph. A block with
+    no text fragment (one built in code) has none."""
+    from ..definitions import text_fragments  # definitions -> validator.helpers -> validator: a cycle at import
+
+    for section, index, block in document.iter_indexed_blocks():
+        if block.kind != "paragraph":
+            continue
+        texts = text_fragments(block)
+        directive = paragraph_include(block, texts[0], lex_fragment(texts[0])) if texts else None
+        if directive is not None:
+            yield section, index, directive
 
 
 def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex) -> list[FoundMarker]:
