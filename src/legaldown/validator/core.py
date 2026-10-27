@@ -1804,7 +1804,7 @@ def _validate(
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             presence = units.presence(section_index, block_index, fragment_index)
-            in_note = in_drafting_note(notes, fragment_index)
+            in_note = bool(lexed.directives) and in_drafting_note(notes, fragment_index)  # only a directive asks
             for offset in lexed.stray_braces:
                 result.warning(
                     "brace-stray", BRACE_STRAY,

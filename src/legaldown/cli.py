@@ -556,16 +556,28 @@ def build_parser() -> argparse.ArgumentParser:
             "affect the exit status."
         ),
     )
-    validate.add_argument(
+    host = validate.add_mutually_exclusive_group()
+    # dest is not `template`: assemble and questions have that argument.
+    host.add_argument(
         "--template",
-        action=argparse.BooleanOptionalAction,
+        action="store_const",
+        const=True,
         default=None,
-        dest="host_template",  # not `template`: assemble and questions have that argument
+        dest="host_template",
         help=(
-            "With --fragment: say whether the document that includes the fragments is a template "
-            "(§15.1). --template checks them as parts of one; --no-template says it is not, so "
-            "no question is declared for a condition or {{choose:}} to name. Without either, a "
-            "fragment is a template only when it holds a condition or a {{choose:}}."
+            "With --fragment: the document that includes the fragments is a template (§15.1), so "
+            "they are checked as parts of one. Without --template or --no-template, a fragment is "
+            "a template only when it holds a condition or a {{choose:}}."
+        ),
+    )
+    host.add_argument(
+        "--no-template",
+        action="store_const",
+        const=False,
+        dest="host_template",
+        help=(
+            "With --fragment: the including document is not a template, so it declares no "
+            "question for a condition or {{choose:}} to name."
         ),
     )
     validate.add_argument(

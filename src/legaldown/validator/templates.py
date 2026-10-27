@@ -212,7 +212,8 @@ def check_questions(
     *blanks* are the document's placeholders by id: a default must agree with
     the currency or unit its question's placeholders fix, and in a *template*
     an undeclared placeholder id is a question id too. *where* gives each
-    diagnostic's line: the question's, or the key's.
+    diagnostic's line: the question's, or the key's; for a blank whose id
+    YAML reads as a boolean or null, the blank's own.
     """
     def line_of(*path: Any) -> int | None:
         return where.key(*path) if where is not None else None

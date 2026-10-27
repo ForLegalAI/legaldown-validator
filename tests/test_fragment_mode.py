@@ -200,6 +200,15 @@ def test_a_host_that_is_not_a_template_declares_no_question_for_a_condition_to_n
     assert not said.index.is_template and said.index.placed_markers == []
 
 
+def test_a_host_that_is_not_a_template_leaves_no_template_only_check_for_the_fragment():
+    body = "## Scope {when=vat}\n\nPay {{placeholder: no}}.\n"
+    assert [(d.rule, d.host_dependent) for d in _fragment(body).diagnostics] == [
+        ("condition-invalid", True), ("question-invalid", False)
+    ]
+    said = _fragment(body, template=False)
+    assert [(d.rule, d.host_dependent) for d in said.diagnostics] == [("condition-invalid", False)]
+
+
 def test_template_is_only_meaningful_for_a_fragment():
     document = parse("## Scope\n")
     for value in (True, False):
@@ -607,3 +616,11 @@ def test_the_cli_no_template_flag_says_the_host_declares_no_questions(write, cap
     assert main(["validate", "--fragment", "--no-template", "--format", "json", str(path)]) == EXIT_DIAGNOSTICS
     records = json.loads(capsys.readouterr().out)["diagnostics"]
     assert [(d["rule"], d["host_dependent"]) for d in records] == [("condition-invalid", False)]
+
+
+def test_the_cli_refuses_both_template_flags(write, capsys):
+    path = write("part.lgd", _BLANK)
+    with pytest.raises(SystemExit) as exit_:
+        main(["validate", "--fragment", "--template", "--no-template", str(path)])
+    assert exit_.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err

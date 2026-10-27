@@ -80,7 +80,8 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   whether its host is a template, so it is one exactly when it holds a condition or a `{{choose:}}`,
   unless `validate(template=)` (`legaldown validate --fragment --template` / `--no-template`) says
   so: a blank or a drafting note is legal in any document. A host that is no template declares no
-  question, so a condition naming one is then the fragment's own `condition-invalid`. The checks of
+  question, so a condition or a `{{choose:}}` naming one is then the fragment's own
+  `condition-invalid` or `choose-invalid`, not `host_dependent`. The checks of
   §15.3 on what a template's fragment may hold are not made in this mode.
   `legaldown validate --fragment` marks the host-dependent findings in its text output, counts them apart in its
   summary, and its exit status ignores them. Rule ids and levels are unchanged, and without `fragment=True` nothing is
