@@ -269,39 +269,107 @@ def blank_run_end(text: str, position: int) -> int:
     return _BLANKS_RE.match(text, position).end()
 
 
+# A list item's marker and its spacing, as the parser's LIST_ITEM_RE reads
+# them (``tests/test_list_oracles.py`` checks that they agree).
+_MARKER_AT_RE = re.compile(r"([ \t]*+)([0-9]{1,9}[.)]|[-*+])(?:([ \t]+)|$)")
+
+
+def _advance(column: int, blanks: str) -> int:
+    """The column reached from *column* over *blanks*, spaces and tabs, a tab
+    counting to the next tab stop."""
+    for char in blanks:
+        column += 1 if char == " " else _TAB - column % _TAB
+    return column
+
+
+class ItemMarker(NamedTuple):
+    """A list item marker found in a text (``item_marker_at``) with where its
+    content starts, in the text and in columns."""
+
+    lead: int  #: blanks before the marker, in characters
+    indent: int  #: and in columns
+    gap: int  #: columns of spacing after the marker
+    end: int  #: the index just past the marker and its spacing
+    end_column: int  #: its column
+    cut: int  #: the index where the content starts: past all the spacing of one to four columns, past one column of more
+    column: int  #: the column of that
+    blank: bool  #: nothing follows the marker and its spacing: an empty item
+    remainder: int  #: columns of a tab that ``cut`` passes, which the content starts inside of
+
+
+def item_marker_end(text: str, position: int = 0) -> int | None:
+    """The index just past the list item marker, and its spacing, that *text*
+    has at *position*, or None."""
+    found = _MARKER_AT_RE.match(text, position)
+    return None if found is None else found.end()
+
+
+def item_marker_at(text: str, position: int = 0, column: int = 0) -> ItemMarker | None:
+    """The list item marker that *text* has at *position*, a text whose
+    character there is at *column*, or None. The columns are the ones the line
+    has: a tab counts to the next tab stop from column 0 (CommonMark), so a
+    text cut out of a line says where it was cut. Nothing but the marker and
+    its spacing is read, so that a line of markers is walked, not copied, one
+    marker at a time (#94). The content starts after one to four columns of
+    spacing, or one column when there are more, or when the item is empty."""
+    found = _MARKER_AT_RE.match(text, position)
+    if found is None:
+        return None
+    _, (_, lead_end), (_, marker_end), (gap_start, _) = found.regs
+    end = found.end()
+    if text.find("\t", position, end) < 0:
+        marker_column = column + lead_end - position
+        after = marker_column + marker_end - lead_end
+        end_column = after + end - marker_end
+    else:
+        marker_column = _advance(column, text[position:lead_end])
+        after = marker_column + marker_end - lead_end
+        end_column = _advance(after, text[marker_end:end])
+    gap = end_column - after
+    indent = marker_column - column
+    lead = lead_end - position
+    if end == len(text):  # an empty item
+        return ItemMarker(lead, indent, gap, end, end_column, end, after + 1, True, 0)
+    if gap > 4:
+        tab = _TAB - after % _TAB if text[gap_start] == "\t" else 1
+        return ItemMarker(lead, indent, gap, end, end_column, gap_start + 1, after + 1, False, tab - 1)
+    return ItemMarker(lead, indent, gap, end, end_column, end, after + gap, False, 0)
+
+
 def item_content_column(line: str) -> int:
     """The column where the content of the list item beginning on *line*
     starts (CommonMark): after its marker and one to four columns of spacing,
     or one column when there are more, or when the item is empty."""
+    found = item_marker_at(line)
+    if found is not None:
+        return found.column
     marker = _ITEM_START_RE.match(line)
     if marker is None:  # never: the parser read *line* as an item
         return indent_width(line) + 2
-    after = len(line[:marker.end()].expandtabs(4))
-    # Where the text after the marker starts, found from the marker on: the
-    # rest of a long line is not copied to strip it (#94).
-    text = blank_run_end(line, marker.end())
-    if text == len(line):
-        return after + 1
-    spacing = len(line[:text].expandtabs(4)) - after
-    return after + 1 if spacing > 4 else after + spacing
+    return len(line[:marker.end()].expandtabs(4))  # a marker with text right after it
 
 
-# A list item's marker opening an item's own text: an item nested on its line.
-_NESTED_ITEM_RE = re.compile(r"(?:[0-9]{1,9}[.)]|[-*+])[ \t]+(?=\S)")
+def nested_content(first: str, column: int = 0) -> tuple[int, int]:
+    """``(columns, characters)``: how much further in than a list item's
+    content its innermost content starts, when its text *first* opens with
+    items nested on its line (``1. y`` in ``- 1. y``), in columns and in
+    characters of *first*, which differ where a tab is spacing: its later
+    content is measured from there (CommonMark). *column*: where *first*
+    starts in its line."""
+    columns = characters = position = 0
+    while (found := item_marker_at(first, position, column)) is not None:
+        after = first[found.end:found.end + 1]
+        if found.lead or not found.gap or not after or after.isspace():
+            break  # an item nested on the line has spacing and text
+        columns += found.column - column
+        characters += found.cut - position
+        position, column = found.end, found.end_column
+    return columns, characters
 
 
-def nested_offset(first: str) -> int:
-    """How much further in than a list item's content its innermost content
-    starts, when its text opens with items nested on its line (``1. y`` in
-    ``- 1. y``): its later content is measured from there (CommonMark)."""
-    offset = position = 0
-    while marker := _NESTED_ITEM_RE.match(first, position):
-        # Each marker is measured on itself and the character after its
-        # spacing, with the same column as on the rest of the line, which a
-        # line of many markers would copy once per marker (#94).
-        offset += item_content_column(first[position:marker.end() + 1])
-        position = marker.end()
-    return offset
+def nested_offset(first: str, column: int = 0) -> int:
+    """The columns of ``nested_content``."""
+    return nested_content(first, column)[0]
 
 
 def dedent(line: str, columns: int, *, expand: bool = False) -> str:

@@ -16,6 +16,8 @@ from legaldown.markdown import (
     indent_width,
     is_blank,
     item_content_column,
+    item_marker_at,
+    nested_content,
     nested_offset,
 )
 from legaldown.parser import (
@@ -24,6 +26,7 @@ from legaldown.parser import (
     LIST_ITEM_RE,
     RULE_RE,
     _atx_text,
+    _expand_prefix,
     _item_body,
     _opens_paragraph,
     _rule_from,
@@ -109,10 +112,16 @@ def test_item_content_column_is_what_it_was() -> None:
 
 
 def test_nested_offset_is_what_it_was() -> None:
+    """Without tabs it is the earlier function's, in columns and in characters.
+    With them, what the earlier function made of the line with its markers' tabs
+    written as the spaces they stand for, from the line's start."""
     rng = random.Random(_SEED)
     for _ in range(30000):
         line = _markers(rng) + rng.choice(["", "a", " a"])
-        assert nested_offset(line) == _old_nested_offset(line), repr(line)
+        columns, characters = nested_content(line)
+        assert columns == nested_offset(line) == _old_nested_offset(_expand_prefix(line)), repr(line)
+        if "\t" not in line:
+            assert characters == columns, repr(line)
 
 
 def test_item_markers_are_stripped_until_a_thematic_break_as_before() -> None:
@@ -130,10 +139,30 @@ def test_a_quoted_line_opens_paragraph_text_as_before() -> None:
 
 
 def test_item_markers_in_a_quoted_line_are_read_as_before() -> None:
+    """Without tabs, as the earlier loop read them. With them, as it read the
+    line with its markers' tabs written as the spaces they stand for: the same
+    columns, and the same text after them where it has no tab."""
     rng = random.Random(_SEED)
     for _ in range(60000):
         content = _markers(rng)
-        assert _item_body(content) == _old_item_body(content), repr(content)
+        body, columns = _item_body(content)
+        old_body, old_columns = _old_item_body(_expand_prefix(content))
+        assert columns == old_columns, repr(content)
+        if "\t" not in body + old_body:
+            assert body == old_body, repr(content)
+        if "\t" not in content:
+            assert (body, columns) == _old_item_body(content), repr(content)
+
+
+def test_item_marker_at_agrees_with_list_item_re() -> None:
+    rng = random.Random(_SEED)
+    for _ in range(60000):
+        text = _markers(rng)
+        position = rng.randrange(0, len(text) + 1)
+        found, expected = item_marker_at(text, position), LIST_ITEM_RE.match(text[position:])
+        assert (found is None) == (expected is None), (text, position)
+        if found is not None and expected is not None:
+            assert found.end - position == expected.end(), (text, position)
 
 
 def test_the_rule_test_from_the_end_agrees_with_rule_re_at_every_position() -> None:

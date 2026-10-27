@@ -27,7 +27,6 @@ from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
-    blank_run_end,
     closes_fence,
     dedent,
     fence_end,
@@ -37,7 +36,9 @@ from .markdown import (
     indented_code_end,
     is_blank,
     item_content_column,
-    nested_offset,
+    item_marker_at,
+    item_marker_end,
+    nested_content,
     paragraph_text,
     strip_text,
 )
@@ -162,12 +163,9 @@ RULE_RE = re.compile(r"^[ \t]*+(?:(?:-[ \t]*+){3,}|(?:\*[ \t]*+){3,}|(?:_[ \t]*+
 # list, a number of at most nine ASCII digits and ``.`` or ``)`` for an
 # ordered one, with only spaces and tabs around it — other whitespace is
 # text. A thematic break such as ``* * *`` matches too; callers test
-# RULE_RE first.
-_LIST_ITEM = r"[ \t]*+(?:(?P<number>[0-9]{1,9})(?P<delimiter>[.)])|(?P<bullet>[-*+]))(?:[ \t]+|$)"
-LIST_ITEM_RE = re.compile("^" + _LIST_ITEM)
-# The same to match at an offset in a long line, which its ``^`` forbids: the
-# rest of the line is not copied for each marker (#94).
-_ITEM_AT_RE = re.compile(_LIST_ITEM)
+# RULE_RE first. ``markdown.item_marker_at`` reads the same markers at an offset
+# in a text (``tests/test_list_oracles.py`` checks that they agree).
+LIST_ITEM_RE = re.compile(r"^[ \t]*+(?:(?P<number>[0-9]{1,9})(?P<delimiter>[.)])|(?P<bullet>[-*+]))(?:[ \t]+|$)")
 # A cell of a table's delimiter row (GFM): colons mark the alignment.
 _DELIMITER_CELL_RE = re.compile(r":?-+:?")
 
@@ -418,10 +416,10 @@ def _skip_markers(content: str, *, quotes: bool = False, is_rule: _Rule | None =
     while True:
         if quotes:
             position = _QUOTE_MARKERS_RE.match(content, position).end()
-        marker = _ITEM_AT_RE.match(content, position)
-        if marker is None or is_rule(position):
+        end = item_marker_end(content, position)
+        if end is None or is_rule(position):
             return position
-        position = marker.end()
+        position = end
 
 
 def _opens_paragraph(content: str, is_rule: _Rule | None = None) -> bool:
@@ -447,17 +445,12 @@ def _item_body(content: str, is_rule: _Rule | None = None) -> tuple[str, int]:
     on itself and the character after its spacing, not on a copy of the rest
     of the line."""
     is_rule = is_rule or _Rule(content)
-    position = column = 0
-    while (
-        indent_width(content[position:blank_run_end(content, position)]) < 4
-        and (item := _ITEM_AT_RE.match(content, position))
-    ):
-        spacing_end = blank_run_end(content, item.end())
-        if is_rule(position) or spacing_end == len(content):
+    position = column = passed = 0  # *passed*: columns of a tab the last cut went through
+    while (item := item_marker_at(content, position, column + passed)) is not None and passed + item.indent < 4:
+        if is_rule(position) or item.blank:
             break
-        columns = item_content_column(content[position:spacing_end + 1])
-        position, column = position + columns, column + columns
-    return content[position:], column
+        position, column, passed = item.cut, item.column, item.remainder
+    return " " * passed + content[position:], column
 
 
 # How deep ``_Quote`` follows nested quotes; in deeper ones, a line's
@@ -491,7 +484,7 @@ class _Quote:
         if (self._fence is not None or self._html is not None) and (
             not content.strip(" \t") or indent_width(content) >= self._column
         ):
-            own = content[self._column:]  # as the item holding it has it
+            own = dedent(content, self._column)  # as the item holding it has it
             if self._fence is not None:
                 if closes_fence(own, self._fence):
                     self._fence = None
@@ -699,7 +692,9 @@ def _scan_list(
     innermost = 0  # past the item's content column, where its innermost first-line item's content starts
     end = index
     while end < len(lines):
-        line = lines[end]
+        # Its markers' tabs written as the spaces they stand for, from the line's
+        # start, as its item's lines have them (``_item_lines``).
+        line = _expand_prefix(lines[end])
         width = indent_width(line)  # the line's, read many times below
         if fence is not None:
             # A line that starts an item, indented less than the current
@@ -806,9 +801,11 @@ def _scan_list(
                 own.append((end, content_indent))
             chain[depth:] = [content_indent]
             quote, table, previous = None, False, None
-            offset = nested_offset(content)  # an item nested on its line: its content is further in
+            # An item nested on its line: its content is further in, by *offset* columns,
+            # which is *inner* characters of the text.
+            offset, inner = nested_content(content)
             # So is that of a bare item ending the line (``1. -``), on the next.
-            rest = content[offset:]
+            rest = content[inner:]
             bare = not RULE_RE.match(rest) and (end_marker := LIST_ITEM_RE.match(rest)) and is_blank(rest[end_marker.end():])
             innermost = offset + (item_content_column(rest) if bare else 0)
         elif own and (
@@ -871,7 +868,7 @@ def _scan_list(
         else:
             # An item's first line may open items nested on it (``- - ``````):
             # the fence is theirs.
-            body = content[offset:] if marker else content
+            body = content[inner:] if marker else content
             opening = None if marker and first_code else FENCE_OPEN_RE.match(body)
             fence = opening.group("fence") if opening else None
             # Opened in the item's content, not by a line short of it that
@@ -927,7 +924,7 @@ def _scan_list(
                 para_column = chain[depth - 1] if depth else content_indent
             # A quote there (``- - > a``) holds it: a line without its ``>``
             # only lazily continues it.
-            para_quote = bool(marker) and content[offset:].lstrip(" \t").startswith(">")
+            para_quote = bool(marker) and content[inner:].lstrip(" \t").startswith(">")
         # Only paragraph text can be a table's header row (GFM).
         previous, previous_code = (content, code) if open_paragraph else (None, False)
         end += 1
