@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from legaldown import Diagnostic, Document, load, parse, validate
+from legaldown import Diagnostic, Document, is_template, load, parse, validate
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.directives import lex
 from legaldown.positions import Locator
@@ -100,7 +100,7 @@ INTRINSIC = [
     ("## Clause {{choose: q, a=\"x\"}}\n\nText.", "choose-invalid"),
     ("A {{date: yesterday}}", "date-invalid"),
     ("A {{money: abc, currency=EUR}}", "money-invalid-amount"),
-    # No host can settle it: a question declared under the id is invalid in its turn.
+    # The condition makes it certainly a template: no host's declaration settles it.
     ("## Clause {when=vat}\n\n{{placeholder: yes}}", "question-invalid"),
 ]
 
@@ -146,18 +146,71 @@ def test_a_definition_the_fragment_leaves_unreferenced_is_host_dependent():
     ]
 
 
-def test_a_fragment_with_a_blank_is_read_as_a_template():
-    # Whether it is one is the host's to decide, so the template checks are made.
+def test_a_fragment_with_only_a_blank_may_or_may_not_be_a_template_as_its_host_is():
+    # A blank is legal in any document: `no` is a problem only if the host is a
+    # template, so the template-only check is made and the host's to settle.
     body = "## Scope\n\nPay {{placeholder: no}}.\n"
     assert _rows(validate(parse(body))) == [("frontmatter-absent", "warning", 1)]
     fragment = _fragment(body)
-    assert [(d.rule, d.host_dependent) for d in fragment.diagnostics] == [("question-invalid", False)]
+    assert [(d.rule, d.line, d.host_dependent) for d in fragment.diagnostics] == [("question-invalid", 3, True)]
     assert fragment.index.is_template
-    # A blank in a heading, and a drafting note, are enough too.
-    assert _fragment("## Pay {{placeholder: ok}}\n").index.is_template
-    assert _fragment("## Scope\n\n> [!DRAFTING]\n> Note.\n\nPay {{placeholder: ok}}.\n").index.is_template
-    assert _fragment("## Scope\n\n> [!DRAFTING]\n> Note.\n").index.is_template
-    assert not _fragment("## Scope\n\nText.\n").index.is_template
+
+
+def test_a_fragment_with_a_condition_or_choice_is_certainly_a_template():
+    body = "## Scope {when=vat}\n\nPay {{placeholder: no}}.\n"
+    assert [(d.rule, d.host_dependent) for d in _fragment(body).diagnostics] == [
+        ("condition-invalid", True),  # the question is the host's
+        ("question-invalid", False),
+    ]
+
+
+def test_a_drafting_note_alone_makes_the_template_only_findings_the_hosts():
+    body = "## Scope\n\n> [!DRAFTING]\n> See {{include: part.lgd}}\n"
+    assert [(d.rule, d.line, d.host_dependent) for d in _fragment(body).diagnostics] == [
+        ("template-fragment-invalid", 4, True)
+    ]
+    assert validate(parse(body)).rules() == {"frontmatter-absent"}
+    certain = _fragment("## Scope {when=vat}\n\n> [!DRAFTING]\n> See {{include: part.lgd}}\n")
+    assert [(d.rule, d.host_dependent) for d in certain.diagnostics] == [
+        ("condition-invalid", True),
+        ("template-fragment-invalid", False),
+    ]
+    twice = _fragment("## Scope\n\n{{include: p.lgd}}\n\n{{include: p.lgd}}\n\n{{placeholder: x}}\n")
+    assert [(d.rule, d.host_dependent) for d in twice.diagnostics] == [("template-fragment-invalid", True)]
+
+
+def test_the_line_of_a_yaml_keyword_blank_is_the_blank_when_no_questions_are_written():
+    framed = _fragment("---\ntitle: T\nquestions:\n  vat:\n    type: boolean\n---\n\n## A\n\nPay {{placeholder: no}}.\n")
+    assert [(d.rule, d.line) for d in framed.diagnostics] == [("include-has-frontmatter", 2), ("question-invalid", 10)]
+    complete = validate(parse("---\ntitle: T\nquestions:\n  vat:\n    type: boolean\n---\n\n# A\n\nPay {{placeholder: no}}.\n"))
+    assert [(d.rule, d.line) for d in complete.diagnostics if d.rule == "question-invalid"] == [("question-invalid", 3)]
+
+
+BODIES = [
+    "## Scope\n\nText.\n",
+    "## Scope\n\nPay {{placeholder: fee}}.\n",
+    "## Pay {{placeholder: fee}}\n",
+    "## Scope\n\n> [!DRAFTING]\n> Note.\n",
+    "## Scope {when=vat}\n\nText.\n",
+    '## Scope\n\n{{choose: vat, true="a", false="b"}}\n',
+    "---\nquestions:\n  vat:\n    type: boolean\n---\n\n## Scope\n\nText.\n",
+    "---\ntitle: T\n---\n\n## Scope\n\nText {{placeholder: x}}.\n",
+    "## Scope\n\nA literal `{{placeholder: x}}` and > quote.\n",
+]
+
+
+@pytest.mark.parametrize("body", BODIES)
+def test_is_template_with_fragment_is_what_validating_a_fragment_finds(body):
+    document = parse(body)
+    assert is_template(document, fragment=True) == _fragment(body).index.is_template
+    # Without it, the document's own decision: unchanged.
+    assert is_template(document) == validate(document).index.is_template
+
+
+def test_is_template_of_a_fragment_does_not_read_its_metadata():
+    document = parse("---\nquestions:\n  vat:\n    type: boolean\n---\n\n## Scope\n\nText.\n")
+    assert is_template(document)
+    assert not is_template(document, fragment=True)
 
 
 # ── A fragment that has frontmatter, or a level-1 heading ──────────
@@ -473,3 +526,15 @@ def test_the_cli_fragment_of_a_clean_file_exits_zero(write, capsys):
     path = write("part.lgd", "## Scope\n\nText.\n")
     assert main(["validate", "--fragment", str(path)]) == EXIT_OK
     assert load(path).metadata.frontmatter_absent
+
+
+def test_the_cli_summary_counts_host_dependent_findings_apart(write, capsys):
+    path = write("part.lgd", "## A\n\n{{ref: b}} {{party: acme}} {{term: fee}}\n")
+    assert main(["validate", "--fragment", str(path)]) == EXIT_OK
+    assert capsys.readouterr().err.strip() == "0 error(s), 0 warning(s), 0 info(s); 3 host-dependent"
+    own = write("own.lgd", "## A\n\n{{ref: b}} {{ref: Bad Id}}\n")
+    assert main(["validate", "--fragment", str(own)]) == EXIT_DIAGNOSTICS
+    assert capsys.readouterr().err.strip() == "1 error(s), 0 warning(s), 0 info(s); 1 host-dependent"
+    # Without the flag nothing is host-dependent and the summary is as it was.
+    main(["validate", str(own)])
+    assert capsys.readouterr().err.strip().splitlines()[-1].endswith("0 info(s)")

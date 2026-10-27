@@ -337,7 +337,7 @@ itself is what was found, kept nowhere but in `diagnostics`:
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)` (`legaldown.syntax`), at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
-`is_template(document)` (top-level) gives the template decision without validating (§15.1).
+`is_template(document, *, fragment=False)` (top-level) gives the template decision without validating (§15.1); with `fragment=True`, the decision for a fragment ([below](#validating-a-fragment)).
 A renderer builds from these decisions rather than re-deriving them, reading the source with
 the validator's own helpers ([Tooling API](#tooling-api)).
 [`legaldown-render`](https://github.com/ForLegalAI/legaldown-render) is built this way.
@@ -382,13 +382,17 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   key (the opening `---` when it has none), and a level-1 heading draws `include-has-h1`, at the
   heading, each an Error. Its metadata is then not read at all, and the lines of everything else are
   the file's. Whichever way the host includes it, the ids are the `include-*` ones.
-- Whether a fragment is a template is its host's to decide (§15.1), so one that holds any template
-  construct, a `{{placeholder:}}` or a drafting note included, is checked as a template
-  (`index.is_template` is true), and a blank with a YAML keyword for an id (`{{placeholder: no}}`) is
-  a `question-invalid` that no host can settle.
+- Whether a fragment is a template is its host's to decide (§15.1). One with a condition or a
+  `{{choose:}}` certainly is, and the findings only a template has stay its own. One with only a
+  `{{placeholder:}}` or a drafting note may be part of a document that is not a template, so the
+  template checks are still made, but their findings are `host_dependent`: a blank with a YAML
+  keyword for an id (`{{placeholder: no}}`, `question-invalid`), an `{{include:}}` in a drafting note,
+  a fragment included twice (`template-fragment-invalid`). `is_template(document, fragment=True)` and
+  `index.is_template` agree on this.
 - `legaldown validate --fragment` shows a flagged finding with `(host-dependent)` at the end of its
   line, and its exit status ignores them (also under `--strict`): a fragment that only uses what its
-  host declares or defines exits `0`, and one with a finding of its own exits `1`.
+  host declares or defines exits `0`, and one with a finding of its own exits `1`. The summary line
+  counts them apart (`0 error(s), 0 warning(s), 0 info(s); 3 host-dependent`) to agree with it.
 - `host_dependent` is `False` in every other result: for a complete document there is no host, and a
   broken reference is simply an Error. It takes part in a `Diagnostic`'s equality. Assembly's
   diagnostics never carry it.

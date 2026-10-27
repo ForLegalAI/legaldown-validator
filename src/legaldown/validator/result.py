@@ -67,8 +67,11 @@ class Depends(Enum):
     #: A declaration in the frontmatter of the document that includes the
     #: fragment (§3): a party, a side, an attachment, a question.
     FRONTMATTER = "frontmatter"
-    #: A section, anchor or definition in the including document's *body*, or
-    #: one that it imports (§7.5, §12.2): a ``{{ref:}}`` or ``{{term:}}`` target.
+    #: The including document's *body*, or what it imports (§7.5, §12.2): a
+    #: section, anchor or definition that a ``{{ref:}}`` or ``{{term:}}`` of the
+    #: fragment names, and the reference to a definition of the fragment that
+    #: the host may make (def-unreferenced). Suppressing BODY would drop
+    #: def-unreferenced as well as ref-broken and term-undefined.
     BODY = "body"
 
 

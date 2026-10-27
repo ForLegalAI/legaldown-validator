@@ -77,9 +77,11 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   level it has in a complete document, but with `Diagnostic.host_dependent` set: only the including
   document can settle it. So is a definition it declares and does not reference
   (`def-unreferenced`), which the host may reference. Whether a fragment is a template is the host's
-  to decide, so one holding any template construct, a placeholder or a drafting note included, is
-  checked as a template. `legaldown validate --fragment` marks these in its text output and its
-  exit status ignores them. Rule ids and levels are unchanged, and without `fragment=True` nothing is
+  to decide: one with a condition or `{{choose:}}` is, and one with only a placeholder or a
+  drafting note is checked as one too, its template-only findings (a YAML-keyword blank id, an
+  include in a drafting note, a fragment included twice) being `host_dependent`.
+  `legaldown validate --fragment` marks these in its text output, counts them apart in its
+  summary, and its exit status ignores them. Rule ids and levels are unchanged, and without `fragment=True` nothing is
   flagged and a document is checked as a complete one. The fragment's own frontmatter is
   `include-has-frontmatter` and its level-1 heading `include-has-h1`, reported by this mode alone;
   the rest of the Includes group, which reads files, is not implemented.

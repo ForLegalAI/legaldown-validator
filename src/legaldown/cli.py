@@ -97,10 +97,18 @@ def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
         print(f"{where}: {d['level']}: [{d['rule']}] {d['message']}{host}")
     if quiet:
         return
+    # The host-dependent findings (--fragment) are counted apart, as the exit
+    # status leaves them out, so the summary agrees with it.
     counts = {level: 0 for level in _LEVEL_ORDER}
+    host = 0
     for d in diagnostics:
-        counts[d["level"]] = counts.get(d["level"], 0) + 1
+        if d.get("host_dependent"):
+            host += 1
+        else:
+            counts[d["level"]] = counts.get(d["level"], 0) + 1
     summary = ", ".join(f"{counts.get(lvl, 0)} {lvl}(s)" for lvl in _LEVEL_ORDER)
+    if host:
+        summary += f"; {host} host-dependent"
     print(f"\n{summary}" if diagnostics else "No issues found.", file=sys.stderr)
 
 
