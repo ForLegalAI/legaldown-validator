@@ -31,7 +31,16 @@ from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
 from ..models import LIST_KINDS, Amends, Document
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
-from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
+from .conditions import (
+    ALWAYS,
+    Condition,
+    Presence,
+    always_covered,
+    condition_problem,
+    exclusive,
+    parse_condition,
+    satisfiable,
+)
 from .helpers import (
     format_section_number,
     generate_identifier,
@@ -437,36 +446,126 @@ def _clashes(presence: Presence, others: list[Presence], questions: Any) -> bool
     return any(not exclusive(presence, other, questions) for other in others)
 
 
+def _conditions_by_question(presence: Presence) -> dict[str, Presence]:
+    """The conditions of *presence* on each question it mentions."""
+    grouped: dict[str, set[Condition]] = {}
+    for condition in presence:
+        grouped.setdefault(condition.question, set()).add(condition)
+    return {question: frozenset(conditions) for question, conditions in grouped.items()}
+
+
+# The identifier ``stem-k`` is the suffix k of ``stem`` (§5.5), as written: no
+# leading zero, and k at least 2.
+_SUFFIXED_RE = re.compile(r"(.*)-([2-9]|[1-9][0-9]+)")
+
+
 class _FreeIdentifiers:
     """The identifiers headings get when theirs is missing or taken (§5.5).
 
     Called with a heading's base identifier and presence, it returns the
     lowest suffix of the base — none, -2, -3, … — not taken by an explicit
-    identifier or by an earlier heading that can appear with this one. A
-    suffix taken for a presence stays taken, as ``anchors`` only grows, so a
-    later call for the same base and presence resumes after the suffixes
-    known to be taken: *n* headings of one title cost *n* probes, not *n*²
-    (#94).
+    identifier or by an earlier heading that can appear with this one. The
+    caller declares each identifier it takes (``declare``), explicit or not.
+
+    Probing every suffix for each heading would be quadratic in a document of
+    many headings with one title (#94). Two things avoid it:
+
+    - A suffix taken for a presence stays taken, as declarations only grow,
+      so a call for the same base and presence resumes after the suffixes
+      known to be taken.
+    - A presence can appear together with a declaration unless some question
+      they both condition has no answer that satisfies both (``satisfiable``
+      decides per question, §15.4). The conditions that the declarations of a
+      base's suffixes make on each question are kept; when none of them is
+      exclusive with the heading's own on any question, every suffix with a
+      declaration is taken, and the lowest free one is the first with none.
+
+    What remains quadratic is a heading that some declarations exclude and
+    others do not, over many suffixes, such as ``p_k ∧ q`` and ``p_k ∧ !q``
+    for every k: each is probed against the suffixes before it. A question's
+    declared choices bound the other cases.
     """
 
     def __init__(self, explicit_ids: set[str], anchors: dict[str, list[Presence]], questions: Any) -> None:
         self._explicit_ids = explicit_ids
-        self._anchors = anchors  # the caller adds to it; it is read, not copied
+        self._anchors = anchors  # the declarations of each identifier
         self._questions = questions
         #: How many leading suffixes of a base are taken for a presence.
         self._taken: dict[tuple[str, Presence], int] = {}
+        #: Whether a presence can appear at all.
+        self._appears: dict[Presence, bool] = {}
+        #: How many declarations that can appear an identifier has.
+        self._occupants: dict[str, int] = {}
+        #: The conditions on a question that the declarations of a base's
+        #: suffixes make, by base and question.
+        self._seen: dict[tuple[str, str], set[Presence]] = {}
+        #: Whether two sets of conditions on one question exclude each other.
+        self._excludes: dict[tuple[Presence, Presence], bool] = {}
+        #: Per base, the lowest suffix that is not explicit, and the lowest
+        #: that is not explicit either and has no declaration that can appear.
+        #: Both only move up.
+        self._lowest: dict[str, int] = {}
+        self._lowest_empty: dict[str, int] = {}
+
+    def declare(self, identifier: str, presence: Presence) -> None:
+        """Record that *identifier* is declared with *presence*."""
+        self._anchors.setdefault(identifier, []).append(presence)
+        if not self._can_appear(presence):
+            return  # it clashes with nothing
+        self._occupants[identifier] = self._occupants.get(identifier, 0) + 1
+        suffixed = _SUFFIXED_RE.fullmatch(identifier)
+        bases = (identifier, suffixed.group(1)) if suffixed else (identifier,)
+        for question, conditions in _conditions_by_question(presence).items():
+            for base in bases:
+                self._seen.setdefault((base, question), set()).add(conditions)
 
     def __call__(self, base: str, presence: Presence) -> str:
+        if not self._can_appear(presence):
+            return self._suffixed(base, self._first(self._lowest, base, occupied=False))
+        empty = self._first(self._lowest_empty, base, occupied=True)
+        if not any(
+            self._exclude(conditions, seen)
+            for question, conditions in _conditions_by_question(presence).items()
+            for seen in self._seen.get((base, question), ())
+        ):
+            return self._suffixed(base, empty)  # every suffix with a declaration is taken
         key = (base, presence)
         suffix = self._taken.get(key, 0) + 1
-        candidate = base if suffix == 1 else f"{base}-{suffix}"
-        while candidate in self._explicit_ids or _clashes(
-            presence, self._anchors.get(candidate, []), self._questions
-        ):
+        while suffix < empty:
+            candidate = self._suffixed(base, suffix)
+            if candidate not in self._explicit_ids and not _clashes(
+                presence, self._anchors.get(candidate, []), self._questions
+            ):
+                return candidate
             self._taken[key] = suffix
             suffix += 1
-            candidate = f"{base}-{suffix}"
-        return candidate
+        return self._suffixed(base, empty)
+
+    @staticmethod
+    def _suffixed(base: str, suffix: int) -> str:
+        return base if suffix == 1 else f"{base}-{suffix}"
+
+    def _first(self, lowest: dict[str, int], base: str, *, occupied: bool) -> int:
+        """The lowest suffix of *base* from ``lowest[base]`` on that is not
+        explicit and, with *occupied*, has no declaration that can appear."""
+        suffix = lowest.get(base, 1)
+        while (candidate := self._suffixed(base, suffix)) in self._explicit_ids or (
+            occupied and self._occupants.get(candidate)
+        ):
+            suffix += 1
+        lowest[base] = suffix
+        return suffix
+
+    def _can_appear(self, presence: Presence) -> bool:
+        if presence not in self._appears:
+            self._appears[presence] = satisfiable(presence, self._questions)
+        return self._appears[presence]
+
+    def _exclude(self, first: Presence, second: Presence) -> bool:
+        key = (first, second)
+        if key not in self._excludes:
+            self._excludes[key] = not satisfiable(first | second, self._questions)
+        return self._excludes[key]
 
 
 # A link's pointy-bracket destination, ``](<…>)``, then an optional title and
@@ -1122,7 +1221,7 @@ def _validate(
                     f"identifier. It was adjusted to '{identifier}'; give the heading an "
                     f"explicit identifier (§5.5).", line=where.heading(section_index),
                 )
-        anchors.setdefault(identifier, []).append(presence)
+        free_identifier.declare(identifier, presence)
 
         if _clashes(presence, attachment_presence.get(identifier, []), questions):
             result.error(
@@ -1213,7 +1312,7 @@ def _validate(
                 line=where.key("attachments", attachment_entry[anchor_id]),
             )
         else:
-            anchors.setdefault(anchor_id, []).append(presence)
+            free_identifier.declare(anchor_id, presence)
             result.index.section_lookup.setdefault(anchor_id, result.index.sections[found.section])
 
     # ── Definitions (§7) ──

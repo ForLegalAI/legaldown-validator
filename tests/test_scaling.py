@@ -19,8 +19,10 @@ from legaldown import directives as directives_module
 from legaldown import markdown
 from legaldown.directives import lex
 from legaldown.parser import parse
+from legaldown.validator import conditions as conditions_module
 from legaldown.validator import core, templates, validate
 from legaldown.validator import units as units_module
+from legaldown.validator.conditions import ALWAYS
 from legaldown.validator.units import find_markers
 
 _SIDES = """sides:
@@ -110,6 +112,55 @@ def test_sections_of_one_title_probe_each_suffix_once(monkeypatch):
 def test_sections_of_one_title_in_a_time_budget():
     document = parse("# Same\n\ntext\n\n" * 10000, filename="t.lgd")
     assert _seconds(validate, document) < 5.0  # 1.4 s now; the old probe took a minute
+
+
+def _boolean_questions(count):
+    return {f"q{k}": {"type": "boolean"} for k in range(count + 2)}
+
+
+def _condition_shapes(n):
+    """The presences of n headings that share a title, by shape."""
+    from legaldown.validator.units import own_presence
+
+    questions = _boolean_questions(n)
+
+    def when(text):
+        return own_presence(text, questions)
+
+    return questions, {
+        "distinct questions": [when(f"q{k}") for k in range(n)],
+        "identical presences": [when("q0")] * n,
+        "one question and another each": [when("q0") | when(f"q{k + 1}") for k in range(n)],
+        "pure alternation": [when("!q0" if k % 2 == 0 else "q0") for k in range(n)],
+        "unconditional and distinct": [when(f"q{k}") if k % 2 else ALWAYS for k in range(n)],
+    }
+
+
+@pytest.mark.parametrize("shape", [
+    "distinct questions", "identical presences", "one question and another each", "pure alternation",
+    "unconditional and distinct",
+])
+def test_headings_of_one_title_under_conditions_decide_in_linear_work(shape, monkeypatch):
+    n = 1500
+    questions, presences = _condition_shapes(n)
+    clashes = _Counter(monkeypatch, core, "_clashes")
+    decisions = _Counter(monkeypatch, core, "satisfiable")
+    decisions_in_exclusive = _Counter(monkeypatch, conditions_module, "satisfiable")
+    pool = core._FreeIdentifiers(set(), {}, questions)
+    for presence in presences[shape]:
+        pool.declare(pool("same", presence), presence)
+    assert clashes.calls <= 2 * n
+    assert decisions.calls + decisions_in_exclusive.calls <= 4 * n  # n² / 2 and more before
+
+
+def test_headings_of_one_title_under_conditions_get_their_suffixes():
+    count = 300
+    questions = "".join(f"  q{k}:\n    type: boolean\n" for k in range(count))
+    headings = "".join(f"# Same {{when=q{k}}}\n\ntext\n\n" for k in range(count))
+    result = validate(parse(f"---\ntitle: T\nquestions:\n{questions}---\n\n{headings}", filename="t.lgd"))
+    assert [entry.identifier for entry in result.index.sections] == ["same"] + [
+        f"same-{k}" for k in range(2, count + 1)
+    ]
 
 
 # ── Blanks on one line (insertion-boundary) ───────────────────────

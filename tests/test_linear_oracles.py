@@ -482,42 +482,46 @@ def old_free_identifier(base, presence, explicit_ids, anchors, questions):
 _QUESTIONS = {
     "a": {"type": "boolean"},
     "b": {"type": "boolean"},
-    "c": {"type": "choice", "choices": {"x": "X", "y": "Y"}},
+    "c": {"type": "choice", "choices": {"x": "X", "y": "Y", "z": "Z"}},
 }
-_CONDITIONS = ["a", "!a", "b", "c:x", "c:y", "!b"]
+_CONDITIONS = ["a", "!a", "b", "!b", "c:x", "c:y", "!c:x", "!c:z"]
 
 
 def _presences(rng):
-    """ALWAYS, one or two conditions, and contradictions (which never appear)."""
+    """ALWAYS, one to three conditions, and contradictions (which never appear)."""
     presence = ALWAYS
     for _ in range(rng.choice([0, 0, 1, 1, 2, 3])):
         presence = presence | own_presence(rng.choice(_CONDITIONS), _QUESTIONS)
     return presence
 
 
-@pytest.mark.parametrize("seed", range(40))
+@pytest.mark.parametrize("seed", range(300))
 def test_free_identifiers_are_the_lowest_free_suffix(seed):
     """Headings of a few titles, under a few presences, in a document that
-    also has explicit identifiers: the new pool hands out what the old probe
-    did, heading by heading (the suffixes are taken in the order of the
-    document, as the caller declares each one)."""
+    also has explicit identifiers: the pool hands out what the old probe did,
+    heading by heading (the identifiers are declared in the order of the
+    document, as the caller does). The bases include ``same-2`` and
+    ``same-3``, which are suffixes of ``same`` too, and the explicit ones
+    ``same-1``, ``same-02`` and ``same-2-2``, which are no suffix."""
     rng = random.Random(seed)
-    bases = ["same", "other", "x"]
-    explicit = {f"{rng.choice(bases)}{rng.choice(['', '-2', '-3', '-5', '-9'])}" for _ in range(rng.randint(0, 5))}
-    presences = [_presences(rng) for _ in range(rng.randint(1, 5))]
-    new_anchors: dict[str, list] = {}
+    bases = ["same", "same-2", "same-3", "x"]
+    explicit = {
+        f"{rng.choice(bases)}{rng.choice(['', '-2', '-3', '-5', '-2-2', '-1', '-02'])}"
+        for _ in range(rng.randint(0, 6))
+    }
+    presences = [_presences(rng) for _ in range(rng.randint(1, 8))]
     old_anchors: dict[str, list] = {}
-    pool = core._FreeIdentifiers(explicit, new_anchors, _QUESTIONS)
-    for _ in range(rng.randint(5, 60)):
+    pool = core._FreeIdentifiers(explicit, {}, _QUESTIONS)
+    for _ in range(rng.randint(5, 80)):
         base, presence = rng.choice(bases), rng.choice(presences)
         got = pool(base, presence)
         assert got == old_free_identifier(base, presence, explicit, old_anchors, _QUESTIONS)
-        new_anchors.setdefault(got, []).append(presence)
         old_anchors.setdefault(got, []).append(presence)
-        if rng.random() < 0.1:  # an explicit anchor declared in between, as sections with ids do
-            other = rng.choice(bases)
-            new_anchors.setdefault(other, []).append(presence)
+        pool.declare(got, presence)
+        if rng.random() < 0.15:  # an explicit anchor, as sections with ids declare (anchor-duplicate too)
+            other = rng.choice([*sorted(explicit), "same", "same-2", "same-3-2"])
             old_anchors.setdefault(other, []).append(presence)
+            pool.declare(other, presence)
 
 
 # ── Offsets ───────────────────────────────────────────────────────
