@@ -50,7 +50,7 @@ files other than the document itself.
 | Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip`; of these, `include-has-frontmatter` and `include-has-h1` are reported for a fragment validated on its own (`validate(fragment=True)`, below), which is not how their fixtures run them: they validate the including document, which does not read the fragment, so those cases stay skipped |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Rendering (§17.3) | `ref-not-enumerated` |
-| Other | `frontmatter-invalid-yaml` (reported by the CLI and assembly, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
+| Other | `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means validating a set of files is out of scope: the validator does not resolve
 or cross-check includes, attachment file contents, or bilingual document sets. The one thing it
@@ -183,11 +183,33 @@ failed to resolve. From assembly, which reads the file, it means the file could 
 and for one whose `---` block holds YAML that is a scalar or a list rather than a mapping of
 fields: that block is not frontmatter, its `---` lines are thematic breaks, and the whole document
 is validated as body. A block that cannot be read at all — YAML that is malformed, nested too
-deep, or a mapping of another kind (`!!set`) — is `frontmatter-invalid-yaml`: `parse` (and `load`)
-raises `FrontmatterError` for it, which the CLI reports and assembly returns as a diagnostic, for
-the template or for a fragment or attachment file it reads. Any other exception while parsing is
-a fault of this implementation: the CLI reports it as an internal error (exit status 2), never as
-a diagnostic. As §16.6 requires, a document without frontmatter draws that Warning alone: not
+deep, or a mapping of another kind (`!!set`), as prose between two `---` lines is — is
+`frontmatter-invalid-yaml`. `parse` (and `load`) raise `FrontmatterError` for it by default;
+given `on_frontmatter_error="keep"`, which the CLI and the conformance run use, they keep the
+error as `Document.frontmatter_error` and read the rest as the body. `validate` then reports it
+(an Error, at the line of the problem) and goes on to validate that body (#43): §16.1 says an
+Error prevents rendering, not that it stops the validation, and the fixture is not exhaustive.
+The block is still the frontmatter, so the document is not `frontmatter-absent`, and its first
+heading must still be level 1 (`heading-skip`, §4.1). Its metadata is read as empty, so nothing
+is reported for want of what it might have declared (`title-missing`, `sides-absent`,
+`sides-minimum`, `parties-minimum`, `issuer-side-required`), and nothing that needs those
+declarations is reported either: `party-unknown`, `side-unknown`, `attach-undeclared`,
+`ref-targets-attachment`, `amend-term-undefined`, `amend-term-unresolvable`, and
+`condition-invalid` and `choose-invalid` where they name a question that is not declared (a
+malformed condition, or the wrong form for a declared question, is not). What the body decides
+alone is reported, `ref-broken`, `heading-*`, `anchor-*`, `directive-*`, `def-*` and `raw-html`
+among them, and `term-undefined` too, although the original an `amends` names might have defined
+the term. A block of comments only, such as a heading written as a comment between two `---`
+lines, is valid YAML: it is present and empty (§3.1) and not body, so `title-missing` and
+`sides-absent` point at it. `serialize`, `save` and `Document.to_dict` raise the
+`FrontmatterError` for such a document, so that nothing written from it loses the block. Assembly
+returns it as a diagnostic, for the template or for a fragment or attachment file it reads
+(`parse_template` and `load_template` still raise it). A fragment validated on its own (`validate(fragment=True)`,
+`legaldown validate --fragment`) never reads its frontmatter: a block it has, readable or not, is
+`include-has-frontmatter`, at the line of the problem for one that cannot be read, and
+`frontmatter-invalid-yaml` is not reported as well. Any other exception while parsing is a fault of
+this implementation: the CLI reports it as an internal error (exit status 2), never as a
+diagnostic. As §16.6 requires, a document without frontmatter draws that Warning alone: not
 `title-missing`, and not `sides-absent`.
 
 `heading-skip` covers the first heading too: in a document with frontmatter, a main document,
@@ -211,10 +233,10 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Each case's expected rule is asserted at its expected line, where the case gives one (above).
-Cases for the rules above are skipped by name, so the 28 `not implemented` skips reproduce this
+Cases for the rules above are skipped by name, so the 27 `not implemented` skips reproduce this
 table one for one, except `ref-not-enumerated`, which has no fixture. Each fixture document is
 also written back (`serialize`) and validated again, which must report the same diagnostics. The
-run reports 234 passed and 39 skipped: eight of the other skips are the implemented rules named
+run reports 235 passed and 38 skipped: eight of the other skips are the implemented rules named
 above, skipped as `multi-file case` or `requires conformance level full`, two are the `multi-file`
 assembly case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py`
 assembles it with a loader instead — and one is the write-back of the `frontmatter-invalid-yaml`

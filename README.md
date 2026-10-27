@@ -130,6 +130,10 @@ legaldown validate --fragment clauses/               # include fragments and att
 Directories are searched recursively for `*.lgd`, `*.legaldown`, and `*.legal.md`, and
 `legaldown --version` reports the validator version.
 
+A file whose frontmatter cannot be read draws `frontmatter-invalid-yaml` (an Error, at the line of the
+problem), and its body is validated all the same; what only the frontmatter could have declared is not
+reported.
+
 **Exit codes:** `0` clean · `1` diagnostics found (errors, or any diagnostic under `--strict`) ·
 `2` a file could not be read.
 
@@ -263,7 +267,15 @@ its diagnostics.
 `load` raises `FileNotFoundError` (or another `OSError`) when the file cannot be read and
 `UnicodeDecodeError` when it is not UTF-8. Both it and `parse` raise `FrontmatterError` (a
 `yaml.YAMLError` and a `ValueError`) when the frontmatter cannot be read — the
-`frontmatter-invalid-yaml` rule, which `validate`, given a parsed document, cannot report.
+`frontmatter-invalid-yaml` rule — unless you pass `on_frontmatter_error="keep"`: they then read the
+rest of the source as the body and keep the error as `document.frontmatter_error`, and `validate`
+reports it (an Error, at the line of the problem) together with what is wrong in the body, as
+`legaldown validate` does. That is for prose that sits between two `---` lines, say: an author who
+meant a thematic break should still be told about the rest of the document. The frontmatter is
+then read as empty, so nothing is reported for want of what it might have declared (a title, the
+sides, and a party, side, attachment or question the body uses), and the document cannot be
+written out: `serialize`, `save` and `to_dict` raise the same `FrontmatterError`, so the text of the
+block is not lost. The default stays `"raise"`; `on_frontmatter_error` is keyword-only.
 
 `validate(document)` checks it and returns a `ValidationResult`; `validate(document, final=True)`
 is the signature-ready check (§15.9), and `validate(document, fragment=True)` checks an include
@@ -382,7 +394,9 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
 - A fragment that has frontmatter draws `include-has-frontmatter` (§16.11), at the line of its first
   key (the opening `---` when it has none), and a level-1 heading draws `include-has-h1`, at the
   heading, each an Error. Its metadata is then not read at all, and the lines of everything else are
-  the file's. Whichever way the host includes it, the ids are the `include-*` ones.
+  the file's. Whichever way the host includes it, the ids are the `include-*` ones. That holds for a
+  block whose YAML cannot be read, too (`load(path, on_frontmatter_error="keep")`; the CLI does): it is
+  `include-has-frontmatter`, at the line of the problem, and not also `frontmatter-invalid-yaml`.
 - A fragment cannot tell whether the document that includes it is a template (§15.1): a blank or a
   drafting note is legal in any document. By default it is a template exactly when it holds a
   condition or a `{{choose:}}`, as any document is, with no `questions` to count. Say what the host is
@@ -427,7 +441,9 @@ are created. The text is UTF-8 with LF line endings and no byte-order mark, so a
 with CRLF line endings or a byte-order mark is written back without them. Afterwards `document.path`
 is the path written, as after `load`: that is where `validate` looks for the files the document
 refers to (and `document.filename`, which diagnostics name, is its name). `serialize(document)` is the same text as a `str`, the inverse of `parse`, for when the
-file is not what you want to write (an HTTP response, a database).
+file is not what you want to write (an HTTP response, a database). Both raise `FrontmatterError`
+for a document parsed with `on_frontmatter_error="keep"` whose frontmatter could not be read, and
+`save` leaves the file as it is.
 
 Content before the first heading — typically the sentence identifying the parties — is the
 document's preamble (§4.4): it is unnumbered, so it lives in `document.preamble` rather than in
@@ -440,7 +456,8 @@ model: read them from `result.index.sections`.
 `document.to_dict()` and `Document.from_dict(data)` round-trip the model through JSON-friendly
 structures (missing fields take their defaults), except the fields that describe the parsed source
 rather than the document, `Metadata.not_line_editable`, `Metadata.frontmatter_absent`,
-`Document.source_map` and `Document.path`. A blank document is `Document()`; `empty_document()`,
+`Document.source_map`, `Document.path` and `Document.frontmatter_error`. `to_dict()` raises that
+error, when there is one: the empty metadata of such a document would not say what its source says. A blank document is `Document()`; `empty_document()`,
 still importable from `legaldown`, is not one but a starter contract with two sides and two sections.
 
 Each diagnostic names its `line` (from 1) and its `file` (the document's `filename`), as §16.9
@@ -449,7 +466,8 @@ frontmatter key — for a missing key, the key that holds it, or the frontmatter
 come from the `source_map` that `load` and `parse` give a document. A document built from a dict
 has none, and one changed after parsing no longer fits its map: their diagnostics have no line
 (`None`) rather than a stale one. `FrontmatterError.line` is the line of YAML that cannot be
-read. `render_block()` (`legaldown.syntax`) renders a single block when you are driving your own
+read, and the line of the `frontmatter-invalid-yaml` diagnostic (the opening `---` when the reader
+gives none). `render_block()` (`legaldown.syntax`) renders a single block when you are driving your own
 layout. `iter_directives()` (`legaldown.syntax`) lexes the directives in a piece of text by the §11.2
 grammar — parameters in any order, quoted values decoded — and is what the validator itself uses.
 
