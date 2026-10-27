@@ -10,6 +10,7 @@ sections and list items enclosing it.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -94,13 +95,40 @@ def marker_matches(text: str, lexed: Lexed) -> Iterator[re.Match[str]]:
     """The markers and look-alikes in *text*, whose lexing is *lexed*: not
     in code or comments (blanked in the lexer's view), not escaped, and not
     in a directive's value (§11.4)."""
+    directives = sorted(
+        (directive for directive in lexed.directives if not directive.malformed),
+        key=lambda directive: directive.start,
+    )
+    directive_starts = [directive.start for directive in directives]
     for match in MARKER_RE.finditer(lexed.view):
         if not is_look_alike(match.group(0)):
             continue
-        if not is_escaped(text, match.start()) and not any(
-            d.start <= match.start() < d.end for d in lexed.directives if not d.malformed
-        ):
-            yield match
+        if is_escaped(text, match.start()):
+            continue
+        directive_index = bisect_right(directive_starts, match.start()) - 1
+        if directive_index >= 0 and match.start() < directives[directive_index].end:
+            continue
+        yield match
+
+
+def _marker_tail_start(text: str) -> int:
+    """The first offset after which only whitespace and comments remain."""
+    tail_start = 0
+    cursor = 0
+    for comment in HTML_COMMENT_RE.finditer(text):
+        end = comment.start()
+        while end > cursor and text[end - 1].isspace():
+            end -= 1
+        if end > cursor:
+            tail_start = end
+        cursor = comment.end()
+
+    end = len(text)
+    while end > cursor and text[end - 1].isspace():
+        end -= 1
+    if end > cursor:
+        tail_start = end
+    return tail_start
 
 
 def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex) -> list[FoundMarker]:
@@ -120,12 +148,13 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex)
             if "{" not in fragment or ("#" not in fragment and "when=" not in fragment):
                 continue
             lexed = lex_fragment(fragment)
+            tail_start = _marker_tail_start(fragment) if position else len(fragment)
             for m in marker_matches(fragment, lexed):
                 marker = parse_marker(m.group(0))
                 # Only whitespace and comments may follow a marker, to the
                 # end of its paragraph: a comment is not rendered (§8.6),
                 # but a code span is text.
-                at_end = position and not HTML_COMMENT_RE.sub("", fragment[m.end():]).strip()
+                at_end = position and m.end() >= tail_start
                 include_only = (
                     at_end
                     and block.kind == "paragraph"
