@@ -947,3 +947,31 @@ def test_a_finding_on_a_literal_start_shows_the_names_that_were_judged(tmp_path)
     assert "read as '../a/' once percent-decoded" in message and "'%2E%2E/a/b{{placeholder: p}}'" in message
     message = _messages(validate(_body("![a](%2E%2E/a/b?{{placeholder: p}})"), document_root=root))[0]
     assert "without its query or fragment, read as '../a/b' once percent-decoded" in message
+
+
+@pytest.mark.parametrize("query", ["?x", "\\?x", "&#63;x", "&quest;x", "&num;x", "\\#x"])
+def test_a_directive_then_a_query_names_no_file_however_the_query_is_written(query, tmp_path):
+    """``{{placeholder: p}}?x`` names no file, and neither does the same query written with an
+    escape or a character reference: the rest is read as the literal start is."""
+    document = replace(parse(f"{_ROOT_FRONT}# A {{#a}}\n\n![a]({{{{placeholder: p}}}}{query})\n"), path=tmp_path / "elsewhere" / "d.lgd")
+    assert _found(validate(document, document_root=tmp_path / "root")) == []
+
+
+def test_many_images_with_directives_are_read_in_linear_work():
+    """Each image reads only the directives inside its destination, never a copy of the rest (#94)."""
+    from dataclasses import replace as replace_lexed
+
+    from legaldown.directives import lex
+
+    class Counted(list):
+        copied = 0
+
+        def __getitem__(self, index):
+            if isinstance(index, slice):
+                Counted.copied += len(range(*index.indices(len(self))))
+            return super().__getitem__(index)
+
+    text = "![a]({{placeholder: p}}.png) " * 3000
+    lexed = lex(text)
+    found = paths_module.images(text, replace_lexed(lexed, directives=Counted(lexed.directives)))
+    assert len(found) == 3000 and Counted.copied <= 3000

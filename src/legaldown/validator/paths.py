@@ -11,6 +11,7 @@ is no file reference, and raw HTML is ``raw-html``'s.
 from __future__ import annotations
 
 import html
+import itertools
 import os
 import re
 import string
@@ -338,7 +339,7 @@ def images(text: str, lexed: Lexed) -> list[Image]:
                 if first < len(starts) and starts[first] < stop:
                     found.append(Image(
                         text[start:stop], at, after, _decoded(text[start:starts[first]]),
-                        _more_than_directives(text, lexed.directives[first:], stop),
+                        _more_than_directives(text, lexed.directives, first, stop),
                     ))
                 else:
                     found.append(Image(_decoded(text[start:stop]), at, after))
@@ -346,18 +347,21 @@ def images(text: str, lexed: Lexed) -> list[Image]:
     return found
 
 
-def _more_than_directives(text: str, directives: list[Directive], stop: int) -> bool:
-    """True if the text up to *stop*, after the first of *directives* (which begins
-    in it), holds more than directives and a query or fragment."""
+def _more_than_directives(text: str, directives: list[Directive], first: int, stop: int) -> bool:
+    """True if the text up to *stop*, from ``directives[first]`` (which begins in it),
+    holds more than directives and a query or fragment. Only the directives before
+    *stop* are read, never a copy of the rest, so many images stay linear (#94)."""
     pieces = []
-    at = directives[0].start
-    for directive in directives:
+    at = directives[first].start
+    for directive in itertools.islice(directives, first, None):
         if directive.start >= stop:
             break
         pieces.append(text[at:directive.start])
         at = directive.end
     pieces.append(text[at:stop])
-    return bool("".join(pieces).split("?", 1)[0].split("#", 1)[0].strip())
+    # Read as the literal before the directive is: escapes and character references decoded,
+    # so ``\?`` and ``&#63;`` end the path as ``?`` does.
+    return bool(_decoded("".join(pieces)).split("?", 1)[0].split("#", 1)[0].strip())
 
 
 def check_heading_images(
