@@ -1290,8 +1290,8 @@ def test_a_marker_on_an_items_later_paragraph_is_misplaced():
 @pytest.mark.parametrize(("body", "kinds", "titles"), [
     # An empty item takes nothing after a blank line (CommonMark).
     ("- \n\n  b\n", ["unordered_list", "paragraph"], ["Terms"]),
-    # An ATX heading stays a section heading.
-    ("- a\n\n  # Next\n", ["unordered_list"], ["Terms", "Next"]),
+    # Indented to the item's content, an ATX heading is the item's (#84).
+    ("- a\n\n  # Next\n", ["unordered_list"], ["Terms"]),
     # Less indented than the item's content: the list ends.
     ("- a\n\n b\n", ["unordered_list", "paragraph"], ["Terms"]),
 ])
@@ -1301,6 +1301,52 @@ def test_where_a_list_does_not_continue_past_a_blank_line(body, kinds, titles):
     assert [s.title for s in document.sections] == titles
     if "- \n" not in body:  # an empty item is not written back (#46)
         assert parse(serialize(document)) == document
+
+
+def _item_blocks(document):
+    """The blocks of each item of the document's first list, as (kind, text,
+    level) triples."""
+    return [[(b.kind, b.text, b.level) for b in item.blocks] for item in list_items(document.sections[0].blocks[0])]
+
+
+@pytest.mark.parametrize(("body", "items", "titles"), [
+    # #84: indented to the item's content after a blank line, a heading is the
+    # item's, and what follows it in the item too (CommonMark).
+    ("- a\n\n  ## H\n  y\n", [[("paragraph", "a", 0), ("heading", "H", 2), ("paragraph", "y", 0)]], ["Terms"]),
+    ("1. a\n\n   ## H\n", [[("paragraph", "a", 0), ("heading", "H", 2)]], ["Terms"]),
+    # Its text keeps `{#x}`: a heading in an item takes no identifier (#78).
+    ("- a\n\n  ## H {#x}\n", [[("paragraph", "a", 0), ("heading", "H {#x}", 2)]], ["Terms"]),
+    # Indented less than the item's content, or at the margin, it is a section's.
+    ("- a\n\n ## H\n", [[("paragraph", "a", 0)]], ["Terms", "H"]),
+    ("- a\n\n## H\n", [[("paragraph", "a", 0)]], ["Terms", "H"]),
+    # An empty item begins with at most one blank line (CommonMark).
+    ("-\n\n  ## H\n", [[]], ["Terms", "H"]),
+])
+def test_an_atx_heading_after_a_blank_line_is_in_an_item_when_indented_to_its_content(body, items, titles):
+    document = parse(_FRONTMATTER + body)
+    assert [s.title for s in document.sections] == titles
+    assert _item_blocks(document) == items
+    assert document_to_dict(parse(serialize(document))) == document_to_dict(document)
+
+
+def test_a_line_after_an_items_heading_is_no_lazy_continuation():
+    """#84: as after any heading, a line after it ends the list (CommonMark)."""
+    document = parse(_FRONTMATTER + "- a\n\n  ## H\nb\n")
+    assert [s.title for s in document.sections] == ["Terms"]
+    assert [b.kind for b in document.sections[0].blocks] == ["unordered_list", "paragraph"]
+    assert _item_blocks(document) == [[("paragraph", "a", 0), ("heading", "H", 2)]]
+    assert document_to_dict(parse(serialize(document))) == document_to_dict(document)
+
+
+def test_a_heading_in_a_nested_item_after_a_blank_line_is_in_that_item():
+    """#84, a guard rather than a regression: the content of an item nested in
+    an item is read without sections (``headings=False``), so this held
+    before the fix too (CommonMark)."""
+    document = parse(_FRONTMATTER + "- a\n  - b\n\n    ## H\n")
+    assert [s.title for s in document.sections] == ["Terms"]
+    [nested] = [b for b in list_items(document.sections[0].blocks[0])[0].blocks if b.kind == "unordered_list"]
+    assert [(b.kind, b.text, b.level) for b in list_items(nested)[0].blocks] == [("paragraph", "b", 0), ("heading", "H", 2)]
+    assert document_to_dict(parse(serialize(document))) == document_to_dict(document)
 
 
 @pytest.mark.parametrize(("body", "items", "after"), [
@@ -3257,8 +3303,8 @@ def test_a_model_built_heading_block_is_written_as_one_in_an_item(heading, writt
     ]}]})
     list_items(document.sections[0].blocks[0])[0].blocks.append(heading)
     source = serialize(document)
-    # Four columns in, where a heading after a blank line stays the item's.
-    assert f"-   a\n    {written}\n" in source
+    # After a blank line, indented to the item's content, it is the item's (#84).
+    assert f"- a\n\n  {written}\n" in source
     [reread] = list_items(parse(source).sections[0].blocks[0])[0].blocks[1:]
     assert (reread.kind, reread.text, reread.level) == ("heading", text, written.count("#", 0, written.index(" ")))
 

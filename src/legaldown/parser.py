@@ -493,7 +493,7 @@ def _starts_item(line: str, chain: list[int], margin: int) -> re.Match[str] | No
 
 
 def _scan_list(
-    lines: list[str], index: int, *, list_type: str, headings: bool
+    lines: list[str], index: int, *, list_type: str
 ) -> tuple[list[tuple[int, int]], int, bool, dict[int, int]]:
     """Where the list starting at ``lines[index]`` ends, and where its own
     items start: ``(items, end, lazy, text)``, each item as its first line
@@ -508,10 +508,11 @@ def _scan_list(
     continuation lines of an open paragraph), and past a blank line the
     lines indented into one of its items (§5.7) or starting another item of
     its own (a loose list). An item of another type not nested in one of
-    its items, or a thematic break, ends it; so does, where *headings* are
-    sections, an ATX heading after a blank line. An item is nested in the
-    items whose content its marker reaches, and a marker four or more
-    columns into that content starts no item (CommonMark). A fenced code
+    its items, or a thematic break, ends it. An ATX heading after a blank
+    line is the item's when indented to its content, as CommonMark has it
+    (#84); indented less, or at column 0, it is a section. An item is
+    nested in the items whose content its marker reaches, and a marker four
+    or more columns into that content starts no item (CommonMark). A fenced code
     block in an item runs until it closes, until an unindented line, or
     until an item starts short of its content; a block quote in an item
     takes its lazy continuation lines. What each item holds is read from its
@@ -579,8 +580,8 @@ def _scan_list(
             if html is not None and html[0] is None:
                 html = None  # a block-level or lone tag's HTML ends at a blank line
             following = next((k for k in range(end, len(lines)) if not is_blank(lines[k])), None)
-            if following is None or (headings and HEADING_RE.match(lines[following])):
-                break  # a heading stays a section heading
+            if following is None:
+                break
             if not items[-1]:
                 # An item begins with at most one blank line: an empty item
                 # ends here, its parent's content going on.
@@ -837,7 +838,7 @@ MAX_QUOTE_DEPTH = 16
 
 
 def _parse_list(
-    lines: list[str], index: int, *, list_type: str, headings: bool = True, offset: int = 0, depth: int = 0,
+    lines: list[str], index: int, *, list_type: str, offset: int = 0, depth: int = 0,
 ) -> tuple[Block, int, bool, list[_ItemSpan]]:
     """Parse the list starting at ``lines[index]``: ``(block, end, lazy,
     items)`` — *end* and *lazy* as ``_scan_list`` gives them, *items* where
@@ -846,7 +847,7 @@ def _parse_list(
     a directive into block fields. *offset*: the source line ``lines[0]``
     is (for the item spans); *depth*: how many items the list is in, past
     ``MAX_LIST_DEPTH`` of which an item's content is one paragraph."""
-    own, end, lazy, text = _scan_list(lines, index, list_type=list_type, headings=headings)
+    own, end, lazy, text = _scan_list(lines, index, list_type=list_type)
     items: list[ListItem] = []
     spans: list[_ItemSpan] = []
     starts = [first for first, _column in own] + [end]
@@ -1302,7 +1303,7 @@ def _parse_body(
             lazy = open_paragraph
         elif marker:
             block, index, lazy, item_spans = _parse_list(
-                lines, index, list_type=_list_type(marker), headings=headings, offset=offset, depth=depth
+                lines, index, list_type=_list_type(marker), offset=offset, depth=depth
             )
             blocks.append(block)
         elif (end := html_block_end(lines, index)) is not None:

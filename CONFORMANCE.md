@@ -123,13 +123,14 @@ numbered, without an identifier, and not checked by the heading rules. Its direc
 checked as a paragraph's are, and a marker after it is text, as it is no paragraph for an item's
 anchor (§5.7): `- # Title {#x}` is `anchor-misplaced`. As in CommonMark, a heading ends the
 paragraph before it, so a line after it is not a lazy continuation line, and a setext underline
-never lazily continues a paragraph into a heading. Outside items and quotes, a section's heading
-needs text: a line of `#` alone is paragraph text there, where CommonMark reads an empty heading.
+never lazily continues a paragraph into a heading. After a blank line, a heading indented to an
+item's content is the item's too, as CommonMark has it
+([#84](https://github.com/ForLegalAI/legaldown-validator/issues/84)); indented less, or not at
+all, it is a section's. Outside items and quotes, a section's heading needs text: a line of `#`
+alone is paragraph text there, where CommonMark reads an empty heading.
 
 What the model does not keep, or reads more simply than CommonMark:
 
-- An ATX heading indented after a list, after a blank line, stays a section heading, where
-  CommonMark reads it in the item.
 - An ordered item's number is not kept: a list is written numbered from 1. Whether a list is
   loose or tight is not kept either: items are written without blank lines between them.
 - A fence left open in an item, under an item nested on its first line and short of that

@@ -391,7 +391,7 @@ def _item_content(item: ListItem, *, open_end: bool) -> str:
 
 
 def _render_list(
-    block: Block, last_column: int = 0, *, own: str = "", close_last: bool = False, in_item: bool = False,
+    block: Block, last_column: int = 0, *, own: str = "", close_last: bool = False,
 ) -> str | None:
     """A list: each item's marker, then its content (``_item_content``),
     later lines indented to the item's content column; an empty item is its
@@ -423,18 +423,12 @@ def _render_list(
             # after the bare marker.
             rows = ["", *rows]
         needed = 0
-        if not in_item:
-            # A later line that reads as an ATX heading at the margin is
-            # written at least four columns in, where the parser keeps it
-            # the item's (``parser._scan_list``).
-            headings = [row for row in rows[1:] if HEADING_RE.match(row)]
-            needed = 4 - min((indent_width(row) for row in headings), default=4)
         if k == last and rows:
             needed = max(needed, last_column)
         if len(marker) < needed:
             spacing = needed - len(marker.rstrip())
             if spacing > 4:
-                return None  # past last_column only: a heading line needs less
+                return None  # no spacing of at most four columns reaches last_column
             marker = marker.rstrip() + " " * spacing
         if not rows or not rows[0]:
             if rows and k == last and last_column > len(marker.rstrip()) + 1:
@@ -486,19 +480,19 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # A block indented to the last item's content would continue it:
             # the item is written with its content further in.
             rendered = _render_list(
-                block, indent_width(following.text) + 1, own=markers[index], in_item=in_item
+                block, indent_width(following.text) + 1, own=markers[index]
             )
             if rendered is not None:
                 as_written.add(index + 1)
             else:
-                rendered = _render_list(block, own=markers[index], close_last=True, in_item=in_item) or ""
+                rendered = _render_list(block, own=markers[index], close_last=True) or ""
         elif block.kind in _LISTS:
             # Only where the items leave no other bullet does a list follow
             # one with its marker.
             same = following is not None and following.kind == block.kind and markers[index + 1] == markers[index]
             # What follows the list starts short of its items' content, where
             # a fence left open in them ends.
-            rendered = _render_list(block, own=markers[index], close_last=same, in_item=in_item) or ""
+            rendered = _render_list(block, own=markers[index], close_last=same) or ""
         elif index in as_written:
             rendered = (block.text if keep_open else close_fences(block.text)) if block.kind != "html" else block.text
         elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":
@@ -512,18 +506,13 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
         else:
             rendered = _render_block(block, in_item=in_item)
         if rendered:
-            # In an item, what may interrupt a paragraph follows it directly,
-            # and so does a list another list (CommonMark), keeping the list
-            # tight as it is written.
+            # In an item, a quote or a fence follows a paragraph directly, and
+            # so does a list another list (CommonMark), keeping the list tight
+            # as it is written. A heading after a paragraph is written after a
+            # blank line, which the parser reads as the item's too (#84).
             before = blocks[index - 1] if index > 0 else None
             closed = before is not None and before.kind == "code" and FENCE_OPEN_RE.match(before.text.split("\n")[0])
-            heading = block.kind == "heading"
             tight = in_item and before is not None and (
-                # A heading's line, which a blank line before it would make a
-                # section's (``parser._scan_list``), follows any block that
-                # ends at it.
-                (heading and before.kind != "html")
-                or
                 (block.kind in _LISTS and before.kind in ("paragraph", "heading", *_LISTS) and not _bare(rendered))
                 or (before.kind == "paragraph" and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered.split("\n")[0])))
                 # After a closed fence a block starts on the next line.
