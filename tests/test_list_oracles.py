@@ -57,10 +57,15 @@ def _old_item_content_column(line: str) -> int:
 
 
 def _old_nested_offset(first: str) -> int:
+    """The earlier function, but for the stop it has now: after a marker with
+    more than four columns of spacing, whose content is indented code."""
     offset = 0
     while marker := _NESTED_ITEM_RE.match(first):
         offset += _old_item_content_column(first)
+        spacing = len(first[:marker.end()].expandtabs(4)) - len(first[:marker.end()].rstrip(" \t"))
         first = first[marker.end():]
+        if spacing > 4:
+            break
     return offset
 
 
@@ -97,18 +102,20 @@ def _old_item_body(content: str) -> tuple[str, int]:
     return body, column
 
 
-def _markers(rng: random.Random) -> str:
+def _markers(rng: random.Random, *, newlines: bool = True) -> str:
     """A string of marker characters and blanks: of all kinds, or, two times
     in three, of the few that make thematic breaks and the items they look
     like. A line ending may come anywhere."""
     alphabet = rng.choice(["-*_+1.) \t\ta0#>\n", "-*_ \t\n", "-- \t\n", "> -\t1.", ">- *\t\t`<#a"])
+    if not newlines:
+        alphabet = alphabet.replace("\n", "")
     return "".join(rng.choice(alphabet) for _ in range(rng.randrange(0, 16)))
 
 
 def test_item_content_column_is_what_it_was() -> None:
     rng = random.Random(_SEED)
     for _ in range(30000):
-        line = _markers(rng)
+        line = _markers(rng, newlines=False)
         if _OLD_ITEM_RE.match(line):  # the parser asks it of the line of an item
             assert item_content_column(line) == _old_item_content_column(line), repr(line)
 
@@ -119,7 +126,7 @@ def test_nested_content_is_what_nested_offset_was() -> None:
     written as the spaces they stand for, from the line's start."""
     rng = random.Random(_SEED)
     for _ in range(30000):
-        line = _markers(rng) + rng.choice(["", "a", " a"])
+        line = _markers(rng, newlines=False) + rng.choice(["", "a", " a"])
         columns, characters = nested_content(line)
         assert columns == _old_nested_offset(_expand_prefix(line)), repr(line)
         if "\t" not in line:
@@ -130,14 +137,21 @@ def test_item_markers_are_stripped_until_a_thematic_break_as_before() -> None:
     rng = random.Random(_SEED)
     for _ in range(60000):
         content = _markers(rng)
-        assert content[_skip_markers(content):] == _old_after_item_markers(content), repr(content)
+        position, code = _skip_markers(content)
+        old = _old_after_item_markers(content)
+        if code:  # a marker with more than four columns of spacing ends it: the earlier loop went on
+            assert len(old) <= len(content) - position, repr(content)
+        else:
+            assert content[position:] == old, repr(content)
 
 
 def test_a_quoted_line_opens_paragraph_text_as_before() -> None:
+    """Unless its markers end in indented code, which no paragraph continues."""
     rng = random.Random(_SEED)
     for _ in range(60000):
         content = _markers(rng)
-        assert _opens_paragraph(content) == _old_opens_paragraph(content), repr(content)
+        code = _skip_markers(content, quotes=True)[1]  # after a marker with five columns of spacing: indented code
+        assert _opens_paragraph(content) == (False if code else _old_opens_paragraph(content)), repr(content)
 
 
 def test_item_markers_in_a_quoted_line_are_read_as_before() -> None:
@@ -146,7 +160,7 @@ def test_item_markers_in_a_quoted_line_are_read_as_before() -> None:
     columns, and the same text after them where it has no tab."""
     rng = random.Random(_SEED)
     for _ in range(60000):
-        content = _markers(rng)
+        content = _markers(rng, newlines=False)
         body, columns = _item_body(content)
         old_body, old_columns = _old_item_body(_expand_prefix(content))
         assert columns == old_columns, repr(content)

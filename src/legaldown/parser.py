@@ -420,21 +420,26 @@ class _Rule:
         return position >= self._start and self._content.count(self._char, position, self._end) >= 3
 
 
-def _skip_markers(content: str, *, quotes: bool = False, is_rule: _Rule | None = None) -> int:
-    """Where *content* goes on after the list item markers it opens with, one
-    after the other, while what is left is no thematic break. *quotes*: block
-    quote markers between them count too. Each marker is matched at an offset,
-    and a rest is tested for a break from the end of the line (``_Rule``): a
-    line of markers (``- - - - a``) is not copied, or read, once per marker."""
+def _skip_markers(content: str, *, quotes: bool = False, is_rule: _Rule | None = None) -> tuple[int, bool]:
+    """``(position, code)``: where *content* goes on after the list item
+    markers it opens with, one after the other, while what is left is no
+    thematic break; *code*: after a marker with more than four columns of
+    spacing, whose content is indented code, which nests no item and is no
+    paragraph. *quotes*: block quote markers between them count too. Each
+    marker is matched at an offset, and a rest is tested for a break from the
+    end of the line (``_Rule``): a line of markers (``- - - - a``) is not
+    copied, or read, once per marker."""
     is_rule = is_rule or _Rule(content)
     position = 0
     while True:
         if quotes:
             position = _QUOTE_MARKERS_RE.match(content, position).end()
-        end = item_marker_end(content, position)
-        if end is None or is_rule(position):
-            return position
-        position = end
+        marker = item_marker_at(content, position, position)  # the prefix has no tab
+        if marker is None or is_rule(position):
+            return position, False
+        position = marker.end
+        if marker.gap > 4 and not marker.blank:
+            return position, True
 
 
 class _Walks:
@@ -450,7 +455,7 @@ class _Walks:
 
     def __init__(self) -> None:
         self.nested: dict[str, tuple[int, int]] = {}  # ``nested_content``
-        self.skipped: dict[str, int] = {}  # ``_skip_markers``
+        self.skipped: dict[str, tuple[int, bool]] = {}  # ``_skip_markers``
 
     def nested_content(self, content: str) -> tuple[int, int]:
         """``nested_content(content)``."""
@@ -464,16 +469,17 @@ class _Walks:
                 self.nested[content[first.end:]] = (columns - first.column, characters - first.cut)
         return found
 
-    def skip_markers(self, content: str) -> int:
+    def skip_markers(self, content: str) -> tuple[int, bool]:
         """``_skip_markers(content)``."""
-        position = self.skipped.pop(content, None)
-        if position is None:
-            position = _skip_markers(content)
+        found = self.skipped.pop(content, None)
+        if found is None:
+            found = _skip_markers(content)
+        position, code = found
         if position:
             first = item_marker_end(content)  # which the walk went through
             if first is not None and position > first:
-                self.skipped[content[first:]] = position - first
-        return position
+                self.skipped[content[first:]] = (position - first, code)
+        return found
 
 
 def _opens_paragraph(content: str, is_rule: _Rule | None = None) -> bool:
@@ -482,9 +488,11 @@ def _opens_paragraph(content: str, is_rule: _Rule | None = None) -> bool:
     any nesting — which a lazy line may continue. A heading, a thematic
     break, a fence, an HTML block, or an empty list item or quote leaves
     none."""
-    inner = content[_skip_markers(content, quotes=True, is_rule=is_rule):]
+    position, code = _skip_markers(content, quotes=True, is_rule=is_rule)
+    inner = content[position:]
     return (
-        bool(inner.strip(" \t"))
+        not code
+        and bool(inner.strip(" \t"))
         and not (FENCE_OPEN_RE.match(inner) and indent_width(content) < 4)
         and not ATX_HEADING_RE.match(inner)
         and not RULE_RE.match(inner)
@@ -730,6 +738,7 @@ def _scan_list(
     margin = indent_width(lines[index]) if indent_width(lines[index]) >= 4 else 0
     fence_inside = False  # the open fence was opened in the current item's content
     fence: str | None = None  # the open fence inside the current item
+    fence_column = 0  # the content column of the item nested on a line that holds it, else 0
     html: tuple[re.Pattern[str] | None] | None = None  # how an HTML block open in an item ends
     html_column = 0  # the content column of the item holding it
     first_code = False  # the current item's first line is indented code
@@ -759,7 +768,7 @@ def _scan_list(
                 fence_inside and width < content_indent
                 and _starts_item(_marker(line), chain, margin, width)
             )
-            if not starts and (is_blank(line) or width >= (chain[0] if chain else 2)):
+            if not starts and (is_blank(line) or width >= (fence_column or (chain[0] if chain else 2))):
                 code = dedent(line, content_indent, expand=True)
                 end += 1
                 if closes_fence(code, fence):
@@ -929,6 +938,9 @@ def _scan_list(
             # Opened in the item's content, not by a line short of it that
             # only this parser reads into the item (``indented``).
             fence_inside = marker is not None or width >= content_indent
+            # A fence in an item nested on the line (``- 1. ```) ends at a line short of
+            # that item's content, as does HTML (``html_column``).
+            fence_column = content_indent + offset if marker and offset else 0
             # So may raw HTML, which runs to its end or its item's (a lone
             # tag cannot interrupt the item's paragraph, CommonMark).
             opened = None if fence or (marker and first_code) else html_block_opening(
@@ -1289,7 +1301,10 @@ def _is_paragraph_text(content: str, *, nested: bool = False, walks: _Walks | No
     break, a nested list item, a fence, or an HTML block. *nested*: a nested
     item's text counts too (`1. item` opens that item's paragraph)."""
     if nested:
-        content = content[walks.skip_markers(content) if walks else _skip_markers(content):]
+        position, code = walks.skip_markers(content) if walks else _skip_markers(content)
+        if code:
+            return False
+        content = content[position:]
     return bool(content.strip(" \t")) and not (
         ATX_HEADING_RE.match(content) or RULE_RE.match(content) or LIST_ITEM_RE.match(content)
         or FENCE_OPEN_RE.match(content) or HTML_BLOCK_START_RE.match(content)

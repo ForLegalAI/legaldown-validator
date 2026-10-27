@@ -326,7 +326,7 @@ def item_marker_at(text: str, position: int = 0, column: int = 0) -> ItemMarker 
     gap = end_column - after
     indent = marker_column - column
     lead = lead_end - position
-    if end == len(text):  # an empty item
+    if end == len(text) or (end == len(text) - 1 and text[end] == "\n"):  # an empty item: only a line ending is left
         return ItemMarker(lead, indent, gap, end, end_column, end, after + 1, True, 0)
     if gap > 4:
         tab = _TAB - after % _TAB if text[gap_start] == "\t" else 1
@@ -356,6 +356,8 @@ def nested_content(first: str, column: int = 0) -> tuple[int, int]:
             break  # an item nested on the line has spacing and text
         columns += found.column - column
         characters += found.cut - position
+        if found.gap > 4:
+            break  # the item's content is indented code: what follows nests no item
         position, column = found.end, found.end_column
     return columns, characters
 

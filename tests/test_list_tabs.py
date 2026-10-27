@@ -48,10 +48,12 @@ def test_a_tab_in_the_spacing_of_markers_reads_as_the_spaces_it_stands_for(tabbe
     assert _read(tabbed) == _read(spaced)
 
 
-def test_the_fence_a_nested_marker_and_a_tab_open_leaves_the_lazy_line_out_of_the_list() -> None:
+def test_the_line_after_the_fence_a_nested_marker_and_a_tab_open_is_the_items_lazy_text() -> None:
+    """``x`` is in the second item (the fence ends at it, short of the third's
+    content), and ``b`` goes on its paragraph, as in cmark and markdown-it."""
     blocks = _blocks("- - -\t```\n    x\nb\n")
-    assert [block["kind"] for block in blocks] == ["unordered_list", "paragraph"]
-    assert blocks[1]["text"] == "b"
+    assert [block["kind"] for block in blocks] == ["unordered_list"]
+    assert blocks == _blocks("- - - ```\n    x\nb\n")
 
 
 def test_a_fence_in_a_quote_closes_at_a_line_a_tab_indents_to_its_item() -> None:
