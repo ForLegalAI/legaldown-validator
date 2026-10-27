@@ -354,7 +354,8 @@ def test_a_nul_in_the_text_is_not_a_directive(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "destination", ["C%3A%5CWindows%5Cx.png", "C%3A/x.png", "c%3a%5cx", "z%3A%2Fx", "C%3Ax.png", "C%3A"]
+    "destination",
+    ["C%3A%5CWindows%5Cx.png", "C%3A/x.png", "c%3a%5cx", "z%3A%2Fx", "C%3Ax.png", "C%3A", "a%3Ab.png", "c%3Ax.png"],
 )
 def test_a_percent_encoded_drive_is_absolute(destination):
     result = validate(_body(f"![a]({destination})"))
@@ -362,10 +363,10 @@ def test_a_percent_encoded_drive_is_absolute(destination):
     assert _found(validate(_body(f"![a]({destination})"), document_root="/r")) == [("path-not-relative", 7)]
 
 
-@pytest.mark.parametrize("destination", ["a%3Ab.png", "c%3Ax.png", "a%3A", "1%3A/x", "ab%3Ax", "CD%3Ax"])
+@pytest.mark.parametrize("destination", ["1%3A/x", "ab%3Ax", "CD%3Ax", "img/a%3Ab.png"])
 def test_a_decoded_colon_that_is_no_drive_is_a_character_of_the_name(destination):
-    """A drive-relative ``C%3Ax`` is a drive, as written ``C:x`` is; a lowercase letter needs a separator after
-    it, since ``a%3Ab.png`` may well be a file named so."""
+    """Only one letter and a colon at the start is a drive, of either case, as written ``a:b`` is not
+    relative either; a colon after more letters, or further in, is a character of the name."""
     assert _found(validate(_body(f"![a]({destination})"))) == []
 
 
@@ -843,9 +844,10 @@ def test_ten_thousand_images_in_one_paragraph_are_each_found_at_their_line():
 # A destination is a URL (§8.7): what is encoded, what is a query ------------------
 
 
-@pytest.mark.parametrize("destination", ["a%3Ab.png", "a%3ab.png", "img/a%3Ab.png", "https%3A//x/y.png", "%68ttps://x"])
+@pytest.mark.parametrize("destination", ["img/a%3Ab.png", "https%3A//x/y.png", "%68ttps://x"])
 def test_a_percent_encoded_colon_is_a_character_of_the_name_not_a_scheme(destination, tmp_path):
-    """``a%3Ab.png`` is a file named ``a:b.png``, not the scheme ``a``: a scheme is the one written."""
+    """``https%3A//x`` names no scheme: a scheme is the one written. (One letter and a colon at the start
+    is a drive once decoded, ``test_a_percent_encoded_drive_is_absolute``.)"""
     assert _found(validate(_body(f"![a]({destination})"))) == [], destination
     assert _found(validate(_body(f"![a]({destination})"), document_root=_root(tmp_path))) == [], destination
 

@@ -182,9 +182,9 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
   (`?…`, `#…`, the first of either) is not part of the path (`x.png?p=/../..` stays in the root), and **it is
   also read percent-decoded**: `%2Fetc` is not relative and `%2E%2E/%2E%2E/x.png` leaves a root, since a tool
   that opens the file decodes the URL first; a `%` not followed by two hex digits stays as written. Only
-  a `/` or `\` that decoding yields at the start, or a drive (`C%3A/x`, `c%3A%5Cx`, and `C%3Ax` for a capital
-  letter, as `C:x` written is), makes a path absolute: a scheme is the one written, so `a%3Ab.png` is a file
-  named `a:b.png`, and so is `ab%3Ax`. No other reference is percent-decoded or loses a query.
+  a `/` or `\` that decoding yields at the start, or a drive, one letter of either case and a colon
+  (`C%3A/x`, `c%3A%5Cx`, `C%3Ax`, `a%3Ab.png`, as `C:x` written is), makes a path absolute: otherwise a
+  scheme is the one written, so `https%3A//x` and `ab%3Ax` are relative. No other reference is percent-decoded or loses a query.
   Not an image: one in a code span, fenced or indented code, a comment or a raw HTML block, `\![a](x)`
   (a link after a literal `!`), a link or autolink (valid, §8.7), `<img src>` (that is `raw-html`),
   and a reference-style image (`![a][r]`, `[r]: path`), which waits for link reference definitions in the

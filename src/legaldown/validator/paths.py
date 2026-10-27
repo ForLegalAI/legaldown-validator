@@ -39,9 +39,9 @@ class _Reference(NamedTuple):
     rest: bool
 
 
-#: A drive, ``C:\\x`` or ``C:/x`` for a letter of either case, and ``C:x`` for a capital: a decoded
-#: ``a:b.png`` is as likely a file named so (``a%3Ab.png``) as a drive-relative path.
-_DRIVE_RE = re.compile(r"[A-Za-z]:[\\/]|[A-Z]:")
+#: A drive once decoded: one letter, of either case, and a colon (``C%3A/x``, ``C%3Ax``). On Windows a
+#: drive letter is case-blind and ``a:b.png`` is drive-relative, as written ``a:b`` is read too (§2.3).
+_DRIVE_RE = re.compile(r"[A-Za-z]:")
 
 
 def _whole_names(path: str) -> str:
