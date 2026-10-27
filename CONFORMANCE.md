@@ -6,7 +6,7 @@ parse and validate a single document in memory. It also claims the **Assembly** 
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **85 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **87 of the
 corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes**,
 at the line each case gives.
 
@@ -46,7 +46,7 @@ files other than the document itself.
 
 | Group | Rules |
 |---|---|
-| Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`, `path-not-relative`, `path-outside-root` |
+| Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing` |
 | Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip`; of these, `include-has-frontmatter` and `include-has-h1` are reported for a fragment validated on its own (`validate(fragment=True)`, below), which is not how their fixtures run them: they validate the including document, which does not read the fragment, so those cases stay skipped |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Rendering (§17.3) | `ref-not-enumerated` |
@@ -99,6 +99,52 @@ spans are found by the directive lexer (§11.4), which reads comments by CommonM
 no tags, so a few rare texts are read differently from cmark-gfm: a comment holding `--`, text
 after an unclosed `<!--` (where cmark-gfm finds no more inline HTML), and a backtick or `<!--`
 inside a CDATA section, declaration or processing instruction.
+
+`path-not-relative` and `path-outside-root` (§2.3, §16.2, §17.2,
+[#104](https://github.com/ForLegalAI/legaldown-validator/issues/104)) are Core checks, and syntactic:
+they read the text of a path and never a file or the file system, so a symbolic link is not followed,
+and whether the file exists stays Full (§17.4). The paths are the ones §2.3 lists: `{{include:}}`, an
+image's path, `attachments[].file`, `amends.file`, `supersedes.file` (the object form only: a string is
+a description of the document, §3.2) and `translations`. Each is reported at its own line: the directive,
+the image, or the key (the entry of a list). An empty path is `attachment-file-missing`'s, not these.
+
+- A path is not relative when it begins with a URI scheme (`[A-Za-z][A-Za-z0-9+.-]*:`: `https://`,
+  `file://`, `data:`, `mailto:`, and a drive letter, `C:/x` or `C:x`) or with `/` or `\` (`//host`,
+  `\\host`), whitespace around it ignored. `../x` is relative. A relative name whose first segment holds a
+  colon (`a:b.lgd`) reads as having the scheme `a`, as RFC 3986 does; write `./a:b.lgd`. A path that is
+  not relative is one finding, not also outside the root.
+- No document root is configured by default (§2.3): `validate(document_root=)` and
+  `legaldown validate --document-root DIR` set it (the fixtures' `requires_config` `document_root`,
+  relative to the case's directory). Without one the containment check does not run, and
+  `../shared/definitions.lgd` is valid. With one, `normpath(directory of the document / path)` must be at
+  or below the root, by names alone, with `/` and `\` both separating names (`a/../b` stays, `a/../../b`
+  leaves). The document and the root are made absolute first, so a relative `path` and `.` compare; a document
+  from `parse` has no path and is taken to be at the root, so any leading `..` leaves it. A loaded document
+  below the root may climb up to it. A document outside the root cannot name a file within it: that is
+  reported once, as `path-outside-root` at line 1 saying so, not once for each path, and only when it
+  names a relative path at all.
+- Reading is stricter than validating: `files.relative_path`, which assembly and the definitions read for
+  `amends` and attachments use, still refuses `../` always (a file outside the document's directory is never
+  read, §2.3), and now every URI scheme as well (it let `https://example.com/a.lgd` through as
+  `https:/example.com/a.lgd`). So a root that permits `../shared/x.lgd` validates clean, but such a file is
+  not read. Assembly does not report these two rules.
+- An image is the inline `![alt](destination)` (§8.7), in a paragraph, list item, quote, table cell, heading
+  or definition, and in the alt text of another image (both are checked). The destination is `<…>` or a
+  raw one with balanced parentheses, then an optional title; backslash escapes and character references in
+  it are decoded (`&#47;etc` is `/etc`). **It is also read percent-decoded, for both checks**: `%2Fetc` is
+  not relative and `%2E%2E/%2E%2E/x.png` leaves a root, since a tool that opens the file decodes the URL
+  first; a `%` not followed by two hex digits stays as written. No other reference is percent-decoded.
+  Not an image: one in a code span, fenced or indented code, a comment or a raw HTML block, `\![a](x)`
+  (a link after a literal `!`), a link or autolink (valid, §8.7), `<img src>` (that is `raw-html`),
+  and a reference-style image (`![a][r]`, `[r]: path`), which waits for link reference definitions in the
+  model ([#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)). An image whose
+  destination holds a directive (`![a]({{placeholder: p}})`) is skipped, since its path is not known
+  until the directive is filled in; assembly's output is validated again (§15.7.4). A directive in the
+  alt text is no matter.
+- In a fragment (`validate(fragment=True)`) the include and image paths are its own, whoever includes it:
+  they are checked and never `host_dependent`. Its frontmatter is never read, so none of its keys is checked.
+  A document whose frontmatter cannot be read is validated by its body alone, as for the other rules.
+- A document that validated clean may now carry these Errors, and so `legaldown validate` exit with status 1.
 
 Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body,
 in list items and in block quotes.

@@ -114,6 +114,7 @@ legaldown validate --ignore def-unreferenced doc.lgd # mute one rule
 legaldown validate --warnings-as-errors doc.lgd      # tighten a CI gate
 legaldown validate --final signed-contract.lgd       # nothing left to fill in
 legaldown validate --fragment clauses/               # include fragments and attachment files, on their own
+legaldown validate --document-root . docs/           # no file reference may lead out of the project
 ```
 
 | Option | Effect |
@@ -123,6 +124,7 @@ legaldown validate --fragment clauses/               # include fragments and att
 | `--final` | Check a document is ready for signature: a remaining placeholder, drafting note, or template construct is an error (§15.9) |
 | `--fragment` | Validate each file as an include fragment or attachment file on its own (§12.2, §12.4), as [`validate(fragment=True)`](#validating-a-fragment) does: what only the including document can settle is reported with `"host_dependent": true` in the JSON output and `(host-dependent)` at the end of the line in text, and does not affect the exit status |
 | `--template` / `--no-template` | With `--fragment`: say whether the document that includes the fragments is a template (`validate(fragment=True, template=True / False)`). Without either, a fragment is a template only when it holds a condition or a `{{choose:}}` |
+| `--document-root DIR` | The directory every file a document refers to must lie within (§2.3, [`validate(document_root=)`](#file-references-and-the-document-root)): a path that escapes it, as `../` does, is `path-outside-root`. Each document is read from its own directory, which must be within `DIR`. Without it, `../shared/definitions.lgd` is valid. A path that is absolute or begins with a URI scheme is `path-not-relative` with or without a root |
 | `--warnings-as-errors` | Report warnings at error severity |
 | `--strict` | Exit non-zero on any diagnostic, not just errors |
 | `--quiet` | Drop the trailing summary line |
@@ -294,7 +296,7 @@ so there is nothing to read (`resolve=lambda path: None` does the same for a loa
 validate it without reading anything); give `validate` a `resolve=` function, from a relative path to the
 file's text (or `None`), to read them from elsewhere — a database, an upload. Such a function is a
 `LoadFile`; `file_loader(directory)` makes one for files on disk, and `parse_template` takes one as
-`resolve=` too.
+`resolve=` too. Where those files may lie is [`document_root`](#file-references-and-the-document-root).
 
 > **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file),
 > `validate_document` is now `validate`, `serialize_document` is now `serialize` (text) or `save`
@@ -378,7 +380,8 @@ for d in result.diagnostics:
 ```
 
 ```python
-validate(document, *, final=False, fragment=False, template=None, resolve=None) -> ValidationResult
+validate(document, *, final=False, fragment=False, template=None, resolve=None,
+         document_root=None) -> ValidationResult
 Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
 ```
 
@@ -418,9 +421,36 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   line, and its exit status ignores them (also under `--strict`): a fragment that only uses what its
   host declares or defines exits `0`, and one with a finding of its own exits `1`. The summary line
   counts them apart (`0 error(s), 0 warning(s), 0 info(s); 3 host-dependent`) to agree with it.
+- The paths a fragment names are its own, whoever includes it: its `{{include:}}` and image paths are
+  checked (`path-not-relative`, and `path-outside-root` with a `document_root`) and are never
+  `host_dependent`. Its frontmatter is never read, so there is no `attachments`, `amends`, `supersedes`
+  or `translations` of the fragment's to check.
 - `host_dependent` is `False` in every other result: for a complete document there is no host, and a
   broken reference is simply an Error. It takes part in a `Diagnostic`'s equality. Assembly's
   diagnostics never carry it.
+
+### File references and the document root
+
+A document names other files by a path relative to itself (§2.3): `{{include:}}`, an image's path,
+and `attachments[].file`, `amends.file`, `supersedes.file` and `translations` in the frontmatter.
+`validate` checks the text of each path, at Core level, and reads no file:
+
+```python
+validate(document, document_root="/srv/contracts")
+```
+
+- `path-not-relative` (Error): the path is absolute (`/etc/x`, `//host/x`) or begins with a URI scheme
+  (`https://…`, `file://…`, `data:…`, a drive letter `C:/x`). It is reported with or without a root.
+- `path-outside-root` (Error): with a `document_root`, the path leads out of it, as `../../x` does.
+  Without one — there is no default root — the check does not run, and `../shared/definitions.lgd` is
+  valid. A loaded document is read from the directory of its `path`, which must be within the root
+  (otherwise the document is reported once as outside it); a parsed one is taken to be at the root.
+  The comparison is of names alone: no file is looked at, and a symbolic link is not followed.
+- Whether the file exists is Full (§17.4) and is not checked. Reading still refuses `../`: a root that
+  permits `../shared/x.lgd` validates clean, but assembly and the definitions read for `amends` and
+  attachments (`resolve=`) never ask for it.
+
+[CONFORMANCE.md](CONFORMANCE.md) gives the details, what counts as an image included.
 
 ### Reading and editing the document model
 
