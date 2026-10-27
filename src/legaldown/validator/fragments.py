@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from functools import cache, cached_property
+from functools import cache, cached_property, partial
 from typing import Literal
 
 from ..directives import Lexed, lex
@@ -27,7 +27,7 @@ from ..positions import Locator
 from .patterns import LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
 from .templates import BodyScan, IncludeDirective, check_template_body
-from .units import FoundMarker, find_markers
+from .units import FoundMarker, find_markers, include_paragraph
 
 #: How a file is used by the document that names it: an include fragment
 #: (``{{include:}}``, §12.2) or a LegalDown attachment file (``attachments[].file``,
@@ -218,8 +218,8 @@ def content_findings(
             continue
         found.append(Finding(
             "template-fragment-invalid",
-            f"{subject} holds an {{{{include:}}}}, '{{{{include: {include.written}}}}}'; in a template an "
-            f"include belongs in the template's own body (§15.3).",
+            f"{subject} holds '{include.source}'; in a template an include belongs in the template's "
+            f"own body (§15.3).",
             _line(include.line),
         ))
     # In the order of the file; what has no line last.
@@ -258,14 +258,27 @@ def fragment_findings(
 
 def nested_includes(
     fragment: FragmentFile, lex_fragment: Callable[[str], Lexed] | None = None
-) -> list[tuple[IncludeDirective, int | None]]:
-    """The ``{{include:}}`` directives a file holds outside its drafting notes, in order,
-    each with its line: those that are allowed outside a template (§12.2) and
-    that assembly does not assemble."""
-    scan = check_template_body(
-        fragment.document, lex_fragment or cache(lex), _Recorder(), template=False, where=fragment.where
-    )
-    return [(include, _line(include.line)) for include in scan.includes if not include.in_note]
+) -> list[tuple[str, int | None]]:
+    """The include paragraphs a file holds, in order, each as written with its line:
+    what is allowed outside a template (§12.2) and that assembly does not
+    assemble. An ``{{include:}}`` in a sentence, a list item or a quote is text
+    (§12.2), and a drafting note is a quote: only a paragraph of its own counts."""
+    # Imported here, as in core.py: definitions -> validator.helpers -> validator would
+    # otherwise be a cycle at import time.
+    from ..definitions import text_fragments
+
+    lexed = lex_fragment or cache(lex)
+    found = []
+    for section, index, block in fragment.document.iter_indexed_blocks():
+        if block.kind != "paragraph":
+            continue
+        text = text_fragments(block)[0]
+        if "{{include" not in text:
+            continue
+        directive = include_paragraph(text, lexed(text))
+        if directive is not None:
+            found.append((directive.source, _line(partial(fragment.where.find, section, index, directive.source, 0, directive.start))))
+    return found
 
 
 def skips(previous: int | None, level: int) -> bool:
@@ -366,6 +379,8 @@ def check_includes(
     files: Files | None,
     template: bool,
     first_level: int | None,
+    unconditional: Callable[[IncludeDirective], bool],
+    rooted: bool,
     lex_fragment: Callable[[str], Lexed] = lex,
 ) -> set[int]:
     """What the include paragraphs of *document* require (§12.2, §16.11), and what the
@@ -380,7 +395,7 @@ def check_includes(
     A path that is not there is ``include-file-missing`` at its include, one
     finding for each include, as is a path a loader is never asked for, because it
     leads out of the document's directory (§2.3) or holds a backslash: assembly
-    refuses the template for it too. A fragment
+    refuses the template for it too (with a ``document_root`` it is valid, and skipped). A fragment
     that is there is checked for its shape and, in a *template*, its content
     (``fragment_findings``), once for each file however often it is included, and
     its headings are joined to the document's for ``include-heading-skip``
@@ -391,7 +406,12 @@ def check_includes(
 
     Returned: the headings of the document whose ``heading-skip`` the combined document
     makes valid (``include_heading_skips``), which the caller drops, as the combined
-    document is the one §4.1 judges when every fragment between is read (§12.2).
+    document is the one §4.1 judges when every fragment between is read (§12.2). A
+    fragment does not count for that when it is not known to be there (a condition
+    on its include paragraph or on a section around it, *unconditional*) or when it is
+    not read as a fragment (frontmatter, or a level 1 heading: it is reported, and not
+    spliced). *rooted*: the validation has a ``document_root``, so a path it does not
+    judge is valid, and a path the reader cannot ask for is skipped, not missing.
 
     A path that file reference checks judged (*judged*: the places they reported,
     ``FileReferences.reported``) draws that finding alone (path-not-relative, an
@@ -399,7 +419,7 @@ def check_includes(
     not also missing, or not LegalDown."""
     splices: dict[int | None, list[FragmentFile]] = {}
     unread: set[int | None] = set()  # the sections with an include paragraph whose fragment is not known
-    seen: set[str] = set()
+    findings: dict[str, list[Finding]] = {}  # of each fragment, once
     for include in includes:
         if not include.paragraph:
             continue
@@ -422,6 +442,11 @@ def check_includes(
         # does for a file that is not there. It is not path-not-relative (an absolute path or a
         # URI scheme, judged above), nor path-outside-root, which judges where it leads.
         relative = relative_path(include.written)
+        if relative is None and rooted:
+            # Valid as a path within the root (§2.3), but this implementation reads nothing
+            # outside the document's directory: a known limitation (CONFORMANCE.md).
+            unread.add(include.section)
+            continue
         fragment = None if relative is None else files.read(relative)
         # Asked about itself only when something was read: the file system is the loader's.
         if fragment is not None and files.is_own(fragment.path):
@@ -438,12 +463,19 @@ def check_includes(
             )
             unread.add(include.section)
             continue
-        splices.setdefault(include.section, []).append(fragment)
-        if fragment.path in seen:
+        if fragment.path not in findings:
+            findings[fragment.path] = fragment_findings(
+                fragment, kind="include", template=template, lex_fragment=lex_fragment
+            )
+            for finding in findings[fragment.path]:
+                result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
+        # A file with frontmatter or a level 1 heading is not a fragment: it is reported, not spliced.
+        if any(finding.rule in ("include-has-frontmatter", "include-has-h1") for finding in findings[fragment.path]):
+            unread.add(include.section)
             continue
-        seen.add(fragment.path)
-        for finding in fragment_findings(fragment, kind="include", template=template, lex_fragment=lex_fragment):
-            result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
+        splices.setdefault(include.section, []).append(fragment)
+        if not unconditional(include):
+            unread.add(include.section)  # it may not be there: it fills nothing
     if files is not None and template:
         # The attachment files of a template hold no include (§16.12); only that is checked
         # of them here: their frontmatter and heading are assembly's to refuse, and are not
@@ -452,7 +484,7 @@ def check_includes(
         for attachment in document.metadata.attachments:
             relative = relative_path(attachment.file) if attachment.file.endswith(LEGALDOWN_EXTENSIONS) else None
             # (A file that is also an include was checked above, and is a finding of its own.)
-            if relative is None or relative in attached or relative in seen:
+            if relative is None or relative in attached or relative in findings:
                 continue
             attached.add(relative)
             fragment = files.read(relative)

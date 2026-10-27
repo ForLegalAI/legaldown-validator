@@ -473,7 +473,8 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   because its path leads out of the document's directory (`../x.lgd`) or holds a backslash, which a
   loader is never asked for and assembly refuses the template for (an absolute path or one with a
   URI scheme is `path-not-relative` alone, and a path that leaves a `document_root` is
-  `path-outside-root` alone);
+  `path-outside-root` alone; with a `document_root` that contains it, such a path is valid and is
+  skipped, not read);
 - `include-has-frontmatter` and `include-has-h1` (§16.11), `include-has-frontmatter` also for a block
   whose YAML cannot be read;
 - `include-heading-skip`: the headings of every fragment are placed where its include paragraph is,
@@ -481,7 +482,8 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   that follows one of a fragment's is reported at its own line; a `heading-skip` of the document
   that a fragment read between the headings fills (`# One`, an include of `## Deep`, `### Three`) is
   not reported, as §4.1 judges the combined document, unless an include before that heading is not
-  known (missing, not LegalDown, unreadable). This is one pass with every include
+  known for certain (missing, not LegalDown, unreadable, conditional, or itself reported as not a
+  fragment). This is one pass with every include
   present: a template's conditional includes are not tried in every combination (§16.11), which
   [CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612) lists with the other limits;
 - in a template, `template-fragment-invalid` for what §15.3 forbids in a fragment (a condition, a

@@ -128,6 +128,7 @@ def _run_validate(args: argparse.Namespace) -> int:
     ignored = set(args.ignore or [])
     collected: list[dict] = []
     failures: list[str] = []
+    shared: set[tuple[Any, ...]] = set()  # the findings in fragment files, of the targets so far
 
     for raw_path in args.paths:
         path = Path(raw_path)
@@ -151,18 +152,20 @@ def _run_validate(args: argparse.Namespace) -> int:
             if failure:
                 failures.append(failure)
                 continue
-            collected.extend(d for d in diagnostics if d["rule"] not in ignored)
-
-    # A fragment that several documents include is found wrong once, not once for each
-    # (#35): the same finding in the same place, in the output and in the counts.
-    seen: set[tuple[Any, ...]] = set()
-    unique = []
-    for d in collected:
-        key = (d["file"], d.get("line"), d["rule"], d["message"])
-        if key not in seen:
-            seen.add(key)
-            unique.append(d)
-    collected = unique
+            # A fragment several of the documents include is found wrong once, not once for
+            # each (#35): a finding in a file other than the target's, the same as one an
+            # earlier target brought. A document's own findings are all kept, however alike.
+            found = set()
+            for d in diagnostics:
+                if d["rule"] in ignored:
+                    continue
+                if d["file"] != str(target):
+                    key = (d["file"], d.get("line"), d["rule"], d["message"])
+                    found.add(key)
+                    if key in shared:
+                        continue
+                collected.append(d)
+            shared |= found
 
     if args.warnings_as_errors:
         for d in collected:

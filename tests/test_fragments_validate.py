@@ -174,12 +174,13 @@ def test_a_path_a_loader_is_not_asked_for_is_missing_as_assembly_says(tmp_path):
     template = Template(_TEMPLATE_FRONT + _SCOPE + "{{include: ../shared.lgd}}\n", resolve=_Loader({}))
     assert [d.rule for d in template.problems] == ["include-file-missing"]
     assert [d.rule for d in template.validation.diagnostics if d.rule == "include-file-missing"] == ["include-file-missing"]
-    # With a root it leaves, path-outside-root says where it leads and is the only finding; within it, the file is missing.
+    # With a root it leaves, path-outside-root says where it leads and is the only finding; within it, the
+    # path is valid (§2.3) and not read outside the document's directory: skipped, not missing.
     root = tmp_path / "root"
     (root / "sub").mkdir(parents=True)
     path = root / "sub" / "main.lgd"
     path.write_text(_FRONT + _SCOPE + "{{include: ../shared.lgd}}\n", encoding="utf-8")
-    assert _found(validate(load(path), document_root=root)) == [("include-file-missing", "main.lgd", 21)]
+    assert _found(validate(load(path), document_root=root)) == []
     assert _found(validate(load(path), document_root=root / "sub")) == [("path-outside-root", "main.lgd", 21)]
     # Without a resolver (parse(text)) nothing is read, and nothing is said.
     assert _found(validate(parse(text, filename="main.lgd"))) == []
@@ -339,14 +340,13 @@ def test_the_headings_of_every_fragment_are_joined_to_the_documents_in_one_pass(
 
 
 def test_a_heading_of_the_document_after_a_fragment_is_reported_at_its_own_line():
-    text = _FRONT + "# A {#a}\n\n## B {#b}\n\n{{include: p.lgd}}\n\n### C {#c}\n"
-    # B, then the fragment's Q at level 1 (include-has-h1 as well), then C: C follows B without a skip,
-    # and follows Q with one.
-    result, _ = _run(text, {"p.lgd": "# Q {#q}\n"})
-    assert _found(result, "include-heading-skip", "include-has-h1", "heading-skip") == [
-        ("include-has-h1", "p.lgd", 1), ("include-heading-skip", "main.lgd", _at(text, "### C"))
+    text = _FRONT + "# A {#a}\n\n## B {#b}\n\n### C {#c}\n\n{{include: p.lgd}}\n\n#### D {#d}\n"
+    # C, then the fragment's Q at level 2, then D: D follows C without a skip, and Q with one.
+    result, _ = _run(text, {"p.lgd": "## Q {#q}\n"})
+    assert _found(result, "include-heading-skip", "heading-skip") == [
+        ("include-heading-skip", "main.lgd", _at(text, "#### D"))
     ]
-    ok, _ = _run(text, {"p.lgd": "## Q {#q}\n"})
+    ok, _ = _run(text, {"p.lgd": "### Q {#q}\n"})
     assert _found(ok, "include-heading-skip", "heading-skip") == []
 
 
@@ -380,11 +380,31 @@ def test_heading_skip_stands_when_an_include_before_the_heading_is_not_known():
     assert [r[0] for r in _found(result, "heading-skip", "include-heading-skip")] == ["heading-skip"]
 
 
-def test_the_first_heading_may_be_filled_by_a_fragment_before_it():
+def test_a_conditional_include_fills_no_level():
+    front = _TEMPLATE_FRONT
+    part = {"p.lgd": "## Deep {#deep}\n"}
+    for include in ("{{include: p.lgd}} {when=x}\n", "{{include: p.lgd}}\n"):
+        text = front + "# One {#one}\n\n" + include + "\n### Three {#three}\n"
+        result, _ = _run(text, part)
+        expected = [("heading-skip", "main.lgd", _at(text, "### Three"))] if "when" in include else []
+        assert _found(result, "heading-skip") == expected, include
+    # ... nor does one under a conditional section.
+    text = front + "# One {#one when=x}\n\n{{include: p.lgd}}\n\n### Three {#three}\n"
+    result, _ = _run(text, part)
+    assert [rule for rule, *_ in _found(result, "heading-skip")] == ["heading-skip"]
+
+
+def test_a_file_that_is_not_a_fragment_is_not_spliced():
+    # A level 1 heading, or frontmatter, is reported (include-has-h1, include-has-frontmatter) and the file
+    # is not joined to the document: it fills no level, and has no heading to skip.
+    for part in ("# Deep {#deep}\n\n## Under {#under}\n", "---\ntitle: T\n---\n\n## Under {#under}\n"):
+        text = _FRONT + "# One {#one}\n\n{{include: part.lgd}}\n\n### Three {#three}\n"
+        result, _ = _run(text, {"part.lgd": part})
+        assert [rule for rule, *_ in _found(result, "heading-skip", "include-heading-skip")] == ["heading-skip"]
+        assert {rule for rule, *_ in _found(result)} & {"include-has-h1", "include-has-frontmatter"}
     text = _FRONT + "{{include: part.lgd}}\n\n## Two {#two}\n"
-    result, _ = _run(text, {"part.lgd": "# One {#one}\n"})  # (a level 1 heading in a fragment is include-has-h1)
-    assert _found(result, "heading-skip", "include-heading-skip") == []
-    assert [r[0] for r in _found(validate(parse(text, filename="main.lgd")), "heading-skip")] == ["heading-skip"]
+    result, _ = _run(text, {"part.lgd": "# One {#one}\n"})
+    assert [rule for rule, *_ in _found(result, "heading-skip", "include-heading-skip")] == ["heading-skip"]
 
 
 def test_a_fragment_included_twice_is_reported_once_per_heading():
@@ -668,15 +688,41 @@ def test_a_fragment_that_several_documents_include_is_found_wrong_once_in_the_ou
     for name in ("one.lgd", "two.lgd"):
         (tmp_path / name).write_text(_FRONT + _SCOPE + "{{include: part.lgd}}\n", encoding="utf-8")
     (tmp_path / "part.lgd").write_text("# H {#h}\n", encoding="utf-8")
-    (tmp_path / "gone.lgd").write_text(_FRONT + _SCOPE + "{{include: absent.lgd}}\n", encoding="utf-8")
-    assert main(["validate", "--format", "json", str(tmp_path / "one.lgd"), str(tmp_path / "two.lgd"), str(tmp_path / "gone.lgd")]) == EXIT_DIAGNOSTICS
+    one, two = str(tmp_path / "one.lgd"), str(tmp_path / "two.lgd")
+    assert main(["validate", "--format", "json", one, two]) == EXIT_DIAGNOSTICS
     records = json.loads(capsys.readouterr().out)["diagnostics"]
     assert [(d["rule"], d["file"]) for d in records if d["rule"] == "include-has-h1"] == [
         ("include-has-h1", str(tmp_path / "part.lgd"))
     ]
-    # ... and in the counts of the text output; a finding of the documents themselves stays one for each.
-    assert main(["validate", str(tmp_path / "one.lgd"), str(tmp_path / "two.lgd")]) == EXIT_DIAGNOSTICS
+    # ... and in the counts of the text output.
+    assert main(["validate", one, two]) == EXIT_DIAGNOSTICS
     captured = capsys.readouterr()
     assert captured.out.count("[include-has-h1]") == 1 and "1 error(s)" in captured.err
-    assert main(["validate", str(tmp_path / "gone.lgd"), str(tmp_path / "gone.lgd")]) == EXIT_DIAGNOSTICS
-    assert capsys.readouterr().out.count("[include-file-missing]") == 1
+
+
+def test_the_findings_of_one_document_are_never_collapsed(tmp_path, capsys):
+    text = _FRONT + _SCOPE + "See {{ref: nowhere}} and {{ref: nowhere}}.\n\n{{include: gone.lgd}}\n"
+    (tmp_path / "doc.lgd").write_text(text, encoding="utf-8")
+    doc = str(tmp_path / "doc.lgd")
+    assert main(["validate", "--format", "json", doc]) == EXIT_DIAGNOSTICS
+    records = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert [d["rule"] for d in records].count("ref-broken") == 2
+    # Nor the same document named twice: each is a target of its own.
+    assert main(["validate", "--format", "json", doc, doc]) == EXIT_DIAGNOSTICS
+    records = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert [d["rule"] for d in records].count("ref-broken") == 4 and [d["rule"] for d in records].count("include-file-missing") == 2
+
+
+def test_assembly_refuses_only_an_include_paragraph_of_a_plain_documents_fragment():
+    part = "## P {#p}\n\nSee {{include: a.lgd}} inline.\n\n- {{include: b.lgd}}\n\n> {{include: c.lgd}}\n\n{{include: d.lgd}} {when=x}\n"
+    template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": part}.get)
+    assert [(d.rule, d.file, d.line) for d in template.problems] == [("include-file-missing", "part.lgd", 9)]
+    # The directive is quoted as written, once.
+    message = template.problems[0].message
+    assert "'{{include: d.lgd}}'" in message and message.count("{{include:") == 1
+
+
+def test_a_nested_include_is_quoted_as_written_in_a_templates_finding_too():
+    result, _ = _template("## B {#b}\n\nSee {{include:   g.lgd }} inline.\n")
+    message = [d.message for d in result.diagnostics if d.rule == _TFR][0]
+    assert "'{{include:   g.lgd }}'" in message and message.count("include") == 2

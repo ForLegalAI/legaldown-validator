@@ -962,12 +962,11 @@ def _file_problems(path: str, kind: FragmentKind, document: Document, template: 
         problems += [
             Diagnostic(
                 "include-file-missing", "error",
-                f"{noun(kind, 'the').capitalize()} '{path}' holds an {{{{include:}}}}, "
-                f"'{{{{include: {include.written}}}}}'; an include in an included or attached file is "
-                f"not assembled, so the template is not assembled.",
+                f"{noun(kind, 'the').capitalize()} '{path}' holds '{source}'; an include in an included "
+                f"or attached file is not assembled, so the template is not assembled.",
                 line=line, file=path,
             )
-            for include, line in nested_includes(fragment, lexed)
+            for source, line in nested_includes(fragment, lexed)
         ]
     return problems
 

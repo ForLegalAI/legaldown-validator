@@ -16,7 +16,7 @@ import pytest
 
 import legaldown
 from legaldown import Document, load, parse, validate
-from legaldown.cli import EXIT_DIAGNOSTICS, main
+from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.files import (
     has_uri_scheme,
     is_absolute_reference,
@@ -756,10 +756,9 @@ def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree,
     assert capsys.readouterr().out.count("[path-outside-root]") == 1
     assert main(["validate", "sub/doc.lgd", "--document-root", "sub"]) == EXIT_DIAGNOSTICS
     assert capsys.readouterr().out.count("[path-outside-root]") == 2
-    # Within the root, nothing leads out of it; the fragment cannot be read from beside the document all the same.
-    assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_DIAGNOSTICS
-    out = capsys.readouterr().out
-    assert "[path-outside-root]" not in out and out.count("[include-file-missing]") == 1
+    # ../shared.lgd is within this root, so valid (§2.3); this implementation reads nothing outside
+    # the document's directory, and says nothing of it (CONFORMANCE.md, a known limitation).
+    assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_OK
 
 
 def test_cli_reports_a_path_that_is_not_relative_with_or_without_a_root(tree, capsys):

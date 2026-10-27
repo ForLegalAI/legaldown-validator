@@ -568,6 +568,8 @@ class IncludeDirective:
     #: the key assembly and the validator read a fragment by.
     written: str
     path: str
+    #: The directive as written (``{{include: part.lgd}}``).
+    source: str
     line: Line
     #: Where it is: the section (None in the preamble), the block, the fragment of
     #: the block's text and the offset in it, as ``FileReferences.check`` places it.
@@ -675,7 +677,7 @@ def check_template_body(
                     )
                 if directive.name == "include" and directive.positional:
                     includes.append(IncludeDirective(
-                        directive.positional, posixpath.normpath(directive.positional), line,
+                        directive.positional, posixpath.normpath(directive.positional), directive.source, line,
                         block_section, block_index, index, directive.start, in_note, only is directive,
                     ))
                     if in_note and template:
