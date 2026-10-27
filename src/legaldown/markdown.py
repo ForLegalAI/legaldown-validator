@@ -260,6 +260,13 @@ def indent_width(line: str) -> int:
 
 # A list item's marker, as the parser's LIST_ITEM_RE reads it.
 _ITEM_START_RE = re.compile(r"[ \t]*(?:[0-9]{1,9}[.)]|[-*+])")
+_BLANKS_RE = re.compile(r"[ \t]*")
+
+
+def blank_run_end(text: str, position: int) -> int:
+    """The index just past the spaces and tabs that *text* has from *position*
+    on: where the text after them starts, found without copying the rest."""
+    return _BLANKS_RE.match(text, position).end()
 
 
 def item_content_column(line: str) -> int:
@@ -270,10 +277,12 @@ def item_content_column(line: str) -> int:
     if marker is None:  # never: the parser read *line* as an item
         return indent_width(line) + 2
     after = len(line[:marker.end()].expandtabs(4))
-    rest = line[marker.end():]
-    if is_blank(rest):
+    # Where the text after the marker starts, found from the marker on: the
+    # rest of a long line is not copied to strip it (#94).
+    text = blank_run_end(line, marker.end())
+    if text == len(line):
         return after + 1
-    spacing = len(line[:len(line) - len(rest.lstrip(" \t"))].expandtabs(4)) - after
+    spacing = len(line[:text].expandtabs(4)) - after
     return after + 1 if spacing > 4 else after + spacing
 
 
@@ -285,10 +294,13 @@ def nested_offset(first: str) -> int:
     """How much further in than a list item's content its innermost content
     starts, when its text opens with items nested on its line (``1. y`` in
     ``- 1. y``): its later content is measured from there (CommonMark)."""
-    offset = 0
-    while marker := _NESTED_ITEM_RE.match(first):
-        offset += item_content_column(first)
-        first = first[marker.end():]
+    offset = position = 0
+    while marker := _NESTED_ITEM_RE.match(first, position):
+        # Each marker is measured on itself and the character after its
+        # spacing, with the same column as on the rest of the line, which a
+        # line of many markers would copy once per marker (#94).
+        offset += item_content_column(first[position:marker.end() + 1])
+        position = marker.end()
     return offset
 
 

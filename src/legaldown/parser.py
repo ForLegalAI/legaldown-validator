@@ -12,7 +12,7 @@ import bisect
 import os
 import re
 import warnings
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -27,6 +27,7 @@ from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
+    blank_run_end,
     closes_fence,
     dedent,
     fence_end,
@@ -151,14 +152,22 @@ ATX_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*))?$")
 # ``---`` a level-2 one. Anywhere else, ``---`` is a thematic break.
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 # A thematic break: three or more ``-``, ``*``, or ``_``, the same one,
-# with optional spaces or tabs between them.
-RULE_RE = re.compile(r"^[ \t]*(?:(?:-[ \t]*){3,}|(?:\*[ \t]*){3,}|(?:_[ \t]*){3,})$")
+# with optional spaces or tabs between them. The runs of spaces are
+# possessive, as what follows one is never a space: a deeply indented line
+# that is no break would otherwise give them back one by one to try the
+# three alternatives at every column, and the list scan tests each line at
+# each level of nesting.
+RULE_RE = re.compile(r"^[ \t]*+(?:(?:-[ \t]*+){3,}|(?:\*[ \t]*+){3,}|(?:_[ \t]*+){3,})$")
 # A list item marker (CommonMark): ``-``, ``*``, or ``+`` for an unordered
 # list, a number of at most nine ASCII digits and ``.`` or ``)`` for an
 # ordered one, with only spaces and tabs around it — other whitespace is
 # text. A thematic break such as ``* * *`` matches too; callers test
 # RULE_RE first.
-LIST_ITEM_RE = re.compile(r"^[ \t]*(?:(?P<number>[0-9]{1,9})(?P<delimiter>[.)])|(?P<bullet>[-*+]))(?:[ \t]+|$)")
+_LIST_ITEM = r"[ \t]*+(?:(?P<number>[0-9]{1,9})(?P<delimiter>[.)])|(?P<bullet>[-*+]))(?:[ \t]+|$)"
+LIST_ITEM_RE = re.compile("^" + _LIST_ITEM)
+# The same to match at an offset in a long line, which its ``^`` forbids: the
+# rest of the line is not copied for each marker (#94).
+_ITEM_AT_RE = re.compile(_LIST_ITEM)
 # A cell of a table's delimiter row (GFM): colons mark the alignment.
 _DELIMITER_CELL_RE = re.compile(r":?-+:?")
 
@@ -381,19 +390,47 @@ def _is_lazy_line(line: str) -> bool:
 _QUOTE_MARKERS_RE = re.compile(r"[ \t]*(?:>[ \t]*)*")
 
 
-def _opens_paragraph(content: str) -> bool:
+class _Rule:
+    """Whether *content* from a position on is a thematic break
+    (``_rule_from``), built when first asked: most lines have no list marker
+    to ask it for. One serves every walk of a line's markers."""
+
+    __slots__ = ("_content", "_test")
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self._test: Callable[[int], bool] | None = None
+
+    def __call__(self, position: int) -> bool:
+        if self._test is None:
+            self._test = _rule_from(self._content)
+        return self._test(position)
+
+
+def _skip_markers(content: str, *, quotes: bool = False, is_rule: _Rule | None = None) -> int:
+    """Where *content* goes on after the list item markers it opens with, one
+    after the other, while what is left is no thematic break. *quotes*: block
+    quote markers between them count too. Each marker is matched at an offset,
+    and a rest is tested for a break from the end of the line (``_Rule``): a
+    line of markers (``- - - - a``) is not copied, or read, once per marker."""
+    is_rule = is_rule or _Rule(content)
+    position = 0
+    while True:
+        if quotes:
+            position = _QUOTE_MARKERS_RE.match(content, position).end()
+        marker = _ITEM_AT_RE.match(content, position)
+        if marker is None or is_rule(position):
+            return position
+        position = marker.end()
+
+
+def _opens_paragraph(content: str, is_rule: _Rule | None = None) -> bool:
     """True if a quoted line's *content* leaves paragraph text open — its
     own, or that of a list item or nested quote it starts, behind markers of
     any nesting — which a lazy line may continue. A heading, a thematic
     break, a fence, an HTML block, or an empty list item or quote leaves
     none."""
-    inner = content
-    while True:
-        inner = inner[_QUOTE_MARKERS_RE.match(inner).end():]
-        marker = None if RULE_RE.match(inner) else LIST_ITEM_RE.match(inner)
-        if not marker:
-            break
-        inner = inner[marker.end():]
+    inner = content[_skip_markers(content, quotes=True, is_rule=is_rule):]
     return (
         bool(inner.strip(" \t"))
         and not (FENCE_OPEN_RE.match(inner) and indent_width(content) < 4)
@@ -401,6 +438,26 @@ def _opens_paragraph(content: str) -> bool:
         and not RULE_RE.match(inner)
         and not HTML_BLOCK_START_RE.match(inner)
     )
+
+
+def _item_body(content: str, is_rule: _Rule | None = None) -> tuple[str, int]:
+    """What a quoted line's *content* holds after the list item markers it
+    opens with, one after the other (each at most three columns in, not empty,
+    and no thematic break), and the columns they take. Each marker is measured
+    on itself and the character after its spacing, not on a copy of the rest
+    of the line."""
+    is_rule = is_rule or _Rule(content)
+    position = column = 0
+    while (
+        indent_width(content[position:blank_run_end(content, position)]) < 4
+        and (item := _ITEM_AT_RE.match(content, position))
+    ):
+        spacing_end = blank_run_end(content, item.end())
+        if is_rule(position) or spacing_end == len(content):
+            break
+        columns = item_content_column(content[position:spacing_end + 1])
+        position, column = position + columns, column + columns
+    return content[position:], column
 
 
 # How deep ``_Quote`` follows nested quotes; in deeper ones, a line's
@@ -480,12 +537,8 @@ class _Quote:
             self._table, self.paragraph = True, False
             return
         # Code or HTML may open the line, or the item or items it starts.
-        body, self._column = content, 0
-        while indent_width(body) < 4 and not RULE_RE.match(body) and (item := LIST_ITEM_RE.match(body)):
-            if not body[item.end():].strip(" \t"):
-                break
-            column = item_content_column(body)
-            body, self._column = body[column:], self._column + column
+        is_rule = _Rule(content)
+        body, self._column = _item_body(content, is_rule)
         if opening := FENCE_OPEN_RE.match(body):
             self._fence = opening.group("fence")
             self.paragraph = False
@@ -496,7 +549,7 @@ class _Quote:
             self.paragraph = False
         elif self.paragraph or indent_width(content) < 4:  # else indented code
             was = self.paragraph
-            self.paragraph = _opens_paragraph(content)
+            self.paragraph = _opens_paragraph(content, is_rule)
             self._last = content if self.paragraph else None
             # A paragraph opened by an item, or an item started under one, is
             # the item's: a delimiter-like line may be its lazy text.
@@ -569,17 +622,22 @@ def _list_type(marker: re.Match[str]) -> str:
     return marker.group("delimiter") or marker.group("bullet")
 
 
-def _starts_item(line: str, chain: list[int], margin: int) -> re.Match[str] | None:
-    """The marker of the list item *line* starts, inside a list whose open
-    items' content columns are *chain* (``_parse_list``) and whose own items
-    are measured from *margin*: None when *line* is no item's start, or its
-    marker lies four or more columns into the content it is in (CommonMark:
-    indented code, or text)."""
-    marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
+def _marker(line: str) -> re.Match[str] | None:
+    """The marker of the list item *line* looks like it starts: none for a
+    thematic break, which ``LIST_ITEM_RE`` would match as one."""
+    return None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
+
+
+def _starts_item(marker: re.Match[str] | None, chain: list[int], margin: int, width: int) -> bool:
+    """True if *marker*, which a line of indentation *width* has (``_marker``),
+    starts a list item, inside a list whose open items' content columns are
+    *chain* (``_parse_list``) and whose own items are measured from *margin*:
+    not if the line has none, or its marker lies four or more columns into the
+    content it is in (CommonMark: indented code, or text)."""
     if marker is None:
-        return None
-    depth = bisect.bisect_right(chain, indent_width(line))
-    return marker if indent_width(line) - (chain[depth - 1] if depth else margin) < 4 else None
+        return False
+    depth = bisect.bisect_right(chain, width)
+    return width - (chain[depth - 1] if depth else margin) < 4
 
 
 def _scan_list(
@@ -608,7 +666,13 @@ def _scan_list(
     takes its lazy continuation lines. What each item holds is read from its
     lines afterwards (``_parse_list``).
     """
-    items: list[str] = []  # each item's text as far as the walk needs it
+    # The walk reads one thing of the current item's text: whether it is still
+    # empty, for a blank line right after its marker. The text itself is never
+    # read, and a string grown by ``+=`` once per line is copied once per line:
+    # an item of 200,000 lines took seconds. A line joins the item's text
+    # below; the lines that come first in the loop, in a fence or an HTML block
+    # or blank, only follow one that did.
+    empty = False  # the item has nothing after its marker yet
     own: list[tuple[int, int]] = []  # the list's own items: first line, content column
     text: dict[int, int] = {}  # lazy lines that look like an item's start
     chain: list[int] = []  # the content columns of the current item and those it is nested in
@@ -636,17 +700,17 @@ def _scan_list(
     end = index
     while end < len(lines):
         line = lines[end]
+        width = indent_width(line)  # the line's, read many times below
         if fence is not None:
             # A line that starts an item, indented less than the current
             # item's content, closes the item and a fence opened in its
             # content (CommonMark): a sibling of a nested item, say.
             starts = (
-                fence_inside and indent_width(line) < content_indent
-                and _starts_item(line, chain, margin) is not None
+                fence_inside and width < content_indent
+                and _starts_item(_marker(line), chain, margin, width)
             )
-            if not starts and (is_blank(line) or indent_width(line) >= (chain[0] if chain else 2)):
+            if not starts and (is_blank(line) or width >= (chain[0] if chain else 2)):
                 code = dedent(line, content_indent, expand=True)
-                items[-1] += "\n" + code
                 end += 1
                 if closes_fence(code, fence):
                     fence = None
@@ -654,13 +718,12 @@ def _scan_list(
                 continue
             fence = None
         if html is not None and not is_blank(line):
-            if indent_width(line) >= html_column:
+            if width >= html_column:
                 # The HTML block's, whatever it looks like — an item's
                 # marker, a quote — and no paragraph a lazy line continues.
                 (close,) = html
                 if close is not None and close.search(line):
                     html = None
-                items[-1] += "\n" + dedent(line, content_indent, expand=True)
                 lazy = paragraph = open_paragraph = table = False
                 quote = previous = None
                 end += 1
@@ -672,37 +735,36 @@ def _scan_list(
             following = next((k for k in range(end, len(lines)) if not is_blank(lines[k])), None)
             if following is None:
                 break
-            if not items[-1]:
+            if empty:
                 # An item begins with at most one blank line: an empty item
                 # ends here, its parent's content going on.
                 chain.pop()
-            width = indent_width(lines[following])
-            if chain and width >= chain[0]:
+            after = indent_width(lines[following])
+            if chain and after >= chain[0]:
                 # Indented into an item still open: its content goes on, after
                 # the items nested in it too.
-                del chain[bisect.bisect_right(chain, width):]
+                del chain[bisect.bisect_right(chain, after):]
                 content_indent = chain[-1]
             elif (
-                (sibling := _starts_item(lines[following], [], margin)) is None
+                not _starts_item(sibling := _marker(lines[following]), [], margin, after)
                 or _list_type(sibling) != list_type
             ):
                 break
             else:
                 chain.clear()  # another item of the list's own: it is loose
-            items[-1] += "\n" * (following - end)  # the blank lines, one row each
             end = following
             lazy = paragraph = open_paragraph = table = False  # the blank line closed the item's paragraph
             quote = previous = None  # a later paragraph in the item is not the quote's
             continue
         was_open, was_table, was_paragraph = open_paragraph, table, paragraph  # before this line
-        marker = None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
+        marker = _marker(line)
         quote_lazy = False  # the line lazily continues the item's quote
-        indented = indent_width(line) >= 2
+        indented = width >= 2
         joined = False  # the line is paragraph text though it looks like an item
         lazy_line = False  # the line lazily continues an open paragraph
         # The items the line is inside: those whose content it reaches.
-        depth = bisect.bisect_right(chain, indent_width(line))
-        if marker and _starts_item(line, chain, margin) is None:
+        depth = bisect.bisect_right(chain, width)
+        if marker and not _starts_item(marker, chain, margin, width):
             # Four or more columns into the content it is in, a marker
             # starts no item (CommonMark).
             if depth == len(chain):
@@ -723,7 +785,7 @@ def _scan_list(
             # model holds no place for: read as an item, as it always was.
         if (
             marker and paragraph and quote is None and indented
-            and indent_width(line) >= content_indent and not _may_interrupt(line, marker)
+            and width >= content_indent and not _may_interrupt(line, marker)
         ):
             # A nested list would interrupt the item's own open paragraph,
             # which only an item that may interrupt one does: the line is
@@ -739,7 +801,7 @@ def _scan_list(
             # Content four or more columns past the item's content column is
             # indented code (CommonMark): no paragraph, no fence.
             first_code = indent_width(_expand_prefix(line)[content_indent:]) >= 4
-            items.append(content)
+            empty = not content
             if not depth:
                 own.append((end, content_indent))
             chain[depth:] = [content_indent]
@@ -749,11 +811,11 @@ def _scan_list(
             rest = content[offset:]
             bare = not RULE_RE.match(rest) and (end_marker := LIST_ITEM_RE.match(rest)) and is_blank(rest[end_marker.end():])
             innermost = offset + (item_content_column(rest) if bare else 0)
-        elif items and (
+        elif own and (
             # Into the content of an item still open: the list's (the item a
             # line is in is read from its lines, ``_parse_list``). Short of
             # it, only a lazy continuation line of an open paragraph.
-            (chain and indent_width(line) >= chain[0])
+            (chain and width >= chain[0])
             or ((quote.paragraph if quote is not None else open_paragraph) and (lazy_line or _is_lazy_line(line)))
         ):
             content = dedent(line, content_indent, expand=True) if indented else line.strip(" \t")
@@ -764,9 +826,9 @@ def _scan_list(
                 # it continues the paragraph, and starts no item.
                 content = " " * 4 + content.strip(" \t")
             elif (
-                quote is None and not (chain and indent_width(line) >= chain[0])
+                quote is None and not (chain and width >= chain[0])
                 and (
-                    indent_width(line) >= 4 or _delimiter_row(line) is not None
+                    width >= 4 or _delimiter_row(line) is not None
                     or SETEXT_UNDERLINE_RE.match(line)
                 )
             ):
@@ -785,7 +847,7 @@ def _scan_list(
                 within = dedent(line, chain[depth - 1], expand=True) if depth else line
                 if lazy_line or quote.continues(within):
                     if not lazy_line and not depth and (
-                        indent_width(line) >= 4 or _delimiter_row(line) is not None
+                        width >= 4 or _delimiter_row(line) is not None
                         or SETEXT_UNDERLINE_RE.match(line)
                     ):
                         # As a paragraph's lazy line above: four columns into
@@ -796,17 +858,7 @@ def _scan_list(
                     quote_lazy = True
                 else:
                     quote = None
-            # An item holding code or a block quote keeps its lines; other
-            # continuation lines join the item's text.
-            if (
-                FENCE_OPEN_RE.match(content)
-                or content.startswith(">")
-                or "\n" in items[-1]
-                or items[-1].startswith(">")
-            ):
-                items[-1] += "\n" + content
-            else:
-                items[-1] += " " + content.strip(" \t")
+            empty = False  # the line joins the item's text
         else:
             break
         if content.startswith(">") and not (marker and first_code):
@@ -819,12 +871,12 @@ def _scan_list(
         else:
             # An item's first line may open items nested on it (``- - ``````):
             # the fence is theirs.
-            body = content[nested_offset(content):] if marker else content
+            body = content[offset:] if marker else content
             opening = None if marker and first_code else FENCE_OPEN_RE.match(body)
             fence = opening.group("fence") if opening else None
             # Opened in the item's content, not by a line short of it that
             # only this parser reads into the item (``indented``).
-            fence_inside = marker is not None or indent_width(line) >= content_indent
+            fence_inside = marker is not None or width >= content_indent
             # So may raw HTML, which runs to its end or its item's (a lone
             # tag cannot interrupt the item's paragraph, CommonMark).
             opened = None if fence or (marker and first_code) else html_block_opening(
@@ -849,7 +901,7 @@ def _scan_list(
         # open makes it a heading, which ends it (CommonMark).
         underline = (
             not marker and was_open and quote is None and not was_table and not para_quote
-            and para_column <= indent_width(line) <= para_column + 3
+            and para_column <= width <= para_column + 3
             and SETEXT_UNDERLINE_RE.match(line.lstrip(" \t")) is not None
         )
         prose = lazy and quote is None and not code and not table and not underline
@@ -869,13 +921,13 @@ def _scan_list(
             # current item's first line when it reaches that one's content.
             if marker:
                 para_column = content_indent + offset
-            elif indent_width(line) >= content_indent + innermost:
+            elif width >= content_indent + innermost:
                 para_column = content_indent + innermost
             else:
                 para_column = chain[depth - 1] if depth else content_indent
             # A quote there (``- - > a``) holds it: a line without its ``>``
             # only lazily continues it.
-            para_quote = bool(marker) and content[nested_offset(content):].lstrip(" \t").startswith(">")
+            para_quote = bool(marker) and content[offset:].lstrip(" \t").startswith(">")
         # Only paragraph text can be a table's header row (GFM).
         previous, previous_code = (content, code) if open_paragraph else (None, False)
         end += 1
@@ -941,9 +993,13 @@ def _parse_list(
     items: list[ListItem] = []
     spans: list[_ItemSpan] = []
     starts = [first for first, _column in own] + [end]
+    # *text* by line, to hand each item its own lines'; filtering all of it
+    # for every item is quadratic in a list of items that each hold one.
+    text_lines = list(text)  # in ascending order: the scan reaches the lines in order
     for (first, column), stop in zip(own, starts[1:], strict=True):
         layout = _Layout()
-        content = _item_lines(lines[first:stop], column, {k - first: at for k, at in text.items() if first <= k < stop})
+        within = text_lines[bisect.bisect_left(text_lines, first):bisect.bisect_left(text_lines, stop)]
+        content = _item_lines(lines[first:stop], column, {k - first: text[k] for k in within})
         if depth >= MAX_LIST_DEPTH:
             joined = paragraph_text([part for part in content if not is_blank(part)])
             blocks = [Block(kind="paragraph", text=joined)] if joined else []
@@ -1173,13 +1229,33 @@ def _starts_interrupting_item(line: str) -> bool:
     )
 
 
+def _rule_from(content: str) -> Callable[[int], bool]:
+    """A test of whether *content* from a position on is a thematic break, as
+    ``RULE_RE.match(content[position:])``: it must agree with ``RULE_RE``, which
+    ``tests/test_list_oracles.py`` checks on random strings. Testing each rest of a line of
+    markers (``- - - - a``) with ``RULE_RE`` reads the rest of the line over
+    and over: a rest is a break when it is, from some point on, only blanks and
+    one character (``-``, ``*``, ``_``) at least three times, which is found
+    from the end once. As with ``RULE_RE``, a line ending may follow the last
+    of them."""
+    limit = len(content) - 1 if content.endswith("\n") else len(content)
+    end = len(content[:limit].rstrip(" \t"))
+    char = content[end - 1] if end else ""
+    start = len(content[:end].rstrip(char + " \t")) if char in ("-", "*", "_") else len(content) + 1
+
+    def is_rule(position: int) -> bool:
+        return position >= start and content.count(char, position, end) >= 3
+
+    return is_rule
+
+
 def _is_paragraph_text(content: str, *, nested: bool = False) -> bool:
     """True if *content*, a list item's text or one of its lines, is
     paragraph text rather than a block of its own: a heading, a thematic
     break, a nested list item, a fence, or an HTML block. *nested*: a nested
     item's text counts too (`1. item` opens that item's paragraph)."""
-    while nested and not RULE_RE.match(content) and (marker := LIST_ITEM_RE.match(content)):
-        content = content[marker.end():]
+    if nested:
+        content = content[_skip_markers(content):]
     return bool(content.strip(" \t")) and not (
         ATX_HEADING_RE.match(content) or RULE_RE.match(content) or LIST_ITEM_RE.match(content)
         or FENCE_OPEN_RE.match(content) or HTML_BLOCK_START_RE.match(content)
@@ -1238,15 +1314,18 @@ def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool =
     return end, 0
 
 
-# An ATX heading's closing sequence (CommonMark): ``#`` characters ending
-# the line, after a space or tab or as all of its text.
-_CLOSING_SEQUENCE_RE = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
-
-
 def _atx_text(text: str) -> str:
     """An ATX heading's text as CommonMark reads it, in a list item or a
-    quote: without the spaces around it and without a closing sequence."""
-    return _CLOSING_SEQUENCE_RE.sub("", text.strip(" \t")).strip(" \t")
+    quote: without the spaces around it and without a closing sequence, the
+    ``#`` characters ending the line after a space or tab or as all of its
+    text. (Found from the end: a regular expression for it, tried at every
+    space in a long run of them, is quadratic.) *text* is a line's, which holds
+    no line ending for the expression's ``$`` to stop before."""
+    text = text.strip(" \t")
+    body = text.rstrip("#")
+    if len(body) < len(text) and (not body or body[-1] in " \t"):
+        text = body
+    return text.strip(" \t")
 
 
 _Heading = tuple[str, Marker, int]  # title, marker, level
