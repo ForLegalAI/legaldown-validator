@@ -16,6 +16,7 @@ from functools import partial
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
+from ..markdown import find_all
 from ..models import Block, Document
 from ..positions import Locator
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
@@ -372,16 +373,28 @@ class _InsertionScan:
     def __init__(self, text: str, template: str, directives: list[Directive]) -> None:
         self.text = text
         self.template = template
-        self._newlines = _offsets(text, "\n")
+        self._directives = directives
+        self._count = len(directives)
+        self._newlines = find_all(text, "\n")
         self._directive_ends = {directive.end for directive in directives}
-        self._blanks = _offsets(template, " ", "\t")
-        self._combining = _offsets(template, *_COMBINING)
-        self._destination_starts = _offsets(template, "](")
-        self._closing_parentheses = _offsets(template, ")")
+        self._blanks = _merged(template, " ", "\t")
+        self._combining = _merged(template, *_COMBINING)
+        self._destination_starts = find_all(template, "](")  # it cannot overlap itself
+        self._closing_parentheses = find_all(template, ")")
         # Per line, which the insertions of a line share: where its content
         # begins, and what its link reference definition covers.
         self._content_starts: dict[int, int] = {}
         self._references: dict[int, int] = {}
+
+    def reads(self, text: str, template: str, directives: list[Directive]) -> bool:
+        """True if this scan was made from these arguments. The directives
+        are compared by identity: the list is the lexer's, and not changed."""
+        return (
+            self._directives is directives
+            and self._count == len(directives)
+            and self.text == text
+            and self.template == template
+        )
 
     def _line_content(self, line_start: int) -> int:
         """Where the content of the line at *line_start* begins: after its
@@ -456,9 +469,12 @@ class _InsertionScan:
         return None
 
 
-def _offsets(text: str, *needles: str) -> list[int]:
+def _merged(text: str, *needles: str) -> list[int]:
     """The offsets in *text* of each of *needles*, in order."""
-    return sorted(m.start() for m in re.finditer("|".join(map(re.escape, needles)), text))
+    return sorted(at for needle in needles for at in find_all(text, needle))
+
+
+_last_scan: _InsertionScan | None = None  # the last text insertion_boundary_problem read
 
 
 def insertion_boundary_problem(
@@ -467,8 +483,17 @@ def insertion_boundary_problem(
     """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in body
     *text* — is not kept apart from template text as §15.7.3 requires, or
     None. *directives* are all the directives lexed from *text*, and
-    *template* is ``template_text(text, directives)``."""
-    return _InsertionScan(text, template, directives).problem(insertion)
+    *template* is ``template_text(text, directives)``.
+
+    A text's insertions are checked one after another, so the index made for
+    one serves the next, when it is the same text (#94): checking each of a
+    thousand insertions would otherwise index the whole text a thousand
+    times. Only the last is kept."""
+    global _last_scan
+    scan = _last_scan
+    if scan is None or not scan.reads(text, template, directives):
+        scan = _last_scan = _InsertionScan(text, template, directives)
+    return scan.problem(insertion)
 
 
 # ── Inline choices (§15.5) ────────────────────────────────────────

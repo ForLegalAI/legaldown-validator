@@ -204,10 +204,10 @@ def test_strip_comments_is_sub(alphabet):
 
 def test_comment_end_is_the_match_at_a_position():
     for s in _random_strings(_COMMENT_ALPHABET, 4000, 24, seed=96):
-        last_close = s.rfind("-->")
+        closers = markdown.find_all(s, "-->", overlapping=True)
         for at in (i for i in range(len(s)) if s.startswith("<!--", i)):
             match = OLD_HTML_COMMENT_RE.match(s, at)
-            assert markdown.comment_end(s, at, last_close) == (match.end() if match else None), (s, at)
+            assert markdown.comment_end(s, at, closers) == (match.end() if match else None), (s, at)
 
 
 def test_is_comment_only_is_unchanged():
@@ -511,3 +511,45 @@ def test_free_identifiers_are_the_lowest_free_suffix(seed):
             other = rng.choice(bases)
             new_anchors.setdefault(other, []).append(presence)
             old_anchors.setdefault(other, []).append(presence)
+
+
+# ── Offsets ───────────────────────────────────────────────────────
+
+
+def test_find_all_is_repeated_find():
+    for s in _random_strings(list("}{a\n]()-"), 3000, 16, seed=991):
+        for needle in ("}}", "\n", "-->", "](", "--"):
+            for overlapping in (False, True):
+                expected, at = [], s.find(needle)
+                while at >= 0:
+                    expected.append(at)
+                    at = s.find(needle, at + (1 if overlapping else len(needle)))
+                assert markdown.find_all(s, needle, overlapping=overlapping) == expected
+    assert markdown.find_all("}}}", "}}") == [0]
+    assert markdown.find_all("}}}", "}}", overlapping=True) == [0, 1]
+
+
+def test_landmarks_answer_either_question_first():
+    """``close`` is asked before ``line_end`` in some orders: both lists are
+    found on first use of either."""
+    for s in _random_strings(list("}{a\n"), 1500, 14, seed=992):
+        for body in range(len(s) + 1):
+            line_end = s.find("\n", body)
+            line_end = len(s) if line_end < 0 else line_end
+            landmarks = directives_module._Landmarks(s)
+            assert landmarks.close(body, line_end) == s.find("}}", body, line_end), (s, body)
+            assert landmarks.line_end(body) == line_end, (s, body)
+
+
+def test_the_boundary_check_reuses_its_scan_for_the_same_text_only():
+    text = "a {{placeholder: a}} b {{placeholder: a}}"
+    lexed = lex(text)
+    template = mask_directives(text, lexed.directives)
+    first, second = lexed.directives
+    templates.insertion_boundary_problem(text, template, first, lexed.directives)
+    scan = templates._last_scan
+    templates.insertion_boundary_problem(text, template, second, lexed.directives)
+    assert templates._last_scan is scan  # the same text: one index
+    other = lex(text)
+    templates.insertion_boundary_problem(text, template, other.directives[0], other.directives)
+    assert templates._last_scan is not scan  # other directives: a new one

@@ -43,7 +43,7 @@ SYNTAX = [
     "collect_definitions", "DefinitionRef", "definition_lookup", "id_term",
     "find_definition_anchors", "DefinitionAnchor",
     "render_block", "render_item",
-    "FRONTMATTER_RE", "LINE_ENDING_RE", "HTML_COMMENT_RE", "FENCE_OPEN_RE",
+    "FRONTMATTER_RE", "LINE_ENDING_RE", "HTML_COMMENT_RE", "comment_spans", "strip_comments", "FENCE_OPEN_RE",
     "closes_fence", "fence_end", "dedent", "indent_width", "strip_text",
     "body_layout", "SourceLayout", "SectionSpan", "HeadingSpan", "BlockSpan", "ItemSpan",
 ]
@@ -75,6 +75,8 @@ IMPLEMENTATION = {
     "lex": "legaldown.directives",
     "FENCE_OPEN_RE": "legaldown.markdown",
     "HTML_COMMENT_RE": "legaldown.markdown",
+    "comment_spans": "legaldown.markdown",
+    "strip_comments": "legaldown.markdown",
     "LINE_ENDING_RE": "legaldown.markdown",
     "closes_fence": "legaldown.markdown",
     "dedent": "legaldown.markdown",

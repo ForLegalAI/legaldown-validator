@@ -41,9 +41,11 @@ from .markdown import (
     CodeContent,
     closes_fence,
     code_content,
+    comment_spans,
     dedent,
     fence_end,
     indent_width,
+    strip_comments,
     strip_text,
 )
 from .markers import MARKER_RE, Marker, format_marker, is_look_alike, parse_marker
@@ -109,6 +111,8 @@ __all__ = [
     "FRONTMATTER_RE",
     "LINE_ENDING_RE",
     "HTML_COMMENT_RE",
+    "comment_spans",
+    "strip_comments",
     "FENCE_OPEN_RE",
     "closes_fence",
     "fence_end",

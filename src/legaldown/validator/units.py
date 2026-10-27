@@ -10,14 +10,14 @@ sections and list items enclosing it.
 from __future__ import annotations
 
 import re
-from bisect import bisect_left, bisect_right
+from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from itertools import accumulate
 from typing import Any
 
 from ..directives import Directive, Lexed, is_escaped, lex
-from ..markdown import strip_comments
+from ..markdown import comment_end, find_all, strip_comments
 from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
 from ..models import Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
@@ -125,16 +125,8 @@ def blank_from(text: str) -> Callable[[int], bool]:
     ``text[p:]`` — ends at some *e*, and the text from *p* on is blank when
     the text from *e* is. It is judged right to left, with the end of each
     comment found by a bisect among the ``-->`` of the text."""
-    closers: list[int] = []
-    closer = text.find("-->")
-    while closer >= 0:
-        closers.append(closer)
-        closer = text.find("-->", closer + 1)
-    openers: list[int] = []
-    at = text.find("<!--")
-    while at >= 0:
-        openers.append(at)
-        at = text.find("<!--", at + 4)
+    closers = find_all(text, "-->", overlapping=True)
+    openers = find_all(text, "<!--")
 
     blank_at: dict[int, bool] = {}  # an offset past a comment: the rest is blank
     blank_comment: dict[int, bool] = {}  # an opener: the rest after its comment is blank
@@ -146,14 +138,7 @@ def blank_from(text: str) -> Callable[[int], bool]:
         return blank_at[offset]
 
     for opener in reversed(openers):
-        body = opener + 4
-        if text.startswith(">", body):
-            end: int | None = body + 1  # ``<!-->``
-        elif text.startswith("->", body):
-            end = body + 2  # ``<!--->``
-        else:
-            nearest = bisect_left(closers, body)
-            end = closers[nearest] + 3 if nearest < len(closers) else None  # None: unclosed
+        end = comment_end(text, opener, closers)
         if end is not None:
             blank_comment[opener] = rest_blank(end)
     return rest_blank

@@ -181,12 +181,12 @@ def test_the_lexer_indexes_the_text_once(monkeypatch):
     the backtick runs, the line ends and ``}}``, and the blanked view are each
     made once for the text, not searched or rebuilt for each token."""
     runs = _CountedFindall(monkeypatch, directives_module, "_BACKTICKS_RE")
-    finds = _Counter(monkeypatch, directives_module, "_find_all")
+    finds = _Counter(monkeypatch, directives_module, "find_all")
     blanks = _Counter(monkeypatch, directives_module, "_blank_spans")
     lexed = lex("`` x ` {{ref: a {{ref: \"b <!-- c --> `d` " * 3000)
     assert lexed.directives and lexed.literals
     assert runs.calls == 1
-    assert finds.calls == 2
+    assert finds.calls == 3  # the ``-->``, then the line ends and ``}}``
     assert blanks.calls == 1
 
 

@@ -18,7 +18,7 @@ from bisect import bisect_left
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from .markdown import FENCE_OPEN_RE, comment_end, fence_end
+from .markdown import FENCE_OPEN_RE, comment_end, fence_end, find_all
 
 # Named parameters each directive defines (§6, §7, §10, §12, §15.5). ``note`` is
 # defined for every field spec (§10.1). Placeholder ``currency`` and ``unit``
@@ -320,31 +320,26 @@ class _Landmarks:
 
     def __init__(self, text: str) -> None:
         self._text = text
-        self._line_ends: list[int] | None = None  # found at the first malformed directive
-        self._closers: list[int] = []
+        self._offsets: tuple[list[int], list[int]] | None = None  # found on first use
+
+    def _found(self) -> tuple[list[int], list[int]]:
+        """The offsets of the line breaks, and of each ``}}``, overlapping
+        ones too."""
+        if self._offsets is None:
+            self._offsets = (find_all(self._text, "\n"), find_all(self._text, "}}", overlapping=True))
+        return self._offsets
 
     def line_end(self, start: int) -> int:
         """The offset of the first line break from *start* on, or the text's end."""
-        if self._line_ends is None:
-            self._line_ends = _find_all(self._text, "\n")
-            self._closers = _find_all(self._text, "}}")
-        at = bisect_left(self._line_ends, start)
-        return self._line_ends[at] if at < len(self._line_ends) else len(self._text)
+        line_ends, _closers = self._found()
+        at = bisect_left(line_ends, start)
+        return line_ends[at] if at < len(line_ends) else len(self._text)
 
     def close(self, body: int, line_end: int) -> int:
-        """``text.find("}}", body, line_end)``; after ``line_end``."""
-        at = bisect_left(self._closers, body)
-        return self._closers[at] if at < len(self._closers) and self._closers[at] + 2 <= line_end else -1
-
-
-def _find_all(text: str, needle: str) -> list[int]:
-    """The offsets of *needle* in *text*, overlapping ones too."""
-    found: list[int] = []
-    at = text.find(needle)
-    while at >= 0:
-        found.append(at)
-        at = text.find(needle, at + 1)
-    return found
+        """``text.find("}}", body, line_end)``."""
+        _line_ends, closers = self._found()
+        at = bisect_left(closers, body)
+        return closers[at] if at < len(closers) and closers[at] + 2 <= line_end else -1
 
 
 def _malformed_end(text: str, start: int, body: int, landmarks: _Landmarks) -> int:
@@ -398,7 +393,7 @@ def lex(text: str) -> Lexed:
     # ``pos``, which no search looks at, and a backslash run that ends at
     # ``pos`` is cut short by the span's last character (a ``>`` or a
     # backtick), so ``is_escaped`` reads the same.
-    last_close = source.rfind("-->")  # a comment opening after it cannot close
+    closers = find_all(source, "-->", overlapping=True)  # where a comment can close
     backtick_runs: dict[int, list[int]] | None = None  # run length -> starts, at the first run
     landmarks = _Landmarks(source)
     while token := _INLINE_START_RE.search(source, pos):
@@ -407,7 +402,7 @@ def lex(text: str) -> Lexed:
             pos = start + 1
             continue
         if token.group(0) == "<!--":
-            end = comment_end(source, start, last_close)
+            end = comment_end(source, start, closers)
             if end is None:
                 pos = start + 4  # an unclosed comment is literal text
             else:

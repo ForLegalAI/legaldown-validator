@@ -9,6 +9,7 @@ starts or ends.
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
@@ -120,38 +121,48 @@ def split_lone_tag(text: str) -> str | None:
 
 # An HTML comment (CommonMark 0.31): ``<!-->``, ``<!--->``, or ``<!--``, text
 # not containing ``-->``, and ``-->``. The empty forms end at their own ``>``.
+# This is the definition; to scan text for comments, use comment_spans or
+# strip_comments below: with many unclosed ``<!--`` the regex is quadratic,
+# as each opener's ``.*?-->`` scans to the end of the text before it fails (#94).
 HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)
 
 
-# HTML_COMMENT_RE is quadratic on text with many unclosed ``<!--``: each
-# opener's ``.*?-->`` rescans to the end of the text before failing (#94).
-# These read a comment the way the regex does, but remember where the last
-# ``-->`` is, so that an opener after it fails without a scan, and find a
-# closer with ``str.find``, which a forward pass never repeats.
+def find_all(text: str, needle: str, *, overlapping: bool = False) -> list[int]:
+    """The offsets of *needle* in *text*, in order: those of ``str.find``
+    called again after each, from the end of the match, or with *overlapping*
+    from the next character."""
+    step = 1 if overlapping else len(needle)
+    found: list[int] = []
+    at = text.find(needle)
+    while at >= 0:
+        found.append(at)
+        at = text.find(needle, at + step)
+    return found
 
 
-def comment_end(text: str, start: int, last_close: int) -> int | None:
+def comment_end(text: str, start: int, closers: list[int]) -> int | None:
     """Where the comment that ``HTML_COMMENT_RE`` matches at *start* ends, or
-    None when it matches nothing there. *start* is at ``<!--``, and
-    *last_close* is ``text.rfind("-->")``."""
+    None when it matches nothing there. *start* is at ``<!--``, and *closers*
+    are the offsets of every ``-->`` in *text*, overlapping ones too
+    (``find_all(text, "-->", overlapping=True)``): the comment ends at the
+    first one from its body on, found by bisect, not by a scan."""
     body = start + 4
     if text.startswith(">", body):
         return body + 1  # ``<!-->``
     if text.startswith("->", body):
         return body + 2  # ``<!--->``
-    if last_close < body:
-        return None  # unclosed: it is literal text
-    return text.find("-->", body) + 3
+    nearest = bisect_left(closers, body)
+    return closers[nearest] + 3 if nearest < len(closers) else None  # None: unclosed, literal text
 
 
 def comment_spans(text: str) -> list[tuple[int, int]]:
     """The ``(start, end)`` of each comment in *text*, as
     ``HTML_COMMENT_RE.finditer`` finds them, in linear time."""
     spans: list[tuple[int, int]] = []
-    last_close = text.rfind("-->")
+    closers = find_all(text, "-->", overlapping=True)
     pos = 0
     while (start := text.find("<!--", pos)) >= 0:
-        end = comment_end(text, start, last_close)
+        end = comment_end(text, start, closers)
         if end is None:
             pos = start + 4
         else:
