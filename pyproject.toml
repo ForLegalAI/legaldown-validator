@@ -86,4 +86,5 @@ addopts = "-ra --strict-markers"
 pythonpath = ["src"]
 markers = [
     "conformance: Specification conformance (needs the LegalDown fixtures corpus)",
+    "scaling: Input-size stress tests (#94): counts of work, and generous time budgets",
 ]
