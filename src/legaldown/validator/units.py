@@ -17,7 +17,7 @@ from itertools import accumulate
 from typing import Any
 
 from ..directives import Directive, Lexed, is_escaped, lex
-from ..markdown import comment_end, find_all, strip_comments
+from ..markdown import comment_closers, comment_end, find_all, strip_comments
 from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
 from ..models import Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
@@ -125,7 +125,7 @@ def blank_from(text: str) -> Callable[[int], bool]:
     ``text[p:]`` — ends at some *e*, and the text from *p* on is blank when
     the text from *e* is. It is judged right to left, with the end of each
     comment found by a bisect among the ``-->`` of the text."""
-    closers = find_all(text, "-->", overlapping=True)
+    closers = comment_closers(text)
     openers = find_all(text, "<!--")
 
     blank_at: dict[int, bool] = {}  # an offset past a comment: the rest is blank

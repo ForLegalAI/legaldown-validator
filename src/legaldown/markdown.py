@@ -130,7 +130,9 @@ HTML_COMMENT_RE = re.compile(r"<!--(?:-?>|.*?-->)", re.DOTALL)
 def find_all(text: str, needle: str, *, overlapping: bool = False) -> list[int]:
     """The offsets of *needle* in *text*, in order: those of ``str.find``
     called again after each, from the end of the match, or with *overlapping*
-    from the next character."""
+    from the next character. *needle* is not empty."""
+    if not needle:
+        raise ValueError("find_all needs a needle")
     step = 1 if overlapping else len(needle)
     found: list[int] = []
     at = text.find(needle)
@@ -140,12 +142,16 @@ def find_all(text: str, needle: str, *, overlapping: bool = False) -> list[int]:
     return found
 
 
+def comment_closers(text: str) -> list[int]:
+    """The offsets of each ``-->`` in *text*, in order (it cannot overlap itself)."""
+    return find_all(text, "-->")
+
+
 def comment_end(text: str, start: int, closers: list[int]) -> int | None:
     """Where the comment that ``HTML_COMMENT_RE`` matches at *start* ends, or
     None when it matches nothing there. *start* is at ``<!--``, and *closers*
-    are the offsets of every ``-->`` in *text*, overlapping ones too
-    (``find_all(text, "-->", overlapping=True)``): the comment ends at the
-    first one from its body on, found by bisect, not by a scan."""
+    are ``comment_closers(text)``: the comment ends at the first one from its
+    body on, found by bisect, not by a scan."""
     body = start + 4
     if text.startswith(">", body):
         return body + 1  # ``<!-->``
@@ -159,7 +165,7 @@ def comment_spans(text: str) -> list[tuple[int, int]]:
     """The ``(start, end)`` of each comment in *text*, as
     ``HTML_COMMENT_RE.finditer`` finds them, in linear time."""
     spans: list[tuple[int, int]] = []
-    closers = find_all(text, "-->", overlapping=True)
+    closers = comment_closers(text)
     pos = 0
     while (start := text.find("<!--", pos)) >= 0:
         end = comment_end(text, start, closers)

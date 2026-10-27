@@ -18,7 +18,7 @@ from bisect import bisect_left
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from .markdown import FENCE_OPEN_RE, comment_end, fence_end, find_all
+from .markdown import FENCE_OPEN_RE, comment_closers, comment_end, fence_end, find_all
 
 # Named parameters each directive defines (§6, §7, §10, §12, §15.5). ``note`` is
 # defined for every field spec (§10.1). Placeholder ``currency`` and ``unit``
@@ -393,7 +393,7 @@ def lex(text: str) -> Lexed:
     # ``pos``, which no search looks at, and a backslash run that ends at
     # ``pos`` is cut short by the span's last character (a ``>`` or a
     # backtick), so ``is_escaped`` reads the same.
-    closers = find_all(source, "-->", overlapping=True)  # where a comment can close
+    closers: list[int] | None = None  # where a comment can close, at the first opener
     backtick_runs: dict[int, list[int]] | None = None  # run length -> starts, at the first run
     landmarks = _Landmarks(source)
     while token := _INLINE_START_RE.search(source, pos):
@@ -402,6 +402,8 @@ def lex(text: str) -> Lexed:
             pos = start + 1
             continue
         if token.group(0) == "<!--":
+            if closers is None:
+                closers = comment_closers(source)
             end = comment_end(source, start, closers)
             if end is None:
                 pos = start + 4  # an unclosed comment is literal text

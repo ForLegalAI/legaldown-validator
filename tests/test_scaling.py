@@ -182,11 +182,13 @@ def test_the_lexer_indexes_the_text_once(monkeypatch):
     made once for the text, not searched or rebuilt for each token."""
     runs = _CountedFindall(monkeypatch, directives_module, "_BACKTICKS_RE")
     finds = _Counter(monkeypatch, directives_module, "find_all")
+    closers = _Counter(monkeypatch, directives_module, "comment_closers")
     blanks = _Counter(monkeypatch, directives_module, "_blank_spans")
-    lexed = lex("`` x ` {{ref: a {{ref: \"b <!-- c --> `d` " * 3000)
+    lexed = lex("`` x ` <!-- c --> {{ref: a {{ref: \"b `d` " * 3000)
     assert lexed.directives and lexed.literals
     assert runs.calls == 1
-    assert finds.calls == 3  # the ``-->``, then the line ends and ``}}``
+    assert finds.calls == 2  # the line ends, and ``}}``
+    assert closers.calls == 1  # the ``-->``, at the first comment
     assert blanks.calls == 1
 
 
