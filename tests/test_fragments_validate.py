@@ -660,7 +660,7 @@ def test_a_message_says_an_attachment_file_not_a_attachment_file():
     front = _TEMPLATE_FRONT.replace("---\n\n", "attachments:\n  - id: s\n    title: S\n    file: s.lgd\n---\n\n")
     problems = Template(front + "# A {#a}\n\nSee {{attach: s}}.\n", resolve={"s.lgd": source}.get).problems
     assert problems and all("a attachment" not in d.message for d in problems)
-    assert any("The attachment file 's.lgd'" in d.message for d in problems)
+    assert any(d.message.startswith("The attachment file ") and d.file == "s.lgd" for d in problems)
 
 
 def test_assembly_refuses_a_nested_include_of_a_plain_document_at_its_line_in_the_fragment():
@@ -872,3 +872,58 @@ def test_relative_path_problem_says_why_a_path_is_refused():
     }
     assert {path: relative_path_problem(path) for path in cases} == cases
     assert all((relative_path(path) is None) == (problem is not None) for path, problem in cases.items())
+
+
+# ── An include paragraph that names no file is judged the same everywhere (#35 review) ─────
+
+def test_an_include_paragraph_that_names_no_file_is_missing_in_validate_and_in_assembly():
+    body = "# A {#a}\n\nIntro.\n\n{{include:}}\n"
+    for front in (_FRONT, _TEMPLATE_FRONT):
+        text = front + body
+        line = _at(text, "{{include:}}")
+        result, loader = _run(text)
+        assert loader.asked == []  # no file to ask for
+        assert _found(result) == [("include-file-missing", "main.lgd", line)]
+        assert "names no file" in result.diagnostics[-1].message
+        # ... and says nothing of it when nothing is read (parse without a path / resolver).
+        assert _found(validate(parse(text, filename="main.lgd"))) == []
+    # Assembly refuses the template for it, at the same line, saying the same.
+    problems = Template(_TEMPLATE_FRONT + body, resolve=lambda _path: None).problems
+    assert [(d.rule, d.file, d.line) for d in problems] == [("include-file-missing", "", _at(_TEMPLATE_FRONT + body, "{{include:}}"))]
+    assert "names no file" in problems[0].message and "'.'" not in problems[0].message
+
+
+def test_an_include_paragraph_that_names_no_file_in_a_plain_fragment_is_refused_by_assembly_alone():
+    part = "## P {#p}\n\nText.\n\n{{include:}}\n"
+    # Nested includes are allowed outside a template and not followed (§12.2): validate says nothing.
+    result, _ = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part})
+    assert _found(result) == []
+    template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": part}.get)
+    assert [(d.rule, d.file, d.line) for d in template.problems] == [("include-file-missing", "part.lgd", 5)]
+
+
+def test_an_include_that_names_no_file_in_a_templates_fragment_is_a_nested_include():
+    part = "## P {#p}\n\nText.\n\n{{include:}}\n\nSee {{include:}} inline.\n"
+    main = _TEMPLATE_FRONT + "# A {#a}\n\n{{include: part.lgd}}\n"
+    result, _ = _run(main, {"part.lgd": part})
+    expected = [(_TFR, "part.lgd", 5), (_TFR, "part.lgd", 7)]
+    assert [(d.rule, d.file, d.line) for d in result.diagnostics if d.file] == expected
+    template = Template(main, resolve={"part.lgd": part}.get)
+    assert [(d.rule, d.file, d.line) for d in template.problems] == expected
+    assert all("holds '{{include:}}'" in d.message for d in template.problems)
+
+
+def test_a_file_reached_through_a_link_is_one_target_and_a_fragment_finding_does_not_name_its_path(tmp_path, capsys):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.lgd").write_text(_FRONT + _SCOPE + "{{include: sub/p.lgd}}\n", encoding="utf-8")
+    (tmp_path / "sub" / "p.lgd").write_text("# H {#h}\n", encoding="utf-8")
+    link = tmp_path / "link.lgd"
+    try:
+        link.symlink_to(tmp_path / "a.lgd")
+    except OSError:  # no links here
+        pytest.skip("cannot make a symbolic link")
+    assert main(["validate", "--format", "json", str(tmp_path / "a.lgd"), str(link)]) == EXIT_DIAGNOSTICS
+    records = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert [d["rule"] for d in records].count("include-has-h1") == 1
+    # The file names the fragment; the message does not (it would differ from each directory).
+    assert all("p.lgd" not in d["message"] for d in records if d["rule"] == "include-has-h1")

@@ -125,11 +125,11 @@ def noun(kind: FragmentKind, article: Literal["a", "the", ""] = "") -> str:
     return f"the {name}" if article == "the" else name
 
 
-def _subject(kind: FragmentKind, path: str) -> str:
-    """How a message names the file: ``The fragment 'part.lgd'``; for one validated
-    on its own, which has no name here, ``The fragment``."""
-    name = noun(kind, "the").capitalize()
-    return f"{name} '{path}'" if path else name
+def _subject(kind: FragmentKind) -> str:
+    """How a message names the file: ``The fragment``. Not by its path: ``Diagnostic.file``
+    names it, and the path from each including document's directory would make the same
+    finding read differently from two documents in two directories."""
+    return noun(kind, "the").capitalize()
 
 
 def _shape(document: Document, where: Locator) -> tuple[bool, list[int]]:
@@ -142,14 +142,14 @@ def _shape(document: Document, where: Locator) -> tuple[bool, list[int]]:
     return has_frontmatter, [index for index, section in enumerate(document.sections) if section.level == 1]
 
 
-def shape_findings(document: Document, where: Locator, kind: FragmentKind, *, path: str = "") -> list[Finding]:
+def shape_findings(document: Document, where: Locator, kind: FragmentKind) -> list[Finding]:
     """What §12.2 and §12.4 require of a file's own text: no frontmatter, which
     the including document supplies, and no level-1 heading, which it writes
     around the file (include-has-frontmatter, include-has-h1, §16.11;
     attachment-has-frontmatter, attachment-has-h1, §16.10, which are the same
     two checks under the other name). *document* is the file as given, with the
     frontmatter it wrongly has; *where* locates its parts."""
-    subject = _subject(kind, path)
+    subject = _subject(kind)
     found = []
     has_frontmatter, headings = _shape(document, where)
     if has_frontmatter:
@@ -182,7 +182,6 @@ def content_findings(
     markers: list[FoundMarker],
     kind: FragmentKind,
     *,
-    path: str = "",
     noted: bool = False,
 ) -> list[Finding]:
     """What §15.3 requires of a file a *template* includes or attaches
@@ -197,7 +196,7 @@ def content_findings(
     *markers* its ``find_markers``. *noted*: the caller's own
     ``check_template_body(template=True)`` has reported the includes in drafting
     notes already (``validate(fragment=True)``), so they are not reported twice."""
-    subject = _subject(kind, path)
+    subject = _subject(kind)
     found = []
     if kind == "include":
         for index, section in enumerate(document.sections):
@@ -259,7 +258,7 @@ def fragment_findings(
     ``validate(fragment=True)`` (``insertion-boundary`` and the like): this is a
     check of what the file may hold, not a validation of it."""
     document = fragment.document
-    found = shape_findings(document, fragment.where, kind, path=fragment.path) if shape else []
+    found = shape_findings(document, fragment.where, kind) if shape else []
     lex_fragment = lex_fragment or cache(lex)  # each text lexed once for the scan and the markers
     if template:
         # The throwaway recorder takes what the body check says of the file for itself
@@ -268,7 +267,7 @@ def fragment_findings(
         # stop the assembly of a template through a fragment's own finding.
         scan = check_template_body(document, lex_fragment, _Recorder(), template=False, where=fragment.where)
         found += content_findings(
-            document, fragment.where, scan, find_markers(document, lex_fragment), kind, path=fragment.path
+            document, fragment.where, scan, find_markers(document, lex_fragment), kind
         )
     return found
 
@@ -432,6 +431,19 @@ def check_includes(
         if not include.paragraph:
             continue
         if include.at in judged:
+            unread.add(include.section)
+            continue
+        if not include.path:
+            # ``{{include:}}``: a paragraph that names no file replaces nothing, and assembly
+            # refuses the template for it (§12.2). Said when files can be read, as for a file that is
+            # not there.
+            if files is not None:
+                result.error(
+                    "include-file-missing",
+                    f"'{include.source}' names no file: an include paragraph names the LegalDown file "
+                    f"it takes in (§12.2).",
+                    line=include.line,
+                )
             unread.add(include.section)
             continue
         if not include.path.endswith(LEGALDOWN_EXTENSIONS):

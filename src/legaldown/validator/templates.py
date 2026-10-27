@@ -565,7 +565,8 @@ _INSERTIONS = ("placeholder", "choose")
 class IncludeDirective:
     """An ``{{include:}}`` in a document's body (§12.2), wherever it is."""
     #: The path as the document writes it, and normalised (``posixpath.normpath``):
-    #: the key assembly and the validator read a fragment by.
+    #: the key assembly and the validator read a fragment by. Both "" for an include that
+    #: names no file.
     written: str
     path: str
     #: The directive as written (``{{include: part.lgd}}``).
@@ -675,10 +676,14 @@ def check_template_body(
                         f"with the definition (§15.6).",
                         line=line,
                     )
-                if directive.name == "include" and directive.positional:
+                # One that names no file (``{{include:}}``) is recorded too, with the path "": an
+                # include paragraph of it is refused as missing, and in a template it is a nested
+                # include as any other, wherever it is (§15.3).
+                if directive.name == "include":
                     includes.append(IncludeDirective(
-                        directive.positional, posixpath.normpath(directive.positional), directive.source, line,
-                        block_section, block_index, index, directive.start, in_note, only is directive,
+                        directive.positional or "", posixpath.normpath(directive.positional) if directive.positional else "",
+                        directive.source, line, block_section, block_index, index, directive.start, in_note,
+                        only is directive,
                     ))
                     if in_note and template:
                         result.error(
@@ -709,7 +714,7 @@ def check_template_body(
                             line=find(block_section, block_index, directive.source, index, directive.start),
                         )
     if template:
-        _check_fragments(document, [(i.path, i.line) for i in includes if not i.in_note], result, where)
+        _check_fragments(document, [(i.path, i.line) for i in includes if i.path and not i.in_note], result, where)
     return BodyScan(all_notes, includes)
 
 

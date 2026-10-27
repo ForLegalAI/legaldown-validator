@@ -124,18 +124,23 @@ def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
     print(f"\n{summary}" if diagnostics else "No issues found.", file=sys.stderr)
 
 
+def _same(path: str | os.PathLike[str]) -> str:
+    """A file by what it is, not how it is spelt: the real path (a link, a ``.``, a ``..`` and a
+    relative spelling resolved), in the case the file system compares by."""
+    return os.path.normcase(os.path.realpath(path))
+
+
 def _own(d: dict, target: str) -> bool:
     """Whether finding *d* is in the file of the target that produced it, and not in a
     fragment it includes."""
-    return os.path.abspath(d["file"]) == os.path.abspath(target)
+    return _same(d["file"]) == _same(target)
 
 
 def _identity(d: dict) -> tuple[Any, ...]:
-    """What makes two findings one: the same file (by its absolute path, however it is
-    spelt), line and rule. Not the message: it names the fragment from the including
-    document's directory, so the same finding reached from two directories reads
-    differently."""
-    return (os.path.abspath(d["file"]), d.get("line"), d["rule"])
+    """What makes two findings one: the same file (``_same``), line, rule and message. The
+    message of a finding in a fragment does not name the fragment by a path (the file does),
+    so the same finding reached from two directories reads the same."""
+    return (_same(d["file"]), d.get("line"), d["rule"], d["message"])
 
 
 def _run_validate(args: argparse.Namespace) -> int:
@@ -158,9 +163,9 @@ def _run_validate(args: argparse.Namespace) -> int:
         for target in targets:
             # A file named twice, or by a directory and by its own path, is one target: validated
             # and reported once, at its first place.
-            if os.path.abspath(target) in reached:
+            if _same(target) in reached:
                 continue
-            reached.add(os.path.abspath(target))
+            reached.add(_same(target))
             diagnostics, failure = _validate_path(
                 target,
                 final=args.final,
@@ -176,10 +181,10 @@ def _run_validate(args: argparse.Namespace) -> int:
 
     # A fragment several of the documents include is found wrong once, not once for each
     # (#35): across all the targets of the run, a finding in a file other than the one that
-    # produced it is printed and counted once per identical (file, line, rule), with the
-    # message of the first. The findings the targets have in themselves are seen first, so a
-    # fragment that is also a target is not reported twice whatever the order of the
-    # arguments; those are never collapsed: two alike in one document are two findings.
+    # produced it is printed and counted once per identical (file, line, rule, message). The
+    # findings the targets have in themselves are seen first, so a fragment that is also a
+    # target is not reported twice whatever the order of the arguments; those are never
+    # collapsed: two alike in one document are two findings.
     seen = {_identity(d) for target, found in reports for d in found if _own(d, target)}
     for target, found in reports:
         for d in found:

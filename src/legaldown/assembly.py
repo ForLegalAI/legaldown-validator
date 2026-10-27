@@ -81,7 +81,7 @@ from .validator.templates import (
     is_drafting_note,
     question_type,
 )
-from .validator.units import find_markers, include_paragraph, own_presence
+from .validator.units import block_include, find_markers, own_presence
 
 __all__ = [
     "frontmatter_diagnostic",
@@ -579,12 +579,13 @@ def _read_paragraph(
                                   line, marker.source))
     if block.kind != "paragraph":
         return
-    # The validator's own reading of an include paragraph, so that both agree (#35).
-    include = include_paragraph(block.text, lex(block.text))
+    # The validator's own reading of an include paragraph, of the same text, so that both agree
+    # (#35). One that names no file (``{{include:}}``) has the path "", refused in ``_read_files``.
+    include = block_include(block)
     if include is not None:
-        # An include that names no path (``{{include:}}``) is the path "": a file that cannot be
-        # asked for, which is refused as missing, not a crash (#35).
-        source.includes.append(_Include(span.start, span.end, posixpath.normpath(include.positional or "")))
+        source.includes.append(
+            _Include(span.start, span.end, posixpath.normpath(include.positional) if include.positional else "")
+        )
 
 
 def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:
@@ -902,11 +903,20 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     """Read every include fragment and LegalDown attachment file — the absent
     ones too: their placeholders are the template's (answer-unknown) and their
     headings take part in identifier generation (step 7)."""
-    wanted: list[tuple[str, FragmentKind]] = [(include.path, "include") for include in main.includes]
+    wanted: list[tuple[str, FragmentKind]] = [(include.path, "include") for include in main.includes if include.path]
     items = front.items if front else []
     wanted += [(item.file, "attachment") for item in items if item.file]
     subs: dict[str, _Source] = {}
-    problems: list[Diagnostic] = []
+    # An include paragraph that names no file, at its line (the validator's include-file-missing).
+    problems: list[Diagnostic] = [
+        Diagnostic(
+            "include-file-missing", "error",
+            "'{{include:}}' names no file: an include paragraph names the LegalDown file it takes in "
+            "(§12.2); the template is not assembled.",
+            line=include.start + 1 + (front.text().count("\n") if front else 0),  # the file's, not the body's
+        )
+        for include in main.includes if not include.path
+    ]
     unreadable: set[str] = set()  # reported once, however often it is referenced
     for path, kind in wanted:
         relative = relative_path(path)
@@ -964,7 +974,7 @@ def _file_problems(path: str, kind: FragmentKind, document: Document, template: 
         problems += [
             Diagnostic(
                 "include-file-missing", "error",
-                f"{noun(kind, 'the').capitalize()} '{path}' holds '{source}'; an include in an included "
+                f"{noun(kind, 'the').capitalize()} holds '{source}'; an include in an included "
                 f"or attached file is not assembled, so the template is not assembled.",
                 line=line, file=path,
             )

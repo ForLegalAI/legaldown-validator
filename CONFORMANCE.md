@@ -436,10 +436,16 @@ Decisions the specification leaves open:
   quoting the directive as written.
 - **Several documents, one fragment.** `legaldown validate a.lgd b.lgd`, where both include `part.lgd`,
   reports a finding in `part.lgd` once, in the output and in the counts: findings in a file other than
-  the target's, with the same file (by absolute path), line and rule as another's, are one, in any order
-  of the arguments, and print the first message (it names the file from the including document's
-  directory). A target's own findings are never collapsed, and a file reached twice as a target (named
-  twice, or by a directory and by itself) is validated once.
+  the target's, with the same file (the real path, however spelt), line, rule and message as another
+  target's, are one, in any order of the arguments. A finding in a fragment does not name the fragment
+  in its message (`Diagnostic.file` does), so it reads the same from every directory. A target's own
+  findings are never collapsed, and a file reached twice as a target (twice, through a link, or by a
+  directory and by itself) is validated once.
+- **An include that names no file.** An include paragraph `{{include:}}` is `include-file-missing`
+  ("names no file") at its line when the validation can read files, and assembly refuses the template
+  for it at the same line. In a template's fragment any `{{include:}}` is `template-fragment-invalid`,
+  as one that names a file; in a plain fragment it is allowed (§12.2) and not followed, and assembly
+  refuses it as it does any nested include.
 - **Silence.** An attachment file that is not there is not reported (`attachment-file-missing` is
   not implemented). The Warning that §17.5 asks for a check that is skipped, because no file could be
   read, is separate work.

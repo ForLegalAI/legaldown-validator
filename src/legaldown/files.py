@@ -67,21 +67,26 @@ def leaves_root(path: str, depth: int) -> bool:
     return False
 
 
-def relative_path_problem(path: str) -> Literal["leads-out", "invalid"] | None:
-    """Why ``relative_path`` refuses *path*, the one place that holds its rules:
-    ``"leads-out"`` when it is a relative path that leads out of the document's
-    directory (``../x``, §2.3), which is valid as a path though not one a ``LoadFile``
-    is asked for; ``"invalid"`` when it is none (empty, absolute, with a URI scheme or
-    a drive letter, a backslash or a null byte, or the directory itself); None when it
-    is a path to read."""
+def _check_relative(path: str) -> tuple[str, Literal["leads-out", "invalid"] | None]:
+    """The rules ``relative_path`` and ``relative_path_problem`` share, held once: *path*
+    normalised (empty when it is none, and not worth normalising) and what is wrong with it."""
     if not path or "\\" in path or "\0" in path or is_absolute_reference(path):
-        return "invalid"
+        return "", "invalid"
     normalized = posixpath.normpath(path)
     if normalized == ".":
-        return "invalid"
+        return normalized, "invalid"
     if normalized == ".." or normalized.startswith("../"):
-        return "leads-out"
-    return None
+        return normalized, "leads-out"
+    return normalized, None
+
+
+def relative_path_problem(path: str) -> Literal["leads-out", "invalid"] | None:
+    """Why ``relative_path`` refuses *path*: ``"leads-out"`` when it is a relative path that
+    leads out of the document's directory (``../x``, §2.3), which is valid as a path though
+    not one a ``LoadFile`` is asked for; ``"invalid"`` when it is none (empty, absolute,
+    with a URI scheme or a drive letter, a backslash or a null byte, or the directory
+    itself); None when it is a path to read."""
+    return _check_relative(path)[1]
 
 
 def relative_path(path: str) -> str | None:
@@ -91,7 +96,8 @@ def relative_path(path: str) -> str | None:
     a backslash or a null byte, or leading out of the directory
     (``relative_path_problem`` says which). A ``LoadFile`` is asked for these paths
     and no others."""
-    return None if relative_path_problem(path) else posixpath.normpath(path)
+    normalized, problem = _check_relative(path)
+    return None if problem else normalized
 
 
 def file_loader(base: str | os.PathLike[str]) -> LoadFile:

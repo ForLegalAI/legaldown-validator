@@ -176,19 +176,26 @@ def paragraph_include(block: Block, text: str, lexed: Lexed) -> Directive | None
     return include_paragraph(text, lexed) if block.kind == "paragraph" else None
 
 
+def block_include(block: Block, lex_fragment: Callable[[str], Lexed] = lex) -> Directive | None:
+    """The ``{{include:}}`` of *block* if it is an include paragraph (``paragraph_include``),
+    read from its first text fragment, which is what the validator and assembly both
+    read. The text is lexed only if it can hold an include; a block with no text fragment
+    (one built in code) holds none."""
+    from ..definitions import text_fragments  # definitions -> validator.helpers -> validator: a cycle at import
+
+    texts = text_fragments(block)
+    if not texts or "{{include" not in texts[0]:
+        return None
+    return paragraph_include(block, texts[0], lex_fragment(texts[0]))
+
+
 def iter_include_paragraphs(
     document: Document, lex_fragment: Callable[[str], Lexed] = lex
 ) -> Iterator[tuple[int | None, int, Directive]]:
     """The include paragraphs of *document*, in order, each as (section, block, directive):
-    a light walk that lexes only the first text fragment of each paragraph. A block with
-    no text fragment (one built in code) has none."""
-    from ..definitions import text_fragments  # definitions -> validator.helpers -> validator: a cycle at import
-
+    a light walk that lexes only the first text fragment of a paragraph that can hold one."""
     for section, index, block in document.iter_indexed_blocks():
-        if block.kind != "paragraph":
-            continue
-        texts = text_fragments(block)
-        directive = paragraph_include(block, texts[0], lex_fragment(texts[0])) if texts else None
+        directive = block_include(block, lex_fragment)
         if directive is not None:
             yield section, index, directive
 
