@@ -13,6 +13,7 @@ from bisect import bisect_left
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
+
     from .models import Block
 
 # A fenced code block opens with three or more backticks or tildes, indented
@@ -249,13 +250,7 @@ def paragraph_text(lines: list[str]) -> str:
 
 def indent_width(line: str) -> int:
     """Columns of leading whitespace, a tab counting to the next tab stop."""
-    lead = line[: len(line) - len(line.lstrip(" \t"))]
-    if "\t" not in lead:
-        return len(lead)
-    column = 0
-    for char in lead:
-        column += 1 if char == " " else _TAB - column % _TAB
-    return column
+    return advance_column(0, line[: len(line) - len(line.lstrip(" \t"))])
 
 
 # A list item's marker (CommonMark): ``-``, ``*``, or ``+`` for an unordered
@@ -272,11 +267,14 @@ LIST_ITEM_PATTERN = (
 _MARKER_AT_RE = re.compile(LIST_ITEM_PATTERN)
 
 
-def _advance(column: int, blanks: str) -> int:
-    """The column reached from *column* over *blanks*, spaces and tabs, a tab
-    counting to the next tab stop."""
-    for char in blanks:
-        column += 1 if char == " " else _TAB - column % _TAB
+def advance_column(column: int, text: str) -> int:
+    """The column reached from *column* over *text*: a tab counts to the next
+    tab stop, any other character one column. The one place tab stops are
+    counted."""
+    if "\t" not in text:
+        return column + len(text)
+    for char in text:
+        column += _TAB - column % _TAB if char == "\t" else 1
     return column
 
 
@@ -313,16 +311,15 @@ def item_marker_at(text: str, position: int = 0, column: int = 0) -> ItemMarker 
     found = _MARKER_AT_RE.match(text, position)
     if found is None:
         return None
-    _, (_, lead_end), (_, marker_end), _, _, _, (gap_start, _) = found.regs
-    end = found.end()
+    lead_end, marker_end, gap_start, end = found.end("lead"), found.end("marker"), found.start("gap"), found.end()
     if text.find("\t", position, end) < 0:
         marker_column = column + lead_end - position
         after = marker_column + marker_end - lead_end
         end_column = after + end - marker_end
     else:
-        marker_column = _advance(column, text[position:lead_end])
+        marker_column = advance_column(column, text[position:lead_end])
         after = marker_column + marker_end - lead_end
-        end_column = _advance(after, text[marker_end:end])
+        end_column = advance_column(after, text[marker_end:end])
     gap = end_column - after
     indent = marker_column - column
     lead = lead_end - position
@@ -371,15 +368,12 @@ def dedent(line: str, columns: int, *, expand: bool = False) -> str:
     differently once the item's marker is written another width."""
     column = index = 0
     while index < len(line) and line[index] in " \t" and column < columns:
-        column += 1 if line[index] == " " else _TAB - column % _TAB
+        column = advance_column(column, line[index])
         index += 1
     rest = line[index:]
     lead = len(rest) - len(rest.lstrip(" \t"))
     if expand and "\t" in rest[:lead]:
-        end = column
-        for char in rest[:lead]:
-            end += 1 if char == " " else _TAB - end % _TAB
-        return " " * (end - columns) + rest[lead:]
+        return " " * (advance_column(column, rest[:lead]) - columns) + rest[lead:]
     return " " * max(column - columns, 0) + rest
 
 

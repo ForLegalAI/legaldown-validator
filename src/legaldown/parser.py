@@ -446,10 +446,18 @@ class _Walks:
     """What the walks of a line's markers found, for the text the next level of
     nesting will walk. A line of items nested on it (``- - - - a``) is read at
     each level of list nesting, each time with its first marker gone: the walk
-    of the next level is the rest of this one's, which is told here, by the
-    text it will walk, so that a level reads its own marker and not the line's.
-    An entry is used once. (Without it, a line of twenty thousand markers took
-    sixty-four walks of them.)"""
+    of the next level is the rest of this one's, which is told here, so that a
+    level reads its own marker and not the line's. (Without it, a line of twenty
+    thousand markers took sixty-four walks of them.)
+
+    The protocol: a walk of the text *t* that went through its first marker
+    puts, under the key *t* without that marker, what the walk of that text
+    will find; the walk of a text first asks for its own key and takes the
+    entry out, so that an entry is used once. The key is the exact text, so an
+    entry answers only the walk of that text, whatever level asks. The walk is
+    a function of the text alone, and a text that holds a tab is never given an
+    entry, as the columns of a tab depend on where the text starts. So a miss
+    only costs the walk that was spared, and a hit is the walk's own result."""
 
     __slots__ = ("nested", "skipped")
 
@@ -475,7 +483,7 @@ class _Walks:
         if found is None:
             found = _skip_markers(content)
         position, code = found
-        if position:
+        if position and "\t" not in content:
             first = item_marker_end(content)  # which the walk went through
             if first is not None and position > first:
                 self.skipped[content[first:]] = (position - first, code)
