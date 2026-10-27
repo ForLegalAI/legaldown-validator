@@ -363,10 +363,7 @@ def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
                   f"(please report this)", file=sys.stderr)
             return EXIT_ERROR
     for d in result.diagnostics:
-        # A diagnostic of a fragment or attachment file names it, beside the template.
-        name = Path(template_path).parent / d.file if d.file else template_path
-        where = f"{name}:{d.line}" if d.line else f"{name}"
-        print(f"{where}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
+        print(f"{_location(diagnostic_dict(d), str(template_path))}{d.level}: [{d.rule}] {d.message}", file=sys.stderr)
     if not result.ok:
         if not args.interactive and any(d.rule == "answer-missing" for d in result.diagnostics):
             print("run with -i in a terminal to be asked for them, or give them with --answers", file=sys.stderr)
@@ -434,10 +431,7 @@ def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict
 
 def _location(d: dict, template: str) -> str:
     """Where a problem or diagnostic of *template* is, as ``assemble`` shows it:
-    the template, or the fragment or attachment file beside it, and the line;
-    nothing for one that has neither."""
-    if not d["file"] and not d["line"]:
-        return ""
+    the template, or the fragment or attachment file beside it, and the line."""
     name = str(Path(template).parent / d["file"]) if d["file"] else template
     return f"{name}:{d['line']}: " if d["line"] else f"{name}: "
 
@@ -482,8 +476,7 @@ def _run_questions(args: argparse.Namespace) -> int:
                           errors="backslashreplace")
         else:
             for d in problems:
-                where = f"{args.template}:{d['line']}" if d["line"] else args.template
-                print(f"{where}: {d['level']}: [{d['rule']}] {d['message']}", file=sys.stderr)
+                print(f"{_location(d, args.template)}{d['level']}: [{d['rule']}] {d['message']}", file=sys.stderr)
         return EXIT_DIAGNOSTICS
     try:
         form = template.form(template.coerce(answers))

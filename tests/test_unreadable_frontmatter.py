@@ -610,7 +610,49 @@ def test_the_text_of_questions_places_a_problem_or_a_diagnostic_as_assemble_does
         f"problem: {template}:4: [a] m",
         f"problem: {tmp_path / 'sub/f.lgd'}:2: [b] m",
         f"problem: {tmp_path / 'f.lgd'}: [c] m",
-        "problem: [d] m",
+        f"problem: {template}: [d] m",
         f"error: {template}:7: [e] m",
-        "error: [f] m",
+        f"error: {template}: [f] m",
     ]
+
+
+def test_nesting_too_deep_to_read_is_where_it_got_too_deep():
+    # The reader gives no mark for it: the innermost collection open when it gave up. A nesting on one
+    # line, as it is usually written, is the line of the key holding it.
+    for depth in (3000, 1500):
+        source = f"---\ntitle: T\nnest: {'[' * depth}{']' * depth}\nlanguage: en\n---\n# A\n\n{{{{ref: nope}}}}\n"
+        document = _kept(source)
+        assert isinstance(document.frontmatter_error.__cause__, RecursionError)
+        assert _rows(document) == [("frontmatter-invalid-yaml", "error", 3), ("ref-broken", "error", 8)]
+
+
+def test_no_node_is_recorded_for_a_document_that_is_read():
+    from legaldown.parser import _StrDateSafeLoader
+
+    loader = _StrDateSafeLoader("a:\n  b:\n    c: 1\n")
+    loader.construct_document(loader.get_single_node())
+    assert loader.constructing is None  # nothing recorded for a document that is read
+
+
+def test_the_two_ways_of_counting_lines_agree():
+    from legaldown.positions import line_at, line_breaks
+
+    for text in ["", "a", "a\nb\n\nc", "\n\n", "x\x85y\u2028z\u2029w\rv\nu\n"]:
+        breaks = line_breaks(text)
+        for first in (1, 2):
+            for index in range(len(text) + 2):
+                assert line_at(breaks, index, first) == text.count("\n", 0, index) + first
+
+
+def test_a_template_reads_and_reports_an_unreadable_file_once_however_it_is_written():
+    seen = []
+
+    def resolve(path):
+        seen.append(path)
+        return "---\n@x\n---\n\nText.\n"
+
+    front = "attachments:\n  - id: a\n    title: A\n    file: ./f.lgd\n  - id: b\n    title: B\n    file: sub/../f.lgd\n"
+    template = f"---\ntitle: T\n{front}---\n\n# A\n\n{{{{include: f.lgd}}}}\n\n{{{{include: ./sub/../f.lgd}}}}\n"
+    problems = parse_template(template, resolve=resolve).problems
+    assert [(d.rule, d.file) for d in problems] == [("frontmatter-invalid-yaml", "f.lgd")]
+    assert len(seen) == len(set(seen)) == 1

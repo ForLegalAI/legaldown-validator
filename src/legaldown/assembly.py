@@ -914,11 +914,11 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     problems: list[Diagnostic] = []
     unreadable: set[str] = set()  # reported once, however often it is referenced
     for path, kind in wanted:
-        if path in subs or path in unreadable:
+        relative = relative_path(path)
+        if path in subs or relative in unreadable:
             continue
         # Only a path within the template's directory (§2.3) is asked for: a loader is
         # not handed ``../x``, an absolute path or a drive letter to open.
-        relative = relative_path(path)
         text = load_file(path) if load_file is not None and relative is not None else None
         if text is None:
             reason = "cannot be read" if load_file else "needs the Full level (§17.6)"
@@ -933,7 +933,7 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
             # its message and line, in the file it is in. (`validate(fragment=True)`
             # reports include-has-frontmatter instead, by design: a fragment must
             # have none.) A text was read only for a path that `relative_path` accepts: *relative*.
-            unreadable.add(path)
+            unreadable.add(relative)
             problems.append(frontmatter_diagnostic(exc, file=relative))
             continue
         sub_front, body = _split(text, sub_document)

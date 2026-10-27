@@ -42,7 +42,7 @@ from .markdown import (
 )
 from .markers import Marker, split_heading
 from .models import Block, Document, ListItem, document_from_dict
-from .positions import SourceMap, document_shape, frontmatter_keys, line_at, line_breaks
+from .positions import SourceMap, document_shape, frontmatter_keys
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -52,17 +52,20 @@ from .positions import SourceMap, document_shape, frontmatter_keys, line_at, lin
 
 
 class _StrDateSafeLoader(yaml.SafeLoader):
-    #: The node being constructed: after an error that names no place (a value
-    #: its tag cannot hold), the one it was found in (#43). Left as it was
-    #: when the error came, so not restored on the way out.
+    #: After an error that names no place (a value its tag cannot hold), the
+    #: node it was found in (#43): the innermost, which is the value. (A node's
+    #: children are constructed after it, not inside it, so there is no nesting
+    #: of calls to follow.) Set only as the error passes, so a document that can
+    #: be read pays nothing for it.
     constructing: yaml.Node | None = None
 
     def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
-        before = self.constructing
-        self.constructing = node
-        result = super().construct_object(node, deep)
-        self.constructing = before
-        return result
+        try:
+            return super().construct_object(node, deep)
+        except Exception:
+            if self.constructing is None:
+                self.constructing = node
+            raise
 
 
 _StrDateSafeLoader.add_constructor(
@@ -264,7 +267,7 @@ def _split_frontmatter(
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or "", loader.constructing if loader else None))
+        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or "", loader))
         if not keep_error:
             raise error from exc
         error.__cause__ = exc  # as `raise ... from` sets it
@@ -282,16 +285,17 @@ def _file_line(block: str, index: int) -> int:
     """The file line of character *index* of the frontmatter's YAML *block*,
     which starts on line 2 (after the opening ``---``): a mark's ``index``, not
     its ``line``, which counts the line ends YAML knows and the format does not
-    (``positions.line_breaks``)."""
-    return line_at(line_breaks(block), index, 2)
+    (``positions.line_breaks``). One lookup, so counted in place."""
+    return block.count("\n", 0, index) + 2
 
 
-def _error_line(exc: BaseException, block: str, node: yaml.Node | None = None) -> int:
+def _error_line(exc: BaseException, block: str, loader: _StrDateSafeLoader | None) -> int:
     """The file line of a YAML error in the frontmatter *block*: where the
     problem is — or, for a quoted scalar or a flow collection left open, where
     it opens, which the problem is only found far past. An error that names no
-    place (a value its tag cannot hold) is at *node*, the one being constructed
-    (``_StrDateSafeLoader.constructing``), else at the opening line."""
+    place is where the *loader* was: at the node it was constructing (a value
+    its tag cannot hold) or, for nesting too deep to read, at the innermost
+    collection open when it was found."""
     context = getattr(exc, "context", None) or ""
     context_mark = getattr(exc, "context_mark", None)
     problem_mark = getattr(exc, "problem_mark", None)
@@ -301,7 +305,11 @@ def _error_line(exc: BaseException, block: str, node: yaml.Node | None = None) -
         return _file_line(block, mark.index)
     if isinstance(exc, yaml.reader.ReaderError) and isinstance(exc.position, int):
         return _file_line(block, exc.position)  # the reader names a character
-    return _file_line(block, node.start_mark.index) if node is not None else 1
+    if loader is not None and loader.constructing is not None:
+        return _file_line(block, loader.constructing.start_mark.index)
+    if loader is not None and isinstance(exc, RecursionError) and getattr(loader, "marks", None):
+        return _file_line(block, loader.marks[-1].index)
+    return 1
 
 
 def _has_flow_style(node: yaml.Node) -> bool:
