@@ -4,8 +4,10 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 
-from legaldown import Document, FrontmatterError, load, parse, save, serialize, validate
+from legaldown import Document, FrontmatterError, document_to_dict, load, parse, save, serialize, validate
+from legaldown.assembly import frontmatter_diagnostic
 from legaldown.cli import EXIT_DIAGNOSTICS, main
 
 #: Prose between two --- lines, as written by someone who meant a thematic break.
@@ -223,19 +225,26 @@ def test_serialize_to_dict_and_save_refuse_a_document_whose_frontmatter_was_not_
     file.write_bytes(source.encode("utf-8"))
     document = load(file, on_frontmatter_error="keep")
     error = document.frontmatter_error
-    with pytest.raises(FrontmatterError) as raised:
-        serialize(document)
-    assert raised.value is error
-    with pytest.raises(FrontmatterError) as raised:
-        document.to_dict()
-    assert raised.value is error
-    with pytest.raises(FrontmatterError) as raised:
-        save(document)
-    assert raised.value is error
+    for write in (serialize, Document.to_dict, document_to_dict, save):
+        with pytest.raises(FrontmatterError) as raised:
+            write(document)
+        # A new exception each time, the kept one its cause: it is not raised again, so its
+        # traceback does not grow and it is not tied to the frames that raised it.
+        assert raised.value is not error and raised.value.__cause__ is error
+        assert (str(raised.value), raised.value.line) == (str(error), error.line)
+    assert error.__traceback__ is None
     assert file.read_bytes() == source.encode("utf-8")  # the text of the block is not lost
     with pytest.raises(FrontmatterError):
         save(document, tmp_path / "copy.lgd")
     assert [p.name for p in tmp_path.iterdir()] == ["doc.lgd"]
+
+
+def test_the_dict_of_such_a_document_cannot_be_the_way_to_write_it_out():
+    # document_to_dict is public: Document.from_dict(document_to_dict(d)) -> serialize
+    # would write the empty frontmatter in place of the block.
+    document = _kept("---\n@x\n---\n\n# A\n")
+    with pytest.raises(FrontmatterError):
+        Document.from_dict(document_to_dict(document))
 
 
 def test_a_document_whose_error_is_cleared_can_be_written_again():
@@ -243,6 +252,17 @@ def test_a_document_whose_error_is_cleared_can_be_written_again():
     document.frontmatter_error = None
     document.metadata.title = "Fixed"
     assert serialize(document).startswith("---\ntitle: Fixed\n")
+
+
+def test_a_document_keeps_reporting_the_error_until_it_is_cleared():
+    # Parsed with "keep", it is validated against empty metadata for as long as the error is set;
+    # a caller that repairs the metadata in code clears it.
+    document = _kept("---\n@x\n---\n\n# A\n")
+    document.metadata.title = "Repaired"
+    assert [r for r, *_ in _rows(document)] == ["frontmatter-invalid-yaml"]
+    document.frontmatter_error = None
+    assert [r for r, *_ in _rows(document)] == ["sides-absent"]  # as for any document with this metadata
+    assert serialize(document).startswith("---\ntitle: Repaired\n")
 
 
 def test_a_document_built_from_a_dict_has_no_error():
@@ -299,3 +319,105 @@ def test_a_fragment_block_on_its_first_key_line_is_reported_there_when_it_can_be
     # Unchanged by #43: a readable block is named at its first key.
     document = parse("---\ntitle: T\n---\n\n## Clause\n")
     assert _rows(document, fragment=True) == [("include-has-frontmatter", "error", 2)]
+
+
+# ── What the YAML reader refuses, and what is said of it ───────────
+
+#: A character YAML does not allow fails the reader before it reads anything.
+_CONTROL = "---\ntitle: A\x01b\n---\n\n# A\n\nSee {{ref: nope}}.\n"
+
+_UNREADABLE = [
+    ("title: [unclosed", 2),
+    ('title: T\nsubtitle: "open\nlanguage: en', 3),
+    ("title: Fixture\n  bad indent: [unclosed", 3),
+    ("title: A\x01b", 2),
+    ("title: T\nlanguage: \x00", 3),
+    ("!!set {a, b}", 2),
+    ("title: T\nquestions:\n  q:\n    default: !!bool maybe", None),
+    ("a: " + "[" * 3000, None),
+]
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_a_character_yaml_does_not_allow_is_a_frontmatter_error_in_both_modes(keep):
+    if keep:
+        document = _kept(_CONTROL)
+        assert [(r, line) for r, _, line in _rows(document)] == [("frontmatter-invalid-yaml", 2), ("ref-broken", 7)]
+        assert isinstance(document.frontmatter_error.__cause__, Exception)
+    else:
+        with pytest.raises(FrontmatterError) as raised:
+            parse(_CONTROL)
+        assert raised.value.line == 2 and isinstance(raised.value.__cause__, yaml.YAMLError)
+
+
+def test_the_line_of_a_character_the_reader_refuses_is_its_line_in_the_file():
+    assert _kept("---\ntitle: T\nsubtitle: S\nlanguage: \x01\n---\n# A\n").frontmatter_error.line == 4
+
+
+def test_the_command_line_reports_a_character_yaml_does_not_allow(write, capsys):
+    path = write("ctrl.lgd", _CONTROL)
+    assert main(["validate", "--format", "json", str(path)]) == EXIT_DIAGNOSTICS
+    captured = capsys.readouterr()
+    assert captured.err == ""  # not an internal error
+    assert [(d["rule"], d["line"]) for d in json.loads(captured.out)["diagnostics"]] == [
+        ("frontmatter-invalid-yaml", 2),
+        ("ref-broken", 7),
+    ]
+
+
+@pytest.mark.parametrize(("block", "line"), _UNREADABLE)
+def test_the_message_is_one_line_without_a_position_or_a_snippet(block, line):
+    document = _kept(f"---\n{block}\n---\n\n# A\n")
+    message = validate(document).diagnostics[0].message
+    assert message.startswith("The frontmatter cannot be read: ") and message.strip() == message
+    assert "\n" not in message and "column" not in message and "<unicode string>" not in message
+    if line is not None:
+        assert document.frontmatter_error.line == line
+    assert "\n" not in str(document.frontmatter_error)
+
+
+def test_the_message_says_what_is_wrong_and_where_it_was_being_read():
+    error = _kept("---\ntitle: [unclosed\n---\n# A\n").frontmatter_error
+    assert str(error) == "expected ',' or ']', but got '<stream end>' (while parsing a flow sequence)"
+    assert str(_kept(_CONTROL).frontmatter_error) == "unacceptable character #x0001: special characters are not allowed"
+
+
+@pytest.mark.parametrize(("block", "line"), _UNREADABLE)
+def test_validation_and_assembly_say_the_same_of_the_same_block(block, line):
+    source = f"---\n{block}\n---\n\n# A\n"
+    reported = validate(_kept(source)).diagnostics[0]
+    with pytest.raises(FrontmatterError) as raised:
+        parse(source)
+    assembled = frontmatter_diagnostic(raised.value)
+    assert (assembled.rule, assembled.level, assembled.message, assembled.line) == (
+        reported.rule, reported.level, reported.message, reported.line,
+    )
+
+
+def test_the_command_line_says_the_same_in_validate_assemble_and_questions(write, capsys):
+    path = write("t.lgd", "---\ntitle: Fixture\n  bad indent: [unclosed\n---\n\n# A\n")
+    main(["validate", "--format", "json", str(path)])
+    validated = json.loads(capsys.readouterr().out)["diagnostics"][0]
+    main(["questions", str(path), "--format", "json"])
+    asked = json.loads(capsys.readouterr().out)["problems"][0]
+    main(["assemble", str(path)])
+    assembled = capsys.readouterr().err
+    assert (validated["rule"], validated["line"]) == (asked["rule"], asked["line"]) == ("frontmatter-invalid-yaml", 3)
+    assert validated["message"] == asked["message"] == "The frontmatter cannot be read: mapping values are not allowed here"
+    assert assembled == f"{path}:3: error: [frontmatter-invalid-yaml] {validated['message']}\n"
+
+
+def test_the_error_kept_has_the_yaml_error_for_its_cause_as_raising_has():
+    source = "---\ntitle: [unclosed\n---\n# A\n"
+    with pytest.raises(FrontmatterError) as raised:
+        parse(source)
+    kept = _kept(source).frontmatter_error
+    assert isinstance(raised.value.__cause__, yaml.YAMLError)
+    assert type(kept.__cause__) is type(raised.value.__cause__)
+
+
+def test_a_wrong_option_is_refused_before_a_file_is_read(tmp_path):
+    with pytest.raises(ValueError, match="on_frontmatter_error"):
+        load(tmp_path / "nope.lgd", on_frontmatter_error="Keep")  # type: ignore[arg-type]
+    with pytest.raises(FileNotFoundError):
+        load(tmp_path / "nope.lgd", on_frontmatter_error="keep")

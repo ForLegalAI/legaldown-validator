@@ -237,11 +237,10 @@ class Document:
         ``Metadata.not_line_editable`` and ``Metadata.frontmatter_absent``,
         which it holds but ``from_dict`` does not read).
 
-        Raises ``Document.frontmatter_error`` for a document whose
-        frontmatter could not be read (``parse(on_frontmatter_error="keep")``):
-        its empty metadata would not say what the source does."""
-        if self.frontmatter_error is not None:
-            raise self.frontmatter_error
+        Raises a ``FrontmatterError`` for a document whose frontmatter could
+        not be read (``parse(on_frontmatter_error="keep")``), as
+        ``document_to_dict`` does: its empty metadata would not say what the
+        source does."""
         return document_to_dict(self)
 
     def iter_indexed_blocks(self) -> Iterator[tuple[int | None, int, Block]]:
@@ -626,9 +625,26 @@ def document_from_dict(data: dict[str, Any] | None) -> Document:
     )
 
 
+def _check_frontmatter_read(document: Document) -> None:
+    """Raise a ``FrontmatterError`` (a new one, the message and line of the
+    kept ``Document.frontmatter_error``, which is its cause) for a document
+    whose frontmatter could not be read (``parse(on_frontmatter_error="keep")``,
+    #43), to stop whatever would write it out from its empty metadata: the
+    text of the block would be lost. The one guard of ``document_to_dict`` and
+    ``serialize`` (``save`` writes what ``serialize`` returns). Raising the
+    stored exception itself would grow its traceback at each raise and tie it
+    to the frames that raised it."""
+    error = document.frontmatter_error
+    if error is not None:
+        raise type(error)(str(error), error.line) from error
+
+
 def document_to_dict(document: Document) -> dict[str, Any]:
     """Convert a Document to a plain dict (for JSON serialization etc.),
-    without its source map."""
+    without its source map. Raises ``FrontmatterError`` for a document whose
+    frontmatter could not be read (``Document.to_dict``): see
+    ``_check_frontmatter_read``."""
+    _check_frontmatter_read(document)
     return {
         "metadata": asdict(document.metadata),
         "sections": [asdict(section) for section in document.sections],

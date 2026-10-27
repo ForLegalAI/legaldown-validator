@@ -274,8 +274,13 @@ reports it (an Error, at the line of the problem) together with what is wrong in
 meant a thematic break should still be told about the rest of the document. The frontmatter is
 then read as empty, so nothing is reported for want of what it might have declared (a title, the
 sides, and a party, side, attachment or question the body uses), and the document cannot be
-written out: `serialize`, `save` and `to_dict` raise the same `FrontmatterError`, so the text of the
-block is not lost. The default stays `"raise"`; `on_frontmatter_error` is keyword-only.
+written out: `serialize`, `save`, `to_dict` and `document_to_dict` raise a new `FrontmatterError` (the
+message and line of the kept one, which is its `__cause__`), so the text of the block is not lost. Such a
+document keeps reporting `frontmatter-invalid-yaml`, and is validated against the empty metadata,
+for as long as `document.frontmatter_error` is set, not only when it is parsed: a program that
+repairs the metadata in code sets `document.frontmatter_error = None`. The default stays `"raise"`;
+`on_frontmatter_error` is keyword-only and is checked before a file is read. The message is one
+line, what the YAML reader found wrong; where is the diagnostic's `line`.
 
 `validate(document)` checks it and returns a `ValidationResult`; `validate(document, final=True)`
 is the signature-ready check (§15.9), and `validate(document, fragment=True)` checks an include

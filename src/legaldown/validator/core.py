@@ -945,6 +945,9 @@ def validate(
     its body is validated all the same, as one whose metadata is empty:
     nothing is reported for want of what the frontmatter might have declared
     (a title, sides, and the party, side, attachment or question the body uses).
+    It is so for as long as ``Document.frontmatter_error`` is set, not only
+    when the document is parsed: a caller that repairs the metadata in code
+    sets ``document.frontmatter_error = None`` to have it read as it is.
 
     Parameters
     ----------
@@ -1155,11 +1158,9 @@ def _validate(
     # §16.6: an Error, but "prevents rendering" (§16.1), not "stops validating":
     # the block is not read (the metadata is empty, above), and the body still is.
     if unreadable is not None:
-        result.error(
-            "frontmatter-invalid-yaml",
-            f"The frontmatter cannot be read: {unreadable}",
-            line=unreadable.line or 1,
-        )
+        from ..parser import frontmatter_message  # here for the import cycle, as below
+
+        result.error("frontmatter-invalid-yaml", frontmatter_message(unreadable), line=unreadable.line or 1)
     # Without frontmatter a document is valid, but has no metadata to
     # check: it draws this Warning alone (§3.2, §16.6).
     frontmatter_absent = document.metadata.frontmatter_absent

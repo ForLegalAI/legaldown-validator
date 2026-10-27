@@ -64,6 +64,7 @@ from .parser import (
     _may_interrupt,
     _opens_paragraph,
     _row_width_end,
+    frontmatter_message,
     parse,
     quote_content,
 )
@@ -1802,11 +1803,9 @@ def assemble(
 
 
 def frontmatter_diagnostic(exc: FrontmatterError) -> Diagnostic:
-    """The error assembly reports for frontmatter that cannot be read."""
-    return Diagnostic(
-        "frontmatter-invalid-yaml", "error",
-        f"The template's frontmatter cannot be read, so it is not assembled: {exc}",
-    )
+    """The error assembly reports for frontmatter that cannot be read: the one
+    ``validate`` reports for it, with the same message and line (#43)."""
+    return Diagnostic("frontmatter-invalid-yaml", "error", frontmatter_message(exc), line=exc.line or 1)
 
 
 def _emit_result(

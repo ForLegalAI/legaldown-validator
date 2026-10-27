@@ -37,6 +37,7 @@ from .models import (
     Metadata,
     Party,
     Side,
+    _check_frontmatter_read,
     heading_level,
     heading_text,
     list_items,
@@ -559,12 +560,10 @@ def serialize(document: Document) -> str:
     long as its metadata is still empty; a thematic break opening it is then
     written ``***``, which cannot open frontmatter.
 
-    Raises ``Document.frontmatter_error`` (a ``FrontmatterError``) for a
-    document whose frontmatter could not be read (``parse`` with
-    ``on_frontmatter_error="keep"``, #43): it has no metadata to write, and
-    what was written would not be the source's."""
-    if document.frontmatter_error is not None:
-        raise document.frontmatter_error
+    Raises ``FrontmatterError`` for a document whose frontmatter could not be
+    read (``parse`` with ``on_frontmatter_error="keep"``, #43): it has no
+    metadata to write, and what was written would not be the source's."""
+    _check_frontmatter_read(document)
     payload = _metadata_to_frontmatter(document.metadata)
     bare = document.metadata.frontmatter_absent and payload == _metadata_to_frontmatter(metadata_from_dict({}))
     parts: list[str] = []
@@ -618,12 +617,10 @@ def save(document: Document, path: str | os.PathLike[str] | None = None) -> Path
     Raises ``ValueError`` when both *path* and ``Document.path`` are None (a
     document parsed from text or built in code has no path; pass one), and
     ``OSError`` when the file cannot be written; the document's path and
-    filename are then unchanged. It raises ``Document.frontmatter_error``
-    for a document whose frontmatter could not be read (see ``serialize``),
-    and leaves the file as it is: the text of its block is not lost.
+    filename are then unchanged. It raises ``FrontmatterError`` for a
+    document whose frontmatter could not be read (see ``serialize``), and
+    leaves the file as it is: the text of its block is not lost.
     """
-    if document.frontmatter_error is not None:
-        raise document.frontmatter_error
     target = document.path if path is None else path
     if target is None:
         raise ValueError("a document parsed from text or built in code has no path; pass one")

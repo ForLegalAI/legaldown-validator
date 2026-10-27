@@ -201,8 +201,11 @@ alone is reported, `ref-broken`, `heading-*`, `anchor-*`, `directive-*`, `def-*`
 among them, and `term-undefined` too, although the original an `amends` names might have defined
 the term. A block of comments only, such as a heading written as a comment between two `---`
 lines, is valid YAML: it is present and empty (§3.1) and not body, so `title-missing` and
-`sides-absent` point at it. `serialize`, `save` and `Document.to_dict` raise the
-`FrontmatterError` for such a document, so that nothing written from it loses the block. Assembly
+`sides-absent` point at it. `serialize`, `save`, `Document.to_dict` and `document_to_dict` raise a new
+`FrontmatterError` for such a document, so that nothing written from it loses the block; it
+keeps being reported and read as empty until `Document.frontmatter_error` is set to None. The
+message is one line, without position or snippet; assembly and `validate` give the same message
+and line. Assembly
 returns it as a diagnostic, for the template or for a fragment or attachment file it reads
 (`parse_template` and `load_template` still raise it). A fragment validated on its own (`validate(fragment=True)`,
 `legaldown validate --fragment`) never reads its frontmatter: a block it has, readable or not, is

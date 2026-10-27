@@ -164,6 +164,35 @@ class FrontmatterError(yaml.YAMLError, ValueError):
         self.line = line
 
 
+def frontmatter_message(error: FrontmatterError) -> str:
+    """The text of the frontmatter-invalid-yaml diagnostic for *error*, one for
+    validation and assembly alike (#43): what is wrong, on one line. Where it
+    is wrong is the diagnostic's own ``line``, so the message holds no position
+    of its own and none of the snippet the YAML reader draws."""
+    return f"The frontmatter cannot be read: {error}"
+
+
+def _error_message(exc: BaseException) -> str:
+    """What is wrong in a YAML error, on one line: the reader's ``problem``
+    with its ``context`` (``expected ',' or ']', but got '<stream end>' (while
+    parsing a flow sequence)``), without the line and column it gives relative
+    to the block or the snippet under them, the file line being the
+    diagnostic's (``_error_line``)."""
+    problem = getattr(exc, "problem", None) or getattr(exc, "reason", None)
+    if isinstance(exc, yaml.reader.ReaderError) and isinstance(exc.character, int):
+        problem = f"unacceptable character #x{exc.character:04x}: {problem}"  # as the reader words it
+    if problem:
+        context = getattr(exc, "context", None)
+        return f"{problem} ({context})" if context else str(problem)
+    text = str(exc).strip().split("\n", 1)[0]
+    return text or type(exc).__name__
+
+
+def _check_frontmatter_option(on_frontmatter_error: str) -> None:
+    if on_frontmatter_error not in ("raise", "keep"):
+        raise ValueError(f"on_frontmatter_error must be 'raise' or 'keep', not {on_frontmatter_error!r}")
+
+
 def _split_frontmatter(
     source: str, keep_error: bool = False
 ) -> tuple[list[str], dict[str, Any], str, bool, dict[tuple[Any, ...], int], FrontmatterError | None]:
@@ -184,8 +213,10 @@ def _split_frontmatter(
     match = FRONTMATTER_RE.match(source)
     if not match:
         return [], {}, source, True, {}, None
-    loader = _StrDateSafeLoader(match.group(1) or "")
+    loader = None
     try:
+        # Inside the try: a character YAML does not allow fails the reader here.
+        loader = _StrDateSafeLoader(match.group(1) or "")
         node = loader.get_single_node()
         if node is None:
             return [], {}, source[match.end():], False, {(): 1}, None
@@ -213,12 +244,17 @@ def _split_frontmatter(
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        error = FrontmatterError(str(exc) or type(exc).__name__, _error_line(exc))
+        line = _error_line(exc)
+        if line is None and isinstance(exc, yaml.reader.ReaderError) and isinstance(exc.position, int):
+            line = (match.group(1) or "").count("\n", 0, exc.position) + 2  # the reader names a character
+        error = FrontmatterError(_error_message(exc), line)
         if not keep_error:
             raise error from exc
+        error.__cause__ = exc  # as `raise ... from` sets it
         return [], {}, source[match.end():], False, {(): 1}, error
     finally:
-        loader.dispose()
+        if loader is not None:
+            loader.dispose()
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
     return not_line_editable, metadata, source[match.end():], False, keys, None
@@ -1423,6 +1459,7 @@ def load(path: str | os.PathLike[str], *, on_frontmatter_error: Literal["raise",
     ``FrontmatterError`` when its frontmatter cannot be read, unless
     *on_frontmatter_error* is ``"keep"`` (see ``parse``).
     """
+    _check_frontmatter_option(on_frontmatter_error)  # before anything is read
     # The path as given is what is read: ``..`` after a symbolic link leads
     # where the operating system takes it, which tidying the text of the path
     # first could not tell. ``absolute`` makes it absolute and nothing more.
@@ -1461,8 +1498,7 @@ def parse(
     # A byte-order mark is an encoding artifact, not content. Lines end at
     # LF, CR, or CRLF (CommonMark), and nowhere else.
     source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
-    if on_frontmatter_error not in ("raise", "keep"):
-        raise ValueError(f"on_frontmatter_error must be 'raise' or 'keep', not {on_frontmatter_error!r}")
+    _check_frontmatter_option(on_frontmatter_error)
     not_line_editable, metadata, body, absent, keys, frontmatter_error = _split_frontmatter(
         source, keep_error=on_frontmatter_error == "keep"
     )
