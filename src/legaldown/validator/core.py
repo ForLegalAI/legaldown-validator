@@ -11,7 +11,7 @@ import re
 import warnings
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import cache, partial
 from types import MappingProxyType
 from typing import Any
@@ -30,7 +30,7 @@ from ..directives import (
 )
 from ..files import LoadFile, file_loader, relative_path, within
 from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
-from ..models import LIST_KINDS, Amends, Document
+from ..models import LIST_KINDS, Amends, Document, Metadata
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
 from .conditions import (
@@ -38,7 +38,7 @@ from .conditions import (
     Presence,
     always_covered,
     by_question,
-    condition_problem,
+    condition_issue,
     condition_values,
     exclusive,
     exclusive_in,
@@ -69,7 +69,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Blank, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
+from .result import Blank, Depends, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
@@ -875,10 +875,55 @@ def _is_template(
     )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Mode:
+    """How ``_validate`` reads a document that is not a complete, readable one
+    (#39, #43). Internal: only ``validate(fragment=)`` is public. The default is
+    an ordinary document; the other presets below are plain data, so each issue
+    that needs one picks it where it knows the case.
+
+    ``empty_metadata``: validate with the empty metadata of a document without
+    frontmatter in place of the document's own (the source map still fits: it
+    describes the body, ``positions.document_shape``), so that nothing is
+    checked of, or resolved against, frontmatter that is not to be read as
+    declarations, and every rule that waits on ``frontmatter_absent`` (§3.1,
+    §16.6) is silent. ``suppress``: the findings that need these (``Depends``)
+    are not reported. ``report_frontmatter_absent``: whether the document draws
+    frontmatter-absent (§3.2); it does not when its frontmatter is there but
+    is not read. ``check_first_heading``: the first heading is required at
+    level 1 (§4.1) although the metadata is the empty one, because the block
+    that is not read still is the frontmatter of a main document. ``fragment``:
+    the document is an include fragment or an attachment file validated on its
+    own (§12.2, §12.4): its findings with a reason are ``host_dependent``, and
+    it is not asked to use everything it declares or to be used (the host
+    does)."""
+    empty_metadata: bool = False
+    suppress: frozenset[Depends] = frozenset()
+    report_frontmatter_absent: bool = True
+    check_first_heading: bool = False
+    fragment: bool = False
+
+
+#: A complete document.
+_DOCUMENT = _Mode()
+#: An include fragment or attachment file on its own (#39): all the findings
+#: are made, and those the including document may settle are flagged.
+_FRAGMENT = _Mode(empty_metadata=True, report_frontmatter_absent=False, fragment=True)
+#: A document whose frontmatter cannot be read (#43): its body is validated, but
+#: not against what the frontmatter might have declared.
+_UNREADABLE_FRONTMATTER = _Mode(
+    empty_metadata=True,
+    suppress=frozenset({Depends.FRONTMATTER}),
+    report_frontmatter_absent=False,
+    check_first_heading=True,
+)
+
+
 def validate(
     document: Document,
     *,
     final: bool = False,
+    fragment: bool = False,
     resolve: LoadFile | None = None,
     import_definitions: DefinitionsImporter | None = None,
     import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
@@ -892,6 +937,23 @@ def validate(
     final:
         Apply the final check (§15.9): the document is meant for signature,
         so a remaining blank or template construct is an Error.
+    fragment:
+        The document is an include fragment (§12.2) or a LegalDown attachment
+        file (§12.4) validated on its own: body-only, so it is not asked for
+        frontmatter, a title, parties or sides, and a level-1 first heading is
+        not required (§4.1). What it cannot settle alone, because the document
+        that includes it declares it (a party, a side, an attachment or a
+        question) or defines it (the target of a ``{{ref:}}`` or a
+        ``{{term:}}``), is still reported, with the same rule id and level it
+        has in a complete document, but marked ``Diagnostic.host_dependent``:
+        a finding to set aside when the host is not known, and to take
+        seriously once the fragment is validated in it. What is wrong with the
+        fragment itself is not marked. Frontmatter in the fragment is
+        include-has-frontmatter (§16.11) and a level-1 heading include-has-h1;
+        the metadata is then not read, so nothing is checked of it. A
+        definition the fragment declares is not reported unreferenced (the
+        host references it, §12.2). Default False: a complete document, as
+        before.
     resolve:
         Reads a file the document refers to — the document it amends
         (``amends.file``, §7.5) and its LegalDown attachment files (§12.4) —
@@ -909,7 +971,8 @@ def validate(
         definitions themselves, which *resolve* leaves to the validator.
     """
     resolve = _resolver(document, resolve, import_definitions, import_attachment_definitions, stacklevel=3)
-    return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
+    mode = _FRAGMENT if fragment else _DOCUMENT
+    return _validate(document, final, resolve, import_definitions, import_attachment_definitions, mode)
 
 
 def validate_document(
@@ -928,7 +991,7 @@ def validate_document(
         stacklevel=2,
     )
     resolve = _resolver(document, None, import_definitions, import_attachment_definitions, stacklevel=3)
-    return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
+    return _validate(document, final, resolve, import_definitions, import_attachment_definitions, _DOCUMENT)
 
 
 def _resolver(
@@ -955,6 +1018,40 @@ def _resolver(
         resolve = file_loader(document.path.parent)
 
     return resolve
+
+
+def _has_frontmatter(document: Document) -> bool:
+    """True if *document* has a frontmatter block (§3.1): a parsed one that opens
+    with it, empty or not, or one built in code with any metadata."""
+    if document.metadata.frontmatter_absent:
+        return False
+    source_map = document.source_map
+    return document.metadata != Metadata() or (source_map is not None and () in source_map.keys)
+
+
+def _check_fragment_shape(document: Document, where: Locator, result: _Recorder) -> None:
+    """What §12.2 and §12.4 require of a fragment's own text: it has no
+    frontmatter and no level-1 heading (include-has-frontmatter,
+    include-has-h1, §16.11). *document* is the fragment as given. These two
+    are the only checks of its shape that need no file but the fragment itself.
+    A fragment is validated as an include whichever way its host includes it
+    (an attachment file's ids, attachment-has-*, §16.10, are the same two
+    checks under another name)."""
+    if _has_frontmatter(document):
+        result.error(
+            "include-has-frontmatter",
+            "The fragment has frontmatter, which a fragment cannot have: the document that "
+            "includes it supplies the metadata (§12.2). It is not read here.",
+            line=where.first_key(),
+        )
+    for index, section in enumerate(document.sections):
+        if section.level == 1:
+            result.error(
+                "include-has-h1",
+                f"The fragment has a level 1 heading, '{section.title}', which a fragment "
+                f"cannot have: the including document writes the heading around it (§12.2).",
+                line=where.heading(index),
+            )
 
 
 def _definitions_in(document: Document, resolve: LoadFile | None, path: str) -> dict[str, str] | None:
@@ -991,8 +1088,16 @@ def _validate(
     resolve: LoadFile | None,
     import_definitions: DefinitionsImporter | None,
     import_attachment_definitions: AttachmentDefinitionsImporter | None,
+    mode: _Mode,
 ) -> ValidationResult:
-    result = _Recorder()
+    result = _Recorder(suppress=mode.suppress, fragment=mode.fragment)
+    # A fragment's own frontmatter, if it wrongly has any, is reported below
+    # and then not read: the host's frontmatter is the one that declares.
+    # Everything after this reads the document as a body-only one, whose
+    # source map is the same (it describes the body, positions.document_shape).
+    original = document
+    if mode.empty_metadata:
+        document = replace(document, metadata=Metadata(frontmatter_absent=True))
     # Where each part is, for the line of each diagnostic (§16.9).
     where = Locator(document)
     # §3.2: a newer declared version draws a Warning, never a failure, and
@@ -1012,7 +1117,7 @@ def _validate(
     # Without frontmatter a document is valid, but has no metadata to
     # check: it draws this Warning alone (§3.2, §16.6).
     frontmatter_absent = document.metadata.frontmatter_absent
-    if frontmatter_absent:
+    if frontmatter_absent and mode.report_frontmatter_absent:
         result.warning(
             "frontmatter-absent",
             "The document has no frontmatter (§3.1), so it has no title, parties, or other "
@@ -1020,6 +1125,8 @@ def _validate(
             "very start and a closing '---' line.",
             line=where.start(),
         )
+    if mode.fragment:
+        _check_fragment_shape(original, where, result)
     title = document.metadata.title.strip()
     if not title and not frontmatter_absent:
         result.error("title-missing", "The document title is required.", line=where.field("title"))
@@ -1300,8 +1407,11 @@ def _validate(
     # heading must be at level 1 (§4.1). A document without frontmatter may
     # be an include fragment or an attachment file validated on its own,
     # which has no level-1 heading and to which §4.1 does not apply alone
-    # (§12): its first heading sets the level.
-    last_level: int | None = None if document.metadata.frontmatter_absent else 0
+    # (§12): its first heading sets the level. Not so when the frontmatter is
+    # there but is not read (#43): it still is a main document's.
+    last_level: int | None = (
+        None if document.metadata.frontmatter_absent and not mode.check_first_heading else 0
+    )
     # The last section at each open level: (identifier, presence). An
     # alternative to it shares its number (§15.8).
     previous_sibling: dict[int, tuple[str, Presence]] = {}
@@ -1707,6 +1817,7 @@ def _validate(
                     in_note = any(fragment_index in note.fragments for note in notes)
                     references[name].append((value, presence, in_note, line))
                 if name in ("ref", "term") and not value:
+                    # Whatever the host holds, a reference with no target is wrong.
                     result.error(
                         "ref-broken" if name == "ref" else "term-undefined",
                         f"'{directive.source}' has no target.", line=line,
@@ -1762,6 +1873,7 @@ def _validate(
                         result.error(
                             "party-unknown",
                             f"Party directive references unknown party: '{value}'.", line=line,
+                            depends=Depends.FRONTMATTER,
                         )
                 elif name == "side":
                     if not value or not IDENTIFIER_RE.fullmatch(value):
@@ -1773,6 +1885,7 @@ def _validate(
                         result.error(
                             "side-unknown",
                             f"Side directive references unknown side: '{value}'.", line=line,
+                            depends=Depends.FRONTMATTER,
                         )
                 elif name == "field":
                     ftype = params.get("type", "")
@@ -1804,6 +1917,7 @@ def _validate(
                         result.error(
                             "attach-undeclared",
                             f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.", line=line,
+                            depends=Depends.FRONTMATTER,
                         )
         for target, line in ref_targets:
             if target in result.index.section_lookup:
@@ -1815,9 +1929,16 @@ def _validate(
                     "ref-targets-attachment",
                     f"Reference '{{{{ref: {target}}}}}' targets an attachment id. "
                     f"Use '{{{{attach: {target}}}}}' instead.", line=line,
+                    depends=Depends.FRONTMATTER,
                 )
             else:
-                result.error("ref-broken", f"Broken section reference: '{target}'.", line=line)
+                # A target that is no identifier names nothing in any document
+                # (§6.2, §5.2); an identifier that is not here may be a section or an
+                # anchor of the including document (#39).
+                result.error(
+                    "ref-broken", f"Broken section reference: '{target}'.", line=line,
+                    depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
+                )
         for target, line in term_targets:
             result.used_terms.add(target)
             if target not in result.index.definition_lookup:
@@ -1827,6 +1948,7 @@ def _validate(
                             "amend-term-undefined",
                             f"Undefined term reference: '{target}' (not found in "
                             f"amendment or imported original).", line=line,
+                            depends=Depends.FRONTMATTER,  # `amends` is the frontmatter's
                         )
                     else:
                         # Original unavailable or not LegalDown source:
@@ -1836,10 +1958,13 @@ def _validate(
                             f"Term reference '{target}' is not defined in the "
                             f"amendment; the original document is not available "
                             f"to verify it.", line=line,
+                            depends=Depends.FRONTMATTER,
                         )
                 else:
+                    # As for ref-broken: a term is defined by an id (§7.2).
                     result.error(
-                        "term-undefined", f"Undefined term reference: '{target}'.", line=line
+                        "term-undefined", f"Undefined term reference: '{target}'.", line=line,
+                        depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
                     )
 
     _check_blank_codes(blanks, result)
@@ -1875,9 +2000,13 @@ def _validate(
         if att.when
     )
     for place, text, line in conditions:
-        problem = condition_problem(text, questions)
-        if problem:
-            result.error("condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).", line=line)
+        issue = condition_issue(text, questions)
+        if issue:
+            depends, problem = issue
+            result.error(
+                "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
+                line=line, depends=depends,
+            )
     _check_never_true(document, markers, units, questions, result, where)
 
     # Reference safety (§15.4): a reference resolves in every assembled
@@ -1956,8 +2085,11 @@ def _validate(
 
     # Warn about declared but never-referenced definitions (§7). May
     # false-positive when §7.4 automatic term recognition is enabled.
+    # A fragment's definitions are the host's (§7.2, §12.2): it is the host
+    # that references them, so a fragment is not reported for leaving them
+    # unreferenced (#39).
     _warned_defs: set[str] = set()
-    for ref in definition_refs:
+    for ref in () if mode.fragment else definition_refs:
         if ref.id in _warned_defs:
             continue
         if ref.id in result.index.definition_lookup and ref.id not in result.used_terms:

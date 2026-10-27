@@ -393,6 +393,11 @@ class Locator:
             return None
         return self._map.keys.get((name,)) or self._map.first_key()
 
+    def first_key(self) -> int | None:
+        """The frontmatter's first key's line, or its opening line when it has
+        no key; None without frontmatter."""
+        return self._map.first_key() if self._map else None
+
     def heading(self, section: int) -> int | None:
         return self._map.heading(section) if self._map else None
 

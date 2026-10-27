@@ -11,6 +11,7 @@ from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .result import Depends
 from .templates import question_type
 
 _CONDITION_RE = re.compile(r"(!?)([a-z][a-z0-9-]*)(?::([a-z][a-z0-9-]*))?")
@@ -49,24 +50,40 @@ def parse_condition(text: str) -> Condition | None:
     return Condition(question, value, bool(negated))
 
 
+def condition_issue(text: str, questions: Any) -> tuple[Depends | None, str] | None:
+    """What is wrong with *text* as a condition for *questions* (the document's
+    ``metadata.questions``; condition-invalid, §15.3): ``(depends, problem)``,
+    or None when it is valid. *depends* is what only the including document's
+    frontmatter can settle (``Depends.FRONTMATTER``): the condition names a
+    question that is not declared here, which a fragment (§12.2) may well
+    leave to its host (#39). It is None for a problem the condition has
+    whatever is declared: a malformed condition, or the wrong form for a
+    question that is declared."""
+    condition = parse_condition(text)
+    if condition is None:
+        return None, "must be '[!]question' or '[!]question:value', in the identifier format"
+    qtype = question_type(questions, condition.question)
+    if qtype not in ("boolean", "choice"):
+        # Undeclared, or declared with no usable type: the declaration is not here
+        # to read. Declared as a value question it is wrong wherever it is read.
+        depends = Depends.FRONTMATTER if qtype is None else None
+        return depends, f"names '{condition.question}', which is not a declared boolean or choice question"
+    if qtype == "boolean" and condition.value is not None:
+        return None, f"'{condition.question}' is a boolean question: write '{condition.question}' or '!{condition.question}'"
+    if qtype == "choice":
+        if condition.value is None:
+            return None, f"'{condition.question}' is a choice question: write '{condition.question}:value'"
+        choices = questions[condition.question].get("choices")
+        if not isinstance(choices, dict) or condition.value not in choices:
+            return None, f"'{condition.value}' is not a declared choice of '{condition.question}'"
+    return None
+
+
 def condition_problem(text: str, questions: Any) -> str | None:
     """Why *text* is not a valid condition for *questions* (the document's
     ``metadata.questions``; condition-invalid, §15.3), or None."""
-    condition = parse_condition(text)
-    if condition is None:
-        return "must be '[!]question' or '[!]question:value', in the identifier format"
-    qtype = question_type(questions, condition.question)
-    if qtype not in ("boolean", "choice"):
-        return f"names '{condition.question}', which is not a declared boolean or choice question"
-    if qtype == "boolean" and condition.value is not None:
-        return f"'{condition.question}' is a boolean question: write '{condition.question}' or '!{condition.question}'"
-    if qtype == "choice":
-        if condition.value is None:
-            return f"'{condition.question}' is a choice question: write '{condition.question}:value'"
-        choices = questions[condition.question].get("choices")
-        if not isinstance(choices, dict) or condition.value not in choices:
-            return f"'{condition.value}' is not a declared choice of '{condition.question}'"
-    return None
+    issue = condition_issue(text, questions)
+    return issue[1] if issue else None
 
 
 _BOOLEAN_ANSWERS = (True, False)

@@ -10,6 +10,7 @@ Usage::
     legaldown validate --format json *.lgd
     legaldown validate --ignore def-unreferenced --warnings-as-errors doc.lgd
     legaldown validate --final signed-contract.lgd
+    legaldown validate --fragment clauses/*.lgd
     legaldown assemble template.lgd --answers answers.yaml -o out/
     legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/
     legaldown questions template.lgd --answers answers.yaml --format json
@@ -40,7 +41,7 @@ EXIT_ERROR = 2
 _LEVEL_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 
-def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str | None]:
+def _validate_path(path: Path, *, final: bool = False, fragment: bool = False) -> tuple[list[dict], str | None]:
     """Validate one file; return (diagnostics, read/parse failure message)."""
     try:
         document = load(path)
@@ -54,6 +55,7 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
                 "level": "error",
                 "line": exc.line,
                 "message": str(exc),
+                "host_dependent": False,
             }
         ], None
     except Exception as exc:
@@ -65,7 +67,7 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
         )
 
     try:
-        result = validate(document, final=final)
+        result = validate(document, final=final, fragment=fragment)
     except Exception as exc:
         # As above: validating reads the files the document refers to, too.
         return [], (
@@ -79,6 +81,9 @@ def _validate_path(path: Path, *, final: bool = False) -> tuple[list[dict], str 
             "level": d.level,
             "line": d.line,
             "message": d.message,
+            # Always present, so the schema does not depend on the mode: false
+            # unless --fragment found what the including document may settle.
+            "host_dependent": d.host_dependent,
         }
         for d in result.diagnostics
     ], None
@@ -113,7 +118,7 @@ def _run_validate(args: argparse.Namespace) -> int:
         else:
             targets = [path]
         for target in targets:
-            diagnostics, failure = _validate_path(target, final=args.final)
+            diagnostics, failure = _validate_path(target, final=args.final, fragment=args.fragment)
             if failure:
                 failures.append(failure)
                 continue
@@ -407,6 +412,7 @@ def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict
         return load_template(path), answers, [], None
     except FrontmatterError as exc:
         diagnostic = frontmatter_diagnostic(exc)
+        # No host_dependent: assembly output is never a fragment-mode result (#39).
         return None, None, [{"rule": diagnostic.rule, "level": diagnostic.level,
                              "message": diagnostic.message, "line": diagnostic.line}], None
     except (OSError, UnicodeDecodeError) as exc:
@@ -518,6 +524,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Check that documents are ready for signature: a remaining placeholder, "
             "drafting note, or template construct is an error (§15.9)."
+        ),
+    )
+    validate.add_argument(
+        "--fragment",
+        action="store_true",
+        help=(
+            "Validate each file as an include fragment or attachment file on its own (§12.2, §12.4): "
+            "no frontmatter is expected, and what only the including document can settle (a party, "
+            "side, attachment or question it declares, a section or term it defines) is reported "
+            "with \"host_dependent\": true in JSON."
         ),
     )
     validate.add_argument(

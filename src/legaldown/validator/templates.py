@@ -27,7 +27,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Line, _Recorder
+from .result import Depends, Line, _Recorder
 
 _CURRENCY_RE = re.compile(r"[A-Z]{3}")
 _LINE_BREAK_RE = re.compile(r"[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
@@ -213,8 +213,8 @@ def check_questions(
 
     line = line_of("questions")  # of the declaration each diagnostic is about
 
-    def invalid(message: str) -> None:
-        result.error("question-invalid", message, line=line)
+    def invalid(message: str, depends: Depends | None = None) -> None:
+        result.error("question-invalid", message, line=line, depends=depends)
 
     if questions is not None and not isinstance(questions, dict):
         invalid("'questions' must be a map of question id to declaration (§15.2).")
@@ -258,9 +258,11 @@ def check_questions(
     if template:
         for pid in blanks:
             if pid not in declared and pid in YAML_KEYWORDS:
+                # A fragment's host may declare the question, which makes the id fine (#39).
                 invalid(
                     f"Placeholder id '{pid}' is read by YAML as a boolean or null, so it "
-                    f"cannot be answered portably in a template (§15.2)."
+                    f"cannot be answered portably in a template (§15.2).",
+                    Depends.FRONTMATTER,
                 )
 
 
@@ -468,14 +470,20 @@ def _merged(text: str, *needles: str) -> list[int]:
 BRACE_STRAY = "'{{' does not begin a directive and is literal text; write '\\{{' if that is intended (§11.4)."
 
 
-def _choose_problems(directive: Directive, questions: Any) -> list[str]:
+def _choose_issues(directive: Directive, questions: Any) -> list[tuple[Depends | None, str]]:
     """Every way a ``{{choose:}}`` fails to list exactly the answers of a
-    declared decision question (choose-invalid, §15.5), as messages."""
-    problems: list[str] = []
+    declared decision question (choose-invalid, §15.5), as ``(depends,
+    message)``. *depends* is ``Depends.FRONTMATTER`` for a question that is not
+    declared here, which a fragment's host may declare (#39); the phrases are
+    only compared with a declared question's answers, so a problem with them is
+    the directive's own."""
+    problems: list[tuple[Depends | None, str]] = []
     qid = directive.positional or ""
     qtype = question_type(questions, qid)
     if qtype not in DECISION_QUESTION_TYPES:
-        problems.append(f"'{directive.source}' must name a declared boolean or choice question (§15.5).")
+        # Declared as a value question it is wrong wherever it is read.
+        depends = Depends.FRONTMATTER if qtype is None else None
+        problems.append((depends, f"'{directive.source}' must name a declared boolean or choice question (§15.5)."))
     elif qtype == "boolean" or _choices_problem(questions[qid].get("choices")) is None:
         # Malformed choices are question-invalid; there is nothing to match.
         answers = (
@@ -485,20 +493,23 @@ def _choose_problems(directive: Directive, questions: Any) -> list[str]:
         extra = [param for param in directive.params if param not in answers]
         repeated = [param for param in dict.fromkeys(directive.duplicates) if param in answers]
         if missing:
-            problems.append(
+            problems.append((
+                None,
                 f"'{directive.source}' lists no phrase for {', '.join(missing)}: every answer "
-                f"to '{qid}' needs one (§15.5)."
-            )
+                f"to '{qid}' needs one (§15.5).",
+            ))
         if extra:
-            problems.append(
+            problems.append((
+                None,
                 f"'{directive.source}' lists {', '.join(extra)}, which "
-                f"{'is not an answer' if len(extra) == 1 else 'are not answers'} to '{qid}' (§15.5)."
-            )
+                f"{'is not an answer' if len(extra) == 1 else 'are not answers'} to '{qid}' (§15.5).",
+            ))
         if repeated:
-            problems.append(
+            problems.append((
+                None,
                 f"'{directive.source}' lists {', '.join(repeated)} more than once; each answer "
-                f"has one phrase (§15.5)."
-            )
+                f"has one phrase (§15.5).",
+            ))
     return problems
 
 
@@ -512,16 +523,16 @@ def choose_problem(directive: Directive, questions: Any) -> str | None:
     never as choose-invalid."""
     if directive.name != "choose" or directive.malformed:
         raise ValueError(f"not a well-formed {{{{choose:}}}}: {directive.source!r}")
-    problems = _choose_problems(directive, questions)
-    return problems[0] if problems else None
+    issues = _choose_issues(directive, questions)
+    return issues[0][1] if issues else None
 
 
 def check_choose(directive: Directive, questions: Any, result: _Recorder) -> None:
     """Report a ``{{choose:}}`` that does not list exactly the answers of a
     declared decision question (choose-invalid, §15.5), and any ``{{`` in
     its phrases, which is literal text (brace-stray)."""
-    for problem in _choose_problems(directive, questions):
-        result.error("choose-invalid", problem)
+    for depends, problem in _choose_issues(directive, questions):
+        result.error("choose-invalid", problem, depends=depends)
     for offset in range(2, len(directive.source) - 1):
         if directive.source.startswith("{{", offset) and not is_escaped(directive.source, offset):
             result.warning("brace-stray", BRACE_STRAY)

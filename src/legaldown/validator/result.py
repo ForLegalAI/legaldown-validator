@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Literal
 
 
@@ -39,12 +40,36 @@ class Diagnostic:
     reports, which a document parsed from source has (``parse``)
     and one built from a dict has not (None). Compare diagnostics by their
     fields, not with one built without a line.
+
+    ``host_dependent`` is True only in a result of ``validate(fragment=True)``,
+    for a finding that the document including the fragment may resolve by
+    declaring or defining what the fragment uses (§12.2, §12.4): a party, a
+    side, an attachment, a question, a section or a term. It is a property of
+    how the fragment was validated, so two findings that differ only by it
+    are different findings.
     """
     rule: str
     level: str  # "error" | "warning" | "info"
     message: str
     line: int | None = None
     file: str = ""
+    host_dependent: bool = False
+
+
+class Depends(Enum):
+    """What a finding needs from outside the document to be settled; a finding
+    that needs nothing is intrinsic (``None``, the default). Internal: the
+    validator's own classification, which ``Diagnostic.host_dependent``
+    publishes for a fragment (#39), and which a document whose frontmatter
+    cannot be read uses to drop what that frontmatter might have declared (#43).
+    The reason is always computed, whatever the mode."""
+
+    #: A declaration in the frontmatter of the document that includes the
+    #: fragment (§3): a party, a side, an attachment, a question.
+    FRONTMATTER = "frontmatter"
+    #: A section, anchor or definition in the including document's *body*, or
+    #: one that it imports (§7.5, §12.2): a ``{{ref:}}`` or ``{{term:}}`` target.
+    BODY = "body"
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -214,6 +239,11 @@ class _Recorder(ValidationResult):
     caller gets."""
     #: The ``{{term:}}`` targets met, for the unreferenced-definition check.
     used_terms: set[str] = field(default_factory=set)
+    #: The findings of these reasons are not recorded at all (``Depends``).
+    suppress: frozenset[Depends] = frozenset()
+    #: Whether the document is validated as a fragment: a finding with a
+    #: reason is then ``host_dependent``, and is not otherwise.
+    fragment: bool = False
     #: The lines diagnostics are recorded at by default (``at``), innermost last.
     _lines: list[Line] = field(default_factory=list, repr=False, compare=False)
 
@@ -227,27 +257,32 @@ class _Recorder(ValidationResult):
         finally:
             self._lines.pop()
 
-    def _record(self, rule: str, level: str, message: str, line: Line) -> None:
+    def _record(self, rule: str, level: str, message: str, line: Line, depends: Depends | None) -> None:
+        if depends is not None and depends in self.suppress:
+            return  # before the line is looked for: a finding dropped costs nothing
         if line is None and self._lines:
             line = self._lines[-1]
         if callable(line):
             line = line()
-        self.diagnostics.append(Diagnostic(rule=rule, level=level, message=message, line=line))
+        self.diagnostics.append(Diagnostic(
+            rule=rule, level=level, message=message, line=line,
+            host_dependent=self.fragment and depends is not None,
+        ))
 
-    def error(self, rule: str, message: str, *, line: Line = None) -> None:
+    def error(self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None) -> None:
         """Record an Error-level diagnostic under stable rule id *rule*, at
-        *line* (``at``)."""
-        self._record(rule, "error", message, line)
+        *line* (``at``); *depends* is what it needs from outside the document."""
+        self._record(rule, "error", message, line, depends)
 
-    def warning(self, rule: str, message: str, *, line: Line = None) -> None:
+    def warning(self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None) -> None:
         """Record a Warning-level diagnostic under stable rule id *rule*, at
-        *line* (``at``)."""
-        self._record(rule, "warning", message, line)
+        *line* (``at``); *depends* is what it needs from outside the document."""
+        self._record(rule, "warning", message, line, depends)
 
-    def info(self, rule: str, message: str, *, line: Line = None) -> None:
+    def info(self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None) -> None:
         """Record an Info-level diagnostic under stable rule id *rule*, at
-        *line* (``at``)."""
-        self._record(rule, "info", message, line)
+        *line* (``at``); *depends* is what it needs from outside the document."""
+        self._record(rule, "info", message, line, depends)
 
     def result(self) -> ValidationResult:
         """What was recorded, as the plain ``ValidationResult``."""
