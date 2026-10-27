@@ -16,7 +16,7 @@ import pytest
 
 import legaldown
 from legaldown import Document, load, parse, validate
-from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
+from legaldown.cli import EXIT_DIAGNOSTICS, main
 from legaldown.files import (
     has_uri_scheme,
     is_absolute_reference,
@@ -743,8 +743,11 @@ def test_cli_document_root_reports_a_path_that_escapes_it(tree, capsys):
     assert main(["validate", str(doc), "--document-root", str(tree / "root")]) == EXIT_DIAGNOSTICS
     out = capsys.readouterr().out
     assert out.count("[path-outside-root]") == 1 and f"{doc}:9:" in out
-    assert main(["validate", str(doc)]) == EXIT_OK  # no root: no containment check
-    assert "path-outside-root" not in capsys.readouterr().out
+    # No root: no containment check. A loader is never asked for ../shared.lgd, which assembly
+    # refuses as unreadable, so it is include-file-missing, and not path-outside-root (#35).
+    assert main(["validate", str(doc)]) == EXIT_DIAGNOSTICS
+    out = capsys.readouterr().out
+    assert "path-outside-root" not in out and out.count("[include-file-missing]") == 1
 
 
 def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree, capsys, monkeypatch):
@@ -753,7 +756,10 @@ def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree,
     assert capsys.readouterr().out.count("[path-outside-root]") == 1
     assert main(["validate", "sub/doc.lgd", "--document-root", "sub"]) == EXIT_DIAGNOSTICS
     assert capsys.readouterr().out.count("[path-outside-root]") == 2
-    assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_OK
+    # Within the root, nothing leads out of it; the fragment cannot be read from beside the document all the same.
+    assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_DIAGNOSTICS
+    out = capsys.readouterr().out
+    assert "[path-outside-root]" not in out and out.count("[include-file-missing]") == 1
 
 
 def test_cli_reports_a_path_that_is_not_relative_with_or_without_a_root(tree, capsys):

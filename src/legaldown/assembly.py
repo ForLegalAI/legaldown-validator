@@ -70,7 +70,7 @@ from .parser import (
 from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
-from .validator.fragments import FragmentFile, FragmentKind, fragment_findings
+from .validator.fragments import FragmentFile, FragmentKind, fragment_findings, nested_includes, noun
 from .validator.helpers import is_positive_numeric, is_valid_money_amount
 from .validator.patterns import DURATION_UNITS, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
 from .validator.result import Diagnostic
@@ -81,7 +81,7 @@ from .validator.templates import (
     is_drafting_note,
     question_type,
 )
-from .validator.units import find_markers, is_include_only, own_presence
+from .validator.units import find_markers, include_paragraph, own_presence
 
 __all__ = [
     "frontmatter_diagnostic",
@@ -487,7 +487,6 @@ class _Source:
     #: marker there is a container marker (§15.7.3).
     item_lines: frozenset[int] = frozenset()
     malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
-    include_lines: list[int] = field(default_factory=list)  # where ``{{include:}}`` is written
 
 
 def _unix(text: str) -> tuple[str, str]:
@@ -531,7 +530,7 @@ def _read_body(
         for inner, inner_block, base, _leaf in _content([span], [block]):
             if inner_block.kind == "quote" and is_drafting_note(inner_block):
                 source.notes.update(range(base + inner.start, base + inner.end))
-    source.occurrences, source.malformed, source.include_lines = _occurrences(layout, document, lines)
+    source.occurrences, source.malformed = _occurrences(layout, document, lines)
     source.item_lines = frozenset(items)
     return source
 
@@ -580,13 +579,10 @@ def _read_paragraph(
                                   line, marker.source))
     if block.kind != "paragraph":
         return
-    at = _last_marker_at(block.text, marker.source) if marker is not None else -1
-    text = block.text[:at] if at >= 0 else block.text
-    directives = lex(block.text).directives
-    if is_include_only(text, directives):
-        include = next(d for d in directives if d.name == "include")
-        path = posixpath.normpath(include.positional)
-        source.includes.append(_Include(span.start, span.end, path))
+    # The validator's own reading of an include paragraph, so that both agree (#35).
+    include = include_paragraph(block.text, lex(block.text))
+    if include is not None:
+        source.includes.append(_Include(span.start, span.end, posixpath.normpath(include.positional)))
 
 
 def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:
@@ -617,16 +613,14 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
 
 def _occurrences(
     layout: _Layout, document: Document, lines: list[str]
-) -> tuple[list[_Occurrence], list[Directive], list[int]]:
+) -> tuple[list[_Occurrence], list[Directive]]:
     """Every placeholder and choice in the body, lexed block by block as the
     validator lexes them (``_content``), so a code span or comment hides the
     same ones and one left open in a block does not run into the next. No
     directive is recognized in code or raw HTML (§11.4), in list items and
-    block quotes too. Also the malformed ones, and the lines each
-    ``{{include:}}`` is written on."""
+    block quotes too. Also the malformed ones."""
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
-    includes: list[int] = []
     for _section, _index, span, top in _pairs(layout, document):
         for block, model, base, leaf in _content([span], [top]):
             if not leaf:
@@ -641,8 +635,6 @@ def _occurrences(
             offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
             for directive in lex(text).directives:
                 row = bisect.bisect_right(offsets, directive.start) - 1
-                if directive.name == "include" and not directive.malformed:
-                    includes.append(start + row)
                 if directive.name not in ("placeholder", "choose"):
                     continue
                 if directive.malformed:
@@ -654,7 +646,7 @@ def _occurrences(
                 found.append(_Occurrence(directive, start + row, column,
                                          column + directive.end - directive.start,
                                          in_table=_kind(block) == "table"))
-    return found, malformed, includes
+    return found, malformed
 
 
 # ── Frontmatter ──────────────────────────────────────────────────
@@ -940,17 +932,18 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
         _front, body = _split(text, sub_document)
         subs[path] = _read_body(path, body, sub_document, declared, template=template)
         subs[path].newline = newline
-        problems += _file_problems(path, kind, subs[path], sub_document, template)
+        problems += _file_problems(path, kind, sub_document, template)
     return subs, problems
 
 
-def _file_problems(path: str, kind: FragmentKind, source: _Source, document: Document, template: bool) -> list[Diagnostic]:
+def _file_problems(path: str, kind: FragmentKind, document: Document, template: bool) -> list[Diagnostic]:
     """The Full checks on a loaded file (§16.10, §16.11, §16.12) that the
     assembled output depends on; the file is read here, so they are made
     here rather than left to a validator that may not read it. They are the
     validator's own (``fragment_findings``, #35), one for each offender, at
     its line in the file: this refuses the template, the validator reports them."""
-    what = "fragment" if kind == "include" else "attachment file"
+    fragment = FragmentFile(path, document)
+    lexed = cache(lex)
     problems = [
         Diagnostic(
             finding.rule, "error",
@@ -960,18 +953,22 @@ def _file_problems(path: str, kind: FragmentKind, source: _Source, document: Doc
             else f"{finding.message} The template is not assembled.",
             line=finding.line, file=path,
         )
-        for finding in fragment_findings(FragmentFile(path, document), kind=kind, template=template)
+        for finding in fragment_findings(fragment, kind=kind, template=template, lex_fragment=lexed)
     ]
-    # Outside a template, an include in a drafting note is removed with it,
-    # unread (§15.6); in one, it is template-fragment-invalid wherever it is
-    # (reported above).
-    if not template and any(line not in source.notes for line in source.include_lines):
-        problems.append(Diagnostic(
-            "include-file-missing", "error",
-            f"The {what} '{path}' holds an {{{{include:}}}}; an include in an included or attached "
-            f"file is not assembled, so the template is not assembled.",
-            line=None, file=path,
-        ))
+    # Outside a template an include in a fragment or attachment file is allowed (§12.2), but
+    # assembly does not assemble it, and refuses (an include in a drafting note is removed
+    # with it, unread, §15.6). In a template it is template-fragment-invalid (reported above).
+    if not template:
+        problems += [
+            Diagnostic(
+                "include-file-missing", "error",
+                f"{noun(kind, 'the').capitalize()} '{path}' holds an {{{{include:}}}}, "
+                f"'{{{{include: {include.written}}}}}'; an include in an included or attached file is "
+                f"not assembled, so the template is not assembled.",
+                line=line, file=path,
+            )
+            for include, line in nested_includes(fragment, lexed)
+        ]
     return problems
 
 

@@ -262,9 +262,12 @@ class Template:
             # is wrong with them where it is (#35). Assembly has read the same files and
             # reports the same findings in `t.problems`, so those are not counted twice:
             # template-fragment-invalid is the one rule of both (`TEMPLATE_RULES`).
+            # (A file assembly could not parse is in `t.problems` by its path, with the
+            # error that stopped it, and nothing else of it is counted.)
+            read = set(t.subs) | {d.file for d in t.problems if d.file}
             problems += [
                 d for d in self.validation.diagnostics
-                if d.level == "error" and d.rule in rules and d.file not in t.subs
+                if d.level == "error" and d.rule in rules and d.file not in read
             ]
             problems += _placeholder_problems(t)
         return tuple(problems)

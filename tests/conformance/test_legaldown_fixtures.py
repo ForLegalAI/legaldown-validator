@@ -198,15 +198,17 @@ def _validate_file(path: Path, config: dict):
     # "keep": a fixture with frontmatter that cannot be read is validated, as the
     # CLI does, not refused: validate reports frontmatter-invalid-yaml (#43).
     document = parse(path.read_text(encoding="utf-8"), filename=path.name, on_frontmatter_error="keep")
-    root = None
-    if "document_root" in config:
-        # The root is the case's directory by the config; the document is where its
-        # file is, as it is for a loaded one, so its paths are read from there.
-        root = path.parent / config["document_root"]
-        document = replace(document, path=path.absolute())
-    # Reads nothing, as for a document without a path: one with a path would be
-    # given the files beside it, and the cases are validated alone.
-    return validate(document, final=bool(config.get("final")), document_root=root, resolve=lambda _path: None)
+    if "document_root" not in config:
+        # A document without a path reads nothing, and does not say that anything is missing:
+        # the single-file cases are validated alone, and `resolve=lambda _: None` would say
+        # that every include is (include-file-missing, #35).
+        return validate(document, final=bool(config.get("final")))
+    # The root is the case's directory by the config; the document is where its file is, as
+    # it is for a loaded one, so its paths are read from there, and so are the files it names,
+    # as `legaldown validate --document-root` reads them.
+    root = path.parent / config["document_root"]
+    document = replace(document, path=path.absolute())
+    return validate(document, final=bool(config.get("final")), document_root=root, resolve=file_loader(path.parent))
 
 
 @pytest.mark.parametrize("case", list(_iter_valid_cases()))

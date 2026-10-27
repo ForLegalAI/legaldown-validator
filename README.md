@@ -469,14 +469,19 @@ it names (§12.2). When `validate` can read files (a loaded document reads from 
 `resolve=`), it reads each such fragment once and reports, in the fragment's own file and at the
 line in it (`Diagnostic.file` is the path from the document's directory, `parts/a.lgd`):
 
-- `include-file-missing` at the include of a fragment that is not there (a path that leads out of the
-  document's directory is not asked for, and is neither found nor missing: `document_root` judges
-  where it leads);
+- `include-file-missing` at the include of a fragment that is not there, or that cannot be read
+  because its path leads out of the document's directory (`../x.lgd`) or holds a backslash, which a
+  loader is never asked for and assembly refuses the template for (an absolute path or one with a
+  URI scheme is `path-not-relative` alone, and a path that leaves a `document_root` is
+  `path-outside-root` alone);
 - `include-has-frontmatter` and `include-has-h1` (§16.11), `include-has-frontmatter` also for a block
   whose YAML cannot be read;
 - `include-heading-skip`: the headings of every fragment are placed where its include paragraph is,
   and one that skips a level (§4.1) is reported at the heading, in its file; a heading of the document
-  that follows one of a fragment's is reported at its own line. This is one pass with every include
+  that follows one of a fragment's is reported at its own line; a `heading-skip` of the document
+  that a fragment read between the headings fills (`# One`, an include of `## Deep`, `### Three`) is
+  not reported, as §4.1 judges the combined document, unless an include before that heading is not
+  known (missing, not LegalDown, unreadable). This is one pass with every include
   present: a template's conditional includes are not tried in every combination (§16.11), which
   [CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612) lists with the other limits;
 - in a template, `template-fragment-invalid` for what §15.3 forbids in a fragment (a condition, a

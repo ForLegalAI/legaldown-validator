@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cache, cached_property
 from typing import Literal
 
 from ..directives import Lexed, lex
@@ -106,11 +106,20 @@ def _line(line: Line) -> int | None:
     return line() if callable(line) else line
 
 
+def noun(kind: FragmentKind, article: Literal["a", "the", ""] = "") -> str:
+    """What a message calls a file of *kind*, with its article: ``fragment``,
+    ``a fragment``, ``an attachment file``, ``the fragment``."""
+    name = "fragment" if kind == "include" else "attachment file"
+    if article == "a":
+        return f"{'a' if kind == 'include' else 'an'} {name}"
+    return f"the {name}" if article == "the" else name
+
+
 def _subject(kind: FragmentKind, path: str) -> str:
     """How a message names the file: ``The fragment 'part.lgd'``; for one validated
     on its own, which has no name here, ``The fragment``."""
-    what = "fragment" if kind == "include" else "attachment file"
-    return f"The {what} '{path}'" if path else f"The {what}"
+    name = noun(kind, "the").capitalize()
+    return f"{name} '{path}'" if path else name
 
 
 def shape_findings(document: Document, where: Locator, kind: FragmentKind, *, path: str = "") -> list[Finding]:
@@ -121,7 +130,6 @@ def shape_findings(document: Document, where: Locator, kind: FragmentKind, *, pa
     two checks under the other name). *document* is the file as given, with the
     frontmatter it wrongly has; *where* locates its parts."""
     subject = _subject(kind, path)
-    what = "fragment" if kind == "include" else "attachment file"
     found = []
     # A parsed one that opens with the block, empty or not (the Locator knows,
     # while the document still fits its source), or one built in code with any
@@ -133,7 +141,7 @@ def shape_findings(document: Document, where: Locator, kind: FragmentKind, *, pa
         error = document.frontmatter_error
         found.append(Finding(
             f"{kind}-has-frontmatter",
-            f"{subject} has frontmatter, which {'a ' + what} cannot have: the document that "
+            f"{subject} has frontmatter, which {noun(kind, 'a')} cannot have: the document that "
             f"{'includes' if kind == 'include' else 'attaches'} it supplies the metadata "
             f"({'§12.2' if kind == 'include' else '§12.4'}). It is not read.",
             (error.line or 1) if error is not None else where.first_key(),
@@ -142,7 +150,7 @@ def shape_findings(document: Document, where: Locator, kind: FragmentKind, *, pa
         if section.level == 1:
             found.append(Finding(
                 f"{kind}-has-h1",
-                f"{subject} has a level 1 heading, '{section.title}', which {'a ' + what} cannot have: "
+                f"{subject} has a level 1 heading, '{section.title}', which {noun(kind, 'a')} cannot have: "
                 + ("the including document writes the heading around it (§12.2)."
                    if kind == "include" else "the renderer writes the attachment's heading from its title (§12.4)."),
                 where.heading(index),
@@ -224,7 +232,7 @@ def fragment_findings(
     kind: FragmentKind,
     template: bool,
     shape: bool = True,
-    lex_fragment: Callable[[str], Lexed] = lex,
+    lex_fragment: Callable[[str], Lexed] | None = None,
 ) -> list[Finding]:
     """The findings on a file read for a document: its shape (``shape_findings``)
     unless *shape* is False, and, when the document is a *template*, what §15.3
@@ -235,6 +243,7 @@ def fragment_findings(
     check of what the file may hold, not a validation of it."""
     document = fragment.document
     found = shape_findings(document, fragment.where, kind, path=fragment.path) if shape else []
+    lex_fragment = lex_fragment or cache(lex)  # each text lexed once for the scan and the markers
     if template:
         # The throwaway recorder takes what the body check says of the file for itself
         # (insertion-boundary, drafting-note-def, def-term-variable, ...): the file is not
@@ -245,6 +254,18 @@ def fragment_findings(
             document, fragment.where, scan, find_markers(document, lex_fragment), kind, path=fragment.path
         )
     return found
+
+
+def nested_includes(
+    fragment: FragmentFile, lex_fragment: Callable[[str], Lexed] | None = None
+) -> list[tuple[IncludeDirective, int | None]]:
+    """The ``{{include:}}`` directives a file holds outside its drafting notes, in order,
+    each with its line: those that are allowed outside a template (§12.2) and
+    that assembly does not assemble."""
+    scan = check_template_body(
+        fragment.document, lex_fragment or cache(lex), _Recorder(), template=False, where=fragment.where
+    )
+    return [(include, _line(include.line)) for include in scan.includes if not include.in_note]
 
 
 def skips(previous: int | None, level: int) -> bool:
@@ -272,7 +293,8 @@ def include_heading_skips(
     where: Locator,
     splices: dict[int | None, list[FragmentFile]],
     first: int | None,
-) -> list[HeadingSkip]:
+    unread: Collection[int | None] = (),
+) -> tuple[list[HeadingSkip], set[int]]:
     """The headings that skip a level when every fragment is spliced in where its
     include paragraph is (§12.2, §16.11): *splices* are the fragments after the
     heading of each section (None: before the first heading), in order, and *first*
@@ -283,7 +305,14 @@ def include_heading_skips(
     which this does not try. A heading is reported where it is: a fragment's heading
     in its file, and a heading of the document after a fragment's at its own line.
     A heading of the document after one of its own is ``heading-skip``'s, not
-    reported again."""
+    reported again.
+
+    Also returned: the headings of the document that skip a level after the one
+    before them in the document (``heading-skip``), and do not in the combined
+    document, because a fragment between them fills the level. *unread* are the
+    sections (None: the preamble) that hold an include paragraph whose fragment
+    was not read: what lies before the heading after such a section is not
+    known, and its ``heading-skip`` stands."""
     found: list[HeadingSkip] = []
     reported: set[tuple[str, int]] = set()
     last = first  # the level of the heading before, in the combined document
@@ -303,13 +332,16 @@ def include_heading_skips(
 
     splice(splices.get(None, []))
     own = first  # the level of the document's own previous heading
+    filled: set[int] = set()
     for index, section in enumerate(document.sections):
         level = _level(section.level)
         if from_fragment and skips(last, level) and not skips(own, level):
             found.append(HeadingSkip("", where.heading(index), _message(section.title, last, level)))
+        elif skips(own, level) and not skips(last, level) and (None if index == 0 else index - 1) not in unread:
+            filled.add(index)
         last, from_fragment, own = level, False, level
         splice(splices.get(index, []))
-    return found
+    return found, filled
 
 
 def _message(title: str, last: int | None, level: int) -> str:
@@ -335,7 +367,7 @@ def check_includes(
     template: bool,
     first_level: int | None,
     lex_fragment: Callable[[str], Lexed] = lex,
-) -> None:
+) -> set[int]:
     """What the include paragraphs of *document* require (§12.2, §16.11), and what the
     fragments they name require of themselves, recorded in *result* at the line
     of the include or, in a fragment, of its own text, with the fragment's path as
@@ -346,8 +378,9 @@ def check_includes(
     ``include-not-legaldown`` needs only the path, so it is made without *files*.
     With *files* (the validation has a ``resolve``) each fragment is read once.
     A path that is not there is ``include-file-missing`` at its include, one
-    finding for each include; a path a loader is never asked for, because it leads
-    out of the document's directory (§2.3), is not read and is neither. A fragment
+    finding for each include, as is a path a loader is never asked for, because it
+    leads out of the document's directory (§2.3) or holds a backslash: assembly
+    refuses the template for it too. A fragment
     that is there is checked for its shape and, in a *template*, its content
     (``fragment_findings``), once for each file however often it is included, and
     its headings are joined to the document's for ``include-heading-skip``
@@ -356,14 +389,22 @@ def check_includes(
     followed: ``include-cycle`` is not implemented, and outside a template they
     are allowed (§12.2).
 
+    Returned: the headings of the document whose ``heading-skip`` the combined document
+    makes valid (``include_heading_skips``), which the caller drops, as the combined
+    document is the one §4.1 judges when every fragment between is read (§12.2).
+
     A path that file reference checks judged (*judged*: the places they reported,
     ``FileReferences.reported``) draws that finding alone (path-not-relative, an
     absolute path or one with a URI scheme; path-outside-root): the same path is
     not also missing, or not LegalDown."""
     splices: dict[int | None, list[FragmentFile]] = {}
+    unread: set[int | None] = set()  # the sections with an include paragraph whose fragment is not known
     seen: set[str] = set()
     for include in includes:
-        if not include.paragraph or include.at in judged:
+        if not include.paragraph:
+            continue
+        if include.at in judged:
+            unread.add(include.section)
             continue
         if not include.path.endswith(LEGALDOWN_EXTENSIONS):
             result.error(
@@ -372,26 +413,30 @@ def check_includes(
                 f"file (§12.2). It is not read.",
                 line=include.line,
             )
+            unread.add(include.section)
             continue
         if files is None:
             continue
-        # A path a LoadFile is never asked for (it leads out of the document's directory,
-        # §2.3) is not read, so it is neither found nor missing: path-outside-root judges
-        # where it leads, given a root.
+        # A path a LoadFile is never asked for (a backslash, or leading out of the document's
+        # directory, §2.3) cannot be read, and assembly refuses the template for it as it
+        # does for a file that is not there. It is not path-not-relative (an absolute path or a
+        # URI scheme, judged above), nor path-outside-root, which judges where it leads.
         relative = relative_path(include.written)
-        if relative is None:
-            continue
-        fragment = files.read(relative)
+        fragment = None if relative is None else files.read(relative)
         # Asked about itself only when something was read: the file system is the loader's.
         if fragment is not None and files.is_own(fragment.path):
+            unread.add(include.section)
             continue
         if fragment is None:
             result.error(
                 "include-file-missing",
-                f"The fragment '{include.written}' cannot be read: there is no such file, or it is not "
-                f"UTF-8 text (§12.2, §16.11).",
+                f"The fragment '{include.written}' cannot be read: "
+                + ("it is outside the directory the document is read from, or is not a relative path "
+                   "that can be read (§2.3)." if relative is None
+                   else "there is no such file, or it is not UTF-8 text (§12.2, §16.11)."),
                 line=include.line,
             )
+            unread.add(include.section)
             continue
         splices.setdefault(include.section, []).append(fragment)
         if fragment.path in seen:
@@ -417,7 +462,10 @@ def check_includes(
                 fragment, kind="attachment", template=True, shape=False, lex_fragment=lex_fragment
             ):
                 result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
-    if splices:
-        for skip in include_heading_skips(document, where, splices, first_level):
-            result.error("include-heading-skip", skip.message, line=skip.line, file=skip.file)
+    if not splices:
+        return set()
+    skipped, filled = include_heading_skips(document, where, splices, first_level, unread)
+    for skip in skipped:
+        result.error("include-heading-skip", skip.message, line=skip.line, file=skip.file)
+    return filled
 

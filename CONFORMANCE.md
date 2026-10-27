@@ -374,10 +374,15 @@ Decisions the specification leaves open:
 - **A path already judged is judged once.** An include path that file reference checks reported
   (`path-not-relative`, an absolute path or one with a URI scheme; `path-outside-root`, given a
   `document_root`) draws that finding alone: it is not also `include-file-missing` or
-  `include-not-legaldown`. A path that leads out of the document's directory (`../x.lgd`) with no root
-  is valid (§2.3), but a `LoadFile` is never asked for it (`legaldown.files.relative_path`), so it is
-  neither found nor missing: it is not read, as `amends.file` and attachment files outside the
-  directory are not. A document with no path, and no `resolve`, reads nothing.
+  `include-not-legaldown`. A path that leads out of the document's directory (`../x.lgd`) with no
+  root is valid as a path (§2.3), but a `LoadFile` is never asked for it
+  (`legaldown.files.relative_path`), as for one that holds a backslash, and assembly refuses a template
+  for it as for a file that is not there. So when the validation can read files it is
+  `include-file-missing` too, at the include, with a message that says the file is outside the
+  document's directory or not a readable relative path; the two agree. It is not `path-not-relative`
+  (an absolute path or a URI scheme, #104's) and, given a root it leaves, not `path-outside-root`
+  as well. (`amends.file` and attachment files outside the directory are still as if not asked for.)
+  A document with no path, and no `resolve`, reads nothing and says nothing.
 - **`resolve=` and the default loader.** A document loaded with `legaldown.load` (and so the CLI)
   now has its fragments read from beside it: a fragment that is missing is an Error on a file that
   was clean. `resolve=lambda path: None` says every file is missing, which `include-file-missing`
@@ -393,7 +398,11 @@ Decisions the specification leaves open:
   the heading of the section holding its include paragraph (before the first heading, for the
   preamble), and are reported where they are: a fragment's heading in its file, a heading of the
   document that follows a fragment's at its own line; the document's own `heading-skip` is not
-  reported a second time. `include-anchor-duplicate` is not implemented. A reference into a
+  reported a second time. Conversely, a `heading-skip` of the document that a fragment read between
+  the headings fills is dropped (`# One`, an include of `## Deep`, `### Three`): §4.1 judges the
+  combined document (§12.2). That holds only when every include paragraph in the section before the
+  heading was read; with one missing, not LegalDown, judged as a path, or unreadable, the plain
+  per-document judgement stands. `include-anchor-duplicate` is not implemented. A reference into a
   fragment (`{{ref:}}` to its section) is still `ref-broken`: fragments are not joined to the
   document's identifiers.
 - **What of a fragment is not reported by the document that includes it.** The fragment is not
@@ -411,8 +420,16 @@ Decisions the specification leaves open:
   Assembly reports them as it always did, now one for each offender and with the file and line
   (`Diagnostic.file`, shown by `legaldown assemble` as `part.lgd:3`). `Template.problems` does not
   count the validator's `template-fragment-invalid` of a file assembly read a second time (its
-  `d.file` is one of the files it read); `Template.validation` keeps both, as advice. The
-  other `include-*` ids are not template rules.
+  `d.file` is one of the files it read, or one it could not parse, which is in `problems` by its
+  path with the error that stopped it); `Template.validation` keeps both, as advice. The
+  other `include-*` ids are not template rules. Assembly and the validator read an include paragraph
+  with the same function (`include_paragraph`). Assembly's own refusal of an `{{include:}}` in a
+  fragment or attachment file of a document that is not a template (§12.2 allows it; it is not
+  assembled) is an `include-file-missing` at the include's line, in the fragment's file, one for
+  each include outside a drafting note.
+- **Several documents, one fragment.** `legaldown validate a.lgd b.lgd`, where both include `part.lgd`,
+  reports a finding in `part.lgd` once, in the output and in the counts: findings with the same file,
+  line, rule and message are one.
 - **Silence.** An attachment file that is not there is not reported (`attachment-file-missing` is
   not implemented). The Warning that §17.5 asks for a check that is skipped, because no file could be
   read, is separate work.

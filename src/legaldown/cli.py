@@ -153,6 +153,17 @@ def _run_validate(args: argparse.Namespace) -> int:
                 continue
             collected.extend(d for d in diagnostics if d["rule"] not in ignored)
 
+    # A fragment that several documents include is found wrong once, not once for each
+    # (#35): the same finding in the same place, in the output and in the counts.
+    seen: set[tuple[Any, ...]] = set()
+    unique = []
+    for d in collected:
+        key = (d["file"], d.get("line"), d["rule"], d["message"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(d)
+    collected = unique
+
     if args.warnings_as_errors:
         for d in collected:
             if d["level"] == "warning":

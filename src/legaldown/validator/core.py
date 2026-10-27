@@ -1034,7 +1034,8 @@ def validate(
         to validate a loaded document without reading its files, validate it
         without its path (``dataclasses.replace(document, path=None)``). A path
         a loader is not asked for (``relative_path``: one that leads out of the
-        document's directory) is not read. Only the referenced file's own
+        document's directory, or holds a backslash) is not read, and an include of
+        one is ``include-file-missing``, as assembly refuses it. Only the referenced file's own
         definitions are read, not those it refers to in turn; an include a
         fragment holds is not followed (``include-cycle`` is not implemented).
     document_root:
@@ -1504,6 +1505,9 @@ def _validate(
     # The last section at each open level: (identifier, presence). An
     # alternative to it shares its number (§15.8).
     previous_sibling: dict[int, tuple[str, Presence]] = {}
+    # Where each heading-skip is among the diagnostics, for the headings that a fragment
+    # between them makes valid in the combined document (check_includes, #35).
+    heading_skips: dict[int, int] = {}
 
     for section_index, section in enumerate(document.sections):
         # An out-of-range level is an Error, but the section still gets an
@@ -1520,12 +1524,14 @@ def _validate(
             )
             level = min(max(level, 1), MAX_SECTION_LEVEL)
         if last_level == 0 and level > 1:
+            heading_skips[section_index] = len(result.diagnostics)
             result.error(
                 "heading-skip",
                 f"Heading levels must not skip. '{section.title}' is at level {level}, but the "
                 f"document has no level-1 heading before it.", line=where.heading(section_index),
             )
         elif last_level and level - last_level > 1:
+            heading_skips[section_index] = len(result.diagnostics)
             result.error(
                 "heading-skip",
                 f"Heading levels must not skip. '{section.title}' jumps from level {last_level} to {level}.", line=where.heading(section_index),
@@ -2204,7 +2210,7 @@ def _validate(
         for finding in content_findings(document, where, body, markers, mode.kind, noted=True):
             result.error(finding.rule, finding.message, line=finding.line)
     # ── Includes (§12.2, §16.11) ──
-    check_includes(
+    filled = check_includes(
         document, body.includes, result, where,
         judged=file_references.reported,
         files=None if mode.fragment else files,
@@ -2212,6 +2218,10 @@ def _validate(
         first_level=first_level,
         lex_fragment=lex_fragment,
     )
+    # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped.
+    if filled:
+        dropped = {heading_skips[index] for index in filled if index in heading_skips}
+        result.diagnostics = [d for position, d in enumerate(result.diagnostics) if position not in dropped]
     if final:
         _check_final(placeholders, chooses, body.notes, conditions, questions, result, where.key("questions"))
 
