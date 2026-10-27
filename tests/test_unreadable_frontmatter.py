@@ -6,7 +6,17 @@ import json
 import pytest
 import yaml
 
-from legaldown import Document, FrontmatterError, document_to_dict, load, parse, save, serialize, validate
+from legaldown import (
+    Document,
+    FrontmatterError,
+    document_to_dict,
+    load,
+    parse,
+    parse_template,
+    save,
+    serialize,
+    validate,
+)
 from legaldown.assembly import frontmatter_diagnostic
 from legaldown.cli import EXIT_DIAGNOSTICS, main
 
@@ -421,3 +431,102 @@ def test_a_wrong_option_is_refused_before_a_file_is_read(tmp_path):
         load(tmp_path / "nope.lgd", on_frontmatter_error="Keep")  # type: ignore[arg-type]
     with pytest.raises(FileNotFoundError):
         load(tmp_path / "nope.lgd", on_frontmatter_error="keep")
+
+
+# ── What a kept error holds, and where it is ───────────────────────
+
+@pytest.mark.parametrize("block", ["@x", "!!set {a, b}", "[unclosed", "title: A\x01b", "questions:\n  q:\n    default: !!bool maybe"])
+def test_a_kept_error_holds_no_frames(block):
+    error = _kept(f"---\n{block}\n---\n# A\n").frontmatter_error
+    assert error.__traceback__ is None
+    seen = []
+    cause = error.__cause__ or error.__context__
+    while cause is not None and cause not in seen:
+        assert cause.__traceback__ is None
+        seen.append(cause)
+        cause = cause.__cause__ or cause.__context__
+    # The YAML error is the cause, where there is one (the !!set is this parser's own).
+    assert (error.__cause__ is None) == (block == "!!set {a, b}")
+
+
+def test_a_value_its_tag_cannot_hold_says_so_and_where():
+    error = _kept("---\ntitle: T\nquestions:\n  q:\n    default: !!bool maybe\n---\n# A\n").frontmatter_error
+    assert (str(error), error.line) == ("a value its tag cannot hold: 'maybe'", 5)
+    assert isinstance(error.__cause__, KeyError)
+    error = _kept("---\ntitle: T\nquestions:\n  q:\n    default: " + "9" * 5000 + "\n---\n# A\n").frontmatter_error
+    assert error.line == 5 and str(error).startswith("a value its tag cannot hold: ")
+    assert "\n" not in str(error)
+
+
+def test_a_value_its_tag_cannot_hold_is_reported_at_its_line_by_validate():
+    document = _kept("---\ntitle: T\nquestions:\n  q:\n    default: !!bool maybe\n---\n# A\n")
+    assert _rows(document)[0] == ("frontmatter-invalid-yaml", "error", 5)
+
+
+@pytest.mark.parametrize("ending", ["\x85", "\u2028", "\u2029"])
+def test_the_line_counts_line_feeds_only_as_the_format_does(ending):
+    # YAML ends a line at NEL, LS and PS too, which the file does not: the line is the file's.
+    cases = [
+        (f"title: \"A{ending}B\"\nbad: [unclosed", 3),  # a parser error, found after the break
+        (f"title: \"A{ending}B\"\nlanguage: \x01", 3),  # a character the reader refuses
+        (f"title: \"A{ending}B\"\nquestions:\n  q:\n    default: !!bool maybe", 5),  # a value its tag cannot hold
+        (f"title: \"A{ending}B\"\nsubtitle: 'open\nlanguage: en", 3),  # a quote, where it opens
+    ]
+    for block, line in cases:
+        assert _kept(f"---\n{block}\n---\n\n# A\n\n{{{{ref: nope}}}}\n").frontmatter_error.line == line, block
+
+
+def test_the_line_of_a_set_is_counted_the_same_way():
+    assert _kept("---\n# a\n# b\n!!set {a, b}\n---\n").frontmatter_error.line == 4
+
+
+# ── Writing, and the guard ─────────────────────────────────────────
+
+def test_save_without_a_path_refuses_the_document_before_it_asks_for_one():
+    document = _kept("---\n@x\n---\n# A\n")
+    assert document.path is None
+    with pytest.raises(FrontmatterError):
+        save(document)
+
+
+def test_the_guard_raises_a_frontmatter_error_whatever_was_stored():
+    document = _kept("---\n@x\n---\n# A\n")
+    document.frontmatter_error = ValueError("by hand")  # type: ignore[assignment]
+    for write in (serialize, Document.to_dict, save):
+        with pytest.raises(FrontmatterError, match="by hand") as raised:
+            write(document)
+        assert raised.value.line is None and isinstance(raised.value.__cause__, ValueError)
+
+
+# ── Assembly, in the files it reads ────────────────────────────────
+
+_ASSEMBLED = "---\ntitle: T\n---\n\n# A\n\n{{include: f.lgd}}\n"
+
+
+def test_assembly_says_of_a_fragment_what_validate_says_with_the_fragments_file_and_line():
+    fragment = "---\ntitle: Fixture\n  bad indent: [unclosed\n---\n\nText.\n"
+    reported = validate(_kept(fragment)).diagnostics[0]
+    (assembled,) = parse_template(_ASSEMBLED, resolve=lambda path: fragment).problems
+    assert (assembled.rule, assembled.level, assembled.message, assembled.line) == (
+        reported.rule, reported.level, reported.message, reported.line,
+    )
+    assert assembled.file == "f.lgd"  # the normalised path: the message does not carry it
+
+
+def test_assembly_names_a_fragment_by_its_normalised_path():
+    template = _ASSEMBLED.replace("f.lgd", "./sub/../f.lgd")
+    (assembled,) = parse_template(template, resolve=lambda path: "---\n@x\n---\n\nText.\n").problems
+    assert assembled.file == "f.lgd"
+
+
+def test_the_command_line_names_the_fragment_file_and_its_line(tmp_path, capsys):
+    (tmp_path / "t.lgd").write_text(_ASSEMBLED, encoding="utf-8")
+    (tmp_path / "f.lgd").write_text("---\ntitle: T\n  bad: [x\n---\n\nText.\n", encoding="utf-8")
+    assert main(["assemble", str(tmp_path / "t.lgd")]) == EXIT_DIAGNOSTICS
+    shown = capsys.readouterr().err
+    message = "The frontmatter cannot be read: mapping values are not allowed here"
+    assert f"{tmp_path / 'f.lgd'}:3: error: [frontmatter-invalid-yaml] {message}" in shown
+    # The template's own is on the template.
+    (tmp_path / "t.lgd").write_text("---\n@x\n---\n\n# A\n", encoding="utf-8")
+    assert main(["assemble", str(tmp_path / "t.lgd")]) == EXIT_DIAGNOSTICS
+    assert f"{tmp_path / 't.lgd'}:2: error: [frontmatter-invalid-yaml]" in capsys.readouterr().err

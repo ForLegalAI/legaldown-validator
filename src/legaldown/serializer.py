@@ -621,6 +621,7 @@ def save(document: Document, path: str | os.PathLike[str] | None = None) -> Path
     document whose frontmatter could not be read (see ``serialize``), and
     leaves the file as it is: the text of its block is not lost.
     """
+    _check_frontmatter_read(document)  # before the path: it is the document that cannot be written
     target = document.path if path is None else path
     if target is None:
         raise ValueError("a document parsed from text or built in code has no path; pass one")

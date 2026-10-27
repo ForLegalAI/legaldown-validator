@@ -159,7 +159,9 @@ def _jsonable(value: Any, budget: list[int] | None = None, depth: int = 0) -> An
 
 def _diagnostic_dict(diagnostic: Diagnostic) -> dict[str, Any]:
     # No host_dependent: assembly output is never a fragment-mode result (#39).
-    return {"rule": diagnostic.rule, "level": diagnostic.level, "message": diagnostic.message, "line": diagnostic.line}
+    shown = {"rule": diagnostic.rule, "level": diagnostic.level, "message": diagnostic.message, "line": diagnostic.line}
+    # Of a fragment or attachment file, the template's own having none (#43).
+    return {**shown, "file": diagnostic.file} if diagnostic.file else shown
 
 
 def _placeholder_problems(t: _Template) -> list[Diagnostic]:

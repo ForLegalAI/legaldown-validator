@@ -625,18 +625,27 @@ def document_from_dict(data: dict[str, Any] | None) -> Document:
     )
 
 
+def frontmatter_message(error: BaseException) -> str:
+    """The text of the frontmatter-invalid-yaml diagnostic for *error*, one for
+    validation and assembly alike (#43): what is wrong, on one line. Where it
+    is wrong is the diagnostic's own ``line``, so the message holds no position
+    of its own and none of the snippet the YAML reader draws."""
+    return f"The frontmatter cannot be read: {error}"
+
+
 def _check_frontmatter_read(document: Document) -> None:
-    """Raise a ``FrontmatterError`` (a new one, the message and line of the
-    kept ``Document.frontmatter_error``, which is its cause) for a document
+    """Raise a ``FrontmatterError`` (a new one, with the message and line of
+    the kept ``Document.frontmatter_error``, which is its cause) for a document
     whose frontmatter could not be read (``parse(on_frontmatter_error="keep")``,
     #43), to stop whatever would write it out from its empty metadata: the
-    text of the block would be lost. The one guard of ``document_to_dict`` and
-    ``serialize`` (``save`` writes what ``serialize`` returns). Raising the
-    stored exception itself would grow its traceback at each raise and tie it
-    to the frames that raised it."""
+    text of the block would be lost. The guard of ``document_to_dict``,
+    ``serialize`` and ``save``. Raising the stored exception itself would grow
+    its traceback at each raise and tie it to the frames that raised it."""
     error = document.frontmatter_error
     if error is not None:
-        raise type(error)(str(error), error.line) from error
+        from .parser import FrontmatterError  # the parser builds on this module
+
+        raise FrontmatterError(str(error), getattr(error, "line", None)) from error
 
 
 def document_to_dict(document: Document) -> dict[str, Any]:

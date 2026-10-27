@@ -30,7 +30,7 @@ from ..directives import (
 )
 from ..files import LoadFile, file_loader, relative_path, within
 from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
-from ..models import LIST_KINDS, Amends, Document, Metadata
+from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
 from .conditions import (
@@ -1158,8 +1158,6 @@ def _validate(
     # §16.6: an Error, but "prevents rendering" (§16.1), not "stops validating":
     # the block is not read (the metadata is empty, above), and the body still is.
     if unreadable is not None:
-        from ..parser import frontmatter_message  # here for the import cycle, as below
-
         result.error("frontmatter-invalid-yaml", frontmatter_message(unreadable), line=unreadable.line or 1)
     # Without frontmatter a document is valid, but has no metadata to
     # check: it draws this Warning alone (§3.2, §16.6).

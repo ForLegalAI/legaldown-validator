@@ -51,7 +51,7 @@ from .markdown import (
     is_blank,
 )
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
-from .models import LIST_KINDS, Block, Document
+from .models import LIST_KINDS, Block, Document, frontmatter_message
 from .parser import (
     FRONTMATTER_RE,
     LIST_ITEM_RE,
@@ -64,7 +64,6 @@ from .parser import (
     _may_interrupt,
     _opens_paragraph,
     _row_width_end,
-    frontmatter_message,
     parse,
     quote_content,
 )
@@ -928,10 +927,8 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
         try:
             sub_document = parse(text)
         except FrontmatterError as exc:
-            problems.append(Diagnostic(
-                "frontmatter-invalid-yaml", "error",
-                f"The frontmatter of '{path}' cannot be read, so the template is not assembled: {exc}",
-            ))
+            # The same diagnostic as validate's, in the file it is in.
+            problems.append(frontmatter_diagnostic(exc, file=relative_path(path) or path))
             continue
         sub_front, body = _split(text, sub_document)
         subs[path] = _read_body(path, body, sub_document, declared, template=template)
@@ -1802,10 +1799,14 @@ def assemble(
     return _emit_result(t, resolved, decision, diagnostics)
 
 
-def frontmatter_diagnostic(exc: FrontmatterError) -> Diagnostic:
+def frontmatter_diagnostic(exc: FrontmatterError, file: str = "") -> Diagnostic:
     """The error assembly reports for frontmatter that cannot be read: the one
-    ``validate`` reports for it, with the same message and line (#43)."""
-    return Diagnostic("frontmatter-invalid-yaml", "error", frontmatter_message(exc), line=exc.line or 1)
+    ``validate`` reports for it, with the same message and line (#43). *file* is
+    the normalised path of the include fragment or attachment file it is in,
+    when it is not the template's own."""
+    return Diagnostic(
+        "frontmatter-invalid-yaml", "error", frontmatter_message(exc), line=getattr(exc, "line", None) or 1, file=file
+    )
 
 
 def _emit_result(

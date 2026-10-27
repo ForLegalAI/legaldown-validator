@@ -206,8 +206,9 @@ lines, is valid YAML: it is present and empty (§3.1) and not body, so `title-mi
 keeps being reported and read as empty until `Document.frontmatter_error` is set to None. The
 message is one line, without position or snippet; assembly and `validate` give the same message
 and line. Assembly
-returns it as a diagnostic, for the template or for a fragment or attachment file it reads
-(`parse_template` and `load_template` still raise it). A fragment validated on its own (`validate(fragment=True)`,
+returns it as a diagnostic, for the template or for a fragment or attachment file it reads, the
+latter with that file's normalised path as the diagnostic's `file` and the line in it
+(`parse_template` and `load_template` still raise the template's own). A fragment validated on its own (`validate(fragment=True)`,
 `legaldown validate --fragment`) never reads its frontmatter: a block it has, readable or not, is
 `include-has-frontmatter`, at the line of the problem for one that cannot be read, and
 `frontmatter-invalid-yaml` is not reported as well. Any other exception while parsing is a fault of

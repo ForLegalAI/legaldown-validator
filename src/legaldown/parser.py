@@ -164,14 +164,6 @@ class FrontmatterError(yaml.YAMLError, ValueError):
         self.line = line
 
 
-def frontmatter_message(error: FrontmatterError) -> str:
-    """The text of the frontmatter-invalid-yaml diagnostic for *error*, one for
-    validation and assembly alike (#43): what is wrong, on one line. Where it
-    is wrong is the diagnostic's own ``line``, so the message holds no position
-    of its own and none of the snippet the YAML reader draws."""
-    return f"The frontmatter cannot be read: {error}"
-
-
 def _error_message(exc: BaseException) -> str:
     """What is wrong in a YAML error, on one line: the reader's ``problem``
     with its ``context`` (``expected ',' or ']', but got '<stream end>' (while
@@ -184,8 +176,23 @@ def _error_message(exc: BaseException) -> str:
     if problem:
         context = getattr(exc, "context", None)
         return f"{problem} ({context})" if context else str(problem)
-    text = str(exc).strip().split("\n", 1)[0]
-    return text or type(exc).__name__
+    text = str(exc).strip().split("\n", 1)[0] or type(exc).__name__
+    if isinstance(exc, (KeyError, ValueError)):
+        # Not the reader's: the value a tag was asked to hold (`!!bool maybe`
+        # is looked up as a key), which says little alone.
+        return f"a value its tag cannot hold: {text}"
+    return text
+
+
+def _forget_frames(exc: BaseException | None) -> None:
+    """Drop the traceback of *exc* and of what caused it: an error kept in a
+    document (#43) is data, and must not hold the frames, the loader and the
+    source of the parse that found it."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        exc.with_traceback(None)
+        exc = exc.__cause__ or exc.__context__
 
 
 def _check_frontmatter_option(on_frontmatter_error: str) -> None:
@@ -226,7 +233,9 @@ def _split_frontmatter(
             # A mapping tagged as something else (!!set, a flow !!omap) is
             # meant as frontmatter, but holds no fields. (A block !!omap is
             # a sequence: not frontmatter.)
-            raise FrontmatterError("Frontmatter must be a YAML mapping of fields.", node.start_mark.line + 2)
+            raise FrontmatterError(
+                "Frontmatter must be a YAML mapping of fields.", _file_line(match.group(1) or "", node.start_mark)
+            )
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
         loader.flatten_mapping(node)
@@ -238,19 +247,18 @@ def _split_frontmatter(
     except FrontmatterError as exc:
         if not keep_error:
             raise
+        _forget_frames(exc)
         return [], {}, source[match.end():], False, {(): 1}, exc
     except (yaml.YAMLError, ValueError, KeyError, RecursionError) as exc:
         # What the YAML says, not a fault of this parser: malformed YAML, a
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        line = _error_line(exc)
-        if line is None and isinstance(exc, yaml.reader.ReaderError) and isinstance(exc.position, int):
-            line = (match.group(1) or "").count("\n", 0, exc.position) + 2  # the reader names a character
-        error = FrontmatterError(_error_message(exc), line)
+        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or ""))
         if not keep_error:
             raise error from exc
         error.__cause__ = exc  # as `raise ... from` sets it
+        _forget_frames(error)
         return [], {}, source[match.end():], False, {(): 1}, error
     finally:
         if loader is not None:
@@ -260,17 +268,45 @@ def _split_frontmatter(
     return not_line_editable, metadata, source[match.end():], False, keys, None
 
 
-def _error_line(exc: BaseException) -> int | None:
-    """The file line of a YAML error in the frontmatter, whose YAML starts on
-    line 2: where the problem is — or, for a quoted scalar or a flow
-    collection left open, where it opens, which the problem is only found
-    far past."""
+def _file_line(block: str, mark: yaml.Mark) -> int:
+    """The file line of *mark*, a place in the frontmatter's YAML *block*,
+    which starts on line 2 (after the opening ``---``). Counted from the
+    character index, not from ``mark.line``: a line ends only at LF in this
+    format, where YAML also ends one at CR, NEL (U+0085), LS and PS."""
+    return block.count("\n", 0, mark.index) + 2
+
+
+def _error_node(exc: BaseException) -> yaml.Node | None:
+    """The node the YAML reader was constructing when it failed with *exc*, for
+    an error that says nothing of where it is (a `KeyError` from a tag): the
+    innermost frame of its traceback that has a node. Found only after the
+    fact, so that parsing a document that can be read costs nothing."""
+    found = None
+    tb = exc.__traceback__
+    while tb is not None:
+        node = tb.tb_frame.f_locals.get("node")
+        if isinstance(node, yaml.Node):
+            found = node
+        tb = tb.tb_next
+    return found
+
+
+def _error_line(exc: BaseException, block: str) -> int:
+    """The file line of a YAML error in the frontmatter *block*: where the
+    problem is — or, for a quoted scalar or a flow collection left open, where
+    it opens, which the problem is only found far past. For an error that
+    names no place, the node being constructed; else the opening line."""
     context = getattr(exc, "context", None) or ""
     context_mark = getattr(exc, "context_mark", None)
     problem_mark = getattr(exc, "problem_mark", None)
     opened = context_mark is not None and ("quoted" in context or "flow" in context)
     mark = context_mark if opened else problem_mark or context_mark
-    return mark.line + 2 if mark is not None else None
+    if mark is not None:
+        return _file_line(block, mark)
+    if isinstance(exc, yaml.reader.ReaderError) and isinstance(exc.position, int):
+        return block.count("\n", 0, exc.position) + 2  # the reader names a character
+    node = _error_node(exc)
+    return _file_line(block, node.start_mark) if node is not None else 1
 
 
 def _has_flow_style(node: yaml.Node) -> bool:

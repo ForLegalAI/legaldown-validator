@@ -1059,7 +1059,11 @@ class TestFrontmatterThatCannotBeRead:
         result = assemble(template, {}, load_file=lambda path: "---\ntitle: [x\n---\n\nText.\n")
         assert not result.ok
         assert [d.rule for d in result.diagnostics] == ["frontmatter-invalid-yaml"]
-        assert "'f.lgd'" in result.diagnostics[0].message
+        # The same diagnostic as validate's, in the file it is in (#43).
+        assert (result.diagnostics[0].file, result.diagnostics[0].line) == ("f.lgd", 2)
+        assert result.diagnostics[0].message == "The frontmatter cannot be read: " + (
+            "expected ',' or ']', but got '<stream end>' (while parsing a flow sequence)"
+        )
 
 
 class TestTables:

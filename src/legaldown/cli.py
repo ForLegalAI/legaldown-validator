@@ -363,7 +363,9 @@ def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
                   f"(please report this)", file=sys.stderr)
             return EXIT_ERROR
     for d in result.diagnostics:
-        where = f"{template_path}:{d.line}" if d.line else f"{template_path}"
+        # A diagnostic of a fragment or attachment file names it, beside the template.
+        name = Path(template_path).parent / d.file if d.file else template_path
+        where = f"{name}:{d.line}" if d.line else f"{name}"
         print(f"{where}: {d.level}: [{d.rule}] {d.message}", file=sys.stderr)
     if not result.ok:
         if not args.interactive and any(d.rule == "answer-missing" for d in result.diagnostics):
