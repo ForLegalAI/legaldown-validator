@@ -80,6 +80,7 @@ from .templates import (
     check_choose,
     check_questions,
     check_template_body,
+    in_drafting_note,
     question_type,
 )
 from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
@@ -968,12 +969,16 @@ def validate(
         is a template (§15.1), which a fragment cannot tell by itself (a
         blank or a drafting note is legal in any document). True checks it as
         part of a template: the checks only a template has are made (a
-        blank whose id YAML reads as a boolean, ``template-fragment-invalid``)
-        and a preamble paragraph's condition is placed (§5.7, §15.3).
-        False says it is not one. By default (None) a fragment is a template
-        exactly when it holds a condition or a ``{{choose:}}``, as any document
-        does; ``DocumentIndex.is_template`` and ``placed_markers`` follow the
-        decision. Raises ``ValueError`` without *fragment*.
+        blank whose id YAML reads as a boolean or null,
+        ``template-fragment-invalid``) and a preamble paragraph's condition is
+        placed (§5.7, §15.3). False says it is not one, so it declares no
+        questions either: a condition or ``{{choose:}}`` naming a question is
+        then ``condition-invalid`` / ``choose-invalid`` without being
+        ``host_dependent``, and the fragment is no template. By default
+        (None) a fragment is a template exactly when it holds a condition or a
+        ``{{choose:}}``, as any document does; ``DocumentIndex.is_template``
+        and ``placed_markers`` follow the decision. Raises ``ValueError``
+        without *fragment*.
     resolve:
         Reads a file the document refers to — the document it amends
         (``amends.file``, §7.5) and its LegalDown attachment files (§12.4) —
@@ -1188,6 +1193,10 @@ def _validate(
     markers = find_markers(document, lex_fragment)
     template = _is_template(document, markers, lex_fragment) if mode.template is None else mode.template
     units = Units(document, markers, questions, template=template)
+    # A host that is not a template declares no questions: a question that a
+    # condition or a {{choose:}} names and the fragment does not declare is then
+    # nobody's to declare (#39).
+    host_declares = mode.template is not False
     body_directives = {
         directive.name
         for _s, _i, block in document.iter_indexed_blocks()
@@ -1795,6 +1804,7 @@ def _validate(
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             presence = units.presence(section_index, block_index, fragment_index)
+            in_note = in_drafting_note(notes, fragment_index)
             for offset in lexed.stray_braces:
                 result.warning(
                     "brace-stray", BRACE_STRAY,
@@ -1809,7 +1819,6 @@ def _validate(
                 if name == "placeholder":
                     placeholders.append((directive, line))
                     # Its effective type decides which parameters it defines.
-                    in_note = any(fragment_index in note.fragments for note in notes)
                     with result.at(line):
                         _check_placeholder(directive, result, blanks, questions, in_note=in_note, line=line)
                     continue
@@ -1831,7 +1840,6 @@ def _validate(
                 value = directive.positional or ""
                 params = directive.params
                 if name in references and value:
-                    in_note = any(fragment_index in note.fragments for note in notes)
                     references[name].append((value, presence, in_note, line))
                 if name in ("ref", "term") and not value:
                     # Whatever the host holds, a reference with no target is wrong.
@@ -1927,7 +1935,7 @@ def _validate(
                     result.index.values.fields.append((value, ftype))
                 elif name == "choose":
                     with result.at(line):
-                        check_choose(directive, questions, result)
+                        check_choose(directive, questions, result, host_declares=host_declares)
                 elif name == "attach":
                     referenced_attachments.add(value)
                     if value not in attachment_ids:
@@ -2022,7 +2030,7 @@ def _validate(
             depends, problem = issue
             result.error(
                 "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
-                line=line, depends=depends,
+                line=line, depends=depends if host_declares else None,
             )
     _check_never_true(document, markers, units, questions, result, where)
 

@@ -12,6 +12,7 @@ Usage::
     legaldown validate --final signed-contract.lgd
     legaldown validate --fragment clauses/*.lgd
     legaldown validate --fragment --template clauses/*.lgd
+    legaldown validate --fragment --no-template clauses/*.lgd
     legaldown assemble template.lgd --answers answers.yaml -o out/
     legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/
     legaldown questions template.lgd --answers answers.yaml --format json
@@ -132,7 +133,7 @@ def _run_validate(args: argparse.Namespace) -> int:
             targets = [path]
         for target in targets:
             diagnostics, failure = _validate_path(
-                target, final=args.final, fragment=args.fragment, template=True if args.host_is_template else None
+                target, final=args.final, fragment=args.fragment, template=args.host_template
             )
             if failure:
                 failures.append(failure)
@@ -557,12 +558,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.add_argument(
         "--template",
-        dest="host_is_template",  # not `template`: assemble and questions have that argument
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="host_template",  # not `template`: assemble and questions have that argument
         help=(
-            "With --fragment: the document that includes the fragments is a template (§15.1), so "
-            "they are checked as parts of one. Without it a fragment is a template only when it "
-            "holds a condition or a {{choose:}}."
+            "With --fragment: say whether the document that includes the fragments is a template "
+            "(§15.1). --template checks them as parts of one; --no-template says it is not, so "
+            "no question is declared for a condition or {{choose:}} to name. Without either, a "
+            "fragment is a template only when it holds a condition or a {{choose:}}."
         ),
     )
     validate.add_argument(
@@ -649,8 +652,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if getattr(args, "host_is_template", False) and not args.fragment:
-        parser.error("--template is only valid with --fragment")
+    if getattr(args, "host_template", None) is not None and not args.fragment:
+        parser.error("--template and --no-template are only valid with --fragment")
     return args.func(args)
 
 

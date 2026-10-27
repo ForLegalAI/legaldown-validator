@@ -122,7 +122,7 @@ legaldown validate --fragment clauses/               # include fragments and att
 | `--ignore RULE_ID` | Suppress a rule by its stable id — repeatable |
 | `--final` | Check a document is ready for signature: a remaining placeholder, drafting note, or template construct is an error (§15.9) |
 | `--fragment` | Validate each file as an include fragment or attachment file on its own (§12.2, §12.4), as [`validate(fragment=True)`](#validating-a-fragment) does: what only the including document can settle is reported with `"host_dependent": true` in the JSON output and `(host-dependent)` at the end of the line in text, and does not affect the exit status |
-| `--template` | With `--fragment`: the document that includes the fragments is a template, so they are checked as parts of one (`validate(fragment=True, template=True)`). Without it a fragment is a template only when it holds a condition or a `{{choose:}}` |
+| `--template` / `--no-template` | With `--fragment`: say whether the document that includes the fragments is a template (`validate(fragment=True, template=True / False)`). Without either, a fragment is a template only when it holds a condition or a `{{choose:}}` |
 | `--warnings-as-errors` | Report warnings at error severity |
 | `--strict` | Exit non-zero on any diagnostic, not just errors |
 | `--quiet` | Drop the trailing summary line |
@@ -387,11 +387,14 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   drafting note is legal in any document. By default it is a template exactly when it holds a
   condition or a `{{choose:}}`, as any document is, with no `questions` to count. Say what the host is
   with `template=`: `True` checks the fragment as part of a template (a blank whose id YAML reads as a
-  boolean, `{{placeholder: no}}`, is a `question-invalid`; `template-fragment-invalid`; a preamble
-  paragraph's condition is placed, §5.7), `False` says it is not one, and `None`, the default, leaves it
-  to the fragment. `index.is_template` and `placed_markers` follow that one decision. `template=` without
-  `fragment=True` raises `ValueError`. A blank only in a drafting note is never checked for such an id
-  in any document: assembly removes the note first (§15.7.2).
+  boolean or null, `{{placeholder: no}}`, is a `question-invalid`; `template-fragment-invalid`; a
+  preamble paragraph's condition is placed, §5.7). `False` says it is not one, so it declares no
+  questions either: a condition or `{{choose:}}` that names one is then a `condition-invalid` or
+  `choose-invalid` of the fragment's own, not `host_dependent`, and the fragment is no template.
+  `None`, the default, leaves it to the fragment. `index.is_template` and `placed_markers` follow
+  that one decision. `template=` without `fragment=True` raises `ValueError`. A blank only in a
+  drafting note is never checked for such an id in any document: assembly removes the note first
+  (§15.7.2). Checks of what a template's fragment may hold (§15.3) are not made here.
 - `legaldown validate --fragment` shows a flagged finding with `(host-dependent)` at the end of its
   line, and its exit status ignores them (also under `--strict`): a fragment that only uses what its
   host declares or defines exits `0`, and one with a finding of its own exits `1`. The summary line

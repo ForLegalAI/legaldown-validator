@@ -185,10 +185,19 @@ def test_the_template_decision_is_one_for_the_index_and_the_markers():
     assert [(m.condition, m.line) for m in hosted.index.placed_markers] == [("vat", 1)]
 
 
-def test_a_host_that_is_not_a_template_is_said_so():
-    fragment = _fragment("## Scope {when=vat}\n\n" + "Pay {{placeholder: no}}.\n", template=False)
-    assert not fragment.index.is_template
-    assert "question-invalid" not in fragment.rules()
+def test_a_host_that_is_not_a_template_declares_no_question_for_a_condition_to_name():
+    body = 'Intro. {when=vat}\n\n## A {when=vat}\n\nPay {{choose: vat, true="x", false="y"}}.\n'
+    inferred = _fragment(body)
+    assert [(d.rule, d.line, d.host_dependent) for d in inferred.diagnostics] == [
+        ("choose-invalid", 5, True), ("condition-invalid", 3, True), ("condition-invalid", 1, True),
+    ]
+    assert inferred.index.is_template and len(inferred.index.placed_markers) == 1
+    said = _fragment(body, template=False)
+    # Nobody is left to declare `vat`; and as no template, the preamble condition is literal text.
+    assert [(d.rule, d.line, d.host_dependent) for d in said.diagnostics] == [
+        ("anchor-misplaced", 1, False), ("choose-invalid", 5, False), ("condition-invalid", 3, False),
+    ]
+    assert not said.index.is_template and said.index.placed_markers == []
 
 
 def test_template_is_only_meaningful_for_a_fragment():
@@ -208,14 +217,14 @@ def test_the_template_decision_of_a_fragment_is_that_of_its_body_alone():
         assert _fragment(body).index.is_template == is_template(parse(body))
 
 
-def test_the_line_of_a_yaml_keyword_blank_is_the_blank_when_no_questions_are_written():
+def test_the_line_of_a_yaml_keyword_blank_is_the_blank_whatever_questions_are_written():
     framed = _fragment(
         "---\ntitle: T\nquestions:\n  vat:\n    type: boolean\n---\n\n## A\n\nPay {{placeholder: no}}.\n",
         template=True,
     )
     assert [(d.rule, d.line) for d in framed.diagnostics] == [("include-has-frontmatter", 2), ("question-invalid", 10)]
     complete = validate(parse("---\ntitle: T\nquestions:\n  vat:\n    type: boolean\n---\n\n# A\n\nPay {{placeholder: no}}.\n"))
-    assert [(d.rule, d.line) for d in complete.diagnostics if d.rule == "question-invalid"] == [("question-invalid", 3)]
+    assert [(d.rule, d.line) for d in complete.diagnostics if d.rule == "question-invalid"] == [("question-invalid", 10)]
 
 
 _TEMPLATE = "---\ntitle: T\nquestions:\n  vat:\n    type: boolean\n---\n\n# A\n\n"
@@ -227,11 +236,11 @@ def _question_invalid(source: str):
 
 def test_a_blank_in_a_drafting_note_is_never_checked_for_a_yaml_keyword_id():
     # Assembly removes the note before anything is inserted (§15.7.2).
-    assert _question_invalid(_TEMPLATE + "Pay {{placeholder: no}}.\n") == [("question-invalid", 3)]
+    assert _question_invalid(_TEMPLATE + "Pay {{placeholder: no}}.\n") == [("question-invalid", 10)]
     assert _question_invalid(_TEMPLATE + "> [!DRAFTING]\n> Pay {{placeholder: no}}.\n") == []
     # One occurrence outside a note is enough, and it is the one pointed at.
     both = _TEMPLATE + "> [!DRAFTING]\n> Pay {{placeholder: no}}.\n\nPay {{placeholder: no}}.\n"
-    assert _question_invalid(both) == [("question-invalid", 3)]
+    assert _question_invalid(both) == [("question-invalid", 13)]
     fragment = _fragment("## A\n\n> [!DRAFTING]\n> Pay {{placeholder: no}}.\n", template=True)
     assert fragment.diagnostics == []
     only_outside = _fragment("## A\n\n> [!DRAFTING]\n> Pay {{placeholder: no}}.\n\nPay {{placeholder: no}}.\n", template=True)
@@ -583,7 +592,18 @@ def test_the_cli_template_flag_checks_the_fragments_as_parts_of_a_template(write
 
 def test_the_cli_template_flag_needs_the_fragment_flag(write, capsys):
     path = write("part.lgd", _BLANK)
-    with pytest.raises(SystemExit) as exit_:
-        main(["validate", "--template", str(path)])
-    assert exit_.value.code == 2
-    assert "--template is only valid with --fragment" in capsys.readouterr().err
+    for flag in ("--template", "--no-template"):
+        with pytest.raises(SystemExit) as exit_:
+            main(["validate", flag, str(path)])
+        assert exit_.value.code == 2
+        assert "only valid with --fragment" in capsys.readouterr().err
+
+
+def test_the_cli_no_template_flag_says_the_host_declares_no_questions(write, capsys):
+    path = write("part.lgd", "## A {when=vat}\n\nText.\n")
+    main(["validate", "--fragment", "--format", "json", str(path)])
+    records = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert [(d["rule"], d["host_dependent"]) for d in records] == [("condition-invalid", True)]
+    assert main(["validate", "--fragment", "--no-template", "--format", "json", str(path)]) == EXIT_DIAGNOSTICS
+    records = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert [(d["rule"], d["host_dependent"]) for d in records] == [("condition-invalid", False)]

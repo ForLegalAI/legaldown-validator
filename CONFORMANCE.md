@@ -78,8 +78,10 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   document can settle it. So is a definition it declares and does not reference
   (`def-unreferenced`), which the host may reference. A fragment cannot tell
   whether its host is a template, so it is one exactly when it holds a condition or a `{{choose:}}`,
-  unless `validate(template=)` (`legaldown validate --fragment --template`) says so: a blank or a
-  drafting note is legal in any document.
+  unless `validate(template=)` (`legaldown validate --fragment --template` / `--no-template`) says
+  so: a blank or a drafting note is legal in any document. A host that is no template declares no
+  question, so a condition naming one is then the fragment's own `condition-invalid`. The checks of
+  §15.3 on what a template's fragment may hold are not made in this mode.
   `legaldown validate --fragment` marks the host-dependent findings in its text output, counts them apart in its
   summary, and its exit status ignores them. Rule ids and levels are unchanged, and without `fragment=True` nothing is
   flagged and a document is checked as a complete one. The fragment's own frontmatter is

@@ -260,17 +260,15 @@ def check_questions(
                 + (", each entry beginning with '- id:'" if key == "attachments" else "")
                 + ", so that assembly can edit it line by line (§15.2)."
             )
-    line = line_of("questions")
-    written = questions is not None and where is not None and where.has("questions")
     if template:
         for pid, blank in blanks.items():
             if blank.kept and pid not in declared and pid in YAML_KEYWORDS:
-                # Without `questions` written, it is the blank's line.
+                # It is the blank that cannot be answered, whatever `questions` holds.
                 result.error(
                     "question-invalid",
                     f"Placeholder id '{pid}' is read by YAML as a boolean or null, so it "
                     f"cannot be answered portably in a template (§15.2).",
-                    line=line if written else blank.line,
+                    line=blank.line,
                 )
 
 
@@ -302,6 +300,13 @@ class Quote:
         ``]``) but is not a drafting note's: an ordinary quote, whose
         guidance would reach the finished document (§15.6)."""
         return _ALERT_RE.match(self.first_line) is not None and not self.is_drafting_note
+
+
+def in_drafting_note(notes: list[Quote], fragment: int) -> bool:
+    """True if fragment *fragment* of a block's ``block_fragments`` is in one of
+    its drafting *notes*: assembly removes it before anything is inserted
+    (§15.7.2)."""
+    return any(fragment in note.fragments for note in notes)
 
 
 def is_drafting_note(quote: Block) -> bool:
@@ -535,12 +540,16 @@ def choose_problem(directive: Directive, questions: Any) -> str | None:
     return issues[0][1] if issues else None
 
 
-def check_choose(directive: Directive, questions: Any, result: _Recorder) -> None:
+def check_choose(
+    directive: Directive, questions: Any, result: _Recorder, *, host_declares: bool = True
+) -> None:
     """Report a ``{{choose:}}`` that does not list exactly the answers of a
     declared decision question (choose-invalid, §15.5), and any ``{{`` in
-    its phrases, which is literal text (brace-stray)."""
+    its phrases, which is literal text (brace-stray). *host_declares*: False
+    when no other document declares questions for it, so naming one that is not
+    declared is its own fault."""
     for depends, problem in _choose_issues(directive, questions):
-        result.error("choose-invalid", problem, depends=depends)
+        result.error("choose-invalid", problem, depends=depends if host_declares else None)
     for offset in range(2, len(directive.source) - 1):
         if directive.source.startswith("{{", offset) and not is_escaped(directive.source, offset):
             result.warning("brace-stray", BRACE_STRAY)
@@ -610,7 +619,7 @@ def check_template_body(
         for index, fragment in enumerate(text_fragments(block)):
             lexed = lex_fragment(fragment)
             scan = None  # the fragment's, for its first insertion
-            in_note = any(index in note.fragments for note in notes)
+            in_note = in_drafting_note(notes, index)
             for directive in lexed.directives:
                 if directive.malformed:
                     continue
