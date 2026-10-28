@@ -105,6 +105,8 @@ def test_columns_are_counted_from_the_start_of_a_line_that_is_read_whole() -> No
     assert _opens_paragraph("2) 1)     e", after_paragraph=True) is True
     # A bare ``-`` under paragraph text underlines it: a heading, no paragraph open.
     assert _opens_paragraph("-", after_paragraph=True) is False
+    assert _opens_paragraph("2.", after_paragraph=True) is True  # an empty item numbered 2 is text there
+    assert _opens_paragraph("# h", after_paragraph=True) is False
 
 
 def test_walks_keep_no_entry_for_text_with_a_tab() -> None:
