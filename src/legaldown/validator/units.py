@@ -189,6 +189,8 @@ def block_include(block: Block, lex_fragment: Callable[[str], Lexed] = lex) -> D
     read from its first text fragment, which is what the validator and assembly both
     read. The text is lexed only if it can hold an include; a block with no text fragment
     (one built in code) holds none."""
+    # Only to skip the lazy import and ``text_fragments`` for a block that cannot be one:
+    # ``paragraph_include`` stays the rule.
     if block.kind != "paragraph":
         return None
     from ..definitions import text_fragments  # definitions -> validator.helpers -> validator: a cycle at import

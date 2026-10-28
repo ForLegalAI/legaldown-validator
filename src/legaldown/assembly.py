@@ -469,7 +469,7 @@ class _Include:
     start: int
     end: int
     path: str
-    source: str = ""  # the directive as written
+    source: str  # the directive as written
 
 
 @dataclass(slots=True)
@@ -673,11 +673,7 @@ class _Frontmatter:
     items: list[_Attachment] = field(default_factory=list)
     occurrences: list[_Occurrence] = field(default_factory=list)
     malformed: list[Directive] = field(default_factory=list)
-
-    @property
-    def rows(self) -> int:
-        """How many lines the frontmatter takes in the file, the offset of the body."""
-        return self.text().count("\n")
+    rows: int = 0  # how many lines it takes in the file: the offset of the body
 
     def text(self, lines: list[str] | None = None, drop: frozenset[int] = frozenset()) -> str:
         """The frontmatter, delimiters included, written from *lines* (its
@@ -694,9 +690,10 @@ def _split(source: str, document: Document) -> tuple[_Frontmatter | None, str]:
     if not match or document.metadata.frontmatter_absent:
         return None, source
     if match.group(1) is None:
-        return _Frontmatter(source[:match.end()], [], ""), source[match.end():]
+        return _Frontmatter(source[:match.end()], [], "", rows=source[:match.end()].count("\n")), source[match.end():]
     head, tail = source[:match.start(1)], source[match.end(1):match.end()]
-    return _Frontmatter(head, match.group(1).split("\n"), tail), source[match.end():]
+    rows = source[:match.end()].count("\n")
+    return _Frontmatter(head, match.group(1).split("\n"), tail, rows=rows), source[match.end():]
 
 
 def _is_comment(line: str) -> bool:

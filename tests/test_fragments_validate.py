@@ -954,24 +954,76 @@ def test_an_include_in_a_drafting_note_is_a_drafting_note_whether_or_not_it_name
     note = f"> [!DRAFTING]\n> remember {include}\n"
     files = {"g.lgd": "## G {#g}\n"}
     for front, in_template in ((_TEMPLATE_FRONT, True), (_FRONT, False)):
-        # In the template's body: template-fragment-invalid (§15.3) in both; in a plain document, nothing in both.
-        main = front + "# A {#a}\n\n" + note
-        result, loader = _run(main, files)
-        template = Template(main, resolve=files.get) if front is _TEMPLATE_FRONT else None
+        # In the body: template-fragment-invalid (§15.3) in a template, in both spellings; in a
+        # plain document, nothing in both. A note is removed unread (§15.6).
+        text = front + "# A {#a}\n\n" + note
+        result, loader = _run(text, files)
+        problems = Template(text, resolve=files.get).problems
         found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.rule in (_TFR, "include-file-missing")]
-        assert loader.asked == []  # a note is removed unread (§15.6)
+        assert loader.asked == []
         if in_template:
-            line = _at(main, include)
+            line = _at(text, include)
             assert found == [(_TFR, "main.lgd", line)]
-            assert [(d.rule, d.line) for d in template.problems] == [(_TFR, line)]
+            assert [(d.rule, d.line) for d in problems] == [(_TFR, line)]
         else:
-            assert found == []
-            assert not Template(main, resolve=files.get).problems
+            assert found == [] and not problems
         # In a fragment, the same.
-        part = "## P {#p}\n\n" + note
-        main = front + "# A {#a}\n\n{{include: part.lgd}}\n"
-        result, _ = _run(main, {**files, "part.lgd": part})
+        part = {**files, "part.lgd": "## P {#p}\n\n" + note}
+        text = front + "# A {#a}\n\n{{include: part.lgd}}\n"
+        result, _ = _run(text, part)
         found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.file]
-        problems = [(d.rule, d.file, d.line) for d in Template(main, resolve={**files, "part.lgd": part}.get).problems]
-        assert found == problems
+        assert found == [(d.rule, d.file, d.line) for d in Template(text, resolve=part.get).problems]
         assert bool(found) == in_template
+
+
+# ── The same file is one file (#35 review) ─────────────────────────────────────
+
+def _link(link, target, *, directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError:  # no links here
+        pytest.skip("cannot make a symbolic link")
+
+
+def test_a_fragment_reached_through_a_linked_directory_is_one_file(tmp_path, capsys):
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "p.lgd").write_text("# H {#h}\n", encoding="utf-8")
+    _link(tmp_path / "linked", tmp_path / "real", directory=True)
+    (tmp_path / "a.lgd").write_text(_FRONT + _SCOPE + "{{include: real/p.lgd}}\n", encoding="utf-8")
+    (tmp_path / "b.lgd").write_text(_FRONT + _SCOPE + "{{include: linked/p.lgd}}\n", encoding="utf-8")
+    assert main(["validate", "--format", "json", str(tmp_path / "a.lgd"), str(tmp_path / "b.lgd")]) == EXIT_DIAGNOSTICS
+    records = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert [d["rule"] for d in records].count("include-has-h1") == 1
+
+
+def test_a_link_beside_its_document_is_the_same_target(tmp_path, capsys):
+    (tmp_path / "a.lgd").write_text(_FRONT + _SCOPE + "{{include: gone.lgd}}\n", encoding="utf-8")
+    _link(tmp_path / "alias.lgd", tmp_path / "a.lgd")
+    for order in (("a.lgd", "alias.lgd"), ("alias.lgd", "a.lgd")):
+        assert main(["validate", "--format", "json", *(str(tmp_path / name) for name in order)]) == EXIT_DIAGNOSTICS
+        records = json.loads(capsys.readouterr().out)["diagnostics"]
+        assert [d["rule"] for d in records].count("include-file-missing") == 1
+
+
+def test_a_case_variant_of_a_fragment_is_one_file_on_a_file_system_that_ignores_case(tmp_path, capsys):
+    (tmp_path / "Probe").write_text("", encoding="utf-8")
+    if not (tmp_path / "probe").exists():
+        pytest.skip("this file system tells cases apart")
+    (tmp_path / "Part.lgd").write_text("# H {#h}\n", encoding="utf-8")
+    (tmp_path / "a.lgd").write_text(_FRONT + _SCOPE + "{{include: Part.lgd}}\n", encoding="utf-8")
+    (tmp_path / "b.lgd").write_text(_FRONT + _SCOPE + "{{include: part.lgd}}\n", encoding="utf-8")
+    assert main(["validate", "--format", "json", str(tmp_path / "a.lgd"), str(tmp_path / "b.lgd")]) == EXIT_DIAGNOSTICS
+    records = json.loads(capsys.readouterr().out)["diagnostics"]
+    assert [d["rule"] for d in records].count("include-has-h1") == 1
+
+
+def test_a_file_identity_is_the_inode_where_there_is_one_and_the_path_where_not(tmp_path):
+    from legaldown.cli import file_identity
+
+    (tmp_path / "x").mkdir()
+    (tmp_path / "x" / "a.lgd").write_text("", encoding="utf-8")
+    assert file_identity(tmp_path / "x" / ".." / "x" / "a.lgd") == file_identity(tmp_path / "x" / "a.lgd")
+    assert file_identity(tmp_path / "x" / "a.lgd") != file_identity(tmp_path / "x")
+    gone = file_identity(tmp_path / "x" / ".." / "gone.lgd")
+    assert gone == file_identity(tmp_path / "gone.lgd") and gone[0] == "path"
+    assert file_identity("a\0b")[0] == "path"  # no path at all

@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -124,21 +125,28 @@ def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
     print(f"\n{summary}" if diagnostics else "No issues found.", file=sys.stderr)
 
 
-def _same(path: str | os.PathLike[str]) -> str:
-    """A file by its absolute path, however it is spelt (``.``, ``..``, a relative path). Links
-    are not followed: ``load`` reads a document's files from its own directory, so a link to a
-    document is a document of its own, with the includes beside the link."""
-    return os.path.abspath(path)
+def file_identity(path: str | os.PathLike[str]) -> tuple[Any, ...]:
+    """What makes two paths one file: its device and inode when it is there (a link, a link in a
+    directory on the way, a hard link, and a spelling in another case on a file system that
+    ignores case are all the file), and otherwise its absolute path in the case the system
+    compares by. Used for the files of a validation and of an assembly alike."""
+    try:
+        status = os.stat(path)
+    except (OSError, ValueError):  # not there, or no path at all
+        return ("path", os.path.normcase(os.path.abspath(path)))
+    return (status.st_dev, status.st_ino)
 
 
-def _judge(d: dict, own_file: str) -> tuple[bool, tuple[Any, ...]]:
-    """Whether finding *d* is in the file of the target that produced it (*own_file*, ``_same``),
-    and not in a fragment it includes, and what makes it one with another: the same file, line,
-    rule and message. The message of a finding in a fragment does not name the fragment by a
-    path (the file does), so the same finding reached from two directories reads the same; one
-    that carries the including document's context (a heading-skip from level 1, or from level 2)
-    is another diagnosis."""
-    file = _same(d["file"])
+def _judge(
+    d: dict, own_file: tuple[Any, ...], identify: Callable[[str], tuple[Any, ...]]
+) -> tuple[bool, tuple[Any, ...]]:
+    """Whether finding *d* is in the file of the target that produced it (*own_file*, its
+    identity), and not in a fragment it includes, and what makes it one with another: the same
+    file, line, rule and message. The message of a finding in a fragment does not name the
+    fragment by a path (the file does), so the same finding reached from two directories reads
+    the same; one that carries the including document's context (a heading-skip from level 1,
+    or from level 2) is another diagnosis."""
+    file = identify(d["file"])
     return file == own_file, (file, d.get("line"), d["rule"], d["message"])
 
 
@@ -149,7 +157,14 @@ def _run_validate(args: argparse.Namespace) -> int:
     # The findings of each target but those ignored, each with whether it is the target's own
     # and what makes it one with another.
     reports: list[list[tuple[dict, bool, tuple[Any, ...]]]] = []
-    reached: set[str] = set()  # the targets validated, by absolute path
+    reached: set[tuple[Any, ...]] = set()  # the targets validated: a file with the directory it is read from
+    identities: dict[str, tuple[Any, ...]] = {}
+
+    def identify(path: str) -> tuple[Any, ...]:
+        if path not in identities:
+            identities[path] = file_identity(path)
+        return identities[path]
+
 
     for raw_path in args.paths:
         path = Path(raw_path)
@@ -162,12 +177,14 @@ def _run_validate(args: argparse.Namespace) -> int:
         else:
             targets = [path]
         for target in targets:
-            # A file named twice, or by a directory and by its own path, is one target: validated
-            # and reported once, at its first place.
-            here = _same(target)
-            if here in reached:
+            # A file named twice, or by a directory and by its own path, or by a link beside it, is
+            # one target: validated and reported once, at its first place. A link in another
+            # directory is a target of its own: ``load`` reads the includes from beside it.
+            here = identify(str(target))
+            reading = (here, identify(str(target.parent)))
+            if reading in reached:
                 continue
-            reached.add(here)
+            reached.add(reading)
             diagnostics, failure = _validate_path(
                 target,
                 final=args.final,
@@ -179,7 +196,7 @@ def _run_validate(args: argparse.Namespace) -> int:
             if failure:
                 failures.append(failure)
                 continue
-            reports.append([(d, *_judge(d, here)) for d in diagnostics if d["rule"] not in ignored])
+            reports.append([(d, *_judge(d, here, identify)) for d in diagnostics if d["rule"] not in ignored])
 
     # A fragment several of the documents include is found wrong once, not once for each
     # (#35): across all the targets of the run, a finding in a file other than the one that
@@ -357,13 +374,8 @@ def _save_answers(path: Path, answers: dict) -> str | None:
 
 
 def _same_file(first: Path, second: Path) -> bool:
-    """Whether the two paths are one file: the same path, or a link, symbolic or hard, to it."""
-    try:
-        if first.resolve() == second.resolve():
-            return True
-        return os.path.samefile(first, second)
-    except (OSError, RuntimeError):  # one of them is not there, or a symbolic link loops
-        return False
+    """Whether the two paths are one file (``file_identity``, as ``validate`` takes it)."""
+    return file_identity(first) == file_identity(second)
 
 
 def _run_assemble(args: argparse.Namespace) -> int:
