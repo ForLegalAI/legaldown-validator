@@ -1547,6 +1547,7 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
 
 
 _QUOTE_MARKER_RE = re.compile(r"[ \t]{0,3}>[ \t]?")
+_TEMPLATE_QUOTE_RE = re.compile(r"[ \t]*>[ \t]?")  # a quote marker the template has, as far in as the item it lies in
 _SIMPLE_RE = re.compile(r"(?:[ \t]{0,3}>[ \t]?|[ \t]{0,3}(?:[-+*]|1[.)])[ \t]+)*")
 _PLAINISH_RE = re.compile(r"[ \t>*+\-0-9.)]*")
 _ITEM_UNIT_RE = re.compile(r"[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
@@ -1574,7 +1575,7 @@ def _marker_end(text: str, items: int, limit: int | None) -> int:
     *items* list item markers that it starts, never past *limit*."""
     pos = 0
     while True:
-        found = _QUOTE_MARKER_RE.match(text, pos)
+        found = _TEMPLATE_QUOTE_RE.match(text, pos)
         if found is None and items:
             found = _ITEM_MARKER_RE.match(text, pos)
             if found:
