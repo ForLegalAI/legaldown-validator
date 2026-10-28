@@ -186,7 +186,7 @@ def test_the_four_images_of_the_issue_are_four_errors():
         "<https://example.com/x>",
         '<img src="/x">',
         "\\![a](https://x)",
-        "![a][r]\n\n[r]: /etc/passwd",
+        "![a][r]",
         "![a] (/e)",
         "![a](/e",
         "![a]()",

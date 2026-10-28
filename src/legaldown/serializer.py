@@ -154,16 +154,37 @@ def _opens_block(text: str, *, in_item: bool = False) -> bool:
     return bool(FENCE_OPEN_RE.match(text) or heading.match(text) or html_block_end([text], 0) is not None)
 
 
-def _paragraph(text: str, *, in_item: bool = False) -> str:
+def _joins_definition(text: str) -> bool:
+    """True if the paragraph *text*, after link reference definitions, is
+    written on the line under them (``_paragraph`` with *joined*): its first
+    line starts a block where it is alone — a complete HTML tag (kind 7), a
+    list item that could not interrupt a paragraph — but is paragraph text
+    under them, where the parser read it (§4.7, #92: a definition is peeled
+    off a closed paragraph, so what is left of it can look like the start
+    of a block). Escaping it with a backslash would not give the same
+    paragraph back."""
+    lines = [line.lstrip(" \t") for line in text.split("\n") if not is_blank(line)]
+    return (
+        bool(lines)
+        and _paragraph_line(lines[0], in_item=False, alone=len(lines) == 1) != lines[0]
+        and _continues(["[a]: b", *_lines_of_paragraph(lines[0], lines[1:])])
+    )
+
+
+def _paragraph(text: str, *, in_item: bool = False, joined: bool = False) -> str:
     """A paragraph's text, written at the margin as its lines
     (``_paragraph_line``, ``_continues``). *in_item*: in a list item's
-    content, where ``#`` alone is a heading too. A blank line, which only a
-    model built in code holds, would end the paragraph: it is left out."""
+    content, where ``#`` alone is a heading too. *joined*: the paragraph is
+    written under link reference definitions, in the same paragraph as they
+    (``_joins_definition``), so that its first line is written as it is. A
+    blank line, which only a model built in code holds, would end the
+    paragraph: it is left out."""
     lines = [line for line in text.split("\n") if not is_blank(line)]
     if not lines:
         return ""
+    first = lines[0].lstrip(" \t")
     written = _lines_of_paragraph(
-        _paragraph_line(lines[0].lstrip(" \t"), in_item=in_item, alone=len(lines) == 1), lines[1:]
+        first if joined else _paragraph_line(first, in_item=in_item, alone=len(lines) == 1), lines[1:]
     )
     if split_link_definitions(written)[0]:
         # The parser makes a block of every definition a paragraph opens with
@@ -268,10 +289,12 @@ def _table_row(cells: list[str]) -> str:
     return "| " + " | ".join(_table_cell(cell) for cell in cells) + " |"
 
 
-def _render_block(block: Block, *, in_item: bool = False) -> str:
-    """*block* as source; *in_item*: in a list item's content."""
+def _render_block(block: Block, *, in_item: bool = False, joined: bool = False) -> str:
+    """*block* as source; *in_item*: in a list item's content; *joined*: a
+    paragraph written in the paragraph of the definitions before it
+    (``_paragraph``)."""
     if block.kind == "paragraph":
-        return _paragraph(strip_text(block.text), in_item=in_item)
+        return _paragraph(strip_text(block.text), in_item=in_item, joined=joined)
     if block.kind == "heading":
         # A heading at the margin would be a section's: outside an item —
         # only a model built in code has one there — it is written as a
@@ -501,6 +524,7 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
     for index, block in enumerate(blocks):
         following = blocks[index + 1] if index + 1 < len(blocks) else None
         keep_open = last and index == final
+        joined = False
         if block.kind in _LISTS and following is not None and following.kind in ("code", "html", "source"):
             # A block indented to the last item's content would continue it:
             # the item is written with its content further in.
@@ -529,7 +553,13 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # on into what follows it: closed unless nothing does.
             rendered = block.text if keep_open else close_fences(block.text)
         else:
-            rendered = _render_block(block, in_item=in_item)
+            # What is left of a paragraph that opened with definitions may read as the start of a
+            # block alone: it is written under them, as the parser read it (#92).
+            joined = (
+                block.kind == "paragraph" and index > 0 and blocks[index - 1].kind == "link_definition"
+                and _joins_definition(strip_text(block.text))
+            )
+            rendered = _render_block(block, in_item=in_item, joined=joined)
         if rendered:
             # In an item, a quote or a fence follows a paragraph directly, and
             # so does a list another list (CommonMark), keeping the list tight
@@ -537,7 +567,7 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # blank line, which the parser reads as the item's too (#84).
             before = blocks[index - 1] if index > 0 else None
             closed = before is not None and before.kind == "code" and FENCE_OPEN_RE.match(before.text.split("\n")[0])
-            tight = in_item and before is not None and (
+            tight = joined or in_item and before is not None and (
                 (block.kind in _LISTS and before.kind in ("paragraph", "heading", *_LISTS) and not _bare(rendered))
                 or (before.kind == "paragraph" and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered.split("\n")[0])))
                 # After a closed fence a block starts on the next line.
