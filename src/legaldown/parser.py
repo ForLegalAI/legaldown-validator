@@ -518,14 +518,14 @@ class _Walks:
         level with less of its indentation), unless a tab in what it walked is
         counted from where the text starts."""
         lead = len(content) - len(content.lstrip(" "))
+        if lead % TAB_STOP and "\t" in content:
+            return _skip_markers(content, code_ends=code_ends)
         text = content[lead:]
         table = self.skipped if code_ends else self.skipped_past
         key = (code_ends, text)
         asked = self.seen.get(key)  # the same text, read at a level before
         found = asked or table.pop(text, None) or _skip_markers(text, code_ends=code_ends)  # or told by the level before
         position, code = found
-        if position and lead % TAB_STOP and text.find("\t", 0, position) >= 0:
-            return _skip_markers(content, code_ends=code_ends)
         if asked is None and (first := self._first_marker(text, position)) is not None:
             self._remember(table, text[first.end:], (position - first.end, code))
             self._remember(self.seen, key, found)
