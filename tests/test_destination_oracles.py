@@ -37,7 +37,7 @@ import pytest
 from legaldown import markdown
 from legaldown.directives import Lexed, is_escaped, lex, mask_directives
 from legaldown.markdown import INLINE_HTML_RE, LinkDefinitionSource, inline_html_unclosed, label_end
-from legaldown.validator import core, templates
+from legaldown.validator import core, paths, templates
 
 # ── The code that was replaced (#113), verbatim ───────────────────
 
@@ -447,6 +447,29 @@ def test_a_line_break_in_a_gap_is_read_as_a_space_by_the_old_code():
         new = markdown.scan_inline_link(text, 0)
         if new is not None:
             assert old_destination(text.replace("\n", " "), 0) is not None, repr(text)
+
+
+@pytest.mark.parametrize(("text", "found"), [
+    ('![a](<x.png> "t")', ["x.png"]),
+    ('![a](<x.png>"t")', []),
+    ("![a](<x.png>\n\"t\")", ["x.png"]),
+    ("![a](\n<x.png>)", ["x.png"]),
+    ("![a](\n\nx.png)", []),
+    ("![a](x.png\n\n)", []),
+    ("![a](x.png\x7f)", []),
+    ("![a](x.png\x01)", []),
+    ("![a](x\0y.png)", ["x\0y.png"]),
+    ('![a](x.png "t\\"u")', ["x.png"]),
+    ("![a](<x.png> (t\\)u))", ["x.png"]),
+])
+def test_images_by_the_scanner(text, found):
+    assert [image.path for image in paths.images(text, lex(text))] == found
+
+
+def test_a_definition_with_a_nul_in_its_destination():
+    assert markdown.split_link_definitions(["[a]: u\0v", "[b]: <w\0>"])[0] == [
+        LinkDefinitionSource("a", "u\0v", "", 1), LinkDefinitionSource("b", "w\0", "", 1)
+    ]
 
 
 # ── The raw-HTML check ────────────────────────────────────────────
