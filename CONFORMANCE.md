@@ -521,7 +521,7 @@ is checked by itself, and is no part of the blank:
 | `placeholder-question-mismatch` (a written type that is not the declared one; the id of a decision question) | reported: it is the occurrence against the declaration (§15.2) |
 | `placeholder-type-inconsistent` (types, currencies, units, §10.7) | not made against the blank: the note's type, currency and unit are not the blank's. Two notes do not conflict either |
 | `question-invalid` for a default against the currency or unit the placeholders fix | the note's currency or unit fixes nothing |
-| `question-unused` | a question only notes use (by a placeholder or a `{{choose:}}`) is unused, a Warning that says only drafting notes use it |
+| `question-unused` | a question only notes use (by a placeholder or a `{{choose:}}`) is unused, a Warning that says only drafting notes use it: it is no blank of the document and needs no answer, though assembly still lists it among the template's questions (below) |
 | `placeholder-unfilled`, `template-construct-present` (`--final`) | both, as ever: a placeholder in a note remains in the document (§15.9), and so does the note |
 | `index.blanks` | an id only notes use is not a blank; for one that is also in the body, type, `fixed` and `consistent` are the body's, and the order is that of the first occurrence outside a note |
 

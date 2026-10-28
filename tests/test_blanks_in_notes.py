@@ -96,7 +96,12 @@ def test_a_question_only_a_note_placeholder_uses_is_unused():
     front = "questions:\n  fee:\n    type: money\n"
     result = _result(_note("{{placeholder: fee}}"), front)
     assert _found(result) == [("question-unused", 4)]
-    assert "only drafting notes do" in next(d.message for d in result.diagnostics if d.rule == "question-unused")
+    message = next(d.message for d in result.diagnostics if d.rule == "question-unused")
+    assert "only drafting notes do" in message and "before asking" not in message
+    assert "needs no answer" in message and "assembly still lists it among the template's questions" in message
+    # ... which is what assembly does: the question is listed, and nobody is asked for it.
+    template = parse_template(_document(_note("{{placeholder: fee}}"), front))
+    assert [question.id for question in template.questions] == ["fee"] and template.form({}).questions == ()
     assert _found(_result(_note("{{placeholder: fee}}") + "Pay {{placeholder: fee}}.\n", front)) == []
 
 

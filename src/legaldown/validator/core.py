@@ -2294,7 +2294,8 @@ def _validate(
                     f"Question '{qid}' is declared but no placeholder, condition, or "
                     f"{{{{choose:}}}} uses it (§15.2)"
                     + (
-                        "; only drafting notes do, and assembly removes them before asking (§15.7.2)."
+                        "; only drafting notes do, so it is no blank of the document and needs no answer "
+                        "(§15.7.2), though assembly still lists it among the template's questions."
                         if qid in asked_in_notes else "."
                     ),
                     line=where.key("questions", qid),
