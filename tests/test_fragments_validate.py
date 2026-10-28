@@ -363,6 +363,16 @@ def test_a_heading_skip_that_stands_keeps_its_place_among_the_findings():
     ]
 
 
+def test_a_heading_skip_of_a_document_built_in_code_has_no_line():
+    from legaldown import Document, Section
+
+    # No layout: no line anywhere, and a deferred finding does not take the one of the check around it.
+    document = Document(sections=[Section(title="One", level=1), Section(title="Three", level=3)])
+    found = [d for d in validate(document).diagnostics if d.rule == "heading-skip"]
+    assert [(d.line, d.file) for d in found] == [(None, "")]
+    assert "'Three' jumps from level 1 to 3" in found[0].message
+
+
 def test_a_level_a_fragment_fills_is_not_skipped_in_the_combined_document():
     text = _FRONT + "# One {#one}\n\n{{include: part.lgd}}\n\n### Three {#three}\n"
     result, _ = _run(text, {"part.lgd": "## Deep {#deep}\n"})

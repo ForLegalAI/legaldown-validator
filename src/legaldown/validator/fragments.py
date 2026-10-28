@@ -455,10 +455,11 @@ def check_includes(
             continue
         if files is None:
             continue
-        # A path a LoadFile is never asked for (a backslash, or leading out of the document's
-        # directory, §2.3) cannot be read, and assembly refuses the template for it as it
-        # does for a file that is not there. It is not path-not-relative (an absolute path or a
-        # URI scheme, judged above), nor path-outside-root, which judges where it leads.
+        # A path a LoadFile is never asked for (a backslash, a null byte, or leading out of the
+        # document's directory, §2.3) is not read. One that leads out is valid and skipped below;
+        # any other is include-file-missing, as assembly refuses the template for it. It is not
+        # path-not-relative (an absolute path or a URI scheme, judged above), nor
+        # path-outside-root, which judges where it leads.
         relative = relative_path(include.written)
         if relative is None and relative_path_problem(include.written) == "leads-out":
             # Not judged above, so (given a root) within it: a valid path (§2.3), with a root or

@@ -557,6 +557,39 @@ def test_a_document_with_definitions_reads_back_the_same(body):
     round_trips(body)
 
 
+@pytest.mark.parametrize("rest", ["", "more\n", "- d\n", "===\n"])
+def test_a_bare_hash_after_a_definition_in_an_item_is_written_under_it(rest):
+    # In an item ``#`` alone is a heading, so it gets no backslash under the definition: it is text there.
+    body = "- [x]: /u\n      #\n" + "".join(f"      {line}\n" for line in rest.splitlines())
+    document = parse(body)
+    assert [b.text for b in document.preamble[0].items[0].blocks] == ["", "#" + "".join(f"\n{line}" for line in rest.splitlines())]
+    written = serialize(document)
+    assert "\\#" not in written
+    round_trips(body)
+    assert serialize(parse(written)) == written
+
+
+_FIRST_LINES = [
+    "- c", "* c", "+ c", "1. c", "1) c", "# c", "## c", "#", "###", "> c", ">", "```", "~~~", "---", "***", "===",
+    "<div>", '<a href="b">', "</span>", "<!-- c", "| a | b |", "[y]: /v", "- ", "1.", "    code", "c",
+]
+_SECOND_LINES = [None, "more", "- d", "#", "===", "---", "> q", "1. n", "[z]: /w"]
+
+
+@pytest.mark.parametrize("where", ["top level", "list item", "quote"])
+def test_what_follows_a_definition_reads_back_the_same_whatever_its_first_line(where):
+    first, rest = {"top level": ("", ""), "list item": ("- ", "  "), "quote": ("> ", "> ")}[where]
+    for shape in _FIRST_LINES:
+        for second in _SECOND_LINES:
+            lines = [first + "[x]: /u", rest + "    " + shape] + ([] if second is None else [rest + "    " + second])
+            body = "\n".join(lines) + "\n"
+            document = parse(FRONTMATTER + body)
+            written = serialize(document)
+            again = parse(written)
+            assert (again.preamble, again.sections) == (document.preamble, document.sections), (body, written)
+            assert serialize(again) == written, (body, written)
+
+
 @pytest.mark.parametrize("line", ["- c", "# c", "1. c"])
 def test_a_paragraph_indented_four_columns_after_a_definition_is_written_under_it(line):
     # What is left of the paragraph reads as the start of a block alone, and is text under the

@@ -72,7 +72,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Blank, Depends, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
+from .result import Blank, Depends, Diagnostic, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
@@ -1509,10 +1509,11 @@ def _validate(
     # The last section at each open level: (identifier, presence). An
     # alternative to it shares its number (§15.8).
     previous_sibling: dict[int, tuple[str, Presence]] = {}
-    # Each heading-skip, with the place among the diagnostics it is recorded at, until the
-    # headings that a fragment between them makes valid in the combined document are known
-    # (check_includes, #35): it is recorded then, if it stands.
-    heading_skips: dict[int, tuple[int, str, Line]] = {}
+    # Each heading-skip, with the place among the diagnostics it is recorded at (and the
+    # diagnostic before that place, which must still be there), until the headings that a
+    # fragment between them makes valid in the combined document are known (check_includes,
+    # #35): it is recorded then, if it stands, with the line it has here.
+    heading_skips: dict[int, tuple[int, Diagnostic | None, str, Line]] = {}
 
     for section_index, section in enumerate(document.sections):
         # An out-of-range level is an Error, but the section still gets an
@@ -1531,6 +1532,7 @@ def _validate(
         if last_level == 0 and level > 1:
             heading_skips[section_index] = (
                 len(result.diagnostics),
+                result.diagnostics[-1] if result.diagnostics else None,
                 f"Heading levels must not skip. '{section.title}' is at level {level}, but the "
                 f"document has no level-1 heading before it.",
                 where.heading(section_index),
@@ -1538,6 +1540,7 @@ def _validate(
         elif last_level and level - last_level > 1:
             heading_skips[section_index] = (
                 len(result.diagnostics),
+                result.diagnostics[-1] if result.diagnostics else None,
                 f"Heading levels must not skip. '{section.title}' jumps from level {last_level} to {level}.",
                 where.heading(section_index),
             )
@@ -2231,8 +2234,13 @@ def _validate(
         lex_fragment=lex_fragment,
     )
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
-    # rest are recorded where the loop met them, the last first so that the places hold.
-    for index, (position, message, line) in reversed(heading_skips.items()):
+    # rest are recorded where the loop met them, the last first so that the places hold. That
+    # needs the diagnostics since then only to have been added to: nothing between the loop and
+    # here may remove, replace or reorder one, or a finding would be placed among the wrong ones.
+    for index, (position, before, message, line) in reversed(heading_skips.items()):
+        assert (position == 0 and before is None) or result.diagnostics[position - 1] is before, (
+            "the diagnostics were changed after the heading loop (heading-skip is recorded in place)"
+        )
         if index not in filled:
             result.error_at(position, "heading-skip", message, line=line)
     if final:
