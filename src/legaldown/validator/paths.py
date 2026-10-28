@@ -90,6 +90,8 @@ class FileReferences:
         if self._root is not None:
             self._depth = names_below(self._root if base is None else base, self._root)
         self._met: list[FileReference] = []
+        #: Whether a document outside the root has been said to be (once, however many paths).
+        self._said_outside = False
         #: The places (*at*) of the references found wrong, once ``finish`` has judged
         #: them: a path that is reported is not also reported for the file it names
         #: (``include-file-missing``, #35).
@@ -130,23 +132,29 @@ class FileReferences:
         if path.strip():
             self._met.append(FileReference(at, path.strip(), what, line, url, literal, rest, noted))
 
+    def is_wrong(self, path: str) -> bool:
+        """Whether *path*, a path of the frontmatter, is a finding of ``finish``: not relative
+        (``path-not-relative``) or out of the root (``path-outside-root``). The same
+        judgement, asked before the references are judged."""
+        path = path.strip()
+        if is_absolute_reference(path) or _DRIVE_RE.match(path):
+            return True
+        return self._root is not None and (self._depth is None or leaves_root(path, self._depth))
+
     def finish(self) -> None:
         """Judge the references recorded, in the order of the document."""
-        said_outside = False
         for reference in sorted(self._met, key=lambda met: met.at):
-            said_outside, names_a_file = self._judge(reference, said_outside)
             if (
-                self.first_image is None and reference.what.startswith("image") and not reference.noted
-                and reference.at not in self.reported and names_a_file
+                self._judge(reference) and self.first_image is None and reference.what.startswith("image")
+                and not reference.noted and reference.at not in self.reported
             ):
                 self.first_image = reference
         self._met = []
 
-    def _judge(self, reference: FileReference, said_outside: bool) -> tuple[bool, bool]:
-        """Record what is wrong with *reference*. Returned: whether a document outside
-        the root has been said to be (*said_outside*), and whether *reference* names a
-        file at all: not a query or a fragment alone (``#top``, ``?q``), nor a directive
-        alone (``{{placeholder: logo}}``), which is not known until it is filled in."""
+    def _judge(self, reference: FileReference) -> bool:
+        """Record what is wrong with *reference*, and say whether it names a file at all: not a
+        query or a fragment alone (``#top``, ``?q``), nor a directive alone
+        (``{{placeholder: logo}}``), which is not known until it is filled in."""
         at, written, what, line, url, literal, rest, _noted = reference
         known = written if literal is None else literal.strip()
         judged = known.split("?", 1)[0].split("#", 1)[0] if url else known
@@ -155,7 +163,7 @@ class FileReferences:
         # partial, as ``..`` may be ``..x`` once filled in.
         whole = literal is None or judged != known
         if not judged and (whole or not rest):
-            return said_outside, False  # a query or a fragment alone, or a directive alone, names no file
+            return False  # a query or a fragment alone, or a directive alone, names no file
         decoded = unquote(judged) if url and "%" in judged else judged
         # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
         absolute = judged if is_absolute_reference(judged) else (
@@ -170,20 +178,21 @@ class FileReferences:
                 line=line,
             )
             self.reported.add(at)
-            return said_outside, True  # not also outside the root: one finding for one path
+            return True  # not also outside the root: one finding for one path
         if self._root is None:
-            return said_outside, True
+            return True
         depth = self._depth
         if depth is None:
             self.reported.add(at)  # every path of the document leads out of the root
-            if not said_outside:
+            if not self._said_outside:
                 self._result.error(
                     "path-outside-root",
                     f"The document is outside the document root '{self._root}', so none of the files it names "
                     f"lies within it (§2.3), such as '{written}' ({what}).",
                     line=self._line,
                 )
-            return True, True
+            self._said_outside = True
+            return True
         for form in (judged, decoded):
             names = form if whole else _whole_names(form)  # what is judged, and what a finding says
             if leaves_root(names, depth):
@@ -194,8 +203,8 @@ class FileReferences:
                     line=line,
                 )
                 self.reported.add(at)
-                return said_outside, True
-        return said_outside, True
+                return True
+        return True
 
 
 def _reading(known: str, judged: str, form: str, shown: str | None = None) -> str:

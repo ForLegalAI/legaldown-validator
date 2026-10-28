@@ -15,7 +15,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cache, partial
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NamedTuple
 
 from .._deprecation import LegaldownDeprecationWarning
 from ..directives import (
@@ -29,7 +29,7 @@ from ..directives import (
     lex,
     mask_directives,
 )
-from ..files import LoadFile, file_loader, relative_path
+from ..files import LoadFile, file_loader, relative_path, relative_path_problem
 from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
@@ -48,7 +48,7 @@ from .conditions import (
     satisfiable,
     satisfiable_in,
 )
-from .fragments import Files, FragmentKind, check_includes, content_findings, shape_findings
+from .fragments import Files, FragmentKind, UnreadReason, check_includes, content_findings, shape_findings
 from .helpers import (
     format_section_number,
     generate_identifier,
@@ -1143,35 +1143,52 @@ def _resolver(
     return resolve
 
 
-def _definitions_in(document: Document, files: Files | None, path: str) -> dict[str, str] | None:
+class _Imported(NamedTuple):
+    """The definitions of a file a document names (``None`` when none were read), and, then, why
+    not (``UnreadReason``)."""
+    definitions: dict[str, str] | None
+    unread: UnreadReason | None = None
+
+    @property
+    def missing(self) -> bool:
+        """Whether the definitions are missing for a reason the Warning of §17.5 names: not for the
+        document's own, which it has, nor for a path that is a finding of its own."""
+        return self.unread in ("no-resolver", "leads-out", "unreadable")
+
+
+def _imported(definitions: dict[str, str] | None) -> _Imported:
+    """What a deprecated importer gave: its word for the file; None is a file it had not."""
+    return _Imported(definitions, None if definitions is not None else "unreadable")
+
+
+def _definitions_in(
+    document: Document, files: Files | None, path: str, references: FileReferences
+) -> _Imported:
     """The definitions the file at *path* declares (``{id: term}``), or None
     when it cannot be read as a LegalDown document: not there, no *files* (the
     validation has no ``resolve``), or frontmatter that cannot be read (that
-    file's problem, not this document's). Any other exception is the parser's
-    fault, as it is anywhere."""
+    file's problem, not this document's), with the reason. Any other exception is
+    the parser's fault, as it is anywhere."""
     # Imported here for the reason given in ``_validate``.
     from ..definitions import collect_definitions, definition_lookup
 
     # Asked for as assembly asks (§15.7): normalized, and only a path within
     # the document's directory (§2.3).
+    if references.is_wrong(path):
+        return _Imported(None, "rejected")
+    if files is None:
+        return _Imported(None, "no-resolver")
     relative = relative_path(path)
-    if files is None or relative is None:
-        return None
+    if relative is None:
+        # Valid as a path, and not one a loader is asked for; or none (a backslash, a null byte).
+        return _Imported(None, "leads-out" if relative_path_problem(path) == "leads-out" else "unreadable")
     # A document that names itself has nothing to add to itself.
     if files.is_own(relative):
-        return None
+        return _Imported(None, "own")
     other = files.read(relative)
     if other is None or other.document.frontmatter_error is not None:
-        return None
-    return definition_lookup(collect_definitions(other.document))
-
-
-def _was_to_be_read(files: Files | None, path: str) -> bool:
-    """Whether the file at *path* was one to read, and was not: not a path a loader is never
-    asked for (not relative, or leading out of the document's directory, §2.3: a finding of its
-    own, or a limitation), nor the document itself, which adds nothing to itself."""
-    relative = relative_path(path)
-    return relative is not None and not (files is not None and files.is_own(relative))
+        return _Imported(None, "unreadable")
+    return _Imported(definition_lookup(collect_definitions(other.document)))
 
 
 def _validate(
@@ -1805,18 +1822,21 @@ def _validate(
     # declares no definitions still counts as consulted, so a missing term is
     # an Error (§16.8) rather than being downgraded to Info.
     _amends_import_succeeded = False
+    # For the Warning of §17.5: the original is named and was not imported for a reason it names.
+    _amends_unread = bool(document.metadata.amends and document.metadata.amends.file)
     _imported_definitions: dict[str, str] = {}
     if document.metadata.amends and document.metadata.amends.file:
         amends_file = document.metadata.amends.file
         if amends_file.endswith(LEGALDOWN_EXTENSIONS):
             _amends_is_legaldown = True
             if import_definitions is not None:
-                imported = import_definitions(amends_file, document.filename)
+                imported = _imported(import_definitions(amends_file, document.filename))
             else:
-                imported = _definitions_in(document, files, amends_file)
-            if imported is not None:
+                imported = _definitions_in(document, files, amends_file, file_references)
+            _amends_unread = imported.missing
+            if imported.definitions is not None:
                 _amends_import_succeeded = True
-                _imported_definitions = imported
+                _imported_definitions = imported.definitions
                 for def_id in result.index.definition_lookup:
                     if def_id in _imported_definitions:
                         result.warning(
@@ -1835,16 +1855,17 @@ def _validate(
     # ── Attachment definition import (§7, §12.4) ──
     # A {{def:}} inside an attachment file registers a document-wide term; ids
     # must remain unique across the combined document (§16.10).
-    attachments_unread = 0  # the LegalDown attachment files whose definitions could not be imported
+    attachments_unread: list[UnreadReason] = []  # why, of the LegalDown attachment files with none imported
     for att_index, att in enumerate(document.metadata.attachments):
         if not att.file.endswith(LEGALDOWN_EXTENSIONS):
             continue
         if import_attachment_definitions is not None:
-            att_defs = import_attachment_definitions(att.file)
+            imported = _imported(import_attachment_definitions(att.file))
         else:
-            att_defs = _definitions_in(document, files, att.file)
-        if att_defs is None and _was_to_be_read(files, att.file):
-            attachments_unread += 1
+            imported = _definitions_in(document, files, att.file, file_references)
+        if imported.missing and imported.unread is not None:
+            attachments_unread.append(imported.unread)
+        att_defs = imported.definitions
         if not att_defs:
             continue
         # Its definitions are present when the attachment is (§15.3).
@@ -1930,14 +1951,15 @@ def _validate(
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             owner_of = None  # for definition-circular, once a {{term:}} asks
-            noted = in_drafting_note(notes, fragment_index)
+            # Only an image or a directive asks.
+            noted = bool(notes) and ("![" in fragment or bool(lexed.directives)) and in_drafting_note(notes, fragment_index)
             if "![" in fragment:
                 check_fragment_images(
                     fragment, lexed, file_references, where, section_index, block_index, fragment_index,
                     reference_images, noted=noted,
                 )
             presence = units.presence(section_index, block_index, fragment_index)
-            in_note = bool(lexed.directives) and noted  # only a directive asks
+            in_note = bool(lexed.directives) and noted
             for offset in lexed.stray_braces:
                 result.warning(
                     "brace-stray", BRACE_STRAY,
@@ -2331,7 +2353,7 @@ def _validate(
         template=template,
         fragment=mode.fragment,
         attachments_unread=attachments_unread,
-        amends_imported=_amends_is_legaldown and _amends_import_succeeded,
+        amends_unread=_amends_unread,
     ):
         result.warning(SKIPPED_RULE, category.message, line=category.line)
 

@@ -212,3 +212,11 @@ def test_questions_are_in_the_order_of_the_first_occurrence_outside_a_note():
     assert [q.id for q in declared.questions] == ["z", "a", "b", "c"]
     noted = _note("{{placeholder: d}}") + _note("{{placeholder: c}}") + "{{placeholder: a}}\n"
     assert [q.id for q in parse_template(_document(noted)).questions] == ["a", "d", "c"]
+
+
+def test_a_declared_question_without_a_valid_type_is_placed_by_its_blank_or_not_at_all():
+    front = "questions:\n  bad:\n    type: number\n  w:\n    type: text\n  gone:\n    prompt: P\n"
+    body = "Pay {{placeholder: a}} {{placeholder: bad}}.\n"
+    template = parse_template(_document(body, front))
+    # w, the one with a type, is first; bad is a blank like a; gone is no blank and has no type: not listed.
+    assert [(q.id, q.type) for q in template.questions] == [("w", "text"), ("a", "text"), ("bad", "text")]

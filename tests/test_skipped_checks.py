@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from legaldown import Template, load, parse, validate
+from legaldown import LegaldownDeprecationWarning, Template, load, parse, validate
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.grammar import IMPLEMENTATION_RULE_PREFIX, SKIPPED_RULE
 from legaldown.positions import Locator
@@ -185,17 +185,73 @@ def test_an_attachment_that_is_not_legaldown_is_only_asked_for_its_existence():
     assert "attachment-has-h1" not in warning.message
 
 
-def test_an_attachment_that_was_not_to_be_read_is_not_an_import_that_did_not_happen(tmp_path):
-    # The document itself adds nothing to itself, and a path no loader is asked for is a finding or a limitation.
-    own = _with("attachments:\n  - id: a\n    title: A\n    file: main.lgd\n", _BODY + "{{attach: a}}\n")
-    path = tmp_path / "main.lgd"
-    path.write_text(own, encoding="utf-8")
-    (warning,) = [d for d in validate(load(path)).diagnostics if d.rule == SKIPPED_RULE]
-    assert "importing" not in warning.message
-    for file in ("/abs.lgd", "../out.lgd", "a\\\\b.lgd"):
-        text = _with(f"attachments:\n  - id: a\n    title: A\n    file: '{file}'\n", _BODY + "{{attach: a}}\n")
-        (warning,) = _warnings(text, resolve=lambda _path: None)
-        assert "importing" not in warning.message, file
+def _attached(file: str) -> str:
+    return _with(f"attachments:\n  - id: a\n    title: A\n    file: '{file}'\n", _BODY + "{{attach: a}}\n")
+
+
+def _amended(file: str) -> str:
+    return _with(f"amends:\n  title: Original\n  file: '{file}'\n")
+
+
+def test_a_path_that_leads_out_of_the_directory_is_an_import_that_did_not_happen_for_both():
+    # Valid (§2.3), and never asked for (#109): the same as an include of it.
+    asked: list[str] = []
+
+    def loader(path: str) -> str | None:
+        asked.append(path)
+        return None
+
+    (warning,) = _warnings(_attached("../shared/defs.lgd"), resolve=loader)
+    assert "importing the definitions of 1 LegalDown attachment file (not read: its path leads out" in warning.message
+    (amends,) = _warnings(_amended("../shared/orig.lgd"), resolve=loader)
+    assert "amend-term-undefined" in amends.message and asked == []
+
+
+def test_a_backslash_or_null_byte_path_is_unreadable_and_said_so():
+    # No finding says anything of it, and no loader is asked: the Warning does.
+    def refuse(_path: str) -> str | None:
+        pytest.fail("asked")
+
+    for file in ("a\\\\b.lgd", "a\0b.lgd"):
+        document = parse(_attached("x.lgd"))
+        document.metadata.attachments[0].file = file  # (a NUL cannot be written in YAML)
+        (warning,) = [d for d in validate(document, resolve=refuse).diagnostics if d.rule == SKIPPED_RULE]
+        assert "importing the definitions of 1 LegalDown attachment file (not read: it could not be read)" in warning.message
+        document = parse(_amended("x.lgd"))
+        document.metadata.amends.file = file
+        (amends,) = [d for d in validate(document, resolve=refuse).diagnostics if d.rule == SKIPPED_RULE]
+        assert "amend-term-undefined" in amends.message
+
+
+def test_a_path_that_is_a_finding_is_not_an_import_that_did_not_happen(tmp_path):
+    for build, rule in ((_attached, "importing"), (_amended, "amend-term-undefined")):
+        absolute = validate(parse(build("/abs.lgd")), resolve=lambda _path: pytest.fail("asked"))
+        outside = validate(parse(build("../out.lgd")), resolve=lambda _path: pytest.fail("asked"), document_root=tmp_path)
+        for result, found in ((absolute, "path-not-relative"), (outside, "path-outside-root")):
+            assert found in result.rules()
+            (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
+            assert rule not in warning.message, (build.__name__, found)
+
+
+def test_the_document_itself_is_not_an_import_that_did_not_happen_for_both(tmp_path):
+    # Its own definitions are already the document's; attachment and original agree.
+    for build, rule in ((_attached, "importing"), (_amended, "amend-term-undefined")):
+        path = tmp_path / "main.lgd"
+        path.write_text(build("main.lgd"), encoding="utf-8")
+        (warning,) = [d for d in validate(load(path)).diagnostics if d.rule == SKIPPED_RULE]
+        assert rule not in warning.message, build.__name__
+
+
+def test_a_deprecated_importer_that_gave_nothing_is_an_import_that_did_not_happen_whatever_the_path():
+    for file in ("../x.lgd", "/abs.lgd", "ok.lgd"):
+        with pytest.warns(LegaldownDeprecationWarning):
+            result = validate(parse(_attached(file)), import_attachment_definitions=lambda _path: None)
+        (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
+        assert "importing the definitions of 1 LegalDown attachment file (not read: it could not be read)" in warning.message
+        with pytest.warns(LegaldownDeprecationWarning):
+            result = validate(parse(_attached(file)), import_attachment_definitions=lambda _path: {})
+        (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
+        assert "importing" not in warning.message
 
 
 def test_an_amendment_draws_one_warning_at_its_file():
@@ -343,7 +399,7 @@ def test_the_caps_a_check_reached_are_named_by_the_includes_warning():
     outcome = IncludeOutcome(unread=[UnreadInclude(include, "no-resolver")], caps=["the include tree exceeds 10,000 includes"])
     (category,) = skipped_categories(
         document, Locator(document), includes=[include], outcome=outcome, image=None, template=False,
-        fragment=False, attachments_unread=0, amends_imported=False,
+        fragment=False, attachments_unread=(), amends_unread=True,
     )
     assert category.key == "includes" and category.line == 3
     assert "the include tree exceeds 10,000 includes (not checked past that point)" in category.message

@@ -107,7 +107,21 @@ def _includes(
     )
 
 
-def _attachments(document: Document, where: Locator, unread: int) -> SkippedCategory | None:
+#: Why the definitions of a file were not imported, as a message says it (``_Imported.missing`` in core.py).
+_NOT_IMPORTED = {
+    "no-resolver": "no loader to read it",
+    "leads-out": "its path leads out of the document's directory, which is not read",
+    "unreadable": "it could not be read",
+}
+
+
+def _not_imported(reasons: Sequence[str]) -> str:
+    """How many files had no definitions imported, and why: ``2 files (no loader to read it)``."""
+    why = [phrase for reason, phrase in _NOT_IMPORTED.items() if reason in reasons]
+    return f"{_count(len(reasons), 'LegalDown attachment file')} (not read: {'; '.join(why)})"
+
+
+def _attachments(document: Document, where: Locator, unread: Sequence[str]) -> SkippedCategory | None:
     files = [(index, att.file.strip()) for index, att in enumerate(document.metadata.attachments) if att.file.strip()]
     if not files:
         return None
@@ -117,10 +131,7 @@ def _attachments(document: Document, where: Locator, unread: int) -> SkippedCate
         rules += ["attachment-has-frontmatter", "attachment-has-h1", "attachment-anchor-duplicate"]
     parts = [_join(rules)]
     if unread:
-        parts.append(
-            f"importing the definitions of {_count(unread, 'LegalDown attachment file')} "
-            f"(not read: no loader, or the file could not be read)"
-        )
+        parts.append(f"importing the definitions of {_not_imported(unread)}")
     return SkippedCategory(
         "attachments",
         f"{_count(len(files), 'attachment file')} declared ({legaldown} LegalDown). Not performed: "
@@ -129,12 +140,12 @@ def _attachments(document: Document, where: Locator, unread: int) -> SkippedCate
     )
 
 
-def _amendment(document: Document, where: Locator, imported: bool) -> SkippedCategory | None:
+def _amendment(document: Document, where: Locator, unread: bool) -> SkippedCategory | None:
     amends = document.metadata.amends
     if not amends or not amends.file.strip():
         return None
     parts = ["amends-file-missing"]
-    if not imported:
+    if unread:
         parts.append(
             "amend-term-undefined, since the definitions of the original were not imported "
             "(a term not defined in the amendment is amend-term-unresolvable, Info)"
@@ -190,8 +201,8 @@ def skipped_categories(
     image: FileReference | None,
     template: bool,
     fragment: bool,
-    attachments_unread: int,
-    amends_imported: bool,
+    attachments_unread: Sequence[str],
+    amends_unread: bool,
 ) -> list[SkippedCategory]:
     """The check categories this validation did not perform for the constructs *document*
     holds, in the order of §17.4: at most one for each (§17.5).
@@ -199,13 +210,13 @@ def skipped_categories(
     *includes* are the document's include paragraphs and *outcome* what ``check_includes``
     did with them; *image* is the first image path to hold no finding of its own
     (``FileReferences.first_image``), or None; *fragment*: the document is validated on its own, as a fragment;
-    *attachments_unread*: how many of its LegalDown attachment files had no definitions
-    imported (not read);
-    *amends_imported*: the original it amends was."""
+    *attachments_unread*: why each of its LegalDown attachment files had no definitions
+    imported (``_Imported.missing``: not for its own, nor for a path that is a finding);
+    *amends_unread*: the same of the original it amends."""
     found = [
         _includes([each for each in includes if each.paragraph], outcome, template, fragment),
         _attachments(document, where, attachments_unread),
-        _amendment(document, where, amends_imported),
+        _amendment(document, where, amends_unread),
         _bilingual(document, where),
         _paths(document, where, image),
     ]

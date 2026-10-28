@@ -374,11 +374,14 @@ def _message(title: str, last: int | None, level: int) -> str:
     )
 
 
-#: Why an include paragraph's fragment was not read, for ``skipped_categories`` (§17.5): no
+#: Why a file a document names was not read, for ``skipped_categories`` (§17.5): no
 #: loader to ask (``resolve``), a path that leads out of the document's directory (valid, §2.3,
-#: and never asked for, #109), a loader that has no such file (``include-file-missing`` is
-#: reported), or the document itself (a cycle, which is not detected).
-UnreadReason = Literal["no-resolver", "leads-out", "unreadable", "own"]
+#: and never asked for, #109), a loader that has no such file or a path it is never asked for
+#: that is no finding of its own (a backslash, a null byte; for an include
+#: ``include-file-missing`` is reported), the document itself (for an include a cycle, which is
+#: not detected), or a path refused with a finding of its own (``path-not-relative``,
+#: ``path-outside-root``), which an include is not counted as unread for either.
+UnreadReason = Literal["no-resolver", "leads-out", "unreadable", "own", "rejected"]
 
 
 @dataclass(frozen=True, slots=True)
