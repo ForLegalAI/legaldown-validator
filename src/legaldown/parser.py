@@ -44,13 +44,22 @@ from .markdown import (
     item_content_column,
     item_marker_at,
     nested_content,
-    no_blank_lines,
     paragraph_text,
     split_link_definitions,
     strip_text,
 )
 from .markers import Marker, split_heading
-from .models import Block, Document, ListItem, Section, _block_text, _str, metadata_from_dict
+from .models import (
+    Block,
+    Document,
+    ListItem,
+    Section,
+    metadata_from_dict,
+    normalise_field,
+    normalise_link_definition,
+    normalise_text,
+    normalise_title,
+)
 from .positions import SourceMap, document_shape, frontmatter_keys
 
 # ── YAML loader ───────────────────────────────────────────────────
@@ -1458,12 +1467,8 @@ def _link_definition(definition: LinkDefinitionSource, *, tidy: bool) -> Block:
     *tidy* as ``block_from_dict`` writes them."""
     if not tidy:
         return Block(kind="link_definition", label=definition.label, target=definition.target, title=definition.title)
-    return Block(
-        kind="link_definition",
-        label=no_blank_lines(_str(definition.label)),
-        target=LINE_ENDING_RE.sub("", _str(definition.target)),
-        title=no_blank_lines(definition.title),
-    )
+    label, target, title = normalise_link_definition(definition.label, definition.target, definition.title)
+    return Block(kind="link_definition", label=label, target=target, title=title)
 
 
 def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
@@ -1515,8 +1520,8 @@ def _parse_paragraph(paragraph: str) -> Block:
         anchor = anchors[0]
         return Block(
             kind="definition",
-            definition_id=_str(anchor.directive.positional),
-            term=_str(anchor.term),
+            definition_id=normalise_field(anchor.directive.positional),
+            term=normalise_field(anchor.term),
             text=strip_text(stripped[anchor.directive.end:]),
         )
     # A directive inside a defined term's quoted span cannot be split out
@@ -1532,7 +1537,7 @@ def _parse_paragraph(paragraph: str) -> Block:
         return Block(
             kind="ref",
             prefix=stripped[:ref_directive.start],
-            target=_str(ref_directive.positional),
+            target=normalise_field(ref_directive.positional),
             suffix=stripped[ref_directive.end:],
         )
     term_directive = _first_liftable(directives, "term")
@@ -1540,8 +1545,8 @@ def _parse_paragraph(paragraph: str) -> Block:
         return Block(
             kind="term",
             prefix=stripped[:term_directive.start],
-            target=_str(term_directive.positional),
-            label=_str(term_directive.params.get("label")),
+            target=normalise_field(term_directive.positional),
+            label=normalise_field(term_directive.params.get("label")),
             suffix=stripped[term_directive.end:],
         )
     return Block(kind="paragraph", text=stripped)
@@ -1843,7 +1848,7 @@ def _parse_body(
         elif line.lstrip(" \t").startswith(">"):
             end, quoted, open_paragraph = _read_quote(lines, index)
             raw = "\n".join(quoted)
-            blocks.append(Block(kind="quote", text=_block_text("quote", raw) if tidy else raw))
+            blocks.append(Block(kind="quote", text=normalise_text("quote", raw) if tidy else raw))
             index = end
             # The quote took every line it could continue; a paragraph after
             # it is lazy only if the quote's is still open.
@@ -1857,7 +1862,7 @@ def _parse_body(
             # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
             # no heading or other block starts inside it.
             raw = "\n".join(lines[index:end])
-            blocks.append(Block(kind="html", text=_block_text("html", raw) if tidy else raw))
+            blocks.append(Block(kind="html", text=normalise_text("html", raw) if tidy else raw))
             index = end
             lazy = False
         elif table := _parse_table(lines, index):
@@ -2031,17 +2036,17 @@ def parse(
         metadata=metadata_from_dict(metadata or {}),
         sections=[
             Section(
-                title=_str(title, "New Section"),
+                title=normalise_title(title),
                 level=level,
                 # An omitted identifier stays empty: the validator generates
                 # it (§5.3, §5.5), knowing which headings can appear together.
-                identifier=_str(marker.identifier),
+                identifier=normalise_field(marker.identifier),
                 blocks=blocks,
-                condition=_str(marker.condition),
+                condition=normalise_field(marker.condition),
             )
             for (title, marker, level), blocks in sections
         ],
-        filename=_str(filename),
+        filename=normalise_field(filename),
         preamble=preamble,
     )
     document.metadata.not_line_editable = not_line_editable

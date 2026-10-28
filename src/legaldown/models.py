@@ -177,10 +177,14 @@ def item_text(item: ListItem) -> str:
     return first.text if first is not None and first.kind == "paragraph" else ""
 
 
+#: The title of a section whose heading has none.
+DEFAULT_SECTION_TITLE = "New Section"
+
+
 @dataclass(slots=True)
 class Section:
     """A headed section of the document."""
-    title: str = "New Section"
+    title: str = DEFAULT_SECTION_TITLE
     level: int = 1
     #: The explicit identifier (§5.2), or ``""`` when the heading has none
     #: and one is generated (§5.3).
@@ -330,10 +334,19 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
 # Internal utilities
 # ---------------------------------------------------------------------------
 
-def _str(value: Any, default: str = "") -> str:
-    """Coerce a value to a stripped string, falling back to *default*."""
+def normalise_field(value: Any, default: str = "") -> str:
+    """Coerce a value to a stripped string, falling back to *default*. The rule
+    for the identifiers, terms, targets and labels of a block, and a section's
+    title, identifier and condition: ``block_from_dict`` and
+    ``section_from_dict`` apply it, and so does the parser where it builds them
+    (#110)."""
     result = str(value or "").strip()
     return result or default
+
+
+def normalise_title(value: Any) -> str:
+    """A section's title: stripped, ``DEFAULT_SECTION_TITLE`` when it is empty."""
+    return normalise_field(value, DEFAULT_SECTION_TITLE)
 
 
 def _clean_list(values: list) -> list[str]:
@@ -388,10 +401,11 @@ def _parse_str_dict(raw: Any) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _block_text(kind: str, value: Any) -> str:
+def normalise_text(kind: str, value: Any) -> str:
     """A block's text. A code block's is literal source, indentation
     included. A block quote keeps a leading blank line, which decides whether
-    it is a drafting note (§15.6)."""
+    it is a drafting note (§15.6). The rule ``block_from_dict`` applies, and the
+    parser where it builds a quote or an HTML block (#110)."""
     text = str(value or "")
     if kind == "code":
         return text
@@ -418,6 +432,18 @@ def _block_text(kind: str, value: Any) -> str:
     return strip_text(LINE_ENDING_RE.sub("\n", text))
 
 
+def normalise_link_definition(label: Any, target: Any, title: Any) -> tuple[str, str, str]:
+    """The *label*, *target* and *title* of a link reference definition block, as
+    ``block_from_dict`` writes them: a blank line would end the paragraph that
+    holds a label or a title (``no_blank_lines``), and a line break cannot be in a
+    destination written in ``<>``; the title is raw, its spaces its own."""
+    return (
+        no_blank_lines(normalise_field(label)),
+        LINE_ENDING_RE.sub("", normalise_field(target)),
+        no_blank_lines(str(title or "")),
+    )
+
+
 def _list_item(value: Any) -> ListItem:
     """A list item from a dict (``{"blocks": [...]}``), or from its text as
     written in the item (a string, the item form of models before 0.3), read
@@ -437,7 +463,9 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
     kind = str(payload.get("kind") or "paragraph")
     defaults = BLOCK_DEFAULTS.get(kind, BLOCK_DEFAULTS["paragraph"])
     merged = {**defaults, **payload}
-    target, label = _str(merged.get("target")), _str(merged.get("label"))
+    target, label, title = normalise_field(merged.get("target")), normalise_field(merged.get("label")), ""
+    if kind == "link_definition":
+        label, target, title = normalise_link_definition(label, target, merged.get("title"))
     headers = [_cell(header) for header in list(merged.get("headers") or [])]
     if kind == "table" and "headers" not in payload:
         # The default headers widen to the widest row, so no cell is cut.
@@ -445,13 +473,13 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         headers += [f"Column {index + 1}" for index in range(len(headers), width)]
     return Block(
         kind=kind,
-        text=_block_text(kind, merged.get("text")),
-        definition_id=_str(merged.get("definition_id")),
-        term=_str(merged.get("term")),
+        text=normalise_text(kind, merged.get("text")),
+        definition_id=normalise_field(merged.get("definition_id")),
+        term=normalise_field(merged.get("term")),
         prefix=str(merged.get("prefix") or ""),
         suffix=str(merged.get("suffix") or ""),
-        target=LINE_ENDING_RE.sub("", target) if kind == "link_definition" else target,
-        label=no_blank_lines(label) if kind == "link_definition" else label,
+        target=target,
+        label=label,
         # Raw: its spaces are its own. A blank line would end the paragraph
         # that holds it (``no_blank_lines``), as in the label; a line break
         # cannot be in a destination written in ``<>``.
@@ -485,11 +513,11 @@ def section_from_dict(data: dict[str, Any] | None) -> Section:
     """Construct a Section from a dict."""
     payload = data or {}
     return Section(
-        title=_str(payload.get("title"), "New Section"),
+        title=normalise_title(payload.get("title")),
         level=max(1, min(6, int(payload.get("level") or 1))),
-        identifier=_str(payload.get("identifier")),
+        identifier=normalise_field(payload.get("identifier")),
         blocks=[block_from_dict(b) for b in list(payload.get("blocks") or [])],
-        condition=_str(payload.get("condition")),
+        condition=normalise_field(payload.get("condition")),
     )
 
 
@@ -516,7 +544,7 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
     """
     payload = data or {}
     custom = [
-        CustomField(label=_str(cf.get("label")), value=_str(cf.get("value")))
+        CustomField(label=normalise_field(cf.get("label")), value=normalise_field(cf.get("value")))
         for cf in list(payload.get("custom_fields") or [])
         if isinstance(cf, dict)
     ]
@@ -526,15 +554,15 @@ def party_from_dict(data: dict[str, Any] | None) -> Party:
             custom.append(CustomField(label=label, value="" if value is None else str(value).strip()))
 
     return Party(
-        name=_str(payload.get("name")),
-        label=_str(payload.get("label")),
-        type=_str(payload.get("type")),
-        legal_name=_str(payload.get("legal_name")),
-        identification_number=_str(payload.get("identification_number")),
-        address=_str(payload.get("address")),
-        date_of_birth=_str(payload.get("date_of_birth")),
+        name=normalise_field(payload.get("name")),
+        label=normalise_field(payload.get("label")),
+        type=normalise_field(payload.get("type")),
+        legal_name=normalise_field(payload.get("legal_name")),
+        identification_number=normalise_field(payload.get("identification_number")),
+        address=normalise_field(payload.get("address")),
+        date_of_birth=normalise_field(payload.get("date_of_birth")),
         representatives=[
-            Representative(name=_str(r.get("name")), title=_str(r.get("title")))
+            Representative(name=normalise_field(r.get("name")), title=normalise_field(r.get("title")))
             for r in list(payload.get("representatives") or [])
             if isinstance(r, dict)
         ],
@@ -551,8 +579,8 @@ def side_from_dict(data: dict[str, Any] | None) -> Side:
     payload = data or {}
 
     return Side(
-        name=_str(payload.get("name")),
-        label=_str(payload.get("label")),
+        name=normalise_field(payload.get("name")),
+        label=normalise_field(payload.get("label")),
         parties=[
             party_from_dict(p)
             for p in list(payload.get("parties") or [])
@@ -581,24 +609,24 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
     # Amends
     raw_amends = payload.get("amends")
     amends = (
-        Amends(title=_str(raw_amends.get("title")), file=_str(raw_amends.get("file")))
+        Amends(title=normalise_field(raw_amends.get("title")), file=normalise_field(raw_amends.get("file")))
         if isinstance(raw_amends, dict)
         else None
     )
     raw_supersedes = payload.get("supersedes")
     supersedes: str | Amends = (
-        Amends(title=_str(raw_supersedes.get("title")), file=_str(raw_supersedes.get("file")))
+        Amends(title=normalise_field(raw_supersedes.get("title")), file=normalise_field(raw_supersedes.get("file")))
         if isinstance(raw_supersedes, dict)
-        else _str(raw_supersedes)
+        else normalise_field(raw_supersedes)
     )
 
     # Attachments
     attachments = [
         Attachment(
-            id=_str(a.get("id")),
-            title=_str(a.get("title")),
-            file=_str(a.get("file")),
-            when=_str(a.get("when")),
+            id=normalise_field(a.get("id")),
+            title=normalise_field(a.get("title")),
+            file=normalise_field(a.get("file")),
+            when=normalise_field(a.get("when")),
         )
         for a in (payload.get("attachments") or [])
         if isinstance(a, dict)
@@ -607,22 +635,22 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
     return Metadata(
         # No default title: a missing title is a validation error (§16.6,
         # title-missing); app flows that create fresh documents supply one.
-        title=_str(payload.get("title")),
-        legaldown=_str(payload.get("legaldown")),
-        subtitle=_str(payload.get("subtitle")),
-        version=_str(payload.get("version")),
-        document_type=_str(payload.get("document_type"), "contract"),
-        effective_date=_str(payload.get("effective_date")),
+        title=normalise_field(payload.get("title")),
+        legaldown=normalise_field(payload.get("legaldown")),
+        subtitle=normalise_field(payload.get("subtitle")),
+        version=normalise_field(payload.get("version")),
+        document_type=normalise_field(payload.get("document_type"), "contract"),
+        effective_date=normalise_field(payload.get("effective_date")),
         field_types=_parse_str_dict(payload.get("field_types")),
-        governing_law=_str(payload.get("governing_law")),
-        language=_str(payload.get("language"), "en"),
+        governing_law=normalise_field(payload.get("governing_law")),
+        language=normalise_field(payload.get("language"), "en"),
         include_signatures=_to_bool(payload.get("include_signatures"), default=True),
         tags=_clean_list(list(tags)),
         sides=sides,
         translations=_parse_str_dict(payload.get("translations")),
-        authoritative=_str(payload.get("authoritative")),
-        adopted_by=_str(payload.get("adopted_by")),
-        adoption_date=_str(payload.get("adoption_date")),
+        authoritative=normalise_field(payload.get("authoritative")),
+        adopted_by=normalise_field(payload.get("adopted_by")),
+        adoption_date=normalise_field(payload.get("adoption_date")),
         supersedes=supersedes,
         amends=amends,
         attachments=attachments,
@@ -636,7 +664,7 @@ def document_from_dict(data: dict[str, Any] | None) -> Document:
     return Document(
         metadata=metadata_from_dict(payload.get("metadata") or {}),
         sections=[section_from_dict(s) for s in list(payload.get("sections") or [])],
-        filename=_str(payload.get("filename")),
+        filename=normalise_field(payload.get("filename")),
         preamble=[block_from_dict(b) for b in list(payload.get("preamble") or [])],
     )
 
