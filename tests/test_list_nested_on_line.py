@@ -77,6 +77,28 @@ def _read(source: str) -> list:
             id="a-quote-in-an-item-short-of-the-empty-item-nested-on-its-line",
         ),
         pytest.param(
+            "- -\n      2. >\nc\n", [("un", [[("un", [[("or", [[("q", [])]])]])]]), P],
+            id="a-bare-item-ends-the-line-and-a-marker-reaches-its-content",
+        ),
+        pytest.param("* *\n      2. >\nc", [("un", [[("un", [[("or", [[("q", [])]])]])]]), P], id="the-same-with-stars"),
+        pytest.param("- -\n      -     c\n=", [("un", [[("un", [[("un", [[C]])]])]]), P], id="code-in-the-item-after-a-bare-one"),
+        pytest.param("- *\n      - <y>\n=", [("un", [[("un", [[("un", [[("html",)]])]])]]), P], id="html-in-the-item-after-a-bare-one"),
+        pytest.param(
+            "+ 2)\n      1. a\n      2.\n=", [("un", [[("or", [[("or", [[P], []])]])]]), P], id="an-item-after-a-bare-one-has-siblings"
+        ),
+        pytest.param("* -\n    |\n\t1.\n=\n", [("un", [[("un", [[P]])]])], id="a-paragraph-in-the-bare-item-is-continued-by-a-tab"),
+        pytest.param(
+            "+ 1.\n  --\n\n      a\n**", [("un", [[("or", [[]]), P, C]]), P], id="the-bare-item-ends-at-a-blank-line-and-code-follows"
+        ),
+        pytest.param(
+            "0. 1. a\n\n   h\n\n\t   c\nc", [("or", [[("or", [[P]]), P, C]]), P], id="nested-items-end-at-a-blank-line-and-code-follows"
+        ),
+        pytest.param(
+            "2) 2. 1.\n   =\n\n       a\n**",
+            [("or", [[("or", [[("or", [[]])]]), P, C]]), P],
+            id="three-levels-end-at-a-blank-line-and-code-follows",
+        ),
+        pytest.param(
             ">* a\n    ***\n>   2) 1)     e\nc\n",
             [("q", [("un", [[P]])])],
             id="a-lazy-rule-is-text-so-a-marker-after-it-cannot-interrupt",
