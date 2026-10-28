@@ -499,9 +499,13 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   that a fragment read between the headings fills (`# One`, an include of `## Deep`, `### Three`) is
   not reported, as §4.1 judges the combined document, unless an include before that heading is not
   known for certain (missing, not LegalDown, unreadable, conditional, itself reported as not a
-  fragment, or with something it includes not followed). This is one pass with every include
-  present: a template's conditional includes are not tried in every combination (§16.11), which
-  [CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612) lists with the other limits;
+  fragment, or with something it includes not followed). In a template this is judged under every
+  combination of answers to the questions the presence of an include names (§15.3, §16.11), with every unit
+  a combination makes absent removed: a skip is reported once, under the first combination that makes it
+  (`It is so when forum=arbitration, nda=false.`), and a `heading-skip` of the document is dropped only
+  if the fragments fill the level in every combination the heading is there for. At most 12 questions and
+  4,096 combinations are tried; past that it is one pass with every include present, and
+  `ldv-check-skipped` says so ([CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612));
 - `include-anchor-duplicate` at the later declaration of an explicit section identifier that the combined
   document declares twice (a fragment's heading in its file, a heading of the document at its own line), unless
   the two can never be there together (alternatives, §15.4); a fragment included twice is reported once, at its

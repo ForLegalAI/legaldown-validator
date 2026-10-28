@@ -113,14 +113,29 @@ def test_a_template_names_the_part_of_the_fragment_check_that_reads_a_file():
     assert "template-fragment-invalid" not in read.message
 
 
-def test_a_conditional_include_is_judged_with_every_include_present_and_the_warning_says_so():
+def test_a_conditional_include_is_judged_under_every_combination_and_the_warning_names_no_such_limit():
     text = _TEMPLATE_FRONT + _BODY + "{{include: p.lgd}} {when=x}\n"
     (warning,) = _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
-    assert "include-heading-skip under every combination of answers" in warning.message
-    (always,) = _warnings(
-        _TEMPLATE_FRONT + _BODY + "{{include: p.lgd}}\n", resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"})
+    # Tried (#108), so nothing is left to say of it: only past the cap of the combinations is it named.
+    assert "every combination" not in warning.message and "judged with every include present" not in warning.message
+
+
+def test_the_includes_warning_of_the_end_state_names_only_the_combined_document_when_everything_was_read():
+    # Everything the includes call for is done (#109, #114, #108) but the combined document (§16.11, #117).
+    text = _TEMPLATE_FRONT + _BODY + "{{include: p.lgd}} {when=x}\n"
+    (warning,) = _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
+    assert warning.message == (
+        "1 `{{include:}}` paragraph. Not performed: the combined-document checks (§16.11), such as a reference "
+        "or a term into a fragment, or an auto-generated identifier the fragments and the document share "
+        "(include processing is Full, §17.4; §17.5)."
     )
-    assert "every combination" not in always.message
+    # ... and for fragments not read, the rules that read or join them, in this order.
+    (unread,) = _warnings(text)
+    assert (
+        "include-file-missing, include-has-frontmatter, include-has-h1, include-heading-skip, include-cycle, "
+        "include-anchor-duplicate and the parts of template-fragment-invalid that read a fragment for the "
+        "fragments not read; the combined-document checks"
+    ) in unread.message
 
 
 def test_each_reason_an_include_is_not_read_is_counted_apart():
@@ -462,7 +477,7 @@ def test_assembly_is_unchanged_by_it(tmp_path):
 def test_the_caps_a_check_reached_are_named_by_the_includes_warning():
     document = parse(_FRONT + _BODY + "{{include: p.lgd}}\n", filename="main.lgd")
     include = IncludeDirective("p.lgd", "p.lgd", "{{include: p.lgd}}", 3, 0, 0, 0, 0, False, True)
-    outcome = IncludeOutcome(unread=[UnreadInclude(include, "no-resolver")], caps=["the include tree exceeds 10,000 includes"])
+    outcome = IncludeOutcome(unread=[UnreadInclude(include, "no-resolver")], caps=["the include tree exceeds 10,000 includes (not checked past that point)"])
     (category,) = skipped_categories(
         document, Locator(document), includes=[include], outcome=outcome, image=None, template=False,
         fragment=False, attachments_unread=(), amends_unread=True,

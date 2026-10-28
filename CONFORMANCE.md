@@ -536,20 +536,37 @@ Decisions the specification leaves open:
   assembled); following it there is tracked as [#118](https://github.com/ForLegalAI/legaldown-validator/issues/118).
   A fragment validated on its own (`validate(fragment=True)`) reads no file, so its includes are judged by their
   path only (`include-not-legaldown`, `path-not-relative`); the document that includes it follows them.
-- **The identifiers and the combined document.** `include-heading-skip` is **one pass with every
-  include present**: a partial implementation of §16.11, which asks for the hierarchy under every
-  combination of answers to the conditions on the includes of a template (§15.3). Each fragment's headings are placed after
+- **The identifiers and the combined document.** `include-heading-skip` is judged on the combined document
+  **under every combination of answers** ([#108](https://github.com/ForLegalAI/legaldown-validator/issues/108);
+  §15.3, §15.4, §16.11). The questions are those that the presence of a read, spliceable include paragraph
+  names (its own condition and those of the sections around it, `Units.presence`), in the order they are
+  first used in the document (within one presence, as the frontmatter declares them); a question
+  that no include names is not varied, and its conditions hold, as do those on a question that has no answer
+  to try. For each combination (true before false, a choice's values as declared, the last question changing
+  fastest) every unit it makes absent is removed (an include, and a section with its subsections, since a
+  presence is cumulative), the fragments of the includes that are left are spliced in, and §4.1 is judged.
+  Each fragment's headings are placed after
   the heading of the section holding its include paragraph (before the first heading, for the
   preamble), those of the fragments it includes after the heading of its own section that includes them, and
   are reported where they are: a fragment's heading in its file, a heading of the
   document that follows a fragment's at its own line; the document's own `heading-skip` is not
-  reported a second time. Conversely, a `heading-skip` of the document that a fragment read between
-  the headings fills is dropped (`# One`, an include of `## Deep`, `### Three`): §4.1 judges the
-  combined document (§12.2). That holds only when every include paragraph in the section before the
-  heading was read and present for certain, and what those include was followed; with one missing, not
-  LegalDown, judged as a path, unreadable, conditional (on its paragraph or a section around it), or
-  reported as not a fragment (`include-has-frontmatter`, `include-has-h1`: it is not spliced), or with
+  reported a second time. A heading is reported **once**, however many combinations skip at it, under
+  the first (the message ends `It is so when forum=arbitration, nda=false.`, naming every question tried;
+  a template with no conditional include has one combination and the message is as it was). Conversely, a
+  `heading-skip` of the document that the fragments read between the headings fill in every
+  combination in which the heading is there is dropped (`# One`, an include of `## Deep`, `### Three`): §4.1 judges the
+  combined document (§12.2). A document heading that is filled in some combinations and not in others
+  (`# One`, a conditional include of `## Deep`, `### Three`) keeps its `heading-skip`, and no
+  `include-heading-skip` is added for it. That holds only when every include paragraph in the section before the
+  heading was read, and what those include was followed; with one missing, not
+  LegalDown, judged as a path, unreadable, or reported as not a fragment
+  (`include-has-frontmatter`, `include-has-h1`: it is not spliced), or with
   something it includes not followed, the plain per-document judgement stands.
+  **Cap:** at most **12 questions and 4,096 combinations**, whichever is reached first (a template's
+  questions are few; the cap is this implementation's). Past it the pass is made once, with every
+  include present, as before #108, and an include that is conditional fills nothing; the Warning of §17.5 says
+  so ("include-heading-skip under every combination of answers ... judged with every include present
+  instead"), and there is no partial try. Combinations that leave the same units present are judged once.
   `include-anchor-duplicate` compares the **explicit** section identifiers (the specification's
   "section identifiers", §12.2) of the document and of every fragment in the order of the combined document
   and reports the later declaration: two that can never be there together (alternatives, with exclusive
@@ -633,7 +650,7 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
 
 | Category (§17.4) | Construct | Not performed |
 |---|---|---|
-| Includes (§12, §16.11) | an include paragraph | always: the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document; [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)). For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. In a template with a conditional include: `include-heading-skip` under every combination of answers (it is judged with every include present) |
+| Includes (§12, §16.11) | an include paragraph | always: the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document; [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)). For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
 | Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file also `attachment-has-frontmatter`, `attachment-has-h1` and `attachment-anchor-duplicate`, and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below) |
 | Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (for any reason, see below), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
 | Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch` |

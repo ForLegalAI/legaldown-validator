@@ -27,7 +27,7 @@ from ..directives import Lexed, lex
 from ..files import LoadFile, Reach, is_absolute_reference, within
 from ..models import Document, Metadata
 from ..positions import Locator
-from .conditions import ALWAYS, Presence, exclusive
+from .conditions import Presence, answer_combinations, exclusive, holds_under
 from .patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
 from .templates import BodyScan, IncludeDirective, check_template_body
@@ -306,7 +306,7 @@ def fragment_findings(
     unless *shape* is False, and, when the document is a *template*, what §15.3
     requires of it (``content_findings``). Nothing is reported of a file that is
     not in a template beyond its shape: its nested includes are allowed (§12.2)
-    and not followed here. Nor is anything the file's own body draws in
+    and followed by ``check_includes``, not here. Nor is anything the file's own body draws in
     ``validate(fragment=True)`` (``insertion-boundary`` and the like): this is a
     check of what the file may hold, not a validation of it."""
     document = fragment.document
@@ -392,64 +392,132 @@ class Splice:
     headings: list[Heading]
 
 
+#: How many questions the conditions on the includes of a template may name, and how many combinations of
+#: their answers are tried, for ``include-heading-skip`` (§15.3). A template is the author's, and its
+#: questions few; past either it is judged once, with every include present, and the Warning of §17.5
+#: says so.
+MAX_COMBINATION_QUESTIONS = 12
+MAX_COMBINATIONS = 4096
+
+
+def _suffix(combination: dict[str, Any]) -> str:
+    """What a message says of the combination it was found under: ``when forum=arbitration, nda=false``
+    (nothing for no question: the document has one way to be)."""
+    if not combination:
+        return ""
+    shown = ", ".join(f"{q}={str(a).lower() if isinstance(a, bool) else a}" for q, a in combination.items())
+    return f" It is so when {shown}."
+
+
+@dataclass(slots=True)
+class HeadingSkips:
+    """What ``include_heading_skips`` found: the *skips* of the combined document, in its order; the
+    headings of the document it *filled* (a ``heading-skip`` of the document that the combined document
+    does not have); and whether the combinations of answers were too many to try (*capped*: the
+    pass was made once, with every include present)."""
+    skips: list[HeadingSkip] = field(default_factory=list)
+    filled: set[int] = field(default_factory=set)
+    capped: bool = False
+
+
 def include_heading_skips(
     document: Document,
     where: Locator,
     splices: dict[int | None, list[Splice]],
     first: int | None,
-    unread: Collection[int | None] = (),
-) -> tuple[list[HeadingSkip], set[int]]:
-    """The headings that skip a level when every fragment is spliced in where its
-    include paragraph is (§12.2, §16.11): *splices* are the includes after the
-    heading of each section (None: before the first heading), in order, each with the
-    headings of its fragment and of the fragments that one includes, and *first*
-    is the level before the document's first heading (0, or None; ``skips``).
+    unread: Collection[int | None],
+    units: Units,
+    questions: Any,
+) -> HeadingSkips:
+    """The headings that skip a level when the fragments are spliced in where their include paragraphs
+    are (§12.2, §16.11): *splices* are the includes after the heading of each section (None: before the
+    first heading), in order, each with the headings of its fragment and of the fragments that one includes,
+    and *first* is the level before the document's first heading (0, or None; ``skips``).
 
-    The check is one pass, with every include present: §16.11 asks for it under
-    every combination of answers to the conditions on the includes of a template,
-    which this does not try. A heading is reported where it is: a fragment's heading
-    in its file, and a heading of the document after a fragment's at its own line.
-    A heading of the document after one of its own is ``heading-skip``'s, not
-    reported again.
+    §15.3 asks for the combined document to satisfy §4.1 under every combination of answers to the questions
+    that the presence of an include names, with every unit a combination makes absent removed (the
+    include, and the section that holds it, with its subsections, since a presence is cumulative,
+    ``Units.presence``). Each combination is tried (``answer_combinations``: the limits are
+    ``MAX_COMBINATION_QUESTIONS`` and ``MAX_COMBINATIONS``; past them, one pass with every include
+    present, *capped*, and an include that is conditional fills nothing). A question no include names
+    is not varied: its conditions hold. A heading is reported where it is, once however many combinations
+    skip at it, and under the first (in the order of ``answer_combinations``) with the answers in the
+    message: a fragment's heading in its file, and a heading of the document after a fragment's at its own
+    line. A heading of the document after one of its own is ``heading-skip``'s, not reported again.
 
-    Also returned: the headings of the document that skip a level after the one
-    before them in the document (``heading-skip``), and do not in the combined
-    document, because a fragment between them fills the level. *unread* are the
-    sections (None: the preamble) that hold an include paragraph whose fragment
-    was not read, or not all of it: what lies before the heading after such a section is not
-    known, and its ``heading-skip`` stands."""
-    found: list[HeadingSkip] = []
-    reported: set[tuple[str, int]] = set()
-    last = first  # the level of the heading before, in the combined document
-    from_fragment = False  # whether that heading is a fragment's
+    Also returned: the headings of the document that skip a level after the one before them in
+    the document (``heading-skip``), and do not in the combined document under any combination in which
+    they are there, because a fragment between them fills the level. *unread* are the sections (None: the
+    preamble) that hold an include paragraph whose fragment was not read, or not all of it: what lies before
+    the heading after such a section is not known, and its ``heading-skip`` stands."""
+    sections = document.sections
+    levels = [_level(section.level) for section in sections]
+    own = [first, *levels[:-1]] if sections else []  # the level of the document's previous heading, for each
+    # The combined document, in order: sections and the splices after them.
+    items: list[tuple[int | None, Splice | None]] = [(None, each) for each in splices.get(None, [])]
+    for index in range(len(sections)):
+        items.append((index, None))
+        items += [(index, each) for each in splices.get(index, [])]
+    section_presence = [units.presence(index) for index in range(len(sections))]
+    tried = answer_combinations(
+        (each.presence for _section, each in items if each is not None), questions,
+        max_questions=MAX_COMBINATION_QUESTIONS, max_combinations=MAX_COMBINATIONS,
+    )
+    result = HeadingSkips(capped=tried is None)
+    combinations = [{}] if tried is None else tried[1]
+    if tried is None:  # one pass with every include present: a conditional one may not be there, and fills nothing
+        unread = {*unread, *(each.include.section for _section, each in items if each is not None and each.presence)}
 
-    def splice(after: list[Splice]) -> None:
-        nonlocal last, from_fragment
-        for each in after:
-            for heading in each.headings:
+    reported: set[tuple[str, int]] = set()  # fragment headings, however often included or found
+    found: list[tuple[tuple[int, int], HeadingSkip]] = []
+    reported_own: set[int] = set()  # headings of the document reported
+    seen: set[tuple[bool, ...]] = set()  # the combinations that leave the same units present
+    present_any: set[int] = set()  # the headings of the document there in some combination
+    skipped_any: set[int] = set()  # ... that skip, whatever is before them, in some
+    # The presence of each item of the combined document.
+    presences = [each.presence if each is not None else section_presence[section] for section, each in items]  # type: ignore[index]
+
+    for combination in combinations:
+        present = [holds_under(presence, combination) for presence in presences]
+        if (signature := tuple(present)) in seen:
+            continue  # the same document as one already judged
+        seen.add(signature)
+        said = _suffix(combination)
+        last, from_fragment = first, False  # the level of the heading before, and whether it is a fragment's
+        for position, ((section, each), there) in enumerate(zip(items, present, strict=True)):
+            if not there:
+                continue
+            if each is None:  # a heading of the document
+                index = section
+                assert index is not None
+                level = levels[index]
+                present_any.add(index)
+                if skips(last, level):
+                    skipped_any.add(index)
+                    # (Not after the one before it in the document: heading-skip says so.)
+                    if from_fragment and not skips(own[index], level) and index not in reported_own:
+                        reported_own.add(index)
+                        found.append(((position, 0), HeadingSkip(
+                            "", where.heading(index), _message(sections[index].title, last, level) + said
+                        )))
+                last, from_fragment = level, False
+                continue
+            for number, heading in enumerate(each.headings):
                 fragment, index = heading
-                level = heading.level
-                # A file included twice is the same heading twice: reported once.
-                if skips(last, level) and (fragment.path, index) not in reported:
+                if skips(last, heading.level) and (fragment.path, index) not in reported:
                     reported.add((fragment.path, index))
-                    line = fragment.where.heading(index)
-                    found.append(HeadingSkip(
-                        fragment.path, line, _message(fragment.document.sections[index].title, last, level)
-                    ))
-                last, from_fragment = level, True
-
-    splice(splices.get(None, []))
-    own = first  # the level of the document's own previous heading
-    filled: set[int] = set()
-    for index, section in enumerate(document.sections):
-        level = _level(section.level)
-        if from_fragment and skips(last, level) and not skips(own, level):
-            found.append(HeadingSkip("", where.heading(index), _message(section.title, last, level)))
-        elif skips(own, level) and not skips(last, level) and (None if index == 0 else index - 1) not in unread:
-            filled.add(index)
-        last, from_fragment, own = level, False, level
-        splice(splices.get(index, []))
-    return found, filled
+                    found.append(((position, number), HeadingSkip(
+                        fragment.path, _line(fragment.where.heading(index)),
+                        _message(fragment.document.sections[index].title, last, heading.level) + said,
+                    )))
+                last, from_fragment = heading.level, True
+    result.skips = [skip for _position, skip in sorted(found, key=lambda entry: entry[0])]
+    result.filled = {
+        index for index in present_any
+        if skips(own[index], levels[index]) and index not in skipped_any
+        and (None if index == 0 else index - 1) not in unread
+    }
+    return result
 
 
 def include_anchor_duplicates(
@@ -548,15 +616,12 @@ class IncludeOutcome:
     what it did not do, for the Warning that §17.5 asks for (``ldv-check-skipped``): the
     include paragraphs it did not read (*unread*, in order, those of fragments too; not one already judged as a
     path or found not LegalDown, which are Errors of their own, nor a cycle), how many of the include
-    paragraphs it met are in fragments (*nested*), whether a
-    fragment it read is conditional (*conditional*: ``include-heading-skip`` is judged with
-    every include present, not under every combination of answers), and the limits it
-    reached (*caps*, each as a phrase): the depth and the count of the includes followed (#114);
-    *caps* is filled by the combination cap (#108) too."""
+    paragraphs it met are in fragments (*nested*), and the limits it
+    reached (*caps*, each as a phrase): the depth and the count of the includes followed (#114), and
+    the combinations of answers that ``include-heading-skip`` tries (#108)."""
     filled: set[int] = field(default_factory=set)
     unread: list[UnreadInclude] = field(default_factory=list)
     nested: int = 0
-    conditional: bool = False
     caps: list[str] = field(default_factory=list)
 
 
@@ -622,7 +687,7 @@ class _Walk:
         """Whether the count of includes and headings followed is reached: said once, and nothing is followed past it."""
         if self._expanded < MAX_INCLUDE_EXPANDED:
             return False
-        cap = f"following the includes of fragments past {MAX_INCLUDE_EXPANDED:,} includes and headings"
+        cap = f"following the includes of fragments past {MAX_INCLUDE_EXPANDED:,} includes and headings (not checked past that point)"
         if cap not in self._outcome.caps:
             self._outcome.caps.append(cap)
         self.incomplete = True
@@ -711,7 +776,7 @@ class _Walk:
             )
             return None
         if len(stack) >= MAX_INCLUDE_DEPTH:
-            cap = f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels"
+            cap = f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels (not checked past that point)"
             if cap not in self._outcome.caps:
                 self._outcome.caps.append(cap)
             return None
@@ -871,9 +936,6 @@ def check_includes(
         )
         if walk.incomplete:
             unread.add(include.section)  # something it includes is not known: it fills nothing
-        if presence != ALWAYS:
-            outcome.conditional = True
-            unread.add(include.section)  # it may not be there: it fills nothing
     if files is not None and template:
         # The attachment files of a template hold no include (§16.12); only that is checked
         # of them here: their frontmatter and heading are assembly's to refuse, and are not
@@ -894,9 +956,16 @@ def check_includes(
                 result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
     if not splices:
         return outcome
-    skipped, outcome.filled = include_heading_skips(document, where, splices, first_level, unread)
-    for skip in skipped:
+    judgement = include_heading_skips(document, where, splices, first_level, unread, units, questions)
+    outcome.filled = judgement.filled
+    for skip in judgement.skips:
         result.error("include-heading-skip", skip.message, line=skip.line, file=skip.file)
+    if judgement.capped:
+        outcome.caps.append(
+            f"include-heading-skip under every combination of answers to the conditions on the includes "
+            f"(more than {MAX_COMBINATION_QUESTIONS} questions, or {MAX_COMBINATIONS:,} combinations), "
+            f"which is judged with every include present instead"
+        )
     for duplicate in include_anchor_duplicates(document, where, splices, units, questions):
         result.error("include-anchor-duplicate", duplicate.message, line=duplicate.line, file=duplicate.file)
     return outcome

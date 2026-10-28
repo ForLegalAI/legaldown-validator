@@ -6,6 +6,7 @@ document: its own condition and those of every unit enclosing it.
 """
 from __future__ import annotations
 
+import itertools
 import re
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
@@ -95,6 +96,49 @@ def question_answers(question: str, questions: Any) -> Collection[Any]:
         return _BOOLEAN_ANSWERS
     choices = questions[question].get("choices")
     return choices if isinstance(choices, dict) else ()  # a dict is read as its keys
+
+
+def holds_under(presence: Iterable[Condition], answers: dict[str, Any]) -> bool:
+    """True if every condition in *presence* holds when each question in *answers* has the answer it gives. A
+    condition on a question that *answers* does not name holds (``answer_combinations``)."""
+    return all(condition.holds(answers[condition.question]) for condition in presence if condition.question in answers)
+
+
+def answer_combinations(
+    presences: Iterable[Presence], questions: Any, *, max_questions: int, max_combinations: int
+) -> tuple[list[str], list[dict[str, Any]]] | None:
+    """Every combination of answers to the questions that *presences* name (§15.4), as the questions
+    in the order they are first used (*presences* in order; those of one presence in the order
+    *questions* declares them) and the combinations in the order of their answers: true before
+    false, a choice's values as declared, the last question changing fastest. A question that has
+    no answer at all (a choice without choices: ``question-invalid`` says so) is left out: its
+    conditions hold. None when there are more than *max_questions* questions or more than
+    *max_combinations* combinations, which is too many to try."""
+    position = {question: index for index, question in enumerate(questions)} if isinstance(questions, dict) else {}
+
+    def answers_of(question: str) -> Collection[Any]:
+        try:
+            return question_answers(question, questions)
+        except (KeyError, AttributeError, TypeError):  # not declared, or no mapping: no answer to give
+            return ()
+
+    asked: list[str] = []
+    for presence in presences:
+        for question in sorted({condition.question for condition in presence}, key=lambda q: position.get(q, len(position))):
+            if question not in asked and answers_of(question):
+                asked.append(question)
+    if len(asked) > max_questions:
+        return None
+    count = 1
+    for question in asked:
+        count *= len(answers_of(question))
+        if count > max_combinations:
+            return None
+    combinations = [
+        dict(zip(asked, answers, strict=True))
+        for answers in itertools.product(*(answers_of(question) for question in asked))
+    ]
+    return asked, combinations
 
 
 def by_question(presence: Iterable[Condition]) -> dict[str, list[Condition]]:

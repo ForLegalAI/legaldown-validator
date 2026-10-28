@@ -130,18 +130,13 @@ def _includes(
     parts = []
     if rules:
         parts.append(f"{_join(rules)} for the fragments not read")
-    if outcome.conditional:
-        parts.append(
-            "include-heading-skip under every combination of answers to the conditions on the includes, "
-            "judged with every include present"
-        )
     # The combined document is never put together (§12.2, §16.11): what refers across a
     # fragment and the document is judged as if the fragment were not there.
     parts.append(
         "the combined-document checks (§16.11), such as a reference or a term into a fragment, "
-        "or an identifier the fragments and the document share"
+        "or an auto-generated identifier the fragments and the document share"
     )
-    parts += [f"{cap} (not checked past that point)" for cap in outcome.caps]
+    parts += outcome.caps
     return SkippedCategory(
         "includes",
         f"{_items(met)}. Not performed: {_items(parts)} "

@@ -405,7 +405,7 @@ def test_heading_skip_stands_when_an_include_before_the_heading_is_not_known():
     assert [r[0] for r in _found(result, "heading-skip", "include-heading-skip")] == ["heading-skip"]
 
 
-def test_a_conditional_include_fills_no_level():
+def test_a_conditional_include_fills_no_level_it_is_not_there_for():
     front = _TEMPLATE_FRONT
     part = {"p.lgd": "## Deep {#deep}\n"}
     for include in ("{{include: p.lgd}} {when=x}\n", "{{include: p.lgd}}\n"):
@@ -413,10 +413,11 @@ def test_a_conditional_include_fills_no_level():
         result, _ = _run(text, part)
         expected = [("heading-skip", "main.lgd", _at(text, "### Three"))] if "when" in include else []
         assert _found(result, "heading-skip") == expected, include
-    # ... nor does one under a conditional section.
+    # One under a conditional section is there whenever the heading after it is (it is in the section, with its
+    # subsections), so it fills the level (#108: every combination is tried).
     text = front + "# One {#one when=x}\n\n{{include: p.lgd}}\n\n### Three {#three}\n"
     result, _ = _run(text, part)
-    assert [rule for rule, *_ in _found(result, "heading-skip")] == ["heading-skip"]
+    assert _found(result, "heading-skip", "include-heading-skip") == []
 
 
 def test_a_file_that_is_not_a_fragment_is_not_spliced():
