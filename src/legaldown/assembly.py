@@ -81,7 +81,7 @@ from .validator.templates import (
     is_drafting_note,
     question_type,
 )
-from .validator.units import block_include, find_markers, own_presence
+from .validator.units import block_include, find_markers, include_key, own_presence
 
 __all__ = [
     "frontmatter_diagnostic",
@@ -469,6 +469,7 @@ class _Include:
     start: int
     end: int
     path: str
+    source: str = ""  # the directive as written
 
 
 @dataclass(slots=True)
@@ -583,9 +584,7 @@ def _read_paragraph(
     # (#35). One that names no file (``{{include:}}``) has the path "", refused in ``_read_files``.
     include = block_include(block)
     if include is not None:
-        source.includes.append(
-            _Include(span.start, span.end, posixpath.normpath(include.positional) if include.positional else "")
-        )
+        source.includes.append(_Include(span.start, span.end, include_key(include), include.source))
 
 
 def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:
@@ -674,6 +673,11 @@ class _Frontmatter:
     items: list[_Attachment] = field(default_factory=list)
     occurrences: list[_Occurrence] = field(default_factory=list)
     malformed: list[Directive] = field(default_factory=list)
+
+    @property
+    def rows(self) -> int:
+        """How many lines the frontmatter takes in the file, the offset of the body."""
+        return self.text().count("\n")
 
     def text(self, lines: list[str] | None = None, drop: frozenset[int] = frozenset()) -> str:
         """The frontmatter, delimiters included, written from *lines* (its
@@ -908,12 +912,13 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     wanted += [(item.file, "attachment") for item in items if item.file]
     subs: dict[str, _Source] = {}
     # An include paragraph that names no file, at its line (the validator's include-file-missing).
+    rows = front.rows if front else 0  # the body's lines are the file's, after the frontmatter's
     problems: list[Diagnostic] = [
         Diagnostic(
             "include-file-missing", "error",
-            "'{{include:}}' names no file: an include paragraph names the LegalDown file it takes in "
-            "(§12.2); the template is not assembled.",
-            line=include.start + 1 + (front.text().count("\n") if front else 0),  # the file's, not the body's
+            f"'{include.source}' names no file: an include paragraph names the LegalDown file it takes in "
+            f"(§12.2); the template is not assembled.",
+            line=include.start + 1 + rows,
         )
         for include in main.includes if not include.path
     ]

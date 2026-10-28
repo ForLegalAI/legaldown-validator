@@ -436,11 +436,14 @@ Decisions the specification leaves open:
   quoting the directive as written.
 - **Several documents, one fragment.** `legaldown validate a.lgd b.lgd`, where both include `part.lgd`,
   reports a finding in `part.lgd` once, in the output and in the counts: findings in a file other than
-  the target's, with the same file (the real path, however spelt), line, rule and message as another
+  the target's, with the same file (its absolute path, however spelt), line, rule and message as another
   target's, are one, in any order of the arguments. A finding in a fragment does not name the fragment
-  in its message (`Diagnostic.file` does), so it reads the same from every directory. A target's own
-  findings are never collapsed, and a file reached twice as a target (twice, through a link, or by a
-  directory and by itself) is validated once.
+  in its message (`Diagnostic.file` does), so it reads the same from every directory. A message that
+  carries the including document's context is another diagnosis and is reported for each: an
+  `include-heading-skip` "from level 1 to 4" in one document and "from level 2 to 4" in the other. A
+  target's own findings are never collapsed. A file reached twice as a target (named twice, or by a
+  directory and by itself) is validated once; a link to a document is a target of its own, as `load`
+  does not follow links and reads the includes from beside the link.
 - **An include that names no file.** An include paragraph `{{include:}}` is `include-file-missing`
   ("names no file") at its line when the validation can read files, and assembly refuses the template
   for it at the same line. In a template's fragment any `{{include:}}` is `template-fragment-invalid`,

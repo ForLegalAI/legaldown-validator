@@ -618,7 +618,7 @@ def check_template_body(
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, text_fragments
-    from .units import paragraph_include  # conditions -> templates -> units -> conditions
+    from .units import include_key, paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
              nth: int = 0) -> Line:
@@ -681,8 +681,7 @@ def check_template_body(
                 # include as any other, wherever it is (§15.3).
                 if directive.name == "include":
                     includes.append(IncludeDirective(
-                        directive.positional or "", posixpath.normpath(directive.positional) if directive.positional else "",
-                        directive.source, line, block_section, block_index, index, directive.start, in_note,
+                        directive.positional or "", include_key(directive), directive.source, line, block_section, block_index, index, directive.start, in_note,
                         only is directive,
                     ))
                     if in_note and template:

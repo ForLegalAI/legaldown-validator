@@ -9,6 +9,7 @@ sections and list items enclosing it.
 """
 from __future__ import annotations
 
+import posixpath
 import re
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
@@ -176,11 +177,20 @@ def paragraph_include(block: Block, text: str, lexed: Lexed) -> Directive | None
     return include_paragraph(text, lexed) if block.kind == "paragraph" else None
 
 
+def include_key(directive: Directive) -> str:
+    """The key an ``{{include:}}`` is read by: its path, normalised (``posixpath.normpath``),
+    or "" for one that names no file. The one place that says so, for assembly and the
+    validator."""
+    return posixpath.normpath(directive.positional) if directive.positional else ""
+
+
 def block_include(block: Block, lex_fragment: Callable[[str], Lexed] = lex) -> Directive | None:
     """The ``{{include:}}`` of *block* if it is an include paragraph (``paragraph_include``),
     read from its first text fragment, which is what the validator and assembly both
     read. The text is lexed only if it can hold an include; a block with no text fragment
     (one built in code) holds none."""
+    if block.kind != "paragraph":
+        return None
     from ..definitions import text_fragments  # definitions -> validator.helpers -> validator: a cycle at import
 
     texts = text_fragments(block)

@@ -891,6 +891,9 @@ def test_an_include_paragraph_that_names_no_file_is_missing_in_validate_and_in_a
     problems = Template(_TEMPLATE_FRONT + body, resolve=lambda _path: None).problems
     assert [(d.rule, d.file, d.line) for d in problems] == [("include-file-missing", "", _at(_TEMPLATE_FRONT + body, "{{include:}}"))]
     assert "names no file" in problems[0].message and "'.'" not in problems[0].message
+    # ... quoting the directive as written, as the validator does.
+    written = Template(_TEMPLATE_FRONT + "# A {#a}\n\n{{include:  }} {when=x}\n", resolve=lambda _path: None).problems
+    assert "'{{include:  }}' names no file" in written[0].message
 
 
 def test_an_include_paragraph_that_names_no_file_in_a_plain_fragment_is_refused_by_assembly_alone():
@@ -913,17 +916,62 @@ def test_an_include_that_names_no_file_in_a_templates_fragment_is_a_nested_inclu
     assert all("holds '{{include:}}'" in d.message for d in template.problems)
 
 
-def test_a_file_reached_through_a_link_is_one_target_and_a_fragment_finding_does_not_name_its_path(tmp_path, capsys):
-    (tmp_path / "sub").mkdir()
-    (tmp_path / "a.lgd").write_text(_FRONT + _SCOPE + "{{include: sub/p.lgd}}\n", encoding="utf-8")
-    (tmp_path / "sub" / "p.lgd").write_text("# H {#h}\n", encoding="utf-8")
-    link = tmp_path / "link.lgd"
+def test_a_link_to_a_document_is_a_target_of_its_own_that_reads_its_includes_from_beside_the_link(tmp_path, capsys):
+    # load() does not follow links: a link's includes are the ones beside the link.
+    (tmp_path / "other").mkdir()
+    (tmp_path / "a.lgd").write_text(_FRONT + _SCOPE + "{{include: part.lgd}}\n", encoding="utf-8")
+    (tmp_path / "part.lgd").write_text("# H {#h}\n", encoding="utf-8")
+    link = tmp_path / "other" / "link.lgd"
     try:
         link.symlink_to(tmp_path / "a.lgd")
     except OSError:  # no links here
         pytest.skip("cannot make a symbolic link")
     assert main(["validate", "--format", "json", str(tmp_path / "a.lgd"), str(link)]) == EXIT_DIAGNOSTICS
     records = json.loads(capsys.readouterr().out)["diagnostics"]
-    assert [d["rule"] for d in records].count("include-has-h1") == 1
-    # The file names the fragment; the message does not (it would differ from each directory).
-    assert all("p.lgd" not in d["message"] for d in records if d["rule"] == "include-has-h1")
+    assert [(d["rule"], d["file"]) for d in records if d["rule"].startswith("include-")] == [
+        ("include-file-missing", str(link)),
+        ("include-has-h1", str(tmp_path / "part.lgd")),
+    ]
+    # The fragment's message does not name it by a path.
+    assert all("part.lgd" not in d["message"] for d in records if d["rule"] == "include-has-h1")
+
+
+def test_a_finding_that_carries_the_including_documents_context_is_reported_for_each(tmp_path, capsys):
+    # The same fragment heading skips from level 1 in one document and from level 2 in the other:
+    # two diagnoses, at one file, line and rule.
+    (tmp_path / "a.lgd").write_text(_FRONT + "# One {#one}\n\n{{include: part.lgd}}\n", encoding="utf-8")
+    (tmp_path / "b.lgd").write_text(_FRONT + "# One {#one}\n\n## Two {#two}\n\n{{include: part.lgd}}\n", encoding="utf-8")
+    (tmp_path / "part.lgd").write_text("#### Deep {#deep}\n", encoding="utf-8")
+    for order in (("a.lgd", "b.lgd"), ("b.lgd", "a.lgd")):
+        assert main(["validate", "--format", "json", *(str(tmp_path / name) for name in order)]) == EXIT_DIAGNOSTICS
+        records = json.loads(capsys.readouterr().out)["diagnostics"]
+        skips = [d["message"] for d in records if d["rule"] == "include-heading-skip"]
+        assert len(skips) == 2 and any("from level 1 to 4" in m for m in skips) and any("from level 2 to 4" in m for m in skips)
+
+
+@pytest.mark.parametrize("include", ["{{include: g.lgd}}", "{{include:}}"])
+def test_an_include_in_a_drafting_note_is_a_drafting_note_whether_or_not_it_names_a_file(include):
+    note = f"> [!DRAFTING]\n> remember {include}\n"
+    files = {"g.lgd": "## G {#g}\n"}
+    for front, in_template in ((_TEMPLATE_FRONT, True), (_FRONT, False)):
+        # In the template's body: template-fragment-invalid (§15.3) in both; in a plain document, nothing in both.
+        main = front + "# A {#a}\n\n" + note
+        result, loader = _run(main, files)
+        template = Template(main, resolve=files.get) if front is _TEMPLATE_FRONT else None
+        found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.rule in (_TFR, "include-file-missing")]
+        assert loader.asked == []  # a note is removed unread (§15.6)
+        if in_template:
+            line = _at(main, include)
+            assert found == [(_TFR, "main.lgd", line)]
+            assert [(d.rule, d.line) for d in template.problems] == [(_TFR, line)]
+        else:
+            assert found == []
+            assert not Template(main, resolve=files.get).problems
+        # In a fragment, the same.
+        part = "## P {#p}\n\n" + note
+        main = front + "# A {#a}\n\n{{include: part.lgd}}\n"
+        result, _ = _run(main, {**files, "part.lgd": part})
+        found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.file]
+        problems = [(d.rule, d.file, d.line) for d in Template(main, resolve={**files, "part.lgd": part}.get).problems]
+        assert found == problems
+        assert bool(found) == in_template

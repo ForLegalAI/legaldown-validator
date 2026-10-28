@@ -125,29 +125,30 @@ def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
 
 
 def _same(path: str | os.PathLike[str]) -> str:
-    """A file by what it is, not how it is spelt: the real path (a link, a ``.``, a ``..`` and a
-    relative spelling resolved), in the case the file system compares by."""
-    return os.path.normcase(os.path.realpath(path))
+    """A file by its absolute path, however it is spelt (``.``, ``..``, a relative path). Links
+    are not followed: ``load`` reads a document's files from its own directory, so a link to a
+    document is a document of its own, with the includes beside the link."""
+    return os.path.abspath(path)
 
 
-def _own(d: dict, target: str) -> bool:
-    """Whether finding *d* is in the file of the target that produced it, and not in a
-    fragment it includes."""
-    return _same(d["file"]) == _same(target)
-
-
-def _identity(d: dict) -> tuple[Any, ...]:
-    """What makes two findings one: the same file (``_same``), line, rule and message. The
-    message of a finding in a fragment does not name the fragment by a path (the file does),
-    so the same finding reached from two directories reads the same."""
-    return (_same(d["file"]), d.get("line"), d["rule"], d["message"])
+def _judge(d: dict, own_file: str) -> tuple[bool, tuple[Any, ...]]:
+    """Whether finding *d* is in the file of the target that produced it (*own_file*, ``_same``),
+    and not in a fragment it includes, and what makes it one with another: the same file, line,
+    rule and message. The message of a finding in a fragment does not name the fragment by a
+    path (the file does), so the same finding reached from two directories reads the same; one
+    that carries the including document's context (a heading-skip from level 1, or from level 2)
+    is another diagnosis."""
+    file = _same(d["file"])
+    return file == own_file, (file, d.get("line"), d["rule"], d["message"])
 
 
 def _run_validate(args: argparse.Namespace) -> int:
     ignored = set(args.ignore or [])
     collected: list[dict] = []
     failures: list[str] = []
-    reports: list[tuple[str, list[dict]]] = []  # the findings of each target, but those ignored
+    # The findings of each target but those ignored, each with whether it is the target's own
+    # and what makes it one with another.
+    reports: list[list[tuple[dict, bool, tuple[Any, ...]]]] = []
     reached: set[str] = set()  # the targets validated, by absolute path
 
     for raw_path in args.paths:
@@ -163,9 +164,10 @@ def _run_validate(args: argparse.Namespace) -> int:
         for target in targets:
             # A file named twice, or by a directory and by its own path, is one target: validated
             # and reported once, at its first place.
-            if _same(target) in reached:
+            here = _same(target)
+            if here in reached:
                 continue
-            reached.add(_same(target))
+            reached.add(here)
             diagnostics, failure = _validate_path(
                 target,
                 final=args.final,
@@ -177,7 +179,7 @@ def _run_validate(args: argparse.Namespace) -> int:
             if failure:
                 failures.append(failure)
                 continue
-            reports.append((str(target), [d for d in diagnostics if d["rule"] not in ignored]))
+            reports.append([(d, *_judge(d, here)) for d in diagnostics if d["rule"] not in ignored])
 
     # A fragment several of the documents include is found wrong once, not once for each
     # (#35): across all the targets of the run, a finding in a file other than the one that
@@ -185,13 +187,13 @@ def _run_validate(args: argparse.Namespace) -> int:
     # findings the targets have in themselves are seen first, so a fragment that is also a
     # target is not reported twice whatever the order of the arguments; those are never
     # collapsed: two alike in one document are two findings.
-    seen = {_identity(d) for target, found in reports for d in found if _own(d, target)}
-    for target, found in reports:
-        for d in found:
-            if not _own(d, target):
-                if _identity(d) in seen:
+    seen = {identity for found in reports for _d, own, identity in found if own}
+    for found in reports:
+        for d, own, identity in found:
+            if not own:
+                if identity in seen:
                     continue
-                seen.add(_identity(d))
+                seen.add(identity)
             collected.append(d)
 
     if args.warnings_as_errors:
