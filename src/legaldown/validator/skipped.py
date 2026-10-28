@@ -55,8 +55,8 @@ def _count(number: int, noun: str) -> str:
 REASONS: dict[UnreadReason, tuple[str, str]] = {
     "no-resolver": ("has no loader to read it", "have no loader to read them"),
     "leads-out": (
-        "leads out of the document's directory, which is not read",
-        "lead out of the document's directory, which is not read",
+        "leads out of the document's directory, which is not read without a document root",
+        "lead out of the document's directory, which are not read without a document root",
     ),
     "unreadable": ("could not be read", "could not be read"),
     "own": ("is the document itself", "are the document itself"),

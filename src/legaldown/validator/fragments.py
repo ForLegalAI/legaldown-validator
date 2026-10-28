@@ -15,13 +15,14 @@ frontmatter that cannot be read is a finding of its own, not an exception (#43).
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from functools import cache, cached_property
 from typing import Literal
 
 from ..directives import Lexed, lex
-from ..files import LoadFile, relative_path, relative_path_check, within
+from ..files import LoadFile, Reach, within
 from ..models import Document, Metadata
 from ..positions import Locator
 from .patterns import LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
@@ -77,11 +78,27 @@ class Files:
     ``LoadFile`` of the validation; *document* is the document being validated,
     which a path may name itself."""
 
-    def __init__(self, resolve: LoadFile, document: Document) -> None:
+    def __init__(
+        self, resolve: LoadFile, document: Document, root: str | os.PathLike[str] | None = None
+    ) -> None:
         self._resolve = resolve
         self._path = document.path
+        #: Which paths may be read (§2.3): given a document *root*, those that stay within it,
+        #: ``../`` included, and none when the document is not itself within it.
+        self._reach = Reach.of(root, document.path.parent if document.path is not None else None)
         self._read: dict[str, FragmentFile | None] = {}
         self._own: dict[str, bool] = {}
+
+    def relative(self, path: str) -> str | None:
+        """*path*, as a document names a file, normalized, when a loader may be asked for it
+        (``relative_path``, given the document root: a path that leads out of the document's
+        directory is read when it stays within the root), else None."""
+        return self._reach.relative(path)
+
+    def relative_check(self, path: str) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
+        """``relative`` and why not (``relative_path_check``): ``leads-out`` is a valid path
+        that is not read, as no document root says it may be."""
+        return self._reach.check(path)
 
     def is_own(self, relative: str) -> bool:
         """True if *relative* names the document being validated: it adds nothing to
@@ -90,14 +107,14 @@ class Files:
         if self._path is None:
             return False
         if relative not in self._own:
-            self._own[relative] = within(self._path.parent, relative) == self._path.resolve()
+            self._own[relative] = within(self._path.parent, relative, self._reach.root) == self._path.resolve()
         return self._own[relative]
 
     def read(self, path: str) -> FragmentFile | None:
-        """The file at *path*, or None when it cannot be asked for (``relative_path``:
-        not relative, or out of the document's directory, §2.3) or is not there. The
+        """The file at *path*, or None when it cannot be asked for (``relative``:
+        not relative, or out of the document's directory and root, §2.3) or is not there. The
         loader is asked once for each file."""
-        relative = relative_path(path)
+        relative = self.relative(path)
         if relative is None:
             return None
         if relative not in self._read:
@@ -376,7 +393,7 @@ def _message(title: str, last: int | None, level: int) -> str:
 
 #: Why a file a document names was not read, for ``skipped_categories`` (§17.5): no
 #: loader to ask (``resolve``), a path that leads out of the document's directory (valid, §2.3,
-#: and never asked for, #109), a loader that has no such file or a path it is never asked for
+#: and never asked for unless a document root holds it, #109), a loader that has no such file or a path it is never asked for
 #: that is no finding of its own (a backslash, a null byte; for an include
 #: ``include-file-missing`` is reported), the document itself (for an include a cycle, which is
 #: not detected), or a path refused with a finding of its own (``path-not-relative``,
@@ -434,8 +451,9 @@ def check_includes(
     finding for each include, as is a path a loader is never asked for because it
     holds a backslash or a null byte: assembly refuses the template for it too. A
     path that only leads out of the document's directory (``../x.lgd``) is no
-    such finding, with a ``document_root`` or without one: it is valid (§2.3) and
-    this implementation does not read it, so it is skipped (#109) and unread (below). A fragment
+    such finding: it is valid (§2.3). With a ``document_root`` that holds it, it is read
+    like any other (``Files.relative``); without one this implementation does not read
+    it, so it is skipped (#109) and unread (below). A fragment
     that is there is checked for its shape and, in a *template*, its content
     (``fragment_findings``), once for each file however often it is included, and
     its headings are joined to the document's for ``include-heading-skip``
@@ -494,16 +512,16 @@ def check_includes(
             outcome.unread.append(UnreadInclude(include, "no-resolver"))
             continue
         # A path a LoadFile is never asked for (a backslash, a null byte, or leading out of the
-        # document's directory, §2.3) is not read. One that leads out is valid and skipped below;
-        # any other is include-file-missing, as assembly refuses the template for it. It is not
-        # path-not-relative (an absolute path or a URI scheme, judged above), nor
-        # path-outside-root, which judges where it leads.
-        relative, problem = relative_path_check(include.written)
+        # document's directory without a document root that holds it, §2.3) is not read. One that
+        # leads out is valid and skipped below; any other is include-file-missing, as assembly
+        # refuses the template for it. It is not path-not-relative (an absolute path or a URI
+        # scheme, judged above), nor path-outside-root, which judges where it leads.
+        relative, problem = files.relative_check(include.written)
         if relative is None and problem == "leads-out":
-            # Not judged above, so (given a root) within it: a valid path (§2.3), with a root or
-            # without, that this implementation does not read, as it reads nothing outside the
-            # document's directory. A known limitation (CONFORMANCE.md, #109), and no finding:
-            # it is *unread*, which the Warning of §17.5 says. A backslash or a null byte is not
+            # Not judged above, so valid (§2.3) and, given a root, within it; but with no root
+            # configured this implementation reads nothing outside the document's directory (a
+            # document it does not control must not read what it names, #109), and no finding: it
+            # is *unread*, which the Warning of §17.5 says. A backslash or a null byte is not
             # such a path, nor any other that cannot be asked for: still missing.
             outcome.unread.append(UnreadInclude(include, "leads-out"))
             unread.add(include.section)
@@ -545,7 +563,7 @@ def check_includes(
         # reported by this validation (CONFORMANCE.md).
         attached: set[str] = set()
         for attachment in document.metadata.attachments:
-            relative = relative_path(attachment.file) if attachment.file.endswith(LEGALDOWN_EXTENSIONS) else None
+            relative = files.relative(attachment.file) if attachment.file.endswith(LEGALDOWN_EXTENSIONS) else None
             # (A file that is also an include was checked above, and is a finding of its own.)
             if relative is None or relative in attached or relative in findings:
                 continue

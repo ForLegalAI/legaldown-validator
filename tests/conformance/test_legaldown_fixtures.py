@@ -208,7 +208,7 @@ def _validate_file(path: Path, config: dict):
     # as `legaldown validate --document-root` reads them.
     root = path.parent / config["document_root"]
     document = replace(document, path=path.absolute())
-    return validate(document, final=bool(config.get("final")), document_root=root, resolve=file_loader(path.parent))
+    return validate(document, final=bool(config.get("final")), document_root=root, resolve=file_loader(path.parent, root=root))
 
 
 @pytest.mark.parametrize("case", list(_iter_valid_cases()))

@@ -42,7 +42,7 @@ from typing import Any
 from ._deprecation import LegaldownDeprecationWarning
 from .definitions import list_fragments
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
-from .files import LoadFile, relative_path
+from .files import LoadFile, Reach
 from .markdown import (
     FENCE_OPEN_RE,
     HTML_BLOCK_START_RE,
@@ -871,7 +871,7 @@ class _Template:
     identifiers: dict | None = None
 
 
-def _read(template: str, load_file: LoadFile | None) -> _Template:
+def _read(template: str, load_file: LoadFile | None, reach: Reach | None = None) -> _Template:
     bom = "\ufeff" if template.startswith("\ufeff") else ""
     source, newline = _unix(template)
     document = parse(source)
@@ -882,7 +882,7 @@ def _read(template: str, load_file: LoadFile | None) -> _Template:
     main.newline = newline
     if front is not None:
         _read_frontmatter(front, document, declared)
-    subs, problems = _read_files(main, front, load_file, declared, template_like)
+    subs, problems = _read_files(main, front, load_file, declared, template_like, reach or Reach())
     problems += _malformed(main, *subs.values(), front=front)
     for path in document.metadata.translations.values():
         # A translation group is assembled together (§15.7.2), which this
@@ -910,10 +910,12 @@ def _read(template: str, load_file: LoadFile | None) -> _Template:
 
 
 def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
-                declared: dict, template: bool) -> tuple[dict[str, _Source], list[Diagnostic]]:
+                declared: dict, template: bool, reach: Reach) -> tuple[dict[str, _Source], list[Diagnostic]]:
     """Read every include fragment and LegalDown attachment file — the absent
     ones too: their placeholders are the template's (answer-unknown) and their
-    headings take part in identifier generation (step 7)."""
+    headings take part in identifier generation (step 7). *reach* says which paths
+    may be asked for: those within the template's directory, and, given a document
+    root, those that lead out of it and stay within the root (§2.3, #109)."""
     wanted: list[tuple[str, FragmentKind]] = [(include.path, "include") for include in main.includes if include.path]
     items = front.items if front else []
     wanted += [(item.file, "attachment") for item in items if item.file]
@@ -931,11 +933,11 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     ]
     unreadable: set[str] = set()  # reported once, however often it is referenced
     for path, kind in wanted:
-        relative = relative_path(path)
+        relative = reach.relative(path)
         if path in subs or relative in unreadable:
             continue
-        # Only a path within the template's directory (§2.3) is asked for: a loader is
-        # not handed ``../x``, an absolute path or a drive letter to open.
+        # Only a path within the template's directory, or its document root (§2.3), is asked
+        # for: a loader is not handed ``../x`` without one, an absolute path or a drive letter.
         text = load_file(path) if load_file is not None and relative is not None else None
         if text is None:
             reason = "cannot be read" if load_file else "needs the Full level (§17.6)"

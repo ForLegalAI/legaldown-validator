@@ -174,9 +174,9 @@ def test_a_blank_document_is_document_not_the_starter_one():
     assert legaldown.empty_document().sections != []
 
 
-def test_a_template_takes_its_text_and_a_resolver():
+def test_a_template_takes_its_text_a_resolver_and_where_it_lies_in_a_document_root():
     public = [name for name in inspect.signature(Template).parameters if not name.startswith("_")]
-    assert public == ["text", "resolve"]
+    assert public == ["text", "resolve", "document_root", "path"]
 
 
 def test_the_renderers_names_are_public():

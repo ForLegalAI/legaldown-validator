@@ -744,7 +744,7 @@ def test_cli_document_root_reports_a_path_that_escapes_it(tree, capsys):
     out = capsys.readouterr().out
     assert out.count("[path-outside-root]") == 1 and f"{doc}:9:" in out
     # No root: no containment check, and ../shared.lgd is a valid path (§2.3) that this implementation
-    # does not read: no finding, not even include-file-missing (CONFORMANCE.md, #109).
+    # does not read without one: no finding, not even include-file-missing (CONFORMANCE.md, #109).
     assert main(["validate", str(doc)]) == EXIT_OK
     out = capsys.readouterr().out
     assert "[path-outside-root]" not in out and "[include-file-missing]" not in out
@@ -756,8 +756,10 @@ def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree,
     assert capsys.readouterr().out.count("[path-outside-root]") == 1
     assert main(["validate", "sub/doc.lgd", "--document-root", "sub"]) == EXIT_DIAGNOSTICS
     assert capsys.readouterr().out.count("[path-outside-root]") == 2
-    # ../shared.lgd is within this root, so valid (§2.3); this implementation reads nothing outside
-    # the document's directory, and says nothing of it (CONFORMANCE.md, a known limitation).
+    # ../shared.lgd is within this root, so valid (§2.3), and read (#109): missing, then there.
+    assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_DIAGNOSTICS
+    assert "[include-file-missing]" in capsys.readouterr().out
+    (tree / "root" / "shared.lgd").write_text("Shared.\n", encoding="utf-8")
     assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_OK
 
 

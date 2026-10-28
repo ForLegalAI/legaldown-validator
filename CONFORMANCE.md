@@ -184,18 +184,39 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
 - No document root is configured by default (§2.3): `validate(document_root=)` and
   `legaldown validate --document-root DIR` set it (the fixtures' `requires_config` `document_root`,
   relative to the case's directory). Without one the containment check does not run, and
-  `../shared/definitions.lgd` is valid. With one, `normpath(directory of the document / path)` must be at
+  `../shared/definitions.lgd` is valid (though not read, below). With one, `normpath(directory of the document / path)` must be at
   or below the root, by names alone, with `/` and `\` both separating names (`a/../b` stays, `a/../../b`
   leaves). The document and the root are made absolute first, so a relative `path` and `.` compare; a document
   from `parse` has no path and is taken to be at the root, so any leading `..` leaves it. A loaded document
   below the root may climb up to it. A document outside the root cannot name a file within it: that is
   reported once, as `path-outside-root` at line 1 saying so, not once for each path, and only when it
   names a relative path at all.
-- Reading is stricter than validating: `files.relative_path`, which assembly and the definitions read for
-  `amends` and attachments use, still refuses `../` always (a file outside the document's directory is never
-  read, §2.3), and now every URI scheme as well (it let `https://example.com/a.lgd` through as
-  `https:/example.com/a.lgd`). So `../shared/x.lgd` validates clean, with a root that permits it or without one, but
-  such a file is not read ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)). Assembly does not report these two rules.
+- **Reading under the root** ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)). §2.3
+  says a document "must never be able to read files outside the tree it belongs to", and that without a
+  root the containment check does not run; it says nothing of reading. So this implementation reads a
+  file a document names only when a root is configured and the file is within it:
+  - **With a root**, a path whose leading `../` run stays within it (`../shared/x.lgd` from a document
+    one directory below the root) is read, like any other: for an include, an attachment file (its
+    definitions) and `amends.file` alike, by `validate`, by assembly (`load_template(path,
+    document_root=)`, `parse_template(text, document_root=, path=)`, `legaldown assemble --document-root`)
+    and by the CLI. A custom `resolve=` is asked for it too, as `../shared/x.lgd` (a change for loaders that
+    never saw a `../`). Containment is tested against the root only: nothing outside it is read, however
+    the path is written, and nothing a document outside the root names (`path-outside-root` reports the
+    document once; its includes, attachment files and `amends.file`, even beside it, are not read). The
+    default loader (`file_loader(directory, root=)`) enforces the same on the file itself: it follows symbolic
+    links and refuses a file whose real path is outside the root. `files.relative_path(path, depth=)`
+    takes how many names the document is below the root (`names_below`). The names of the rules for what
+    stays are unchanged: a backslash, a null byte, an absolute path, a URI scheme, `..` or `.` alone are
+    refused as ever. A document under a symbolic link to elsewhere is below the root by its names (the
+    check is lexical) and reads nothing outside the root, so a fragment it names is `include-file-missing`.
+  - **Without a root**, `../x` is valid and **not read**: no finding, a custom `resolve=` is not asked, and
+    the Warning of §17.5 says so (a document one does not control may not read what it names). The
+    deprecated `assemble()` is unchanged: it asks for no `../`. `-o` still refuses an output that leads
+    out of its directory, so a kept file read from `../` is assembled in memory (`AssemblyResult.files` keeps
+    its `../shared/x.lgd`) but the CLI cannot write it.
+  - `Diagnostic.file` of a finding in such a file is its path from the document's directory, `../shared/x.lgd`;
+    the CLI prints it without the detour.
+  Assembly does not report `path-not-relative` or `path-outside-root`.
 - An image is the inline `![alt](destination)` (§8.7), in a paragraph, list item, quote, table cell, heading
   or definition, and in the alt text of another image (both are checked). The destination is `<…>` or a
   raw one with balanced parentheses, then an optional title; backslash escapes and character references in
@@ -473,17 +494,16 @@ Decisions the specification leaves open:
   (`path-not-relative`, an absolute path or one with a URI scheme; `path-outside-root`, given a
   `document_root`) draws that finding alone: it is not also `include-file-missing` or
   `include-not-legaldown`. A path that leads out of the document's directory (`../x.lgd`) is valid as a
-  path (§2.3), with a `document_root` or without one, but a `LoadFile` is never asked for it
-  (`legaldown.files.relative_path`), as for one that holds a backslash, and assembly refuses a template
-  for it as for a file that is not there. **Known limitation**
-  ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)): this implementation reads
-  nothing outside the document's directory, so such an include is skipped, never
-  `include-file-missing`, whether a root contains it or there is none (it would break a document whose
-  `../shared/x.lgd` exists). The skip is said once, by the Warning of §17.5 below. Given a root it leaves, it is `path-outside-root` alone (#104), as ever. It is not
+  path (§2.3). Given a `document_root` that holds it, it is read like any other include (`../shared/x.lgd`,
+  [#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)); with none, a `LoadFile` is never asked for
+  it (`legaldown.files.relative_path`), as for one that holds a backslash, so it is skipped, never
+  `include-file-missing` (it would break a document whose `../shared/x.lgd` exists), and assembly refuses a
+  template for it as for a file that is not there. The skip is said once, by the Warning of §17.5 below. Given
+  a root it leaves, it is `path-outside-root` alone (#104), as ever. It is not
   `path-not-relative` (an absolute path or a URI scheme, #104's). A backslash, a null byte or an empty
   path is not such a path, and stays `include-file-missing`, at the include, with a message that says it is
-  not a readable relative path. (`amends.file` and attachment files outside the directory are still as if
-  not asked for.) A document with no path, and no `resolve`, reads nothing: the Warning of §17.5 says so.
+  not a readable relative path. (`amends.file` and attachment files are read or skipped by the same rule.)
+  A document with no path, and no `resolve`, reads nothing: the Warning of §17.5 says so.
 - **`resolve=` and the default loader.** A document loaded with `legaldown.load` (and so the CLI)
   now has its fragments read from beside it: a fragment that is missing is an Error on a file that
   was clean. `resolve=lambda path: None` says every file is missing, which `include-file-missing`
@@ -581,7 +601,7 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
 
 | Category (§17.4) | Construct | Not performed |
 |---|---|---|
-| Includes (§12, §16.11) | an include paragraph | always: `include-cycle` and `include-anchor-duplicate` (not implemented), and the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document; [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)). For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, and in a template the part of `template-fragment-invalid` that reads a fragment. In a template with a conditional include: `include-heading-skip` under every combination of answers (it is judged with every include present) |
+| Includes (§12, §16.11) | an include paragraph | always: `include-cycle` and `include-anchor-duplicate` (not implemented), and the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document; [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)). For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, and in a template the part of `template-fragment-invalid` that reads a fragment. In a template with a conditional include: `include-heading-skip` under every combination of answers (it is judged with every include present) |
 | Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file also `attachment-has-frontmatter`, `attachment-has-h1` and `attachment-anchor-duplicate`, and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below) |
 | Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (for any reason, see below), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
 | Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch` |
@@ -596,12 +616,12 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
 - **When "importing the definitions" is named, for an attachment file.** Of a LegalDown attachment file
   whose definitions were not imported, for every reason but its own path (its definitions are the
   document's already): no loader to read it (no `resolve`, and the document has no path); a path that leads
-  out of the document's directory (valid, §2.3, and never asked for, as for an include, #109); a path that is
+  out of the document's directory (valid, §2.3, and not asked for without a `document_root`, as for an include, #109); a path that is
   a finding of its own (`path-not-relative`, or `path-outside-root` given a root), whose definitions are not
   imported, so that a `def-duplicate-id` against them (§16.10) is not made; or a file that could not be read
   (the loader has none, frontmatter that cannot be read, or a backslash or a null byte in the path, which no
   finding reports). The message counts each reason (`3 LegalDown attachment files (1 leads out of the
-  document's directory, which is not read; 2 could not be read)`). With the deprecated `import_attachment_definitions`, any path the
+  document's directory, which is not read without a document root; 2 could not be read)`). With the deprecated `import_attachment_definitions`, any path the
   importer was asked about and gave nothing for is one that could not be read, whatever the path is. A path is
   judged as it is written once stripped, as `parse` reads it (it strips `attachments[].file` and
   `amends.file`) and the references are judged.
@@ -658,7 +678,7 @@ template with Errors in the validator's template rules (`Template.problems`); th
 - A single-file template is assembled at Core, as §17.6 permits ("Core + Assembly").
 - A template with include fragments or LegalDown attachment files is assembled when the caller
   passes `resolve` (`load_file` of the deprecated function), which reads them; the CLI reads them relative to the template and refuses a
-  path that leads out of its directory. Reading them is a Full capability (§17.4) that this
+  path that leads out of its directory, unless `--document-root` holds it (#109). Reading them is a Full capability (§17.4) that this
   implementation provides for assembly without claiming Full, as §17.1 allows. Without
   `resolve`, such a template is refused with `include-file-missing` or
   `attachment-file-missing`, never assembled partially (§17.6).

@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from functools import cached_property
 from pathlib import Path
@@ -37,7 +37,7 @@ from .assembly import (
     _Template,
 )
 from .directives import PLACEHOLDER_TYPE_PARAMS
-from .files import LoadFile, file_loader
+from .files import LoadFile, Reach, file_loader
 from .validator import validate
 from .validator.patterns import VALID_DURATION_UNITS
 from .validator.result import Diagnostic, ValidationResult
@@ -219,19 +219,39 @@ class Template:
     ``Template(text, resolve=None)`` is ``parse_template``: *resolve* reads the
     include fragments and LegalDown attachment files the template names.
     ``path`` is the file ``load_template`` read it from, absolute, and ``None``
-    for a template made from its text.
+    for a template made from its text; it can be given for a template made from
+    its text too (*path*), to say where the template lies.
+
+    *document_root* is the directory every file the template names must lie
+    within (§2.3). Given it, a path that leads out of the template's directory
+    (``../frag.lgd``) and stays within the root is read like any other (it is
+    asked of *resolve*, and its key in ``AssemblyResult.files`` keeps the
+    ``../``); nothing outside the root is, and a template outside it reads
+    nothing. A template made from its text has no *path*, so it is taken to be
+    at the root, and every ``../`` leaves it. Without a root, the default,
+    a ``../`` path is valid and is not read: the template is refused for it, as
+    for any file that cannot be read.
 
     Raises ``FrontmatterError`` when the template's frontmatter cannot be read.
     """
 
-    def __init__(self, text: str, *, resolve: LoadFile | None = None, _check: bool = True) -> None:
+    def __init__(
+        self,
+        text: str,
+        *,
+        resolve: LoadFile | None = None,
+        document_root: str | os.PathLike[str] | None = None,
+        path: str | os.PathLike[str] | None = None,
+        _check: bool = True,
+    ) -> None:
         # Private: ``_check=False`` leaves the validator's template rules
         # (``TEMPLATE_RULES``) out of ``problems``, as the deprecated ``assemble``
         # does, for the tests and the conformance harness that check assembly
         # on its own.
-        self.path: Path | None = None
+        self.path: Path | None = None if path is None else Path(path).absolute()
+        self._root = None if document_root is None else Path(document_root).absolute()
         self._resolve = _snapshot(resolve)
-        self._t = _read(text, self._resolve)
+        self._t = _read(text, self._resolve, Reach.of(self._root, None if self.path is None else self.path.parent))
         self._check = _check
 
     @cached_property
@@ -245,7 +265,10 @@ class Template:
         """What ``validate`` says of the template, and of the fragments and
         attachment files it reads (``Diagnostic.file`` names the file, #35).
         Advice: only the rules in ``problems`` stop assembly."""
-        return validate(self._t.document, resolve=self._resolve)
+        document = self._t.document
+        if self.path is not None:
+            document = replace(document, path=self.path)
+        return validate(document, resolve=self._resolve, document_root=self._root)
 
     @cached_property
     def problems(self) -> tuple[Diagnostic, ...]:
@@ -468,21 +491,36 @@ def _build_form(template: Template, answers: Mapping[str, Any]) -> Form:
     )
 
 
-def parse_template(text: str, *, resolve: Callable[[str], str | None] | None = None) -> Template:
+def parse_template(
+    text: str,
+    *,
+    resolve: Callable[[str], str | None] | None = None,
+    document_root: str | os.PathLike[str] | None = None,
+    path: str | os.PathLike[str] | None = None,
+) -> Template:
     """A ``Template`` from its source *text*. *resolve* reads the include
     fragments and LegalDown attachment files it names — a relative path to the
     file's text, or ``None`` when there is none (``file_loader`` for files on
     disk). Without it, a template with either is refused (``Template.problems``):
-    reading them is a Full capability (§17.6)."""
-    return Template(text, resolve=resolve)
+    reading them is a Full capability (§17.6). *document_root* and *path* are
+    those of ``Template``: given a root, a ``../`` path that stays within it is
+    asked of *resolve*; *path* is where the template lies (without it, at the
+    root)."""
+    return Template(text, resolve=resolve, document_root=document_root, path=path)
 
 
-def load_template(path: str | os.PathLike[str]) -> Template:
+def load_template(path: str | os.PathLike[str], *, document_root: str | os.PathLike[str] | None = None) -> Template:
     """The ``Template`` in the file at *path*, with the include fragments and
     attachment files it names, read from beside it (``file_loader``). The file is
     read as written — byte-order mark and line endings included — since assembly
-    keeps every byte it does not edit (§15.7.2)."""
+    keeps every byte it does not edit (§15.7.2). With a *document_root* (§2.3), a
+    file may also be read from outside the template's directory, as far as it is
+    within the root: ``{{include: ../shared/part.lgd}}``. The template must be
+    within the root, else it reads nothing."""
     file = Path(path).absolute()
-    template = Template(file.read_bytes().decode("utf-8"), resolve=file_loader(file.parent))
-    template.path = file
-    return template
+    return Template(
+        file.read_bytes().decode("utf-8"),
+        resolve=file_loader(file.parent, root=document_root),
+        document_root=document_root,
+        path=file,
+    )

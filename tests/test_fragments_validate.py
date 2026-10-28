@@ -168,7 +168,7 @@ def test_a_path_a_loader_is_not_asked_for_is_missing_only_when_it_is_no_valid_pa
     text = _FRONT + _SCOPE + "{{include: ../shared.lgd}}\n\n{{include: a\\b.lgd}}\n"
     result, loader = _run(text)
     assert loader.asked == []
-    # ../shared.lgd is a valid path (§2.3) that is not read (#109): no finding, with a root or without one. A
+    # ../shared.lgd is a valid path (§2.3) that is not read without a root (#109): no finding. A
     # backslash is none: include-file-missing. Neither is path-not-relative nor path-outside-root (no root).
     assert _found(result) == [("include-file-missing", "main.lgd", 23)]
     assert "relative path" in next(d.message for d in result.diagnostics if d.rule == "include-file-missing")
@@ -177,12 +177,12 @@ def test_a_path_a_loader_is_not_asked_for_is_missing_only_when_it_is_no_valid_pa
     assert [d.rule for d in template.problems] == ["include-file-missing"]
     assert [d.rule for d in template.validation.diagnostics if d.rule == "include-file-missing"] == []
     # With a root it leaves, path-outside-root says where it leads and is the only finding; within it, the
-    # path is valid (§2.3) and not read outside the document's directory: skipped, not missing.
+    # path is read (#109): there is no such file, which is include-file-missing.
     root = tmp_path / "root"
     (root / "sub").mkdir(parents=True)
     path = root / "sub" / "main.lgd"
     path.write_text(_FRONT + _SCOPE + "{{include: ../shared.lgd}}\n", encoding="utf-8")
-    assert _found(validate(load(path), document_root=root)) == []
+    assert _found(validate(load(path), document_root=root)) == [("include-file-missing", "main.lgd", 21)]
     assert _found(validate(load(path), document_root=root / "sub")) == [("path-outside-root", "main.lgd", 21)]
     # Without a resolver (parse(text)) nothing is read, and nothing is said.
     assert _found(validate(parse(text, filename="main.lgd"))) == []
@@ -755,7 +755,7 @@ def test_a_nested_include_is_quoted_as_written_in_a_templates_finding_too():
 
 # ── A root, a path the loader is not asked for, and what is not a fragment (#35 review) ─────
 
-def test_a_path_that_leads_out_of_the_directory_is_skipped_unless_it_leaves_the_root(tmp_path):
+def test_a_path_that_leads_out_of_the_directory_is_read_within_a_root_and_skipped_without_one(tmp_path):
     root = tmp_path / "root"
     (root / "sub").mkdir(parents=True)
     path = root / "sub" / "main.lgd"
@@ -767,10 +767,10 @@ def test_a_path_that_leads_out_of_the_directory_is_skipped_unless_it_leaves_the_
     # A backslash is no separator (§2.3): not a path to read, with a root or without one.
     assert found("parts\\x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
     assert found("parts\\x.lgd", None) == [("include-file-missing", "main.lgd", 21)]
-    # ../ that stays within the root is a valid path this implementation does not read: nothing to say.
-    assert found("../x.lgd", root) == []
-    assert found("sub/../../x.lgd", root) == []
-    # Without a root it is no less valid (§2.3): nothing to say either (#109); out of the root it is #104's.
+    # ../ that stays within the root is read (#109): there is no such file here.
+    assert found("../x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
+    assert found("sub/../../x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
+    # Without a root it is no less valid (§2.3), and not read: nothing to say (#109); out of the root it is #104's.
     assert found("../x.lgd", None) == []
     assert found("sub/../../x.lgd", None) == []
     assert found("../../x.lgd", root) == [("path-outside-root", "main.lgd", 21)]

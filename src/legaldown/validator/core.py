@@ -29,7 +29,7 @@ from ..directives import (
     lex,
     mask_directives,
 )
-from ..files import LoadFile, file_loader, relative_path_check
+from ..files import LoadFile, file_loader
 from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
@@ -1048,8 +1048,9 @@ def validate(
         ``include-has-h1`` and ``include-heading-skip`` (§16.11), and, in a
         template, the parts of ``template-fragment-invalid`` that read a file
         (§15.3, §16.12). By default the files are read from the directory of
-        ``document.path`` (``file_loader``), as far as that is within it (§2.3);
-        a document without a ``path`` (from ``parse``) has none, so nothing is
+        ``document.path`` (``file_loader``), as far as that is within it (§2.3), or
+        within the *document_root* when one is configured; a document without a
+        ``path`` (from ``parse``) has none, so nothing is
         read and the checks that need a file are not made. ``resolve=lambda path:
         None`` says every file is missing, which ``include-file-missing`` reports:
         to validate a loaded document without reading its files, validate it
@@ -1058,9 +1059,12 @@ def validate(
         one that holds a backslash or a null byte is ``include-file-missing``, as
         assembly refuses it. A path that is refused only because it leads out of
         the document's directory (``../x.lgd``) is not that: it is a valid path
-        (§2.3), with a ``document_root`` or without one, that this implementation
-        does not read, and says nothing but the Warning of §17.5 (a known limitation, #109; given a root it
-        leaves, it is path-outside-root). Only the referenced file's own
+        (§2.3). With a *document_root* that holds it, it is read like any other
+        (a custom *resolve* is asked for ``../x.lgd`` too); with none this
+        implementation does not read it, never asks *resolve* for it, and says
+        nothing but the Warning of §17.5 (given a root it leaves, it is
+        path-outside-root, and nothing outside the root is ever read, nor anything
+        a document outside it names). Only the referenced file's own
         definitions are read, not those it refers to in turn; an include a
         fragment holds is not followed (``include-cycle`` is not implemented).
     document_root:
@@ -1068,11 +1072,14 @@ def validate(
         (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
         image, draws path-outside-root. Without one (the default) the
         containment check does not run, and ``../shared/definitions.lgd`` is
-        valid. A document from ``load`` is read from the directory of its
+        valid, though not read (a document one does not control must not read what
+        it names; configure a root to read such files, which a document in the
+        root may then do, and never beyond it). A document from ``load`` is read from the directory of its
         ``path``, which must be within the root (else the document is
         reported once as outside it); one from ``parse`` is taken to be at the
-        root. Only the text of the paths is read, never a file, and a symbolic
-        link is not followed. A path that is not relative (an absolute one, or
+        root. The check reads only the text of the paths, never a file, and a symbolic
+        link is not followed; the default loader does follow one, and reads no file whose
+        real path is outside the root. A path that is not relative (an absolute one, or
         one beginning with a URI scheme) draws path-not-relative, with or
         without a root. Both checks cover ``{{include:}}``, an image's path
         (``![alt](path)``, not a reference-style one) and ``attachments[].file``,
@@ -1091,7 +1098,9 @@ def validate(
         raise ValueError("validate(fragment_kind=) is only meaningful with fragment=True")
     if fragment_kind not in (None, "include", "attachment"):
         raise ValueError(f"fragment_kind must be 'include' or 'attachment', not {fragment_kind!r}")
-    resolve = _resolver(document, resolve, import_definitions, import_attachment_definitions, stacklevel=3)
+    resolve = _resolver(
+        document, resolve, import_definitions, import_attachment_definitions, stacklevel=3, document_root=document_root
+    )
     mode = replace(_FRAGMENT, template=template, kind=fragment_kind or "include") if fragment else _DOCUMENT
     return _validate(
         document, final, resolve, import_definitions, import_attachment_definitions, mode, document_root=document_root
@@ -1124,9 +1133,11 @@ def _resolver(
     import_attachment_definitions: AttachmentDefinitionsImporter | None,
     *,
     stacklevel: int,
+    document_root: str | os.PathLike[str] | None = None,
 ) -> LoadFile | None:
     """How the validation reads the files *document* refers to: *resolve*, else
-    the directory of its path, else not at all.
+    the directory of its path (and the *document_root* around it, which a file may
+    lead out to, #109), else not at all.
     Says the importers are deprecated when one is given, and then reads nothing
     by itself: each importer answers for its own files, as it always did."""
     if import_definitions is not None or import_attachment_definitions is not None:
@@ -1138,7 +1149,7 @@ def _resolver(
         )
         return resolve
     if resolve is None and document.path is not None:
-        resolve = file_loader(document.path.parent)
+        resolve = file_loader(document.path.parent, root=document_root)
 
     return resolve
 
@@ -1173,14 +1184,15 @@ def _definitions_in(
     from ..definitions import collect_definitions, definition_lookup
 
     # Asked for as assembly asks (§15.7): normalized, and only a path within
-    # the document's directory (§2.3).
+    # the document's directory, or the document root around it (§2.3).
     if references.is_wrong(path):
         return _Imported(None, "rejected")
     if files is None:
         return _Imported(None, "no-resolver")
-    relative, problem = relative_path_check(path)
+    relative, problem = files.relative_check(path)
     if relative is None:
-        # Valid as a path, and not one a loader is asked for; or none (a backslash, a null byte).
+        # Valid as a path, and not one a loader is asked for (it leads out of the document's
+        # directory, and no document root holds it); or none (a backslash, a null byte).
         return _Imported(None, "leads-out" if problem == "leads-out" else "unreadable")
     # A document that names itself has nothing to add to itself.
     if files.is_own(relative):
@@ -1220,7 +1232,7 @@ def _validate(
     # The files the document refers to, each read and parsed once: the original it
     # amends, its attachment files, and its include fragments (#35). A fragment
     # validated on its own reads none: its own includes are the host's concern.
-    files = Files(resolve, document) if resolve is not None else None
+    files = Files(resolve, document, document_root) if resolve is not None else None
     # The paths the document names (§2.3, #104), from the directory it is in.
     file_references = FileReferences(
         result, document_root, document.path.parent if document.path is not None else None, where.start()

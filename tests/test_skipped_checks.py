@@ -194,7 +194,7 @@ def _amended(file: str) -> str:
 
 
 def test_a_path_that_leads_out_of_the_directory_is_an_import_that_did_not_happen_for_both():
-    # Valid (§2.3), and never asked for (#109): the same as an include of it.
+    # Valid (§2.3), and never asked for without a document root (#109): the same as an include of it.
     asked: list[str] = []
 
     def loader(path: str) -> str | None:
@@ -204,7 +204,7 @@ def test_a_path_that_leads_out_of_the_directory_is_an_import_that_did_not_happen
     (warning,) = _warnings(_attached("../shared/defs.lgd"), resolve=loader)
     assert (
         "importing the definitions of 1 LegalDown attachment file "
-        "(1 leads out of the document's directory, which is not read)"
+        "(1 leads out of the document's directory, which is not read without a document root)"
     ) in warning.message
     (amends,) = _warnings(_amended("../shared/orig.lgd"), resolve=loader)
     assert "amend-term-undefined" in amends.message and asked == []
@@ -220,7 +220,7 @@ def test_each_reason_is_counted_and_worded_by_its_number():
     (warning,) = _warnings(_with(front), resolve=lambda _path: None)
     assert (
         "importing the definitions of 4 LegalDown attachment files "
-        "(1 leads out of the document's directory, which is not read; 3 could not be read)"
+        "(1 leads out of the document's directory, which is not read without a document root; 3 could not be read)"
     ) in warning.message
     (none,) = _warnings(_with(front), resolve=None)
     # With no loader at all, that is the reason for every one that is asked about (a path that leads out too).

@@ -116,7 +116,7 @@ legaldown validate --ignore ldv-check-skipped doc.lgd # mute the Warning for a c
 legaldown validate --warnings-as-errors doc.lgd      # tighten a CI gate
 legaldown validate --final signed-contract.lgd       # nothing left to fill in
 legaldown validate --fragment clauses/               # include fragments and attachment files, on their own
-legaldown validate --document-root . docs/           # no file reference may lead out of the project
+legaldown validate --document-root . docs/           # no file reference may lead out of the project, and ../ within it is read
 ```
 
 | Option | Effect |
@@ -127,7 +127,7 @@ legaldown validate --document-root . docs/           # no file reference may lea
 | `--fragment` | Validate each file as an include fragment or attachment file on its own (§12.2, §12.4), as [`validate(fragment=True)`](#validating-a-fragment) does: what only the including document can settle is reported with `"host_dependent": true` in the JSON output and `(host-dependent)` at the end of the line in text, and does not affect the exit status |
 | `--template` / `--no-template` | With `--fragment`: say whether the document that includes the fragments is a template (`validate(fragment=True, template=True / False)`). Without either, a fragment is a template only when it holds a condition or a `{{choose:}}` |
 | `--fragment-kind {include,attachment}` | With `--fragment`: what the files are to the document that uses them (`validate(fragment_kind=)`): an `{{include:}}` fragment (the default, §12.2), or a LegalDown attachment file (§12.4), whose frontmatter or level-1 heading is `attachment-has-frontmatter` or `attachment-has-h1` (§16.10). With `--template`, an include fragment is held to what a template's fragment may hold, and an attachment file to holding no `{{include:}}` ([below](#validating-a-fragment)) |
-| `--document-root DIR` | The directory every file a document refers to must lie within (§2.3, [`validate(document_root=)`](#file-references-and-the-document-root)): a path that escapes it, as `../` does, is `path-outside-root`. Each document is read from its own directory, which must be within `DIR`. Without it, `../shared/definitions.lgd` is valid. A path that is absolute or begins with a URI scheme is `path-not-relative` with or without a root |
+| `--document-root DIR` | The directory every file a document refers to must lie within (§2.3, [`validate(document_root=)`](#file-references-and-the-document-root)): a path that escapes it, as `../` does, is `path-outside-root`. Each document is read from its own directory, which must be within `DIR`. A path that leads out of the document's directory but stays within `DIR` (`../shared/part.lgd`) is read like any other; without `--document-root` it is valid but not read (`ldv-check-skipped` says so), and nothing outside `DIR` is ever read. A path that is absolute or begins with a URI scheme is `path-not-relative` with or without a root |
 | `--warnings-as-errors` | Report warnings at error severity |
 | `--strict` | Exit non-zero on any diagnostic, not just errors |
 | `--quiet` | Drop the trailing summary line |
@@ -179,6 +179,7 @@ legaldown assemble template.lgd -i -o out/                         # asked in th
 legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/   # ... and remembered
 legaldown questions template.lgd --answers answers.yaml           # what is asked, given the answers so far
 legaldown questions template.lgd --answers answers.yaml --format json
+legaldown questions --document-root . docs/nda.lgd              # a fragment at ../shared/part.lgd is read, within the root
 ```
 
 `assemble -i` asks, in the terminal, for the answers `--answers` does not give, as the questions are
@@ -203,8 +204,12 @@ form that cannot be assembled exit 1.
 
 The answers set is a YAML mapping of question ids to answers (§15.7.1); the shapes plain YAML gets
 wrong are put right for the template's questions (`5000 EUR`, `yes`, a number as an amount). Include fragments and
-LegalDown attachment files are read relative to the template, never from outside its directory;
-the ones assembly keeps are written under `-o` at their relative paths. Answer problems are
+LegalDown attachment files are read relative to the template, never from outside its directory
+unless `--document-root DIR` (on `assemble` and `questions`) holds them: a path such as `../shared/part.lgd`
+that stays within `DIR` is then read, and nothing outside `DIR` is, nor anything a template outside it names.
+The ones assembly keeps are written under `-o` at their relative paths; `-o` refuses an output
+that leads out of its directory, so a file read from `../` is assembled but cannot be written
+by the command line (use the library, or keep the fragments below the template). Answer problems are
 reported as `answer-invalid`, `answer-missing` and `answer-unknown` (§16.12) on stderr, and
 nothing is written when there is an Error. A template with Errors in the validator's template rules
 (questions, conditions, `{{choose:}}`, placeholders, insertions) is refused, with the rule ids, as
@@ -319,7 +324,7 @@ so there is nothing to read; give `validate` a `resolve=` function, from a relat
 file's text (or `None`), to read them from elsewhere — a database, an upload — or to validate a
 loaded document without its files, validate it without its path (`dataclasses.replace(document, path=None)`):
 `resolve=lambda path: None` answers that no file is there. Such a function is a
-`LoadFile`; `file_loader(directory)` makes one for files on disk, and `parse_template` takes one as
+`LoadFile`; `file_loader(directory, root=None)` makes one for files on disk, and `parse_template` takes one as
 `resolve=` too. Each file is asked for once and parsed once, whichever check wants it. Where those
 files may lie is [`document_root`](#file-references-and-the-document-root).
 
@@ -473,14 +478,14 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
 A paragraph that holds only an `{{include:}}` (and at most its marker) is replaced by the fragment
 it names (§12.2). When `validate` can read files (a loaded document reads from beside it; or give
 `resolve=`), it reads each such fragment once and reports, in the fragment's own file and at the
-line in it (`Diagnostic.file` is the path from the document's directory, `parts/a.lgd`):
+line in it (`Diagnostic.file` is the path from the document's directory, `parts/a.lgd`, or `../shared/a.lgd`):
 
 - `include-file-missing` at the include of a fragment that is not there, or that cannot be read
   because its path holds a backslash or a null byte, which a loader is never asked for and assembly
   refuses the template for (an absolute path or one with a URI scheme is `path-not-relative` alone, and
   a path that leaves a `document_root` is `path-outside-root` alone; a path that only leads out of the
-  document's directory (`../x.lgd`) is valid, with a `document_root` or without one, and is skipped, not
-  read: a known limitation, [#109](https://github.com/ForLegalAI/legaldown-validator/issues/109));
+  document's directory (`../x.lgd`) is valid: with a `document_root` that holds it, it is read like any
+  other; without one it is skipped, not read, and the Warning of §17.5 says so);
 - `include-has-frontmatter` and `include-has-h1` (§16.11), `include-has-frontmatter` also for a block
   whose YAML cannot be read;
 - `include-heading-skip`: the headings of every fragment are placed where its include paragraph is,
@@ -519,10 +524,15 @@ validate(document, document_root="/srv/contracts")
   valid. A loaded document is read from the directory of its `path`, which must be within the root
   (otherwise the document is reported once as outside it); a parsed one is taken to be at the root.
   The comparison is of names alone: no file is looked at, and a symbolic link is not followed.
-- Whether the file exists is Full (§17.4) and is not checked. Reading still refuses `../`: `../shared/x.lgd`
-  validates clean, with a root that permits it or without one, and an `{{include:}}` of it is not an
-  `include-file-missing`, but assembly and the definitions read for `amends` and attachments (`resolve=`)
-  never ask for it ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)).
+- Whether the file exists is Full (§17.4) and is not checked by this. Reading is a separate matter
+  ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)): given a `document_root`,
+  `../shared/x.lgd` from a document below it is read like any other file, for `{{include:}}`,
+  `attachments[].file` and `amends.file` (a `resolve=` is asked for it as `../shared/x.lgd`), by `validate`
+  and by assembly (`load_template(path, document_root=)`, `parse_template(text, document_root=, path=)`),
+  and nothing outside the root is, whatever the path says, nor anything a document outside the root
+  names. Without a root `../shared/x.lgd` is valid and **not read**: no loader is asked for it, an
+  `{{include:}}` of it is not an `include-file-missing`, and `ldv-check-skipped` says it was not read.
+  `file_loader(directory, root=)` is the loader on disk that keeps to the root.
 
 A reference-style image (`![alt][r]`, `![alt][]` or `![alt]`, with `[r]: path`) is judged by the destination
 of the definition it names, once, at the line where the definition is written. [CONFORMANCE.md](CONFORMANCE.md)
@@ -855,7 +865,7 @@ template the parser reads, so report it if you meet it.
 
 A template is read once; a form is a snapshot of the interview over it, so a front end asks for a
 new form after every answer — a decision opens or closes the questions under it. `parse_template(text)`
-(or `Template(text)`, which takes the same `resolve=`) is the same for source text; `template.path` is
+(or `Template(text)`, which takes the same `resolve=`) is the same for source text, and both take `document_root=` (the directory every file the template names must lie within: a `../` path that stays within it is read, and its key in `result.files` keeps the `../`) and `path=` (where the template lies, so that its depth below the root is known; without it, at the root, where every `../` leaves); `load_template(path, document_root=)` reads the files from beside `path` and under the root; `template.path` is
 the file `load_template` read, and `None` for a template from its text. `load_template` raises `FrontmatterError` for frontmatter that cannot
 be read, as `parse` does.
 
@@ -962,7 +972,7 @@ checks and what it does not.
 > **Deprecated:** `assemble(text, answers, load_file=)`, `template_questions` and `needed_questions`
 > are replaced by `Template` and `Form`. They still work, unchanged (but for `Question`, below, and
 > that a `load_file=` loader is never asked for a path that is absolute or leads out of the template's
-> directory, §2.3), and raise a `LegaldownDeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
+> directory, §2.3, and takes no `document_root`), and raise a `LegaldownDeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
 > differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
 > (the functions ask them after the body), and it refuses a template that has Errors in the
 > validator's template rules (the functions assemble it). `legaldown assemble` follows the new API,
