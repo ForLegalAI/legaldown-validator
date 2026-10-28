@@ -223,7 +223,6 @@ class Exclusivity:
         self._questions = questions
         self._answers: dict[str, Collection[Any]] = {}
         self._entries: dict[Presence, tuple[bool, _Profile]] = {}
-        self._values: dict[tuple[Presence, str], tuple[frozenset[Any], frozenset[Any]]] = {}
 
     def answers(self, question: str) -> Collection[Any]:
         """Every answer *question* can have (``question_answers``), kept."""
@@ -233,7 +232,11 @@ class Exclusivity:
 
     def _entry(self, presence: Presence) -> tuple[bool, _Profile]:
         if presence not in self._entries:
-            by_wanted_refused = _profile(presence)
+            # What is refused that is no answer is nothing refused.
+            by_wanted_refused = {
+                question: (wanted, frozenset(value for value in refused if value in self.answers(question)))
+                for question, (wanted, refused) in _profile(presence).items()
+            }
             appears = all(
                 _some_answer_wanted(wanted, refused, self.answers(question))
                 for question, (wanted, refused) in by_wanted_refused.items()
@@ -243,12 +246,7 @@ class Exclusivity:
 
     def values(self, presence: Presence, question: str) -> tuple[frozenset[Any], frozenset[Any]]:
         """The values *presence* wants of *question*, and those of its answers it refuses."""
-        key = (presence, question)
-        if key not in self._values:
-            wanted, refused = self._entry(presence)[1][question]
-            answers = self.answers(question)
-            self._values[key] = wanted, frozenset(value for value in refused if value in answers)
-        return self._values[key]
+        return self._entry(presence)[1][question]
 
     def appears(self, presence: Presence) -> bool:
         """``satisfiable``: some answers make *presence* hold."""

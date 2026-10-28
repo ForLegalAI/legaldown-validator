@@ -312,7 +312,7 @@ def test_a_term_that_references_itself_in_a_circle_is_one_warning():
 
 
 def test_the_alternatives_of_one_id_that_can_appear_together_are_one_id_not_a_circle():
-    # Without the pruning (excluded=None), as the validator calls it for a
+    # Without the pruning (no exclusivity), as the validator calls it for a
     # document that is no template: an id declared twice is still one id.
     body = [
         '"T" {{def: t}} means x. See {{term: t}}.',

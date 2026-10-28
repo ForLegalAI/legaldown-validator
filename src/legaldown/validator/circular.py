@@ -141,7 +141,7 @@ def find_circular_definitions(
     document: Document,
     registered: Sequence[tuple[DefinitionRef, Presence]],
     uses: Iterable[TermUse],
-    excluded: Exclusivity | None = None,
+    exclusivity: Exclusivity | None = None,
 ) -> list[list[int]]:
     """The circles among the definitions of *document*.
 
@@ -157,7 +157,7 @@ def find_circular_definitions(
     ``{{term:}}`` to its own id. A reference in a definition's own paragraph
     is no circle by itself.
 
-    *excluded* tells whether two presences can never hold together (§15.4);
+    *exclusivity* tells whether two presences can never hold together (§15.4);
     it is given only for a template. A reference does not lead to a
     declaration it can never appear with: of the alternatives of one id
     (§15.4) it reaches those it can appear with. That prunes a circle only
@@ -204,9 +204,9 @@ def find_circular_definitions(
     # never appear, which no reference reaches in a template (they are excluded
     # with every presence).
     reachable = declarations
-    if excluded is not None:
+    if exclusivity is not None:
         reachable = {
-            def_id: [number for number in numbers if excluded.appears(registered[number][1])]
+            def_id: [number for number in numbers if exclusivity.appears(registered[number][1])]
             for def_id, numbers in declarations.items()
         }
     # The reachable declarations of an id are one node when a reference reaches
@@ -240,7 +240,7 @@ def find_circular_definitions(
     tests = 0  # the pairs of presences tested: pruning stops at MAX_EXCLUSION_TESTS
     named: dict[str, dict[str, list[int]]] = {}  # per id, as needed: its numbers by the questions they name
 
-    def reach_excluding(exclusivity: Exclusivity, target: str, presence: Presence) -> list[int] | None:
+    def reach_excluding(target: str, presence: Presence) -> list[int] | None:
         """What a reference with *presence* reaches among the alternatives of
         *target* that can appear, tested only against those that name a question
         it names: one that can appear cannot exclude a reference that can appear
@@ -273,8 +273,8 @@ def find_circular_definitions(
         if (target, presence) not in reached:
             numbers = reachable[target]
             keep = numbers
-            if excluded is not None:
-                pruned = reach_excluding(excluded, target, presence)
+            if exclusivity is not None:
+                pruned = reach_excluding(target, presence)
                 keep = numbers if pruned is None else pruned  # past the cap: the alternatives are not told apart
             reached[target, presence] = [id_node[target]] if len(keep) == len(numbers) > 1 else keep
         return reached[target, presence]

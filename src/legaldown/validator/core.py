@@ -639,12 +639,12 @@ class _FreeIdentifiers:
         #: The declarations of each identifier, by presence. Read-only: they
         #: are made by ``declare``, which the indexes below follow.
         self.anchors: Mapping[str, Sequence[Presence]] = MappingProxyType(self._declarations)
-        #: The answers of each question, and which presences can appear and
-        #: exclude each other, worked out once for the pool.
+        #: The answers of each question and what each presence wants and refuses
+        #: of them, worked out once for the pool; the pairs it excludes are tested
+        #: as they are asked, with no cache of their own.
         self._exclusivity = Exclusivity(questions)
         #: How many leading suffixes of a base are taken for a presence.
         self._taken: dict[tuple[str, Presence], int] = {}
-        #: Per pool, what is asked of one presence again and again.
         #: How many declarations that can appear an identifier has.
         self._occupants: dict[str, int] = {}
         #: What those declarations say of a question: at an identifier, and
