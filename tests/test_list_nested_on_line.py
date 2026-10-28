@@ -55,7 +55,73 @@ def _read(source: str) -> list:
             id="fence-closed-in-the-nested-item",
         ),
         pytest.param("- 1. ```\n   code\n  ```\nb\n", [("un", [[("or", [[C]]), P, C]]), P], id="closer-short-of-the-nested-item"),
+        pytest.param("- 10.  ```\n      code\na\n", [("un", [[("or", [[C]]), C]]), P], id="code-in-the-item-after-the-nested-fence"),
+        pytest.param("- 1.      -\n     a\n  ===\nb\n", [("un", [[("or", [[C, P]])]])], id="a-dash-in-code-is-no-item"),
+        pytest.param("- -\t> <v>\n**\n", [("un", [[("un", [[("q", [("html",)])]])]]), P], id="a-quote-nested-on-the-line"),
+        pytest.param("1.\t2)\t>~~~\n->\n", [("or", [[("or", [[("q", [C])]])]]), P], id="a-quote-of-a-fence-nested-on-the-line"),
+        pytest.param(">q\n>2) 1)     e\nc\n", [("q", [P])], id="lazy-text-in-a-quote-is-no-code"),
+        pytest.param(">q\n>     +      q\na\n", [("q", [P])], id="indented-lazy-text-in-a-quote-is-no-code"),
+        pytest.param(
+            "> - >```\n>      >a\nd\n",
+            [("q", [("un", [[("q", [C])]])]), P],
+            id="a-fence-in-a-quote-in-an-item-in-a-quote-holds-its-quoted-lines",
+        ),
+        pytest.param(
+            ">1.\n>    >a\n>    0.\n->\n",
+            [("q", [("or", [[("q", [P]), ("or", [[]])]])]), P],
+            id="an-item-starts-after-a-quote-in-an-item",
+        ),
+        pytest.param(
+            ">-\t1.\n>    >q\n>    0.\n--\n",
+            [("q", [("un", [[("or", [[]]), ("q", [P]), ("or", [[]])]])]), P],
+            id="a-quote-in-an-item-short-of-the-empty-item-nested-on-its-line",
+        ),
+        pytest.param(
+            ">* a\n    ***\n>   2) 1)     e\nc\n",
+            [("q", [("un", [[P]])])],
+            id="a-lazy-rule-is-text-so-a-marker-after-it-cannot-interrupt",
+        ),
         pytest.param("1. * * *\n       x\ny\n", [("or", [[("rule",), C]]), P], id="a-thematic-break-nests-no-item"),
+        pytest.param(
+            ">  +    *\te\n>   \t    >a\n>     *\n",
+            [("q", [("un", [[("un", [[P, ("q", [P])]])]])])],
+            id="lazy-text-after-a-quote-in-a-nested-item",
+        ),
+        pytest.param(
+            ">\t2) 1.\t-\t#\n>           - c\n>=\n",
+            [("q", [("or", [[("or", [[("un", [[("heading",)], [P]])]])]])])],
+            id="a-setext-underline-is-lazy-text-in-a-sibling-of-the-nested-item",
+        ),
+        pytest.param(
+            ">\t2) 1.\t\t-\n>          - c\n>=\n",
+            [("q", [("or", [[("or", [[C, ("un", [[P]])]])]])])],
+            id="the-same-after-code-in-the-nested-item",
+        ),
+        pytest.param(
+            "+     + q\n      ~\n  2) ```\n\tx\nc\n",
+            [("un", [[C, ("or", [[C]]), P]])],
+            id="a-line-short-of-the-item-with-the-fence-ends-it",
+        ),
+        pytest.param(
+            "- > 0.   -  \t<v>\nz\tz\n  ===\n",
+            [("un", [[("q", [("or", [[("un", [[C]])]])])]])],
+            id="code-in-a-quote-is-no-paragraph-to-continue",
+        ),
+        pytest.param(
+            "-\n  1)   ```\n      c\n       x\ne\n",
+            [("un", [[("or", [[C]]), C]]), P],
+            id="a-line-short-of-a-nested-item-ends-it-and-is-code-in-the-outer",
+        ),
+        pytest.param(
+            "- 1)\t\t=\n     a\n  2) ***\nx\n",
+            [("un", [[("or", [[C, P], [("rule",)]])]]), P],
+            id="a-paragraph-in-a-nested-item-is-not-the-items-own",
+        ),
+        pytest.param(
+            "> > - 0. \t-     a\n> >         x\ne\n",
+            [("q", [("q", [("un", [[("or", [[("un", [[C]]), P]])]])])])],
+            id="a-quoted-line-in-an-outer-item-opens-a-paragraph-after-code",
+        ),
         pytest.param(
             "-1.\t1. \n- 1.\t```- \n\t> a \na1.\t- \n",
             [P, ("un", [[("or", [[C]]), ("q", [P])]])],

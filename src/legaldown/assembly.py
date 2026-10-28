@@ -1516,15 +1516,17 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
     return None
 
 
-def _paragraph_open(line: str | None) -> bool:
+def _paragraph_open(line: str | None, after_paragraph: bool = False) -> bool:
     """True if *line* leaves paragraph text open, which the next line would
-    continue — the parser's own reading of a line's content."""
+    continue — the parser's own reading of a line's content. *after_paragraph*:
+    one is open before it, so that a marker that cannot interrupt it starts no
+    item."""
     return (
         line is not None
         and not is_blank(line)
         and not FENCE_OPEN_RE.match(line)
         and not re.fullmatch(r" {0,3}=+[ \t]*", line)
-        and _opens_paragraph(line)
+        and _opens_paragraph(line, after_paragraph=after_paragraph)
     )
 
 
@@ -1556,7 +1558,7 @@ def _line_start(line: _Line, previous: str | None, source: _Source) -> str:
     template = source.lines
     written = template[line.origin]
     written_previous = template[line.origin - 1] if line.origin else None
-    was_open = _paragraph_open(written_previous)
+    was_open = _paragraph_open(written_previous, line.origin > 1 and _paragraph_open(template[line.origin - 2]))
     prefix, listed = _containers(written, was_open, line.first, item=line.origin in source.item_lines)
     content = line.text[prefix:]
     if line.first is not None and not written[prefix:line.first].strip(" \t"):

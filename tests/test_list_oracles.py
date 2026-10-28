@@ -146,11 +146,16 @@ def test_item_markers_are_stripped_until_a_thematic_break_as_before() -> None:
 
 
 def test_a_quoted_line_opens_paragraph_text_as_before() -> None:
-    """Unless its markers end in indented code, which no paragraph continues."""
+    """Unless its markers end in indented code, which no paragraph continues,
+    or it has none and is indented four columns: a heading, a fence or HTML is
+    none there, and the line is text, as indented code that follows a paragraph."""
     rng = random.Random(_SEED)
     for _ in range(60000):
         content = _markers(rng)
-        code = _skip_markers(content, quotes=True)[1]  # after a marker with five columns of spacing: indented code
+        position, code = _skip_markers(content, quotes=True)  # code: after a marker with five columns of spacing
+        if not content[:position].strip(" \t") and indent_width(content) >= 4:
+            assert _opens_paragraph(content) == (bool(content.strip(" \t")) and not RULE_RE.match(content)), repr(content)
+            continue
         assert _opens_paragraph(content) == (False if code else _old_opens_paragraph(content)), repr(content)
 
 
