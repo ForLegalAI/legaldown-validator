@@ -60,11 +60,9 @@ class _BlankState:
     mixed: bool = False
     #: The line of the first occurrence fixing each code (§16.9).
     code_lines: dict[str, Any] = field(default_factory=dict)  # a ``result.Line`` each
-    #: Whether an occurrence is outside every drafting note, which assembly
-    #: removes before anything is inserted (§15.7.2); one only in notes is never
-    #: filled in, so what it would be asked is no one's concern.
-    kept: bool = False
-    #: The line of the first such occurrence (§16.9), a ``result.Line``.
+    #: The line of the first occurrence (§16.9), a ``result.Line``. Occurrences in a
+    #: drafting note, which assembly removes before anything is filled (§15.7.2), are
+    #: not part of a blank (#112).
     line: Any = None
 
 
@@ -263,7 +261,7 @@ def check_questions(
             )
     if template:
         for pid, blank in blanks.items():
-            if blank.kept and pid not in declared and pid in YAML_KEYWORDS:
+            if pid not in declared and pid in YAML_KEYWORDS:
                 # It is the blank that cannot be answered, whatever `questions` holds.
                 result.error(
                     "question-invalid",

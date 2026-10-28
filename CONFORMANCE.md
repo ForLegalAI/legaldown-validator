@@ -415,6 +415,32 @@ is reported (§11.2, §11.5), as is one left unclosed at the end of its paragrap
 table cell. So is a `{{def:}}` whose quoted term is on the line before it: §7.2 puts the term on
 the same line (`def-no-quoted-span`).
 
+## Blanks in drafting notes (§15.6, §15.7.2)
+
+A `{{placeholder:}}` or `{{choose:}}` in a drafting note is "recognized and validated" (§15.6, so that
+a `{{ref:}}` in a note cannot go stale unnoticed), and the note is deleted before any blank is
+filled (§15.7.2 step 2); a question "asked only inside a drafting note needs no answer" (step 1)
+([#112](https://github.com/ForLegalAI/legaldown-validator/issues/112)). So an occurrence in a note
+is checked by itself, and is no part of the blank:
+
+| Check | An occurrence in a note |
+|---|---|
+| `placeholder-id-malformed`, `placeholder-type-invalid`, `placeholder-unknown-currency`, `duration-invalid-unit`, a directive's arguments | reported, at the occurrence |
+| `placeholder-question-mismatch` (a written type that is not the declared one; the id of a decision question) | reported: it is the occurrence against the declaration (§15.2) |
+| `placeholder-type-inconsistent` (types, currencies, units, §10.7) | not made against the blank: the note's type, currency and unit are not the blank's. Two notes do not conflict either |
+| `question-invalid` for a default against the currency or unit the placeholders fix | the note's currency or unit fixes nothing |
+| `question-unused` | a question only notes use (by a placeholder or a `{{choose:}}`) is unused, a Warning that says only drafting notes use it |
+| `placeholder-unfilled`, `template-construct-present` (`--final`) | both, as ever: a placeholder in a note remains in the document (§15.9), and so does the note |
+| `index.blanks` | an id only notes use is not a blank; for one that is also in the body, type, `fixed` and `consistent` are the body's, and the order is that of the first occurrence outside a note |
+
+Assembly reads a blank the same way (`Template.questions`, the answers' types and the currency
+they must carry): the type and the currency or unit come from the occurrences outside notes
+only. An id that only notes use stays a question that assembly knows, a `text` one (nothing
+gives it a type), so an answer to it is not `answer-unknown` and no one is asked for it, which
+is the one place `Template.questions` lists an id that `index.blanks` does not. Before this a note
+written before the body's placeholder could give a text blank the type `money`, and the answer
+`five hundred` was `answer-invalid`.
+
 ## Include fragments (§12.2, §16.11, §16.12)
 
 When the validation can read files (`validate(resolve=)`, or a document with a path, which is read

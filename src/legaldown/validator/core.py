@@ -336,6 +336,11 @@ def _check_placeholder(
     Shared by the body-block scan and the frontmatter scan so a placeholder id
     used in both is treated as the *same* blank (consistent type, currency,
     and unit, §3.10, §10.7).
+
+    A drafting note is removed before anything is filled (§15.7.2 step 2), so
+    an occurrence in one is no part of the blank: it is still recognized and
+    validated by itself (§15.6), against a blank of its own that is dropped,
+    and takes no part in the blank's type, currency or unit (#112).
     """
     pid = directive.positional or ""
     params = directive.params
@@ -351,11 +356,9 @@ def _check_placeholder(
             f"Placeholder id '{pid}' is invalid — must match [a-z][a-z0-9-]*.",
         )
         return
-    blank = blanks.setdefault(pid, _BlankState())
-    if not in_note:
-        blank.kept = True
-        if blank.line is None:
-            blank.line = line
+    blank = _BlankState() if in_note else blanks.setdefault(pid, _BlankState())
+    if blank.line is None:
+        blank.line = line
     blank.in_frontmatter |= in_frontmatter
     type_valid = written_type is None or written_type in VALID_PLACEHOLDER_TYPES
     if not type_valid:
@@ -1879,6 +1882,11 @@ def _validate(
     for directive, misplaced, line in misplaced_chooses:
         chooses.append((directive, line))
         result.error("choose-invalid", f"'{directive.source}' is {misplaced} (§15.5).", line=line)
+    # The questions a blank or a {{choose:}} asks, outside drafting notes and in them: a note is
+    # removed before anything is asked (§15.7.2 step 1), so a question only a note uses needs no
+    # answer, and is unused (question-unused). The frontmatter's and the headings' are kept.
+    asked = {directive.positional for directive, _line in placeholders + chooses if directive.positional}
+    asked_in_notes: set[str] = set()
 
     # The images that name their file by a link reference definition (#92, #104):
     # the definition's path is judged once, where it is written.
@@ -1921,6 +1929,8 @@ def _validate(
                 line = partial(where.find, section_index, block_index, directive.source, fragment_index, directive.start)
                 if name == "choose":
                     chooses.append((directive, line))  # a template even when malformed
+                if name in ("choose", "placeholder") and directive.positional:
+                    (asked_in_notes if in_note else asked).add(directive.positional)
                 if name == "placeholder":
                     placeholders.append((directive, line))
                     # Its effective type decides which parameters it defines.
@@ -2190,15 +2200,11 @@ def _validate(
                 line=line,
             )
 
-    used_questions = (
-        {directive.positional for directive, _line in placeholders if directive.positional}
-        | {
-            condition.question
-            for _place, text, _line in conditions
-            if (condition := parse_condition(text)) is not None
-        }
-        | {directive.positional for directive, _line in chooses if directive.positional}
-    )
+    used_questions = asked | {
+        condition.question
+        for _place, text, _line in conditions
+        if (condition := parse_condition(text)) is not None
+    }
     # A question may be used in an include fragment or a LegalDown attachment
     # file. The files are read for their shape and what a template may hold in
     # them (#35), not for the questions they use, so none is unused for certain.
@@ -2211,7 +2217,11 @@ def _validate(
                 result.warning(
                     "question-unused",
                     f"Question '{qid}' is declared but no placeholder, condition, or "
-                    f"{{{{choose:}}}} uses it (§15.2).",
+                    f"{{{{choose:}}}} uses it (§15.2)"
+                    + (
+                        "; only drafting notes do, and assembly removes them before asking (§15.7.2)."
+                        if qid in asked_in_notes else "."
+                    ),
                     line=where.key("questions", qid),
                 )
 
