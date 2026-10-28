@@ -269,16 +269,23 @@ class _Recorder(ValidationResult):
     def _record(
         self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = ""
     ) -> None:
+        self.diagnostics.extend(self._diagnostic(rule, level, message, line, depends, file))
+
+    def _diagnostic(
+        self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = ""
+    ) -> list[Diagnostic]:
+        """The diagnostic ``_record`` makes, as a list of one, or of none when its
+        reason is suppressed."""
         if depends is not None and depends in self.suppress:
-            return  # before the line is looked for: a finding dropped costs nothing
+            return []  # before the line is looked for: a finding dropped costs nothing
         if line is None and self._lines:
             line = self._lines[-1]
         if callable(line):
             line = line()
-        self.diagnostics.append(Diagnostic(
+        return [Diagnostic(
             rule=rule, level=level, message=message, line=line, file=file,
             host_dependent=self.fragment and depends is not None,
-        ))
+        )]
 
     def error(
         self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
@@ -288,6 +295,12 @@ class _Recorder(ValidationResult):
         *file* is the file it is in when that is not the document's own (a
         fragment the document includes, #35)."""
         self._record(rule, "error", message, line, depends, file)
+
+    def error_at(self, position: int, rule: str, message: str, *, line: Line = None) -> None:
+        """Record an Error-level diagnostic as ``error`` does, but at *position* among the
+        diagnostics recorded (``len(diagnostics)`` when the check came to it), for a
+        finding that is decided after the checks that follow it in the document."""
+        self.diagnostics[position:position] = self._diagnostic(rule, "error", message, line, None)
 
     def warning(
         self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""

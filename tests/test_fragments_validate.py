@@ -351,6 +351,18 @@ def test_a_heading_of_the_document_after_a_fragment_is_reported_at_its_own_line(
     assert _found(ok, "include-heading-skip", "heading-skip") == []
 
 
+def test_a_heading_skip_that_stands_keeps_its_place_among_the_findings():
+    # Recorded once the fragments are known (to leave out the levels they fill), but where the document's
+    # headings are checked: before the finding of its include, and between the ones either side of it.
+    text = _FRONT + "# One {#one}\n\n### Three {#three}\n\n{{include: gone.lgd}}\n\n# Two {#two}\n\n##### Five {#five}\n"
+    result, _ = _run(text)
+    rules = [d.rule for d in result.diagnostics if d.rule in ("heading-skip", "include-file-missing")]
+    assert rules == ["heading-skip", "heading-skip", "include-file-missing"]
+    assert [d.line for d in result.diagnostics if d.rule == "heading-skip"] == [
+        _at(text, "### Three"), _at(text, "##### Five")
+    ]
+
+
 def test_a_level_a_fragment_fills_is_not_skipped_in_the_combined_document():
     text = _FRONT + "# One {#one}\n\n{{include: part.lgd}}\n\n### Three {#three}\n"
     result, _ = _run(text, {"part.lgd": "## Deep {#deep}\n"})

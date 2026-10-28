@@ -411,7 +411,7 @@ def check_includes(
     are allowed (§12.2).
 
     Returned: the headings of the document whose ``heading-skip`` the combined document
-    makes valid (``include_heading_skips``), which the caller drops, as the combined
+    makes valid (``include_heading_skips``), which the caller does not report, as the combined
     document is the one §4.1 judges when every fragment between is read (§12.2). A
     fragment does not count for that when it is not known to be there (a condition
     on its include paragraph or on a section around it, *unconditional*) or when it is
