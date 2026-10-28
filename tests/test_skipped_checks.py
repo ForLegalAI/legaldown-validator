@@ -155,7 +155,7 @@ def test_a_fragment_validated_on_its_own_does_not_follow_its_includes():
     result = validate(parse(text), fragment=True)
     (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
     assert warning.line == 3 and not warning.host_dependent
-    assert "its own includes are not followed" in warning.message
+    assert "the includes inside a fragment are not followed" in warning.message
 
 
 # ── The other categories of §17.4 ───────────────────────────────────────
@@ -169,10 +169,13 @@ def test_attachment_files_draw_one_warning_at_the_first():
     assert warning.line == _at(text, "file: a.lgd")
     assert warning.message.startswith("2 attachment files declared (1 LegalDown). Not performed: ")
     for rule in ("attachment-file-missing", "attachment-has-frontmatter", "attachment-has-h1",
-                 "attachment-anchor-duplicate", "importing the definitions of 1 LegalDown attachment file"):
+                 "attachment-anchor-duplicate", "importing the definitions of 1 LegalDown attachment file (not read"):
         assert rule in warning.message
     (read,) = _warnings(text, resolve=_loader({"a.lgd": "Text.\n"}))
     assert "importing" not in read.message and "attachment-anchor-duplicate" in read.message
+    # A loader that has not the file did not import its definitions either.
+    (missing,) = _warnings(text, resolve=lambda _path: None)
+    assert "importing the definitions of 1 LegalDown attachment file (not read" in missing.message
 
 
 def test_an_attachment_that_is_not_legaldown_is_only_asked_for_its_existence():
@@ -221,6 +224,28 @@ def test_the_first_image_gives_the_warning_its_line():
     (warning,) = _warnings(text)
     assert warning.line == _at(text, "one.png")
     assert warning.message.startswith("an image path declared. Not performed: the existence of image paths")
+
+
+@pytest.mark.parametrize("path", ["#top", "?q=1", "{{placeholder: logo}}", "#a?b"])
+def test_an_image_that_names_no_file_is_no_image_to_check(path):
+    text = _FRONT + _BODY + f"![x]({path})\n"
+    assert _warnings(text) == []
+    # ... and a later one that names a file is the one the Warning stands at.
+    later = text + "\n![y](ok.png)\n"
+    (warning,) = _warnings(later)
+    assert warning.line == _at(later, "ok.png")
+
+
+def test_an_image_in_a_drafting_note_is_no_image_to_check():
+    note = "> [!DRAFTING]\n> ![a](note.png)\n\n"
+    assert _warnings(_FRONT + _BODY + note) == []
+    text = _FRONT + _BODY + note + "![b](body.png)\n"
+    assert _warnings(text)[0].line == _at(text, "body.png")
+    # It is judged all the same (§15.6).
+    assert "path-not-relative" in validate(parse(_FRONT + _BODY + "> [!DRAFTING]\n> ![a](/abs.png)\n")).rules()
+    # By a link reference definition too.
+    by_label = _FRONT + _BODY + "> [!DRAFTING]\n> ![a][r]\n\n[r]: pic.png\n"
+    assert _warnings(by_label) == []
 
 
 def test_an_image_by_a_link_reference_definition_is_one_too():
@@ -305,7 +330,7 @@ def test_the_caps_a_check_reached_are_named_by_the_includes_warning():
     outcome = IncludeOutcome(unread=[UnreadInclude(include, "no-resolver")], caps=["the include tree exceeds 10,000 includes"])
     (category,) = skipped_categories(
         document, Locator(document), includes=[include], outcome=outcome, image=None, template=False,
-        fragment=False, read_attachments=True, amends_imported=False,
+        fragment=False, attachments_unread=0, amends_imported=False,
     )
     assert category.key == "includes" and category.line == 3
     assert "the include tree exceeds 10,000 includes (not checked past that point)" in category.message

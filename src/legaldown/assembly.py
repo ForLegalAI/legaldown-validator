@@ -893,10 +893,12 @@ def _read(template: str, load_file: LoadFile | None) -> _Template:
             f"The template links the translation '{path}', which is assembled with it; "
             f"assembling a translation group is not supported, so the template is not assembled.",
         ))
-    occurrences = [(occ, True, False) for occ in (front.occurrences if front else [])] + [
-        (occ, False, occ.line in src.notes) for src in (main, *subs.values()) for occ in src.occurrences
+    sources = (main, *subs.values())
+    occurrences = [(occ, True) for occ in (front.occurrences if front else [])] + [
+        (occ, False) for src in sources for occ in src.occurrences if occ.line not in src.notes
     ]
-    blanks = _blanks(occurrences, declared)
+    noted = [occ for src in sources for occ in src.occurrences if occ.line in src.notes]
+    blanks = _blanks(occurrences, noted, declared)
     types = {qid: qtype for qid in declared if (qtype := question_type(declared, qid))}
     for pid, blank in blanks.items():
         types.setdefault(pid, blank.type or "text")
@@ -1010,25 +1012,30 @@ def _effective_type(directive: Directive, declared: dict) -> str:
     return qtype if qtype in VALID_PLACEHOLDER_TYPES else directive.params.get("type", "text")
 
 
-def _blanks(occurrences: list[tuple[_Occurrence, bool, bool]], declared: dict) -> dict[str, _BlankState]:
+def _blanks(
+    occurrences: list[tuple[_Occurrence, bool]], noted: list[_Occurrence], declared: dict
+) -> dict[str, _BlankState]:
     """Each placeholder id's blank, recorded as the validator records it: the
     type of its first occurrence, the currency or unit each occurrence of
-    that type fixes, and whether one is in frontmatter. An occurrence in a drafting
-    note is removed before anything is filled (§15.7.2 step 2): it is no part of the
-    blank, and fixes neither its type nor its currency or unit. An id only notes
-    use is still a question (a text one, with no type to take), as it always was (#112)."""
+    that type fixes, and whether one is in frontmatter, in the order of the first
+    occurrence. *occurrences* are those outside drafting notes, which assembly removes
+    before anything is filled (§15.7.2 step 2); the *noted* ones are no part of a blank
+    and fix neither its type nor its currency or unit. An id only notes use is still a
+    question (a text one, with no type to take), as it always was: after every other, in the
+    order its notes first use it (#112)."""
     blanks: dict[str, _BlankState] = {}
-    for occ, in_frontmatter, in_note in occurrences:
+    for occ, in_frontmatter in occurrences:
         if occ.directive.name != "placeholder" or not IDENTIFIER_RE.fullmatch(occ.qid):
             continue
         ptype = _effective_type(occ.directive, declared)
         blank = blanks.setdefault(occ.qid, _BlankState())
-        if in_note:
-            continue
         blank.in_frontmatter |= in_frontmatter
         blank.type = blank.type or ptype
         if ptype == blank.type and ptype in PLACEHOLDER_TYPE_PARAMS:
             blank.codes.add(occ.directive.params.get(PLACEHOLDER_TYPE_PARAMS[ptype], ""))
+    for occ in noted:
+        if occ.directive.name == "placeholder" and IDENTIFIER_RE.fullmatch(occ.qid):
+            blanks.setdefault(occ.qid, _BlankState())
     return blanks
 
 

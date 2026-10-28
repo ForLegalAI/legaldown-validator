@@ -396,7 +396,9 @@ class IncludeOutcome:
     path or found not LegalDown, which are Errors of their own), whether a
     fragment it read is conditional (*conditional*: ``include-heading-skip`` is judged with
     every include present, not under every combination of answers), and the limits it
-    reached (*caps*, each as a phrase)."""
+    reached (*caps*, each as a phrase). *caps* is filled by the limits of following nested
+    includes (the include-cycle depth and count caps, #114) and of trying the combinations
+    of answers (the combination cap, #108); neither is followed yet, so it is empty."""
     filled: set[int] = field(default_factory=set)
     unread: list[UnreadInclude] = field(default_factory=list)
     conditional: bool = False

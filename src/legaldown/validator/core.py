@@ -339,8 +339,8 @@ def _check_placeholder(
 
     A drafting note is removed before anything is filled (§15.7.2 step 2), so
     an occurrence in one is no part of the blank: it is still recognized and
-    validated by itself (§15.6), against a blank of its own that is dropped,
-    and takes no part in the blank's type, currency or unit (#112).
+    validated by itself (§15.6), and takes no part in the blank's type,
+    currency or unit (#112).
     """
     pid = directive.positional or ""
     params = directive.params
@@ -356,10 +356,12 @@ def _check_placeholder(
             f"Placeholder id '{pid}' is invalid — must match [a-z][a-z0-9-]*.",
         )
         return
-    blank = _BlankState() if in_note else blanks.setdefault(pid, _BlankState())
-    if blank.line is None:
-        blank.line = line
-    blank.in_frontmatter |= in_frontmatter
+    # A note's occurrence is validated, and takes no part in the blank: no bookkeeping.
+    blank = None if in_note else blanks.setdefault(pid, _BlankState())
+    if blank is not None:
+        if blank.line is None:
+            blank.line = line
+        blank.in_frontmatter |= in_frontmatter
     type_valid = written_type is None or written_type in VALID_PLACEHOLDER_TYPES
     if not type_valid:
         result.error(
@@ -385,19 +387,20 @@ def _check_placeholder(
     # The currency or unit this occurrence fixes, by its type (§10.7).
     code_param = PLACEHOLDER_TYPE_PARAMS.get(ptype)
     code = params.get(code_param, "") if code_param else ""
-    if blank.type is None:
-        blank.type = ptype
-    if blank.type != ptype:
-        blank.mixed = True
-        result.error(
-            "placeholder-type-inconsistent",
-            f"Placeholder '{pid}' used with inconsistent types: "
-            f"'{blank.type}' and '{ptype}'.",
-        )
-    elif ptype != "duration" or code in VALID_DURATION_UNITS or not code:
-        # An invalid unit is reported below and fixes nothing.
-        blank.codes.add(code)
-        blank.code_lines.setdefault(code, line)
+    if blank is not None:
+        if blank.type is None:
+            blank.type = ptype
+        if blank.type != ptype:
+            blank.mixed = True
+            result.error(
+                "placeholder-type-inconsistent",
+                f"Placeholder '{pid}' used with inconsistent types: "
+                f"'{blank.type}' and '{ptype}'.",
+            )
+        elif ptype != "duration" or code in VALID_DURATION_UNITS or not code:
+            # An invalid unit is reported below and fixes nothing.
+            blank.codes.add(code)
+            blank.code_lines.setdefault(code, line)
     if ptype == "money" and code and code not in KNOWN_CURRENCIES:
         result.warning(
             "placeholder-unknown-currency",
@@ -1819,6 +1822,7 @@ def _validate(
     # ── Attachment definition import (§7, §12.4) ──
     # A {{def:}} inside an attachment file registers a document-wide term; ids
     # must remain unique across the combined document (§16.10).
+    attachments_unread = 0  # the LegalDown attachment files whose definitions could not be imported
     for att_index, att in enumerate(document.metadata.attachments):
         if not att.file.endswith(LEGALDOWN_EXTENSIONS):
             continue
@@ -1826,6 +1830,8 @@ def _validate(
             att_defs = import_attachment_definitions(att.file)
         else:
             att_defs = _definitions_in(document, files, att.file)
+        if att_defs is None:
+            attachments_unread += 1
         if not att_defs:
             continue
         # Its definitions are present when the attachment is (§15.3).
@@ -1914,7 +1920,7 @@ def _validate(
             if "![" in fragment:
                 check_fragment_images(
                     fragment, lexed, file_references, where, section_index, block_index, fragment_index,
-                    reference_images,
+                    reference_images, noted=in_drafting_note(notes, fragment_index),
                 )
             presence = units.presence(section_index, block_index, fragment_index)
             in_note = bool(lexed.directives) and in_drafting_note(notes, fragment_index)  # only a directive asks
@@ -2310,7 +2316,7 @@ def _validate(
         image=file_references.first_image,
         template=template,
         fragment=mode.fragment,
-        read_attachments=files is not None or import_attachment_definitions is not None,
+        attachments_unread=attachments_unread,
         amends_imported=_amends_is_legaldown and _amends_import_succeeded,
     ):
         result.warning(SKIPPED_RULE, category.message, line=category.line)

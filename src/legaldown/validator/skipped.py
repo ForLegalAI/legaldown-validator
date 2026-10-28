@@ -54,7 +54,7 @@ def _unread(unread: list[UnreadInclude], fragment: bool) -> list[str]:
     """How many includes were not read, and why, for the message."""
     reasons = {
         "no-resolver": (
-            "its own includes are not followed (the host reads them, §12.2)" if fragment
+            "the includes inside a fragment are not followed" if fragment
             else "no loader to read it (no `resolve`, and the document has no path)"
         ),
         "leads-out": "its path leads out of the document's directory, which is not read",
@@ -107,7 +107,7 @@ def _includes(
     )
 
 
-def _attachments(document: Document, where: Locator, read: bool) -> SkippedCategory | None:
+def _attachments(document: Document, where: Locator, unread: int) -> SkippedCategory | None:
     files = [(index, att.file.strip()) for index, att in enumerate(document.metadata.attachments) if att.file.strip()]
     if not files:
         return None
@@ -116,8 +116,11 @@ def _attachments(document: Document, where: Locator, read: bool) -> SkippedCateg
     if legaldown:
         rules += ["attachment-has-frontmatter", "attachment-has-h1", "attachment-anchor-duplicate"]
     parts = [_join(rules)]
-    if legaldown and not read:
-        parts.append(f"importing the definitions of {_count(legaldown, 'LegalDown attachment file')} (no loader)")
+    if unread:
+        parts.append(
+            f"importing the definitions of {_count(unread, 'LegalDown attachment file')} "
+            f"(not read: no loader, or the file could not be read)"
+        )
     return SkippedCategory(
         "attachments",
         f"{_count(len(files), 'attachment file')} declared ({legaldown} LegalDown). Not performed: "
@@ -187,7 +190,7 @@ def skipped_categories(
     image: FileReference | None,
     template: bool,
     fragment: bool,
-    read_attachments: bool,
+    attachments_unread: int,
     amends_imported: bool,
 ) -> list[SkippedCategory]:
     """The check categories this validation did not perform for the constructs *document*
@@ -196,11 +199,12 @@ def skipped_categories(
     *includes* are the document's include paragraphs and *outcome* what ``check_includes``
     did with them; *image* is the first image path to hold no finding of its own
     (``FileReferences.first_image``), or None; *fragment*: the document is validated on its own, as a fragment;
-    *read_attachments*: the definitions of its LegalDown attachment files could be read;
+    *attachments_unread*: how many of its LegalDown attachment files had no definitions
+    imported (not read);
     *amends_imported*: the original it amends was."""
     found = [
         _includes([each for each in includes if each.paragraph], outcome, template, fragment),
-        _attachments(document, where, read_attachments),
+        _attachments(document, where, attachments_unread),
         _amendment(document, where, amends_imported),
         _bilingual(document, where),
         _paths(document, where, image),

@@ -43,6 +43,8 @@ class FileReference(NamedTuple):
     url: bool
     literal: str | None
     rest: bool
+    #: Whether it is in a drafting note, which is still judged (§15.6).
+    noted: bool = False
 
 
 #: A drive once decoded: one letter, of either case, and a colon (``C%3A/x``, ``C%3Ax``). On Windows a
@@ -92,9 +94,9 @@ class FileReferences:
         #: them: a path that is reported is not also reported for the file it names
         #: (``include-file-missing``, #35).
         self.reported: set[tuple[int, ...]] = set()
-        #: The first image path in the document that is no finding, once ``finish`` has judged
-        #: them: the position of the existence checks of image paths that are not made
-        #: (``ldv-check-skipped``, §17.4).
+        #: The first image path in the document that names a file, outside drafting notes and
+        #: no finding, once ``finish`` has judged them: the position of the existence checks
+        #: of image paths that are not made (``ldv-check-skipped``, §17.4).
         self.first_image: FileReference | None = None
 
     def check(
@@ -107,6 +109,7 @@ class FileReferences:
         url: bool = False,
         literal: str | None = None,
         rest: bool = True,
+        noted: bool = False,
     ) -> None:
         """Record *path*, which *what* names (``attachments[0].file``, ``image``),
         found at *line* and at place *at* in the document: the frontmatter's
@@ -122,30 +125,34 @@ class FileReferences:
         it: it is judged for being absolute, and for the names of it that are
         whole leaving the root; *rest* is whether more than directives (and a
         query or fragment) follows it, which a path of directives alone has not.
+        *noted*: it is in a drafting note, which is judged all the same.
         A path that is empty is not this rule's concern (``attachment-file-missing``)."""
         if path.strip():
-            self._met.append(FileReference(at, path.strip(), what, line, url, literal, rest))
+            self._met.append(FileReference(at, path.strip(), what, line, url, literal, rest, noted))
 
     def finish(self) -> None:
         """Judge the references recorded, in the order of the document."""
         said_outside = False
         for reference in sorted(self._met, key=lambda met: met.at):
             said_outside = self._judge(reference, said_outside)
-            if self.first_image is None and reference.what.startswith("image") and reference.at not in self.reported:
+            if (
+                self.first_image is None and reference.what.startswith("image") and not reference.noted
+                and reference.at not in self.reported and _names_a_file(reference)
+            ):
                 self.first_image = reference
         self._met = []
 
     def _judge(self, reference: FileReference, said_outside: bool) -> bool:
         """Record what is wrong with *reference*; True once a document outside
         the root has been said to be (*said_outside*)."""
-        at, written, what, line, url, literal, rest = reference
+        at, written, what, line, url, literal, rest, _noted = reference
         known = written if literal is None else literal.strip()
         judged = known.split("?", 1)[0].split("#", 1)[0] if url else known
         # What is known is the whole path when there is no directive, or when a
         # query or a fragment ends it before the directive: else its last name is
         # partial, as ``..`` may be ``..x`` once filled in.
         whole = literal is None or judged != known
-        if not judged and (whole or not rest):
+        if not _names_a_file(reference):
             return said_outside  # a query or a fragment alone, or a directive alone, names no file
         decoded = unquote(judged) if url and "%" in judged else judged
         # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
@@ -187,6 +194,15 @@ class FileReferences:
                 self.reported.add(at)
                 return said_outside
         return said_outside
+
+
+def _names_a_file(reference: FileReference) -> bool:
+    """Whether *reference* names a file: not a query or a fragment alone (``#top``, ``?q``), nor a
+    directive alone (``{{placeholder: logo}}``), which is not known until it is filled in."""
+    known = reference.path if reference.literal is None else reference.literal.strip()
+    judged = known.split("?", 1)[0].split("#", 1)[0] if reference.url else known
+    whole = reference.literal is None or judged != known
+    return bool(judged) or not (whole or not reference.rest)
 
 
 def _reading(known: str, judged: str, form: str, shown: str | None = None) -> str:
@@ -442,10 +458,15 @@ class ReferenceImages:
         self._document = document
         self._definitions: dict[str, PlacedLinkDefinition] | None = None
         self._used: dict[str, None] = {}
+        self._used_outside_notes: set[str] = set()
 
-    def note(self, text: str, lexed: Lexed, inline: Container[int] = (), scanned: Scan | None = None) -> None:
+    def note(
+        self, text: str, lexed: Lexed, inline: Container[int] = (), scanned: Scan | None = None, *,
+        noted: bool = False,
+    ) -> None:
         """Take note of the definitions the images of *text* name. *inline*: the
-        offsets of its inline images; *scanned*: ``scan(text, lexed)``."""
+        offsets of its inline images; *scanned*: ``scan(text, lexed)``; *noted*:
+        *text* is in a drafting note."""
         if "![" not in text:
             return
         if self._definitions is None:
@@ -456,6 +477,8 @@ class ReferenceImages:
         if self._definitions:
             for key in reference_images(text, lexed, self._definitions, inline, scanned):
                 self._used[key] = None
+                if not noted:
+                    self._used_outside_notes.add(key)
 
     def check(self, references: FileReferences, where: Locator) -> None:
         """Record the path of each definition noted, in document order (the top-level
@@ -469,19 +492,20 @@ class ReferenceImages:
             (
                 (
                     (-1 if each.section is None else each.section, each.block, each.fragment, -1, each.ordinal),
-                    each,
+                    each, key in self._used_outside_notes,
                 )
-                for each in (self._definitions[key] for key in self._used)
+                for key, each in ((key, self._definitions[key]) for key in self._used)
             ),
             key=lambda item: item[0],
         )
-        for at, each in placed:
+        for at, each, kept in placed:
             block = each.definition
             # (The finding names the label as CommonMark compares it, line breaks and runs of spaces one space.)
             label = collapse_label_whitespace(block.label)
             references.check(
                 _decoded(block.target), f"image, by the definition of [{label}]",
                 partial(where.definition, each.section, each.block, each.ordinal), at=at, url=True,
+                noted=not kept,
             )
 
 
@@ -518,17 +542,20 @@ def check_fragment_images(
     block: int,
     fragment: int,
     named: ReferenceImages | None = None,
+    *,
+    noted: bool = False,
 ) -> None:
     """Check the path of each inline image (§8.7) in *text*, fragment *fragment*
     of ``block_fragments`` of block *block* of *section* (None: the preamble): the
     free text of a paragraph, list item, quote or table cell, but not code or raw
     HTML, which ``block_fragments`` leaves out. A reference-style image
     (``![a][r]``, ``[r]: path``) names the definition (#92) that *named* takes
-    note of, to judge its path where it is written."""
+    note of, to judge its path where it is written. *noted*: *text* is in a drafting
+    note, whose images are judged all the same (§15.6)."""
     scanned = scan(text, lexed)
     found = images(text, lexed, scanned)
     if named is not None:
-        named.note(text, lexed, {image.start for image in found}, scanned)
+        named.note(text, lexed, {image.start for image in found}, scanned, noted=noted)
     if not found:
         return
     # The first image is looked for in the source; each of the others is as many
@@ -545,7 +572,7 @@ def check_fragment_images(
         references.check(
             image.path, "image", partial(_below, first_line, breaks),
             at=(-1 if section is None else section, block, fragment, image.start), url=True, literal=image.literal,
-            rest=image.rest,
+            rest=image.rest, noted=noted,
         )
 
 

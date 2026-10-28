@@ -198,3 +198,13 @@ def test_an_id_only_a_note_uses_is_still_a_text_question_in_assembly():
     assert template.form({"fee": "x"}).diagnostics == ()
     assert template.form({}).unanswered == ()
     assert isinstance(template, Template)
+
+
+def test_questions_are_in_the_order_of_the_first_occurrence_outside_a_note():
+    body = _note("{{placeholder: b}} {{placeholder: c}}") + "Pay {{placeholder: a}} to {{placeholder: b}}.\n"
+    template = parse_template(_document(body))
+    # a and b by the body; c, which only the note uses, after them. The validator's blanks agree for those it has.
+    assert [q.id for q in template.questions] == ["a", "b", "c"]
+    assert list(validate(parse(_document(body))).index.blanks) == ["a", "b"]
+    noted = _note("{{placeholder: d}}") + _note("{{placeholder: c}}") + "{{placeholder: a}}\n"
+    assert [q.id for q in parse_template(_document(noted)).questions] == ["a", "d", "c"]
