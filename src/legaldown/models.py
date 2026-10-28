@@ -480,10 +480,7 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         suffix=str(merged.get("suffix") or ""),
         target=target,
         label=label,
-        # Raw: its spaces are its own. A blank line would end the paragraph
-        # that holds it (``no_blank_lines``), as in the label; a line break
-        # cannot be in a destination written in ``<>``.
-        title=no_blank_lines(str(merged.get("title") or "")) if kind == "link_definition" else "",
+        title=title,
         items=(
             [_list_item(item) for item in list(merged.get("items") or [])] or [ListItem()]
             if kind in LIST_KINDS else []

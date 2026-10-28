@@ -204,15 +204,11 @@ def find_circular_definitions(
     # never appear, which no reference reaches in a template (they are excluded
     # with every presence).
     reachable = declarations
-    by_question: dict[str, dict[str, list[int]]] = {}  # per id, its numbers by the questions they name
     if excluded is not None:
-        reachable = {}
-        for def_id, numbers in declarations.items():
-            reachable[def_id] = [number for number in numbers if excluded.appears(registered[number][1])]
-            named = by_question[def_id] = {}
-            for number in reachable[def_id]:
-                for question in excluded.questions(registered[number][1]):
-                    named.setdefault(question, []).append(number)
+        reachable = {
+            def_id: [number for number in numbers if excluded.appears(registered[number][1])]
+            for def_id, numbers in declarations.items()
+        }
     # The reachable declarations of an id are one node when a reference reaches
     # them all: a paragraph that mentions thousands of alternatives of one id, or
     # a thousand paragraphs that mention the same alternatives, are then not a
@@ -242,6 +238,7 @@ def find_circular_definitions(
 
     reached: dict[tuple[str, Presence], list[int]] = {}
     tests = 0  # the pairs of presences tested: pruning stops at MAX_EXCLUSION_TESTS
+    named: dict[str, dict[str, list[int]]] = {}  # per id, as needed: its numbers by the questions they name
 
     def reach_excluding(exclusivity: Exclusivity, target: str, presence: Presence) -> list[int] | None:
         """What a reference with *presence* reaches among the alternatives of
@@ -252,12 +249,18 @@ def find_circular_definitions(
         numbers = reachable[target]
         if not exclusivity.appears(presence):
             return []  # it excludes every alternative
+        if target not in named:
+            named[target] = {}
+            for number in numbers:
+                for question in exclusivity.questions(registered[number][1]):
+                    named[target].setdefault(question, []).append(number)
+        by_question = named[target]
         questions = exclusivity.questions(presence)
         if len(questions) == 1:
-            candidates: Iterable[int] = by_question[target].get(next(iter(questions)), ())  # in order
+            candidates: Iterable[int] = by_question.get(next(iter(questions)), ())  # in order
         else:
-            candidates = sorted({n for question in questions for n in by_question[target].get(question, ())})
-        excluded_numbers = set()
+            candidates = sorted({n for question in questions for n in by_question.get(question, ())})
+        excluded_numbers: set[int] = set()
         for number in candidates:
             if tests >= MAX_EXCLUSION_TESTS:
                 return None

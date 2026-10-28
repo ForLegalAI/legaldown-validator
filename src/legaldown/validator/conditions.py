@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import itertools
 import re
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -178,31 +178,20 @@ def _some_answer_wanted(wanted: Collection[Any], refused: Collection[Any], answe
     return len(answers) > sum(1 for value in refused if value in answers)
 
 
-def satisfiable_in(presence: Iterable[Condition], answers_of: Callable[[str], Collection[Any]]) -> bool:
-    """``satisfiable``, with the answers of a question given by *answers_of*:
-    for a caller that asks many times and keeps them."""
-    return all(
-        _some_answer_holds(conditions, answers_of(question))
-        for question, conditions in by_question(presence).items()
-    )
-
-
 def satisfiable(presence: Iterable[Condition], questions: Any) -> bool:
     """True if some answers make every condition in *presence* hold — decided
     per question, as §15.4 describes. Defaults play no part."""
-    return satisfiable_in(presence, lambda question: question_answers(question, questions))
-
-
-def exclusive_in(first: Presence, second: Presence, answers_of: Callable[[str], Collection[Any]]) -> bool:
-    """``exclusive``, with the answers of a question given by *answers_of*."""
-    return not satisfiable_in(first | second, answers_of)
+    return all(
+        _some_answer_holds(conditions, question_answers(question, questions))
+        for question, conditions in by_question(presence).items()
+    )
 
 
 def exclusive(first: Presence, second: Presence, questions: Any) -> bool:
     """True if two units, appearing under the conditions *first* and
     *second* (their ``Presence``), can never appear together for any answers
     to the document's *questions* (``document.metadata.questions``, §15.4)."""
-    return exclusive_in(first, second, lambda question: question_answers(question, questions))
+    return not satisfiable(first | second, questions)
 
 
 #: A presence by question: the values its conditions on it want, and refuse
@@ -234,6 +223,7 @@ class Exclusivity:
         self._questions = questions
         self._answers: dict[str, Collection[Any]] = {}
         self._entries: dict[Presence, tuple[bool, _Profile]] = {}
+        self._values: dict[tuple[Presence, str], tuple[frozenset[Any], frozenset[Any]]] = {}
 
     def answers(self, question: str) -> Collection[Any]:
         """Every answer *question* can have (``question_answers``), kept."""
@@ -250,6 +240,15 @@ class Exclusivity:
             )
             self._entries[presence] = appears, by_wanted_refused
         return self._entries[presence]
+
+    def values(self, presence: Presence, question: str) -> tuple[frozenset[Any], frozenset[Any]]:
+        """The values *presence* wants of *question*, and those of its answers it refuses."""
+        key = (presence, question)
+        if key not in self._values:
+            wanted, refused = self._entry(presence)[1][question]
+            answers = self.answers(question)
+            self._values[key] = wanted, frozenset(value for value in refused if value in answers)
+        return self._values[key]
 
     def appears(self, presence: Presence) -> bool:
         """``satisfiable``: some answers make *presence* hold."""

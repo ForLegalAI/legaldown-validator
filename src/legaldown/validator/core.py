@@ -13,8 +13,7 @@ import warnings
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from functools import cache, partial, reduce
-from operator import and_
+from functools import cache, partial
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
@@ -47,9 +46,7 @@ from .conditions import (
     Exclusivity,
     Presence,
     always_covered,
-    by_question,
     condition_issue,
-    condition_values,
     exclusive,
     parse_condition,
     satisfiable,
@@ -548,7 +545,7 @@ class _AnswerTally:
 
     def add(self, wanted: frozenset[Any], refusal: frozenset[Any]) -> None:
         """Count a declaration that can appear and wants *wanted* and refuses
-        *refusal* of the question's answers (``_FreeIdentifiers._values``)."""
+        *refusal* of the question's answers (``Exclusivity.values``)."""
         if wanted:
             (value,) = wanted
             self.positive[value] += 1
@@ -583,8 +580,13 @@ class _AnswerTally:
                 count += self.negative  # it refuses every answer: it excludes every one
             elif all(value in self.refusers for value in others):
                 # zip stops at the shortest: a chunk a value has no bit in holds none.
-                bitmaps = [self.refusers[value] for value in others]
-                count += sum(reduce(and_, chunks).bit_count() for chunks in zip(*bitmaps, strict=False))
+                for chunks in zip(*(self.refusers[value] for value in others), strict=False):
+                    both = chunks[0]
+                    for chunk in chunks[1:]:
+                        both &= chunk
+                        if not both:
+                            break  # no declaration in the chunk refuses every one
+                    count += both.bit_count()
         return count
 
 
@@ -643,9 +645,6 @@ class _FreeIdentifiers:
         #: How many leading suffixes of a base are taken for a presence.
         self._taken: dict[tuple[str, Presence], int] = {}
         #: Per pool, what is asked of one presence again and again.
-        self._grouped: dict[Presence, dict[str, Presence]] = {}
-        self._wanted_refused: dict[tuple[str, Presence], tuple[frozenset[Any], frozenset[Any]]] = {}
-        self._excludes: dict[tuple[Presence, Presence], bool] = {}
         #: How many declarations that can appear an identifier has.
         self._occupants: dict[str, int] = {}
         #: What those declarations say of a question: at an identifier, and
@@ -666,8 +665,8 @@ class _FreeIdentifiers:
         self._occupants[identifier] = self._occupants.get(identifier, 0) + 1
         suffixed = _SUFFIXED_RE.fullmatch(identifier)
         bases = (identifier, suffixed.group(1)) if suffixed else (identifier,)
-        for question, conditions in self._by_question(presence).items():
-            wanted, refusal = self._values(question, conditions)
+        for question in self._exclusivity.questions(presence):
+            wanted, refusal = self._exclusivity.values(presence, question)
             self._at.setdefault((identifier, question), _AnswerTally()).add(wanted, refusal)
             for base in bases:
                 self._across.setdefault((base, question), _AnswerTally()).add(wanted, refusal)
@@ -706,11 +705,11 @@ class _FreeIdentifiers:
     def _excludes_some(self, base: str, presence: Presence) -> bool:
         """True if *presence* (that can appear) excludes some declaration at
         some suffix of *base*, on some question."""
-        for question, conditions in self._by_question(presence).items():
+        for question in self._exclusivity.questions(presence):
             declared = self._across.get((base, question))
             if declared is None:
                 continue
-            if declared.excluded(*self._values(question, conditions), self._exclusivity.answers(question)):
+            if declared.excluded(*self._exclusivity.values(presence, question), self._exclusivity.answers(question)):
                 return True
         return False
 
@@ -720,52 +719,26 @@ class _FreeIdentifiers:
         occupants = self._occupants.get(identifier, 0)
         if not occupants:
             return False  # nothing, or only what never appears
-        grouped = self._by_question(presence)
+        questions = self._exclusivity.questions(presence)
         excluded = 0  # the declarations the questions exclude, counted for each question
-        for question, conditions in grouped.items():
+        for question in questions:
             declared = self._at.get((identifier, question))
             if declared is None or declared.mentions < occupants:
-                if len(grouped) == 1:
+                if len(questions) == 1:
                     return True  # a declaration that says nothing of the one question
                 if declared is None:
                     continue
-            count = declared.excluded(*self._values(question, conditions), self._exclusivity.answers(question))
+            count = declared.excluded(*self._exclusivity.values(presence, question), self._exclusivity.answers(question))
             if count == occupants:
                 return False  # this question alone excludes every declaration
             excluded += count
         if excluded < occupants:
             return True  # some declaration is excluded by no question
         # The questions together might exclude each declaration, one for each.
-        return any(not self._exclude(presence, other) for other in self._declarations[identifier])
-
-    def _by_question(self, presence: Presence) -> dict[str, Presence]:
-        if presence not in self._grouped:
-            self._grouped[presence] = {
-                question: frozenset(conditions) for question, conditions in by_question(presence).items()
-            }
-        return self._grouped[presence]
-
-    def _values(self, question: str, conditions: Presence) -> tuple[frozenset[Any], frozenset[Any]]:
-        """The values *conditions* on *question* want, and those of its
-        answers they refuse."""
-        key = (question, conditions)  # the refusal is filtered by this question's answers
-        if key not in self._wanted_refused:
-            wanted, refused = condition_values(conditions)
-            answers = self._exclusivity.answers(question)
-            self._wanted_refused[key] = (
-                frozenset(wanted),
-                frozenset(value for value in refused if value in answers),
-            )
-        return self._wanted_refused[key]
+        return any(not self._exclusivity.excluded(presence, other) for other in self._declarations[identifier])
 
     def _can_appear(self, presence: Presence) -> bool:
         return self._exclusivity.appears(presence)
-
-    def _exclude(self, first: Presence, second: Presence) -> bool:
-        key = (first, second)
-        if key not in self._excludes:
-            self._excludes[key] = self._exclusivity.excluded(first, second)
-        return self._excludes[key]
 
 
 def _link_destination_end(view: str, at: int) -> int | None:

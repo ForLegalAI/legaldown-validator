@@ -793,8 +793,8 @@ time budget.)
   identifier depend on the size of the document.
 - **Lists nested to the depth cap** read the lines of an item again for each of the up to
   `MAX_LIST_DEPTH` (64) lists that enclose it: linear in the size of the document, with a larger
-  constant, and no slower per byte than a long flat list of short items (2,000 nested items, 4 MB,
-  take about 8 s; 250,000 flat items, 4.5 MB, about 13 s). Deeper than the cap an item is one paragraph.
+  constant, and no slower per byte than a long flat list of short items (1,000 nested items, 1 MB,
+  take about 3 s; 100,000 flat items, 1.8 MB, about 4 s). Deeper than the cap an item is one paragraph.
 - **Circular definitions** test at most `MAX_EXCLUSION_TESTS` (4,000,000) pairs of conditions,
   about 5 s, past which alternatives are not told apart (see Alternatives above).
 - The walk of includes and the combinations of answers are capped as documented

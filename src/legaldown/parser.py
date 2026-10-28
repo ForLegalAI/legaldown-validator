@@ -2030,7 +2030,7 @@ def parse(
         lines.pop()  # the last line's ending, not a line
     layout = _Layout()
     preamble, sections = _parse_body(lines, layout)
-    # The blocks are built as they stand (``_block_text``, ``_str``): the same
+    # The blocks are built as they stand (``normalise_text``, ``normalise_field``): the same
     # normalisation as ``document_from_dict``, without building them twice (#110).
     document = Document(
         metadata=metadata_from_dict(metadata or {}),

@@ -581,8 +581,8 @@ def test_each_block_of_a_flat_list_is_built_once(monkeypatch):
 
 
 def test_a_flat_list_in_a_time_budget():
-    source = "- item number one\n" * 30_000
-    assert _seconds(parse, source) < 8.0  # 1.2 s now; 2 s before #110
+    source = "- item number one\n" * 100_000
+    assert _seconds(parse, source) < 15.0  # 4 s now; 7.4 s before #110
 
 
 # ── The shapes that stay superlinear, as CONFORMANCE.md documents them ──
@@ -607,9 +607,9 @@ def test_headings_with_pairs_of_conditions_in_a_time_budget():
 
 
 def test_lists_nested_to_the_depth_cap_in_a_time_budget():
-    """Linear in the bytes, at a larger constant: 500 nested items, 250 KB, take 1 s."""
-    source = "".join(" " * (2 * depth) + "- item\n" for depth in range(500))
-    assert _seconds(parse, source) < 10.0
+    """Linear in the bytes, at a larger constant: 1,000 nested items, 1 MB, take 3 s."""
+    source = "".join(" " * (2 * depth) + "- item\n" for depth in range(1000))
+    assert _seconds(parse, source) < 20.0
 
 
 # ── Review of #110 ────────────────────────────────────────────────
