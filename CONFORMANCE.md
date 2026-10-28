@@ -387,7 +387,10 @@ paragraph. What the reading does not follow:
 - Where a quote ends is found line by line, and two things are read more simply than
   CommonMark reads them: in a list inside the quote, an item's content column is not tracked;
   and an empty item is taken to interrupt a paragraph. Such a quote can end a line early or
-  late.
+  late. A third, found by the differential of [#111](https://github.com/ForLegalAI/legaldown-validator/issues/111)
+  (about one document in 200,000, and older than it): a nested quote whose paragraph has a line with a `|`,
+  a lazy line, then a line that looks like a table's delimiter row (`>>a||`, `>     x`, `>>-|-`) ends there,
+  where CommonMark (and pandoc, markdown-it) go on with the paragraph and take an unmarked line after it.
 - A quote in 16 or more list items and quotes is read as one text: its directives are checked
   as a paragraph's.
 

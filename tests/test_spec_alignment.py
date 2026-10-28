@@ -3057,6 +3057,12 @@ def test_an_item_opening_with_code_has_no_paragraph():
         _round_trips(body)
 
 
+@pytest.mark.xfail(strict=True, reason="a quote's last line that looks like a table's delimiter row ends it early (#111, CONFORMANCE.md)")
+def test_a_nested_quote_goes_on_past_a_delimiter_row_like_line_after_a_lazy_line():
+    """CommonMark: no table, so ``-|-`` is paragraph text and the unmarked line after it is a lazy line."""
+    assert [block.kind for block in parse(_FRONTMATTER + ">>a||\n>     x\n>>-|-\n    y\n").sections[0].blocks] == ["quote"]
+
+
 def test_a_lazy_line_four_columns_in_is_the_items_text():
     [block] = parse(_FRONTMATTER + "-    ===\n\t````\n x\n").sections[0].blocks
     assert _shape(block) == (_U, [["===\n````\nx"]])
