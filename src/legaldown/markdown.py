@@ -260,6 +260,9 @@ MAX_DESTINATION_PARENTHESES = 32
 _PUNCTUATION = frozenset(string.punctuation)
 _BLANK_LINES_RE = re.compile(r"[ \t]*\n(?:[ \t]*\n)+[ \t]*")
 _WHITESPACE_RUN_RE = re.compile(r"[ \t\n\r]+")
+#: What a label holds up to its ``]``: characters but a bracket or a backslash, and a backslash
+#: with the punctuation it escapes (or alone).
+_LABEL_TEXT_RE = re.compile(r"(?:[^\[\]\\]|\\[!-/:-@\[-`{-~]|\\)*")
 
 
 class LinkDefinitionSource(NamedTuple):
@@ -372,14 +375,9 @@ def label_end(text: str, at: int) -> int | None:
     ``text[at]``, a ``[`` (§4.7); None when it holds an unescaped bracket or
     is longer than ``MAX_LABEL_LENGTH``. The label may be blank (``[]``, the
     collapsed form of a reference, §6.3): a definition's is not."""
-    end = at + 1
-    while end < len(text) and text[end] != "]":
-        if text[end] == "[":
-            return None
-        end += 2 if _escapes(text, end) else 1
-    if end >= len(text) or end - at - 1 > MAX_LABEL_LENGTH:
-        return None
-    return end
+    stop = min(len(text), at + MAX_LABEL_LENGTH + 2)  # reads no further than a label may be long
+    end = _LABEL_TEXT_RE.match(text, at + 1, stop).end()
+    return end if end < stop and text[end] == "]" else None
 
 
 def _title_end(text: str, at: int) -> int | None:
@@ -469,9 +467,11 @@ def split_link_definitions(lines: list[str]) -> tuple[list[LinkDefinitionSource]
         if read is None or "{{" in text[at:read[3]]:
             break
         label, target, title, end = read
-        total = text.count("\n", 0, end) + (1 if end == len(text) and not text.endswith("\n") else 0)
-        found.append(LinkDefinitionSource(label, target, title, total - taken))
-        at, taken = end, total
+        # The lines it took: its line endings, and its last line if the text ends there. (Counted
+        # from where it begins, not from the start: a paragraph of many definitions is linear.)
+        size = text.count("\n", at, end) + (1 if end == len(text) and text[end - 1] != "\n" else 0)
+        found.append(LinkDefinitionSource(label, target, title, size))
+        at, taken = end, taken + size
     return found, taken
 
 

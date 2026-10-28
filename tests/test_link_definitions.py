@@ -835,3 +835,28 @@ def test_a_line_after_an_underline_under_only_definitions_in_a_quote_continues_t
     """CommonMark: ``===`` there starts a paragraph in the quote, which the unquoted line continues."""
     [quote] = blocks("> [foo]: /url\n> ===\nlazy\n")
     assert shape(quote_blocks(quote)) == [definition("foo", "/url"), ("paragraph", "===\nlazy")]
+
+
+# ── Linear time (#94) ─────────────────────────────────────────────
+
+
+def test_many_definitions_images_and_labels_are_linear():
+    """One generous budget, at a size where reading each from the start of the paragraph, or
+    scanning each label to the end, took many times as long."""
+    import time
+
+    count = 20000
+    cases = {
+        "definitions in a paragraph": "\n".join(f"[a{i}]: /u{i} 'T'" for i in range(count)),
+        "definitions in items": "\n".join(f"- [a{i}]: /u{i}\n  text" for i in range(count // 4)),
+        "unclosed labels": "\n\n".join("[" + "a" * 900 for _ in range(count // 4)),
+        "labels that are brackets": "[" * count + "\n" + "]" * count,
+        "images naming definitions": "\n".join(f"![a{i}][r{i}]" for i in range(count // 2))
+        + "\n\n"
+        + "\n".join(f"[r{i}]: img{i}.png" for i in range(count // 2)),
+        "images and a long label": "![a][" + "x " * count + "\n" + "![a]" * 100,
+    }
+    for name, body in cases.items():
+        start = time.perf_counter()
+        validate(parse(FRONTMATTER + "# A\n\n" + body + "\n"), document_root="/tmp/root")
+        assert time.perf_counter() - start < 15, name
