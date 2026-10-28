@@ -2035,7 +2035,7 @@ def test_a_declaration_with_a_lowercase_letter_is_an_html_block(html):
     commonmark-spec #620). pandoc and markdown-it still read ``<!c`` as a paragraph (CONFORMANCE.md)."""
     assert _html(f"{html}\nAfter.\n")[1] == [("html", html), ("paragraph", "After.")]
     assert _html(f"a\n{html}\nAfter.\n")[1] == [("paragraph", "a"), ("html", html), ("paragraph", "After.")]  # it interrupts
-    assert _html(f"{html[:-1]}\nAfter.\n")[1] == [("html", f"{html[:-1]}\nAfter.")]  # unclosed: to the end of the line
+    assert _html(f"{html[:-1]}\nAfter.\n")[1] == [("html", f"{html[:-1]}\nAfter.")]  # unclosed: a block of kind 4 runs to a line holding ``>``, here the end of the input
 
 
 @pytest.mark.parametrize("opener", ["<!--", "<?", "<!DOCTYPE", "<![CDATA[", "<pre>"])
@@ -3104,7 +3104,8 @@ def test_a_table_under_a_quotes_paragraph_not_an_items(body, kinds):
     ("A <br /> and <b\nclass=x>.\n", ["in text ('<br />')"]),
     ("A <?php x ?>, <!DOCTYPE html>, <![CDATA[x]]>.\n", ["in text ('<?php x ?>')"]),
     # A declaration (0.31.2 §6.6): ``<!``, an ASCII letter, anything but ``>``, ``>``. Before 0.30 it took
-    # capital letters and whitespace; pandoc and markdown-it read the new rule too (#111).
+    # capital letters and whitespace. markdown-it reads all of these as inline HTML; pandoc only those with
+    # whitespace after the letters (``<!doctype x>``, ``<!c x\ny>``), and reads ``<!D>`` and ``<!Cx>`` as text (#111).
     ("A <!D> b.\n", ["in text ('<!D>')"]),
     ("A <!doctype x> b.\n", ["in text ('<!doctype x>')"]),
     ("A <!Cx> b.\n", ["in text ('<!Cx>')"]),
@@ -3137,6 +3138,13 @@ def test_raw_html_is_a_warning(body, shown):
 ])
 def test_no_raw_html(body):
     assert "raw-html" not in _validate(body).rules()
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="a declaration ending in a code span or a comment is not found (CONFORMANCE.md, #111)")
+@pytest.mark.parametrize("body", ["A <!a `>` b.\n", "A <!a <!-- x --> b.\n"])
+def test_a_declaration_ending_in_a_code_span_or_a_comment_is_raw_html(body):
+    """CommonMark, pandoc and markdown-it: the HTML that starts first wins, and ends at the first ``>``."""
+    assert "raw-html" in _validate(body).rules()
 
 
 def test_raw_html_in_a_heading():

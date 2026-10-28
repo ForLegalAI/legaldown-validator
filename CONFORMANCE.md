@@ -166,7 +166,10 @@ and a directive's values are not raw HTML; frontmatter values are not Markdown. 
 spans are found by the directive lexer (§11.4), which reads comments by CommonMark 0.31 and knows
 no tags, so a few rare texts are read differently from cmark-gfm: a comment holding `--`, text
 after an unclosed `<!--` (where cmark-gfm finds no more inline HTML), and a backtick or `<!--`
-inside a CDATA section, declaration or processing instruction.
+inside a CDATA section, declaration or processing instruction. Code spans and comments are blanked first and
+no HTML runs across them, so a declaration, processing instruction or CDATA section whose closer is inside one
+is not found, where CommonMark, pandoc and markdown-it let the HTML that starts first win (`A <!a `>` b.` and
+`A <!a <!-- x --> b.` hold a declaration ending in the code span and in the comment): a missed `raw-html` Warning.
 
 `path-not-relative` and `path-outside-root` (§2.3, §16.2, §17.2,
 [#104](https://github.com/ForLegalAI/legaldown-validator/issues/104)) are Core checks, and syntactic:
@@ -356,12 +359,15 @@ Where this differs from CommonMark, or is read more simply:
   underline stands under a lone label. The test asks that no definition here is neither pandoc's nor markdown-it's.
 - **Where the shapes differ from pandoc or markdown-it** ([#111](https://github.com/ForLegalAI/legaldown-validator/issues/111)):
   over 1.5 million generated documents the block structure here differs from pandoc's in three classes, each
-  deliberate or the reference's own deviation, none a link definition:
+  deliberate or the reference's own deviation, none a link definition (a fourth, a nested quote ended early by a
+  line that looks like a table's delimiter row, is a fault of this package: see the quotes, below):
   - *An empty ATX heading* (`#` alone, outside items and quotes) is paragraph text here, by design (above): a
     section's heading needs text. pandoc and markdown-it read an empty heading.
   - *A declaration with a lowercase letter* (`<!c`) is an HTML block, kind 4 of CommonMark 0.31.2 §4.6 (`<!`
-    and an ASCII letter; 0.30 dropped the restriction to capitals, commonmark-spec #620), and inline HTML in
-    text (§6.6, as above). pandoc and markdown-it still need a capital letter and read `<!c` as a paragraph.
+    and an ASCII letter; 0.30 dropped the restriction to capitals, commonmark-spec #620). pandoc and
+    markdown-it still read `<!c` as a paragraph. In text (§6.6, as above) markdown-it reads `<!c x>`, `<!Cx>`
+    and `<!D>` as inline HTML, as this package does; pandoc reads `<!c x>` and `<!doctype x>` so but `<!Cx>`,
+    `<!D>` and `<!c>`, with no whitespace after the letters, as text, as the rule was before 0.30.
   - *A degenerate end*: `<!-->`, `<!--->` and `<?>` end the HTML block on the line they start (the end condition
     is tested from the `<`, so it overlaps the start), where the next line is a paragraph. markdown-it reads the
     same; pandoc runs the block on to the next end marker.

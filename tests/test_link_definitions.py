@@ -11,6 +11,7 @@ import shutil
 import subprocess
 
 import pytest
+from test_spec_alignment import _O, _U, _trees
 
 from legaldown import Block, Document, parse, parse_template, serialize, validate
 from legaldown.markdown import (
@@ -901,6 +902,7 @@ def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body
 
 # ── Known differences from CommonMark (CONFORMANCE.md) ────────────
 
+
 @pytest.mark.parametrize("body", ['1. [a]: /u\n  "t"\n', '1. [a]: /u\n   "t"\n', '1. [a]: /u\n"t"\n'])
 def test_a_title_on_a_lazy_line_belongs_to_the_definition(body):
     """The lazy line is paragraph text (CommonMark 5.2), and a definition is read from the closed paragraph (4.7),
@@ -909,45 +911,31 @@ def test_a_title_on_a_lazy_line_belongs_to_the_definition(body):
     assert [shape(item.blocks) for item in list_items(listed)] == [[definition("a", "/u", "t")]]
 
 
-
-def content_tree(found: list[Block], depth: int = 0) -> list:
-    """The blocks as nested tuples: a quote or a list with what it holds, a definition by its label."""
-    tree: list = []
-    for b in found:
-        if b.kind == "quote":
-            tree.append(("quote", content_tree(quote_blocks(b, depth=depth), depth + 1)))
-        elif b.kind in ("ordered_list", "unordered_list"):
-            tree.append(("list", [content_tree(item.blocks, depth + 1) for item in list_items(b)]))
-        elif b.kind == "link_definition":
-            tree.append(("definition", b.label))
-        else:
-            tree.append((b.kind, b.text))
-    return tree
-
-
-_UNDERLINE = [("definition", "x"), ("paragraph", "===\nlazy")]
+_DEFINITION = ("link_definition",)
+_UNDERLINE = [_DEFINITION, "===\nlazy"]
 
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="a container's open paragraph does not know that definitions leave an underline as text (#92, #111)",
 )
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
         pytest.param("> [x]: u\n> ===\nlazy\n", [("quote", _UNDERLINE)], id="quote"),
-        pytest.param("- [x]: u\n  ===\nlazy\n", [("list", [_UNDERLINE])], id="bullet-item"),
-        pytest.param("1. [x]: u\n   ===\nlazy\n", [("list", [_UNDERLINE])], id="ordered-item"),
-        pytest.param("> - [x]: u\n>   ===\n> lazy\n", [("quote", [("list", [_UNDERLINE])])], id="item-in-quote-quoted-lazy"),
-        pytest.param("> - [x]: u\n>   ===\nlazy\n", [("quote", [("list", [_UNDERLINE])])], id="item-in-quote-unquoted-lazy"),
+        pytest.param("- [x]: u\n  ===\nlazy\n", [(_U, [_UNDERLINE])], id="bullet-item"),
+        pytest.param("1. [x]: u\n   ===\nlazy\n", [(_O, [_UNDERLINE])], id="ordered-item"),
+        pytest.param("> - [x]: u\n>   ===\n> lazy\n", [("quote", [(_U, [_UNDERLINE])])], id="item-in-quote-quoted-lazy"),
+        pytest.param("> - [x]: u\n>   ===\nlazy\n", [("quote", [(_U, [_UNDERLINE])])], id="item-in-quote-unquoted-lazy"),
         pytest.param("> > [x]: u\n> > ===\nlazy\n", [("quote", [("quote", _UNDERLINE)])], id="quote-in-quote"),
-        pytest.param("- > [x]: u\n  > ===\nlazy\n", [("list", [[("quote", _UNDERLINE)]])], id="quote-in-item"),
+        pytest.param("- > [x]: u\n  > ===\nlazy\n", [(_U, [[("quote", _UNDERLINE)]])], id="quote-in-item"),
     ],
 )
 def test_a_line_after_an_underline_under_only_definitions_in_a_container_continues_the_paragraph(body, expected):
     """CommonMark: ``===`` there starts a paragraph in the container, which the line without its marker continues.
     Here the container has closed its paragraph at the underline (CONFORMANCE.md)."""
-    assert content_tree(blocks(body)) == expected
+    assert _trees(body) == expected
 
 
 # ── Linear time (#94) ─────────────────────────────────────────────
