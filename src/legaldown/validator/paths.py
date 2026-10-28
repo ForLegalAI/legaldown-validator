@@ -5,8 +5,9 @@ Both rules are syntactic (§2.3, §17.2): they read the text of a path and never
 a file, so existence (Full, §17.4) is not asked, and a symbolic link is not
 followed. The paths are the ones §2.3 lists: ``{{include:}}`` (§12),
 ``attachments[].file`` (§3.9), ``amends.file`` (§3.8), ``supersedes.file``
-(§3.2), ``translations`` (§14) and image paths (§8.7). A link or an autolink
-is no file reference, and raw HTML is ``raw-html``'s.
+(§3.2), ``translations`` (§14) and image paths (§8.7), a reference-style image's
+(``![a][r]``) being the destination of the link reference definition it names (§4.7, #92).
+A link or an autolink is no file reference, and raw HTML is ``raw-html``'s.
 """
 from __future__ import annotations
 
