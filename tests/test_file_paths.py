@@ -8,9 +8,12 @@ never a file; the second runs only when a document root is configured
 """
 from __future__ import annotations
 
+import random
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
@@ -25,6 +28,12 @@ from legaldown.files import (
     relative_path,
 )
 from legaldown.validator import paths as paths_module
+
+try:
+    import markdown_it
+except ImportError:  # (a development dependency: the tests that ask it are skipped)
+    markdown_it = None
+needs_markdown_it = pytest.mark.skipif(markdown_it is None, reason="markdown-it-py is not installed")
 
 _RULES = {"path-not-relative", "path-outside-root"}
 _ROOT_FRONT = "---\ntitle: T\n---\n\n"
@@ -868,6 +877,90 @@ def test_an_image_any_renderer_reads_is_checked_whichever_reads_it(image):
     """pandoc keeps a DEL or a control character in a bare destination and reads a title glued to ``<…>``; the
     specification and markdown-it read no image there. The path rules over-approximate: they cover them all."""
     assert _found(validate(_body(image))) == [("path-not-relative", 7)], image
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "![r](x\x7f)\n\n[r]: /etc/passwd",
+        '![r](<ok.png>"t")\n\n[r]: /etc/passwd',
+        "![r](x\x01)\n\n[r]: /etc/passwd",
+        "![a][r]\n\n[r]: /etc/passwd\x7f",
+        "![a][r]\n\n[r]: /etc/passwd\x01",
+        "![a][r]\n\n[r]: ok.png\n[s]: /etc/passwd\x7f\n\n![b][s]",
+        "[x]: y\n[r]: /etc/passwd\x7f\n\n![a][r]",
+        "> [r]: /etc/passwd\x7f\n\n![a][r]",
+        "- text\n\n  [r]: /etc/passwd\x1f\n\n![a][r]",
+    ],
+)
+def test_a_reference_image_is_checked_whatever_the_inline_reading_or_the_definition_reading_of_a_renderer(document):
+    """The path rules cover the union of the readings. ``![r](x\x7f)`` is an inline image to pandoc and ``![r]`` and
+    text to the specification: the definition it names is judged too. A definition pandoc reads, with a DEL or a
+    control character in its bare destination, is judged though the model reads it as paragraph text."""
+    found = _found(validate(_body(document)))
+    assert [rule for rule, _line in found] == ["path-not-relative"], document
+
+
+def test_a_permissive_definition_is_judged_once_and_only_when_an_image_names_it():
+    assert _found(validate(_body("[r]: /etc/passwd\x7f\n\ntext"))) == []
+    assert _found(validate(_body("![a][s]\n\n[r]: /etc/passwd\x7f"))) == []
+    assert _found(validate(_body("![a][r] ![b][r] ![c][]\n\n[r]: /etc/passwd\x7f"))) == [("path-not-relative", 9)]
+    assert _found(validate(_body("| a |\n|---|\n| [r]: /etc/passwd\x7f |\n\n![a][r]"))) == []  # (a cell is no paragraph)
+
+
+_BACKSLASH_RE = re.compile(r"\\(?![!-/:-@\[-`{-~])")  # markdown-it: a backslash before any character is a pair
+_DESTINATIONS = ["/etc/x", "<x>", "<x y>", "x\x7f", "x\x01y", "x[", "x]", "x](", "(", "x(y)", "<x\\>y>", "x\\)", "[x]", "x\x1f"]
+_GAPS = ["", " ", "\t", "\n", " \n ", "\n\n"]
+_TITLES = ["", '"t"', "'t'", "(t)", '"t', "(t(u)", '"t\\"u"']
+_TOKENS = ["<b>", "<", ">", "(", ")", "\\", '"', "'", " ", "\t", "\n", "\x7f", "\\)", '\\"', "\\>", '"t"', "'x'", "(t)", "b", "a",
+           "\x01", "\x1f", "]", "[", "](", "/etc", "x.png", "\\\\", ":", "[r]"]
+
+
+def _image_sources_by_markdown_it(text):
+    return [
+        unquote(child.attrGet("src"))
+        for token in markdown_it.MarkdownIt("commonmark").parse(text)
+        for child in token.children or []
+        if child.type == "image"
+    ]
+
+
+@needs_markdown_it
+def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
+    """The safety direction: wherever markdown-it reads an image, inline or by a definition (random destinations
+    with brackets, titles and controls; random definitions), the destination it reads is one the path rules judge.
+    (The backslash before a character that is no punctuation, which only markdown-it reads as a pair, is left out.)"""
+    judged = []
+    real = paths_module.FileReferences.check
+    monkeypatch.setattr(
+        paths_module.FileReferences, "check",
+        lambda self, path, *args, **kwargs: judged.append(path.strip()) or real(self, path, *args, **kwargs),
+    )
+    rng = random.Random(113)
+
+    def body():
+        if rng.random() < 0.3:
+            return "".join(rng.choice(_TOKENS) for _ in range(rng.randint(0, 7)))
+        return rng.choice(_DESTINATIONS) + rng.choice(_GAPS) + rng.choice(_TITLES) + rng.choice(_GAPS)
+
+    compared = 0
+    for _ in range(90_000):
+        first, second = body() + rng.choice([")", ")", ""]), body()
+        text = rng.choice([
+            f"![a]({first}", f"![r]({first}\n\n[r]: {second}", f"![a][r]\n\n[r]: {second}", f"![r]\n\n[r]: {second}",
+            f"[x]: y\n[r]: {second}\n\n![a][r] ![r]({first}",
+        ])
+        if _BACKSLASH_RE.search(text) or re.search(r"\n[ \t]*(?:\n|>)", text) or text.endswith("\\") or "\n\n\n" in text:
+            continue
+        read = [source for source in _image_sources_by_markdown_it(text) if source.strip()]
+        if not read:
+            continue
+        judged.clear()
+        validate(_body(text))
+        for source in read:
+            assert source in judged, (text, source, judged)
+        compared += 1
+    assert compared > 3000
 
 
 def test_the_decoded_form_is_still_absolute_with_a_slash_and_still_escapes():

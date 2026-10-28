@@ -366,9 +366,9 @@ def _escape(text: str, characters: str) -> str:
 
 
 def is_bare_destination(target: str) -> bool:
-    """True if *target* can be written as a link destination without ``<>``
-    (§6.3): not empty, with no space, control character or ``<`` first, and
-    balanced parentheses."""
+    """True if *target* is a bare link destination (§6.3): not empty, with no space,
+    control character (a NUL is text, and counts as bare) or ``<`` first, and balanced parentheses.
+    ``format_link_definition`` still writes a target that holds a NUL in ``<>``."""
     if not target or target[0] == "<":
         return False
     found = scan_destination(target, 0, nonempty=True)
@@ -423,7 +423,7 @@ def scan_destination(
     ``MAX_DESTINATION_PARENTHESES`` deep, which also keeps a run of them linear. A NUL is text
     like any other (§2.3 makes it U+FFFD), which lets a text with its directives masked as NULs be scanned.
     With *nonempty* a bare destination is not empty (a definition's is not; an inline link's may be). With
-    *permissive* a bare destination ends only at a space, a tab or a line break, as pandoc reads it (it keeps a control
+    *permissive* a bare destination ends only at a space, a tab or a line ending (LF or CR), as pandoc reads it (it keeps a control
     character or DEL, which the specification and markdown-it end it at): for a rule that must cover what any
     renderer reads (``path-not-relative``), not for the model."""
     if text.startswith("<", at):
@@ -437,7 +437,7 @@ def scan_destination(
         if escapes(text, end):
             end += 2
             continue
-        if (char in " \t\n") if permissive else ((char <= " " and char != "\0") or char == "\x7f"):
+        if (char in " \t\n\r") if permissive else ((char <= " " and char != "\0") or char == "\x7f"):
             break
         if char == "(":
             depth += 1
@@ -492,17 +492,18 @@ def scan_inline_link(text: str, opening: int, *, permissive: bool = False) -> tu
     return (start, stop, gap + 1) if text.startswith(")", gap) else None
 
 
-def _read_definition(text: str, at: int) -> tuple[str, str, str, int] | None:
+def _read_definition(text: str, at: int, *, permissive: bool = False) -> tuple[str, str, str, int] | None:
     """The link reference definition that opens at ``text[at]`` (§4.7), as
     cmark reads it: ``(label, target, title, end)``, *end* past its last
-    line's ending; None when it is none."""
+    line's ending; None when it is none. With *permissive* as pandoc reads it
+    (``scan_destination``): a bare destination holds a control character or DEL."""
     close = label_end(text, at)
     if close is None or text[close + 1:close + 2] != ":":
         return None
     label = text[at + 1:close].strip(" \t\n")
     if not label:
         return None
-    found = scan_destination(text, skip_line_space(text, close + 2), nonempty=True)
+    found = scan_destination(text, skip_line_space(text, close + 2), nonempty=True, permissive=permissive)
     if found is None:
         return None
     start, stop, after = found
@@ -523,19 +524,20 @@ def _read_definition(text: str, at: int) -> tuple[str, str, str, int] | None:
     return None
 
 
-def split_link_definitions(lines: list[str]) -> tuple[list[LinkDefinitionSource], int]:
+def split_link_definitions(lines: list[str], *, permissive: bool = False) -> tuple[list[LinkDefinitionSource], int]:
     """The link reference definitions (§4.7) a paragraph of *lines* opens
     with, and how many lines they took: ``([(label, target, title, lines)],
     count)``. They are read from the closed paragraph, as CommonMark does,
     so a definition cannot interrupt a paragraph (``a`` then ``[x]: u`` is
     one) and lazy lines are already part of it. A definition holding ``{{``
     ends the run and stays paragraph text: its destination or title is not
-    final until the directive is filled in (#92)."""
+    final until the directive is filled in (#92). With *permissive* (``_read_definition``) the reading is
+    pandoc's, for the path checks, which must cover every definition any renderer reads; the model is read strictly."""
     text = "\n".join(line.lstrip(" \t") for line in lines)
     found: list[LinkDefinitionSource] = []
     at = taken = 0
     while text.startswith("[", at):
-        read = _read_definition(text, at)
+        read = _read_definition(text, at, permissive=permissive)
         if read is None or "{{" in text[at:read[3]]:
             break
         label, target, title, end = read

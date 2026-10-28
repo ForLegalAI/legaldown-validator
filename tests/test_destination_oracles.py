@@ -336,14 +336,16 @@ def _products(first, second, third, destinations=_DESTINATIONS, titles=_TITLES):
 # ── The definitions parser ────────────────────────────────────────
 
 
-def _as_text(read):
-    """A definition read, with the NULs of its strings made the ``a`` they are read as by the old code."""
+def _as_text(read, table=None):
+    """A definition read, with the characters of *table* in its strings made what they are read as by the old code
+    (the NULs are the ``a`` they are read as)."""
+    table = table or {0: "a"}
     if read is None:
         return None
     if isinstance(read, tuple) and len(read) == 4 and isinstance(read[3], int):
-        return tuple(part.replace("\0", "a") if isinstance(part, str) else part for part in read)
+        return tuple(part.translate(table) if isinstance(part, str) else part for part in read)
     found, taken = read
-    return [LinkDefinitionSource(*(part.replace("\0", "a") if isinstance(part, str) else part for part in each))
+    return [LinkDefinitionSource(*(part.translate(table) if isinstance(part, str) else part for part in each))
             for each in found], taken
 
 
@@ -370,6 +372,25 @@ def test_a_definition_is_read_as_before_but_a_nul_is_text():
             assert "\0" in text, repr(text)
             seen["nul-split"] += 1
     assert seen["nul"] > 100 and seen["nul-split"] > 100, seen
+
+
+#: What a definition read permissively (pandoc: the path checks) holds in a bare destination: DEL and the C0
+#: controls but tab, LF and CR (which end it) and the NUL that is text, read by the old code as the ``a`` they are made.
+_DEFINITION_CONTROLS = {code: "a" for code in [0, *range(1, 32), 127] if code not in (9, 10, 13)}
+
+
+def test_a_definition_is_read_permissively_as_before_but_with_controls_as_text():
+    seen = Counter()
+    for text in _definition_inputs():
+        new = markdown._read_definition(text, 0, permissive=True)
+        assert _as_text(new, _DEFINITION_CONTROLS) == _old_read_definition(text.translate(_DEFINITION_CONTROLS), 0), repr(text)
+        if new != _old_read_definition(text, 0):
+            seen["control-in-bare"] += 1
+        lines = text.split("\n")
+        split = markdown.split_link_definitions(lines, permissive=True)
+        expected = old_split_link_definitions([line.translate(_DEFINITION_CONTROLS) for line in lines])
+        assert _as_text(split, _DEFINITION_CONTROLS) == expected, repr(text)
+    assert seen["control-in-bare"] > 500, seen
 
 
 def test_a_target_is_bare_as_before_but_a_nul_is_text():
@@ -458,8 +479,8 @@ def test_the_strict_reading_of_an_inline_link_is_the_old_but_for_del_a_glued_tit
 
 
 #: The control characters a bare destination may hold when it is read permissively (pandoc): DEL and the C0 ones
-#: but NUL (text), tab and line break (which end it), read by the old code as the ``a`` they are made.
-_CONTROLS = {code: "a" for code in [*range(1, 32), 127] if code not in (9, 10)}
+#: but NUL (text), tab, LF and CR (which end it), read by the old code as the ``a`` they are made.
+_CONTROLS = {code: "a" for code in [*range(1, 32), 127] if code not in (9, 10, 13)}
 
 
 def test_an_image_destination_is_read_as_before_but_across_no_blank_line_and_with_controls_as_text():
@@ -661,6 +682,11 @@ def test_the_link_reference_end_of_the_cases_that_differ_from_commonmark(templat
 
 # ── The implementations of CommonMark ─────────────────────────────
 
+try:
+    import markdown_it
+except ImportError:  # (a development dependency: the tests that ask it are skipped)
+    markdown_it = None
+needs_markdown_it = pytest.mark.skipif(markdown_it is None, reason="markdown-it-py is not installed")
 
 _BLOCKS_RE = re.compile(r"\n[ \t]*(?:\n|>)")  # a blank line or a quote ends the paragraph a link is in
 #: markdown-it reads a backslash before any character as a pair, not only before punctuation (cmark does not).
@@ -668,18 +694,17 @@ _BACKSLASH_RE = re.compile(r"\\(?![!-/:-@\[-`{-~])")
 
 
 def _links_by_markdown_it(text):
-    markdown_it = pytest.importorskip("markdown_it")  # (only the tests that ask markdown-it need it)
     for token in markdown_it.MarkdownIt("commonmark").parse(text):
         if any(child.type == "link_open" for child in token.children or []):
             return True
     return False
 
 
+@needs_markdown_it
 def test_an_inline_link_is_one_as_markdown_it_reads_it():
     """``[a](…)`` is a link to ``scan_inline_link`` when it is one to markdown-it, but for what the paragraph
     would not hold (a blank line, a quote) and the backslash before a character that is no punctuation. (A CR is
     left out, as a document's line endings are LF, and so are brackets, which would make links of their own.)"""
-    pytest.importorskip("markdown_it")
     read = 0
     for body in _random_texts([token for token in _TOKENS if token not in ("\r", "[", "](", "]")], 30_000, 9, seed=1136):
         text = f"[a]({body}"
@@ -707,18 +732,7 @@ def test_pandoc_reads_a_link_where_the_specification_reads_none(text):
     assert markdown.scan_inline_link(text, 3, permissive=True) is not None
 
 
+@needs_markdown_it
 @pytest.mark.parametrize("text", _PANDOC_DEVIATIONS, ids=repr)
 def test_markdown_it_reads_no_link_where_pandoc_reads_one(text):
     assert not _links_by_markdown_it(text)
-
-
-def test_nothing_a_renderer_reads_as_a_link_is_none_to_the_permissive_reading():
-    """The safety direction, on random text: where markdown-it reads a link (an image is one), so does
-    ``scan_inline_link(permissive=True)`` (pandoc: see ``test_pandoc_reads_a_link_where_the_specification_reads_none``)."""
-    pandoc_less = [token for token in _TOKENS if token not in ("\r", "[", "](", "]")]
-    for body in _random_texts(pandoc_less, 20_000, 9, seed=1137):
-        text = f"[a]({body}"
-        if _BLOCKS_RE.search(text) or _BACKSLASH_RE.search(text) or text.endswith("\\"):
-            continue
-        if _links_by_markdown_it(text):
-            assert markdown.scan_inline_link(text, 3, permissive=True) is not None, repr(text)

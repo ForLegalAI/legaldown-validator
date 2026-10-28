@@ -23,7 +23,7 @@ from urllib.parse import unquote
 
 from ..directives import Directive, Lexed, is_escaped, mask_directives
 from ..files import containment, is_absolute_reference, names_below
-from ..markdown import collapse_label_whitespace, label_end, normalize_label, scan_inline_link
+from ..markdown import collapse_label_whitespace, label_end, normalize_label, scan_inline_link, split_link_definitions
 from ..models import Amends, Document, Metadata
 from ..positions import Locator
 from .result import Line, _Recorder
@@ -270,6 +270,10 @@ class Image(NamedTuple):
     end: int
     literal: str | None = None
     rest: bool = True
+    #: Whether the specification (and markdown-it) read it as an inline image too: else only pandoc does
+    #: (a DEL in the destination, a title glued to ``<…>``), and by the specification it may be a
+    #: reference-style image, ``![r](x\x7f)`` being ``![r]`` and text (``reference_images``).
+    strict: bool = True
 
 
 #: A backslash escape of an ASCII punctuation character, or a character reference.
@@ -332,15 +336,16 @@ def images(text: str, lexed: Lexed, scanned: Scan | None = None) -> list[Image]:
             link = scan_inline_link(raw, close + 1, permissive=True)  # what any renderer reads as an image
             if link is not None:
                 start, stop, after = link
+                strict = scan_inline_link(raw, close + 1) is not None
                 # Whether a directive is in it is the lexer's to say: a NUL in the text is only a character.
                 first = bisect_left(starts, start)
                 if first < len(starts) and starts[first] < stop:
                     found.append(Image(
                         text[start:stop], at, after, _decoded(text[start:starts[first]]),
-                        _more_than_directives(text, lexed.directives, first, stop),
+                        _more_than_directives(text, lexed.directives, first, stop), strict,
                     ))
                 else:
-                    found.append(Image(_decoded(text[start:stop]), at, after))
+                    found.append(Image(_decoded(text[start:stop]), at, after, strict=strict))
         at = view.find("![", at + 2)
     return found
 
@@ -394,6 +399,21 @@ def reference_images(
     return found
 
 
+class _PermissiveDefinition(NamedTuple):
+    """A link reference definition that pandoc reads and the document model does not (it keeps a control
+    character or DEL in a bare destination, ``split_link_definitions(permissive=True)``): it is paragraph text
+    there, in fragment *fragment* of top-level block *block* of *section* (None: the preamble), where its first
+    line, *needle*, begins at *offset*."""
+
+    section: int | None
+    block: int
+    fragment: int
+    needle: str
+    offset: int
+    label: str
+    target: str
+
+
 class ReferenceImages:
     """The images of a document that name their file by a link reference
     definition (``![a][r]`` and ``[r]: path``, §4.7, §8.7, #92): the path is the
@@ -401,30 +421,59 @@ class ReferenceImages:
     where it is written, when an image names it. A definition no image names is no
     file reference, nor is a link's (§2.3). The document's definitions
     (``definitions.locate_link_definitions``) are found when the first text with an
-    image in it asks, so a document with none pays nothing."""
+    image in it asks, so a document with none pays nothing.
+
+    The path rules read what any renderer reads (``scan_inline_link``): the definitions of the model
+    are the specification's, and those pandoc reads besides (``_PermissiveDefinition``) are
+    checked too, whichever an image names."""
 
     def __init__(self, document: Document) -> None:
         self._document = document
         self._definitions: dict[str, PlacedLinkDefinition] | None = None
+        #: The definitions only pandoc reads, by label, and the labels either reads.
+        self._permissive: dict[str, list[_PermissiveDefinition]] = {}
+        self._labels: set[str] = set()
         #: The labels of the definitions noted, each with whether an image outside a drafting note names it.
         self._used: dict[str, bool] = {}
+
+    def _load(self) -> None:
+        # definitions -> validator.helpers -> validator/__init__ -> core -> paths: a cycle at import
+        from ..definitions import block_fragments, locate_link_definitions
+
+        self._definitions = locate_link_definitions(self._document)
+        for section, block, top in self._document.iter_indexed_blocks():
+            if top.kind == "table":
+                continue  # (a cell is no paragraph)
+            for fragment, (text, _position) in enumerate(block_fragments(top)):
+                if "]:" in text and text.lstrip(" \t").startswith("["):
+                    lines = text.split("\n")
+                    found, _taken = split_link_definitions(lines, permissive=True)
+                    line = offset = 0
+                    for each in found:
+                        key = normalize_label(each.label)
+                        first = lines[line]
+                        if key:
+                            self._permissive.setdefault(key, []).append(_PermissiveDefinition(
+                                section, block, fragment, first.lstrip(" \t"),
+                                offset + len(first) - len(first.lstrip(" \t")), each.label, each.target,
+                            ))
+                        offset += sum(len(each_line) + 1 for each_line in lines[line:line + each.lines])
+                        line += each.lines
+        self._labels = self._definitions.keys() | self._permissive.keys()
 
     def note(
         self, text: str, lexed: Lexed, inline: Container[int] = (), scanned: Scan | None = None, *,
         noted: bool = False,
     ) -> None:
         """Take note of the definitions the images of *text* name. *inline*: the
-        offsets of its inline images; *scanned*: ``scan(text, lexed)``; *noted*:
-        *text* is in a drafting note."""
+        offsets of its inline images, as the specification reads them (``Image.strict``); *scanned*:
+        ``scan(text, lexed)``; *noted*: *text* is in a drafting note."""
         if "![" not in text:
             return
         if self._definitions is None:
-            # definitions -> validator.helpers -> validator/__init__ -> core -> paths: a cycle at import
-            from ..definitions import locate_link_definitions
-
-            self._definitions = locate_link_definitions(self._document)
-        if self._definitions:
-            for key in reference_images(text, lexed, self._definitions, inline, scanned):
+            self._load()
+        if self._labels:
+            for key in reference_images(text, lexed, self._labels, inline, scanned):
                 self._used[key] = self._used.get(key, False) or not noted
 
     def check(self, references: FileReferences, where: Locator) -> None:
@@ -435,22 +484,30 @@ class ReferenceImages:
             return
         # Where each lies among the texts of its top-level block: after the fragment before it,
         # as an inline image's place is (fragment, offset) — a definition has no offset, so -1.
-        placed = []
+        placed: list[tuple[tuple[int, ...], str, Line, bool, str]] = []
         for key, outside in self._used.items():
-            each = self._definitions[key]
-            placed.append(
-                ((-1 if each.section is None else each.section, each.block, each.fragment, -1, each.ordinal), each, outside)
-            )
+            each = self._definitions.get(key)
+            if each is not None:
+                section = -1 if each.section is None else each.section
+                # (The finding names the label as CommonMark compares it, line breaks and runs of spaces one space.)
+                placed.append((
+                    (section, each.block, each.fragment, -1, each.ordinal),
+                    f"image, by the definition of [{collapse_label_whitespace(each.definition.label)}]",
+                    partial(where.definition, each.section, each.block, each.ordinal),
+                    outside,
+                    _decoded(each.definition.target),
+                ))
+            for one in self._permissive.get(key, ()):
+                placed.append((
+                    (-1 if one.section is None else one.section, one.block, one.fragment, one.offset, 0),
+                    f"image, by the definition of [{collapse_label_whitespace(one.label)}]",
+                    partial(where.find, one.section, one.block, one.needle, one.fragment, one.offset),
+                    outside,
+                    _decoded(one.target),
+                ))
         placed.sort(key=lambda item: item[0])
-        for at, each, kept in placed:
-            block = each.definition
-            # (The finding names the label as CommonMark compares it, line breaks and runs of spaces one space.)
-            label = collapse_label_whitespace(block.label)
-            references.check(
-                _decoded(block.target), f"image, by the definition of [{label}]",
-                partial(where.definition, each.section, each.block, each.ordinal), at=at, url=True,
-                noted=not kept,
-            )
+        for at, what, line, kept, path in placed:
+            references.check(path, what, line, at=at, url=True, noted=not kept)
 
 
 def check_heading_images(
@@ -469,7 +526,7 @@ def check_heading_images(
             scanned = scan(title, lexed)
             found = images(title, lexed, scanned)
             if named is not None:
-                named.note(title, lexed, {image.start for image in found}, scanned)
+                named.note(title, lexed, {image.start for image in found if image.strict}, scanned)
             for image in found:
                 references.check(
                     image.path, "image", where.heading(index), at=(index, -1, 0, image.start), url=True,
@@ -499,7 +556,7 @@ def check_fragment_images(
     scanned = scan(text, lexed)
     found = images(text, lexed, scanned)
     if named is not None:
-        named.note(text, lexed, {image.start for image in found}, scanned, noted=noted)
+        named.note(text, lexed, {image.start for image in found if image.strict}, scanned, noted=noted)
     if not found:
         return
     # The first image is looked for in the source; each of the others is as many
