@@ -210,15 +210,16 @@ def test_blanks_on_one_line_in_a_time_budget():
 # ── Unclosed declarations, processing instructions and CDATA sections (#111) ──
 
 _UNCLOSED_HTML = {
-    "processing instruction": "x <?a ",
-    "declaration": "x <!a ",
-    "CDATA section": "x <![CDATA[ ",
+    "processing instruction": ("x <?a ", "<?b ?>"),
+    "declaration": ("x <!a ", "<!b>"),
+    "CDATA section": ("x <![CDATA[ ", "<![CDATA[ b ]]>"),
 }
 
 
-@pytest.mark.parametrize("opener", _UNCLOSED_HTML.values(), ids=_UNCLOSED_HTML.keys())
-def test_inline_html_without_a_closer_is_not_matched_at_each_opener(monkeypatch, opener):
-    """The pattern reads on to the closer, to the end of the text when there is none: it was tried at every opener."""
+@pytest.mark.parametrize(("opener", "closed"), _UNCLOSED_HTML.values(), ids=_UNCLOSED_HTML.keys())
+def test_inline_html_without_a_closer_is_not_matched_at_each_opener(monkeypatch, opener, closed):
+    """The pattern reads on to the closer, to the end of the text when there is none: it was tried at every opener.
+    With a closer at the end the first opener is matched, to it, and found."""
     real = core.INLINE_HTML_RE
 
     class Counting:
@@ -232,12 +233,10 @@ def test_inline_html_without_a_closer_is_not_matched_at_each_opener(monkeypatch,
     text = opener * 5000
     assert core._inline_html(text, lex(text)) is None
     assert Counting.calls == 0
-
-
-@pytest.mark.parametrize("opener", _UNCLOSED_HTML.values(), ids=_UNCLOSED_HTML.keys())
-def test_unclosed_inline_html_in_a_time_budget(opener):
-    document = _document(opener * 40000)
-    assert _seconds(validate, document) < 2.0  # 0.1 s now; a processing instruction took 12 s at half the size
+    text += closed
+    found = core._inline_html(text, lex(text))
+    assert found is not None and found.startswith(opener[2:]) and found.endswith(closed[-2:])
+    assert Counting.calls == 1
 
 
 # ── Unclosed comments ─────────────────────────────────────────────

@@ -30,7 +30,7 @@ from ..directives import (
     mask_directives,
 )
 from ..files import LoadFile, file_loader
-from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
+from ..markdown import INLINE_HTML_RE, inline_html_unclosed, is_comment_only, strip_comments
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
@@ -766,9 +766,9 @@ def _inline_html(text: str, lexed: Lexed) -> str | None:
         for seen, written in zip(mask_directives(lexed.view, lexed.directives), text, strict=True)
     )
     # A processing instruction, declaration or CDATA section is read to its closer, which takes the rest of
-    # the text to look for when there is none: so once there is no closer after an offset, none is searched
-    # for there again (the last one of each kind decides), and every ``<`` costs what it reads.
-    last_pi, last_cdata, last_gt = view.rfind("?>"), view.rfind("]]>"), view.rfind(">")
+    # the text to look for when there is none: once there is no closer after an offset, none is searched
+    # for there again, and every ``<`` costs what it reads.
+    unclosed = inline_html_unclosed(view)
     opened = -1  # the last unescaped ``[`` before *at* with no ``]`` after it but a link's
     scanned = 0
     pos = 0
@@ -792,15 +792,7 @@ def _inline_html(text: str, lexed: Lexed) -> str | None:
             pos = scanned = destination.end()
             opened = -1
             continue
-        if view.startswith("<?", at):
-            unclosed = last_pi < at + 2
-        elif view.startswith("<![CDATA[", at):
-            unclosed = last_cdata < at + 9
-        elif view.startswith("<!", at):
-            unclosed = last_gt < at + 3
-        else:
-            unclosed = False
-        if not unclosed and (tag := INLINE_HTML_RE.match(view, at)):
+        if not unclosed(at) and (tag := INLINE_HTML_RE.match(view, at)):
             return text[at:tag.end()]
     return None
 

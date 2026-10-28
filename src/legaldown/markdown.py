@@ -213,6 +213,26 @@ INLINE_HTML_RE = re.compile(
     re.DOTALL,
 )
 
+# What INLINE_HTML_RE reads on to a closer: for each opener, the closer, and the offset from the opener at which
+# the closer may start (a declaration needs its letter first). With no closer the pattern reads to the end of the
+# text, so it must not be tried at every opener. The CDATA section is before the declaration, as it also starts ``<!``.
+_INLINE_HTML_CLOSERS = (("<?", "?>", 2), ("<![CDATA[", "]]>", 9), ("<!", ">", 3))
+
+
+def inline_html_unclosed(view: str) -> Callable[[int], bool]:
+    """A function of an offset in *view* that is True when a processing instruction, CDATA section or declaration
+    starting there has no closer after it, so INLINE_HTML_RE cannot match there and need not be tried. The last
+    closer of each kind is found once, so asking costs nothing that grows with the text."""
+    lasts = [(opener, view.rfind(closer), first) for opener, closer, first in _INLINE_HTML_CLOSERS]
+
+    def unclosed(at: int) -> bool:
+        for opener, last, first in lasts:
+            if view.startswith(opener, at):
+                return last < at + first
+        return False
+
+    return unclosed
+
 
 def is_comment_only(html: str) -> bool:
     """True if raw HTML block text *html* holds nothing but comments (§8.6)

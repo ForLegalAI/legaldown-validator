@@ -10,6 +10,7 @@ import random
 
 import pytest
 import yaml
+from helpers_tree import OL, UL, tree
 
 from legaldown import (
     Block,
@@ -2307,7 +2308,7 @@ def _list(body: str) -> Block:
     return block
 
 
-_U, _O = "unordered_list", "ordered_list"
+_U, _O = UL, OL
 
 
 @pytest.mark.parametrize(
@@ -3167,24 +3168,10 @@ def test_raw_html_is_found_in_linear_time():
 # ── #78: a heading in a list item or a block quote is a heading block ──
 
 
-def _tree(block: Block):
-    """A block as plain data, a quote's content included: a paragraph as its
-    text, a heading as ``("heading", level, text)``."""
-    from legaldown.parser import quote_content
-
-    if block.kind.endswith("list"):
-        return (block.kind, [[_tree(child) for child in item.blocks] for item in list_items(block)])
-    if block.kind == "quote":
-        return ("quote", [_tree(child) for child in quote_content(block.text)[0]])
-    if block.kind == "heading":
-        return ("heading", block.level, block.text)
-    return block.text if block.kind == "paragraph" else (block.kind,)
-
-
 def _trees(body: str) -> list:
     document = parse(_FRONTMATTER + body)
     assert parse(serialize(document)) == document
-    return [_tree(block) for block in document.sections[0].blocks]
+    return [tree(block) for block in document.sections[0].blocks]
 
 
 @pytest.mark.parametrize(

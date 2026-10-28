@@ -11,7 +11,7 @@ import shutil
 import subprocess
 
 import pytest
-from test_spec_alignment import _O, _U, _trees
+from helpers_tree import OL, UL, tree
 
 from legaldown import Block, Document, parse, parse_template, serialize, validate
 from legaldown.markdown import (
@@ -924,18 +924,18 @@ _UNDERLINE = [_DEFINITION, "===\nlazy"]
     ("body", "expected"),
     [
         pytest.param("> [x]: u\n> ===\nlazy\n", [("quote", _UNDERLINE)], id="quote"),
-        pytest.param("- [x]: u\n  ===\nlazy\n", [(_U, [_UNDERLINE])], id="bullet-item"),
-        pytest.param("1. [x]: u\n   ===\nlazy\n", [(_O, [_UNDERLINE])], id="ordered-item"),
-        pytest.param("> - [x]: u\n>   ===\n> lazy\n", [("quote", [(_U, [_UNDERLINE])])], id="item-in-quote-quoted-lazy"),
-        pytest.param("> - [x]: u\n>   ===\nlazy\n", [("quote", [(_U, [_UNDERLINE])])], id="item-in-quote-unquoted-lazy"),
+        pytest.param("- [x]: u\n  ===\nlazy\n", [(UL, [_UNDERLINE])], id="bullet-item"),
+        pytest.param("1. [x]: u\n   ===\nlazy\n", [(OL, [_UNDERLINE])], id="ordered-item"),
+        pytest.param("> - [x]: u\n>   ===\n> lazy\n", [("quote", [(UL, [_UNDERLINE])])], id="item-in-quote-quoted-lazy"),
+        pytest.param("> - [x]: u\n>   ===\nlazy\n", [("quote", [(UL, [_UNDERLINE])])], id="item-in-quote-unquoted-lazy"),
         pytest.param("> > [x]: u\n> > ===\nlazy\n", [("quote", [("quote", _UNDERLINE)])], id="quote-in-quote"),
-        pytest.param("- > [x]: u\n  > ===\nlazy\n", [(_U, [[("quote", _UNDERLINE)]])], id="quote-in-item"),
+        pytest.param("- > [x]: u\n  > ===\nlazy\n", [(UL, [[("quote", _UNDERLINE)]])], id="quote-in-item"),
     ],
 )
 def test_a_line_after_an_underline_under_only_definitions_in_a_container_continues_the_paragraph(body, expected):
     """CommonMark: ``===`` there starts a paragraph in the container, which the line without its marker continues.
     Here the container has closed its paragraph at the underline (CONFORMANCE.md)."""
-    assert _trees(body) == expected
+    assert [tree(block) for block in blocks(body)] == expected
 
 
 # ── Linear time (#94) ─────────────────────────────────────────────
