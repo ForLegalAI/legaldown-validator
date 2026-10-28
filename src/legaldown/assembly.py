@@ -47,9 +47,9 @@ from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
 from .files import LoadFile, Reach
 from .markdown import (
     FENCE_OPEN_RE,
-    HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
     ItemMarkers,
+    html_block_opening,
     indent_width,
     is_blank,
 )
@@ -1522,7 +1522,7 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
         return "setext"
     if _BREAK_RE.match(content):
         return "break"
-    if HTML_BLOCK_START_RE.match(content):
+    if html_block_opening(content, in_paragraph=in_paragraph) is not None:
         return "html"
     # A list item interrupts paragraph text only as the parser allows: with
     # content and, when ordered, numbered 1.

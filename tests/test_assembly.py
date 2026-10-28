@@ -481,6 +481,13 @@ class TestLineStartsInContext:
     def test_nothing_is_escaped_that_begins_no_block(self, body, answer):
         assert self._assembled(body, {"name": answer}) == body.replace("{{placeholder: name}}", answer)
 
+    def test_a_lone_tag_begins_html_once_the_paragraph_before_it_is_gone(self):
+        """``<x>`` cannot interrupt paragraph text, but starts an HTML block (kind 7) after a deleted line."""
+        body = 'a\n\n{{choose: x, true="", false="Then:"}}\n<x>\n'
+        template = _template(body, _BOOL)
+        assert _body(assemble(template, {"x": True})) == "\na\n\n\\<x>\n"
+        assert _body(assemble(template, {"x": False})) == "\na\n\nThen:\n<x>\n"
+
     def test_a_marker_the_template_has_as_text_is_an_item_after_a_deleted_line(self):
         """``2.`` is text after "Then:" but starts an item once the paragraph is gone."""
         body = 'text\n\n{{choose: x, true="", false="Then:"}}\n2. {{placeholder: name}}\n'
