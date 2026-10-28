@@ -2240,7 +2240,7 @@ def _validate(
     for index, (position, before, message, line) in reversed(heading_skips.items()):
         if index in filled:
             continue
-        if not ((position == 0 and before is None) or result.diagnostics[position - 1 : position] == [before]):
+        if not ((position == 0 and before is None) or (0 < position <= len(result.diagnostics) and result.diagnostics[position - 1] is before)):
             position = len(result.diagnostics)
         result.error_at(position, "heading-skip", message, line=line)
     if final:
