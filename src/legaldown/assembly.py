@@ -1320,12 +1320,14 @@ def _emit(source: _Source, removed: set[int], answers: _Answers) -> list[_Line]:
     return lines
 
 
-# A reading of the template line for each inserted text, whatever it is, and the empty choice phrase too: the
-# word "zzz". The template line is read as the author wrote it, a blank in its place, and a blank holds a word.
-# An empty phrase therefore leaves the template's own markers holding a paragraph (``- zzz``) where the output
-# holds none (``- ``, an empty item), and what that does to the lines after it is not the template's doing:
-# the specification gives no position for a backslash there, which is the open question that the tests of
-# ``test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question`` pin.
+# The template line as the parser reads it has a word where each blank is, whatever fills the blank:
+# "zzz", and for an empty choice phrase too. A blank is the author's text to be, so the line holds text
+# (``- zzz``, an item with a paragraph) where the output may hold none (``- ``, an empty item). The
+# template cannot be read with the blank empty, as it is then no longer the template: its markers
+# would read as the bare ones that the output has, and the check would find nothing to compare. That
+# difference is the source of the open questions that the specification leaves (§15.7.3 names no
+# position for a backslash when the template's own markers, left bare by an empty phrase, begin the
+# construct); the output keeps them as written, and ``TestLineStartsInContext`` pins that.
 _WORD = "zzz"
 _BARE_MARKERS_RE = re.compile(r"(?:[ \t]*(?:>|[-*+]|[0-9]{1,9}[.)]))+[ \t]*")
 
@@ -1774,7 +1776,8 @@ class _Window:
             self.known = k  # lines of a quote each begin with ">", and none of them is where a quote ends
         if self.known < k:
             texts = [line.text for line in self.lines[self.sync:k]]
-            self.sync += _last_block(_layout(texts))[0]
+            start, self.kind = _last_block(_layout(texts))
+            self.sync += start
             self.known = k
         return [line.text for line in self.lines[self.sync:k]]
 
