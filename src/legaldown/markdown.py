@@ -367,16 +367,17 @@ def is_bare_destination(target: str) -> bool:
     return bool(target) and _bare_end(target, 0) == len(target)
 
 
-def _label_end(text: str, at: int) -> int | None:
+def label_end(text: str, at: int) -> int | None:
     """The offset of the ``]`` that ends the link label opening at
-    ``text[at]``, a ``[``; None when it holds an unescaped bracket, is blank
-    or is longer than ``MAX_LABEL_LENGTH``."""
+    ``text[at]``, a ``[`` (§4.7); None when it holds an unescaped bracket or
+    is longer than ``MAX_LABEL_LENGTH``. The label may be blank (``[]``, the
+    collapsed form of a reference, §6.3): a definition's is not."""
     end = at + 1
     while end < len(text) and text[end] != "]":
         if text[end] == "[":
             return None
         end += 2 if _escapes(text, end) else 1
-    if end >= len(text) or end - at - 1 > MAX_LABEL_LENGTH or not text[at + 1:end].strip(" \t\n"):
+    if end >= len(text) or end - at - 1 > MAX_LABEL_LENGTH:
         return None
     return end
 
@@ -417,10 +418,12 @@ def _read_definition(text: str, at: int) -> tuple[str, str, str, int] | None:
     """The link reference definition that opens at ``text[at]`` (§4.7), as
     cmark reads it: ``(label, target, title, end)``, *end* past its last
     line's ending; None when it is none."""
-    close = _label_end(text, at)
+    close = label_end(text, at)
     if close is None or text[close + 1:close + 2] != ":":
         return None
     label = text[at + 1:close].strip(" \t\n")
+    if not label:
+        return None
     start = _skip_to_next_line(text, close + 2)
     if text.startswith("<", start):
         stop = start + 1

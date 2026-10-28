@@ -16,14 +16,15 @@ import os
 import re
 import string
 from bisect import bisect_left
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from functools import cache, partial
 from typing import NamedTuple
 from urllib.parse import unquote
 
 from ..directives import Directive, Lexed, is_escaped, mask_directives
 from ..files import is_absolute_reference, leaves_root, names_below
-from ..models import Amends, Document, Metadata
+from ..markdown import label_end, normalize_label
+from ..models import Amends, Block, Document, Metadata
 from ..positions import Locator
 from .result import Line, _Recorder
 
@@ -371,14 +372,85 @@ def _more_than_directives(text: str, directives: list[Directive], first: int, st
     return bool(_decoded("".join(pieces)).split("?", 1)[0].split("#", 1)[0].strip())
 
 
+def reference_images(text: str, lexed: Lexed, labels: Container[str], inline: Container[int] = ()) -> list[str]:
+    """The labels of the reference-style images of *text*, whose lexing is *lexed*, in order
+    (§6.3, §8.7): ``![a][r]``, ``![a][]`` and ``![a]``, as the normalised keys
+    (``normalize_label``) of the *labels* defined, which only a defined label is. *inline*
+    holds the offsets of the inline images (``images``), which are not these. As in
+    CommonMark, a label that follows the text (``[r]``) decides, and one that is not defined
+    leaves no image — not the text's own label (``![a][r]`` with only ``a`` defined); the
+    collapsed and shortcut forms read the text as the label, if it holds no bracket of its
+    own. An image whose label holds a directive is not known. Linear in the length of *text*."""
+    view = mask_directives(lexed.view, lexed.directives)
+    raw = mask_directives(text, lexed.directives)
+    closing = _closing_brackets(view)
+    found: list[str] = []
+    at = view.find("![")
+    while at >= 0:
+        close = closing.get(at + 1)
+        if close is not None and at not in inline and not is_escaped(view, at):
+            end = label_end(raw, close + 1) if raw.startswith("[", close + 1) else None
+            if end is None:
+                label = raw[at + 2:close]  # the shortcut form, also where what follows is no label
+            elif end == close + 2:
+                label = raw[at + 2:close]  # the collapsed form
+            else:
+                label = raw[close + 2:end]  # the full form, which a blank label cannot be
+            key = normalize_label(label)
+            if key in labels:  # a blank label (``[ ]``) is none of them
+                found.append(key)
+        at = view.find("![", at + 2)
+    return found
+
+
+class ReferenceImages:
+    """The images of a document that name their file by a link reference
+    definition (``![a][r]`` and ``[r]: path``, §4.7, §8.7, #92): the path is the
+    definition's, written once however many images use it, so it is checked once,
+    where it is written, when an image names it. A definition no image names is no
+    file reference, nor is a link's (§2.3). *definitions* are the document's
+    (``definitions._link_definitions``)."""
+
+    def __init__(self, definitions: dict[str, tuple[tuple[int | None, int], Block]]) -> None:
+        self._definitions = definitions
+        self._used: dict[str, None] = {}
+
+    def note(self, text: str, lexed: Lexed, inline: Container[int] = ()) -> None:
+        """Take note of the definitions the images of *text* name."""
+        if self._definitions and "![" in text:
+            for key in reference_images(text, lexed, self._definitions, inline):
+                self._used[key] = None
+
+    def check(self, references: FileReferences, where: Locator) -> None:
+        """Record the path of each definition noted, in document order, at the line where
+        the definition is written."""
+        for key in sorted(self._used, key=lambda key: self._definitions[key][0]):
+            (section, index), block = self._definitions[key]
+            # The first line of the label as written: found among the lines of the top-level block.
+            line = partial(where.find, section, index, "[" + block.label.split("\n")[0])
+            references.check(
+                _decoded(block.target), f"image, by the definition of [{block.label}]", line,
+                at=(-1 if section is None else section, index, -1, 0), url=True,
+            )
+
+
 def check_heading_images(
-    document: Document, lex_fragment: Callable[[str], Lexed], references: FileReferences, where: Locator
+    document: Document,
+    lex_fragment: Callable[[str], Lexed],
+    references: FileReferences,
+    where: Locator,
+    named: ReferenceImages | None = None,
 ) -> None:
-    """Check the path of each inline image (§8.7) in the headings."""
+    """Check the path of each inline image (§8.7) in the headings; *named* takes
+    note of the definitions the others name."""
     for index, section in enumerate(document.sections):
         title = section.title
         if "![" in title:
-            for image in images(title, lex_fragment(title)):
+            lexed = lex_fragment(title)
+            found = images(title, lexed)
+            if named is not None:
+                named.note(title, lexed, {image.start for image in found})
+            for image in found:
                 references.check(
                     image.path, "image", where.heading(index), at=(index, -1, 0, image.start), url=True,
                     literal=image.literal, rest=image.rest,
@@ -393,14 +465,17 @@ def check_fragment_images(
     section: int | None,
     block: int,
     fragment: int,
+    named: ReferenceImages | None = None,
 ) -> None:
     """Check the path of each inline image (§8.7) in *text*, fragment *fragment*
     of ``block_fragments`` of block *block* of *section* (None: the preamble): the
     free text of a paragraph, list item, quote or table cell, but not code or raw
     HTML, which ``block_fragments`` leaves out. A reference-style image
-    (``![a][r]``, ``[r]: path``) is not read: link reference definitions are not
-    in the model (#92)."""
+    (``![a][r]``, ``[r]: path``) names the definition (#92) that *named* takes
+    note of, to judge its path where it is written."""
     found = images(text, lexed)
+    if named is not None:
+        named.note(text, lexed, {image.start for image in found})
     if not found:
         return
     # The first image is looked for in the source; each of the others is as many

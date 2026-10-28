@@ -57,7 +57,7 @@ from .helpers import (
     is_valid_money_amount,
     slugify_identifier,
 )
-from .paths import FileReferences, check_fragment_images, check_frontmatter_paths, check_heading_images
+from .paths import FileReferences, ReferenceImages, check_fragment_images, check_frontmatter_paths, check_heading_images
 from .patterns import (
     _CONSTRUCT_PRESENT,
     _UNFILLED,
@@ -1221,6 +1221,7 @@ def _validate(
     # validator.helpers -> validator/__init__ -> core).
     from ..definitions import (
         DefinitionRef,
+        _link_definitions,
         block_fragments,
         collect_definitions,
         find_definition_anchors,
@@ -1866,6 +1867,10 @@ def _validate(
         chooses.append((directive, line))
         result.error("choose-invalid", f"'{directive.source}' is {misplaced} (§15.5).", line=line)
 
+    # The images that name their file by a link reference definition (#92, #104):
+    # the definition's path is judged once, where it is written.
+    reference_images = ReferenceImages(_link_definitions(document))
+
     # Every {{ref:}}, {{term:}}, and {{attach:}}: (target, presence, in a
     # drafting note, line), for reference safety (§15.4).
     references: dict[str, list[tuple[str, Presence, bool, Line]]] = {"ref": [], "term": [], "attach": []}
@@ -1887,7 +1892,8 @@ def _validate(
             owner_of = None  # for definition-circular, once a {{term:}} asks
             if "![" in fragment:
                 check_fragment_images(
-                    fragment, lexed, file_references, where, section_index, block_index, fragment_index
+                    fragment, lexed, file_references, where, section_index, block_index, fragment_index,
+                    reference_images,
                 )
             presence = units.presence(section_index, block_index, fragment_index)
             in_note = bool(lexed.directives) and in_drafting_note(notes, fragment_index)  # only a directive asks
@@ -2206,7 +2212,8 @@ def _validate(
     )
     body = check_template_body(document, lex_fragment, result, template=template, where=where)
     _check_raw_html(document, lex_fragment, result, where)
-    check_heading_images(document, lex_fragment, file_references, where)
+    check_heading_images(document, lex_fragment, file_references, where, reference_images)
+    reference_images.check(file_references, where)
     file_references.finish()
     # A fragment on its own is asked what a template's fragment must hold, when its host is
     # one (§15.3, §16.12); the shape of its own text was checked at the start.

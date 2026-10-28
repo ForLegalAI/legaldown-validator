@@ -450,13 +450,20 @@ def collect_link_definitions(document: Document) -> dict[str, LinkDefinition]:
     definition holding a directive is paragraph text (#92), so it is none:
     its destination is not final until the directive is filled in. Derived
     from the blocks on each call, not a field of the document."""
-    found: dict[str, LinkDefinition] = {}
-    for _section, _index, top in document.iter_indexed_blocks():
+    return {key: LinkDefinition(block.target, block.title) for key, (_where, block) in _link_definitions(document).items()}
+
+
+def _link_definitions(document: Document) -> dict[str, tuple[tuple[int | None, int], Block]]:
+    """``collect_link_definitions`` with the blocks themselves, each with the
+    section (None: the preamble) and index of the top-level block it is in:
+    the first of each label, in document order."""
+    found: dict[str, tuple[tuple[int | None, int], Block]] = {}
+    for section, index, top in document.iter_indexed_blocks():
         for block in nested_blocks(top):
             if block.kind == "link_definition":
                 key = normalize_label(block.label)
                 if key:
-                    found.setdefault(key, LinkDefinition(block.target, block.title))
+                    found.setdefault(key, ((section, index), block))
     return found
 
 
