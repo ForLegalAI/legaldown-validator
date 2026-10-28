@@ -192,8 +192,8 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
 - Reading is stricter than validating: `files.relative_path`, which assembly and the definitions read for
   `amends` and attachments use, still refuses `../` always (a file outside the document's directory is never
   read, §2.3), and now every URI scheme as well (it let `https://example.com/a.lgd` through as
-  `https:/example.com/a.lgd`). So a root that permits `../shared/x.lgd` validates clean, but such a file is
-  not read. Assembly does not report these two rules.
+  `https:/example.com/a.lgd`). So `../shared/x.lgd` validates clean, with a root that permits it or without one, but
+  such a file is not read ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)). Assembly does not report these two rules.
 - An image is the inline `![alt](destination)` (§8.7), in a paragraph, list item, quote, table cell, heading
   or definition, and in the alt text of another image (both are checked). The destination is `<…>` or a
   raw one with balanced parentheses, then an optional title; backslash escapes and character references in
@@ -439,19 +439,18 @@ Decisions the specification leaves open:
 - **A path already judged is judged once.** An include path that file reference checks reported
   (`path-not-relative`, an absolute path or one with a URI scheme; `path-outside-root`, given a
   `document_root`) draws that finding alone: it is not also `include-file-missing` or
-  `include-not-legaldown`. A path that leads out of the document's directory (`../x.lgd`) with no
-  root is valid as a path (§2.3), but a `LoadFile` is never asked for it
+  `include-not-legaldown`. A path that leads out of the document's directory (`../x.lgd`) is valid as a
+  path (§2.3), with a `document_root` or without one, but a `LoadFile` is never asked for it
   (`legaldown.files.relative_path`), as for one that holds a backslash, and assembly refuses a template
-  for it as for a file that is not there. So with no `document_root`, when the validation can read
-  files, it is `include-file-missing` too, at the include, with a message that says the file is
-  outside the document's directory or not a readable relative path; the two agree. It is not
-  `path-not-relative` (an absolute path or a URI scheme, #104's) and, given a root it leaves, not
-  `path-outside-root` as well. **Known limitation:** with a `document_root` that contains it, a path that is
-  refused only for leading out of the directory is valid (§2.3; a backslash or a null byte is not that, and stays
-  `include-file-missing`), and this implementation only does not read outside the document's directory, so
-  it is skipped and nothing is said (the root-versus-reader follow-up). (`amends.file` and attachment
-  files outside the directory are still as if not asked for.) A document with no path, and no
-  `resolve`, reads nothing and says nothing.
+  for it as for a file that is not there. **Known limitation**
+  ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)): this implementation reads
+  nothing outside the document's directory, so such an include is skipped and nothing is said, never
+  `include-file-missing`, whether a root contains it or there is none (it would break a document whose
+  `../shared/x.lgd` exists). Given a root it leaves, it is `path-outside-root` alone (#104), as ever. It is not
+  `path-not-relative` (an absolute path or a URI scheme, #104's). A backslash, a null byte or an empty
+  path is not such a path, and stays `include-file-missing`, at the include, with a message that says it is
+  not a readable relative path. (`amends.file` and attachment files outside the directory are still as if
+  not asked for.) A document with no path, and no `resolve`, reads nothing and says nothing.
 - **`resolve=` and the default loader.** A document loaded with `legaldown.load` (and so the CLI)
   now has its fragments read from beside it: a fragment that is missing is an Error on a file that
   was clean. `resolve=lambda path: None` says every file is missing, which `include-file-missing`

@@ -743,11 +743,11 @@ def test_cli_document_root_reports_a_path_that_escapes_it(tree, capsys):
     assert main(["validate", str(doc), "--document-root", str(tree / "root")]) == EXIT_DIAGNOSTICS
     out = capsys.readouterr().out
     assert out.count("[path-outside-root]") == 1 and f"{doc}:9:" in out
-    # No root: no containment check. A loader is never asked for ../shared.lgd, which assembly
-    # refuses as unreadable, so it is include-file-missing, and not path-outside-root (#35).
-    assert main(["validate", str(doc)]) == EXIT_DIAGNOSTICS
+    # No root: no containment check, and ../shared.lgd is a valid path (§2.3) that this implementation
+    # does not read: no finding, not even include-file-missing (CONFORMANCE.md, #109).
+    assert main(["validate", str(doc)]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "path-outside-root" not in out and out.count("[include-file-missing]") == 1
+    assert "path-outside-root" not in out and "include-file-missing" not in out
 
 
 def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree, capsys, monkeypatch):

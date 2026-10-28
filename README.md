@@ -470,11 +470,11 @@ it names (§12.2). When `validate` can read files (a loaded document reads from 
 line in it (`Diagnostic.file` is the path from the document's directory, `parts/a.lgd`):
 
 - `include-file-missing` at the include of a fragment that is not there, or that cannot be read
-  because its path leads out of the document's directory (`../x.lgd`) or holds a backslash, which a
-  loader is never asked for and assembly refuses the template for (an absolute path or one with a
-  URI scheme is `path-not-relative` alone, and a path that leaves a `document_root` is
-  `path-outside-root` alone; with a `document_root` that contains it, a path that only leads out of the
-  directory (`../x.lgd`) is valid and is skipped, not read; a backslash is still missing);
+  because its path holds a backslash or a null byte, which a loader is never asked for and assembly
+  refuses the template for (an absolute path or one with a URI scheme is `path-not-relative` alone, and
+  a path that leaves a `document_root` is `path-outside-root` alone; a path that only leads out of the
+  document's directory (`../x.lgd`) is valid, with a `document_root` or without one, and is skipped, not
+  read: a known limitation, [#109](https://github.com/ForLegalAI/legaldown-validator/issues/109));
 - `include-has-frontmatter` and `include-has-h1` (§16.11), `include-has-frontmatter` also for a block
   whose YAML cannot be read;
 - `include-heading-skip`: the headings of every fragment are placed where its include paragraph is,
@@ -513,9 +513,10 @@ validate(document, document_root="/srv/contracts")
   valid. A loaded document is read from the directory of its `path`, which must be within the root
   (otherwise the document is reported once as outside it); a parsed one is taken to be at the root.
   The comparison is of names alone: no file is looked at, and a symbolic link is not followed.
-- Whether the file exists is Full (§17.4) and is not checked. Reading still refuses `../`: a root that
-  permits `../shared/x.lgd` validates clean, but assembly and the definitions read for `amends` and
-  attachments (`resolve=`) never ask for it.
+- Whether the file exists is Full (§17.4) and is not checked. Reading still refuses `../`: `../shared/x.lgd`
+  validates clean, with a root that permits it or without one, and an `{{include:}}` of it is not an
+  `include-file-missing`, but assembly and the definitions read for `amends` and attachments (`resolve=`)
+  never ask for it ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)).
 
 A reference-style image (`![alt][r]`, `![alt][]` or `![alt]`, with `[r]: path`) is judged by the destination
 of the definition it names, once, at the line where the definition is written. [CONFORMANCE.md](CONFORMANCE.md)

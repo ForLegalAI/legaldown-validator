@@ -1033,13 +1033,13 @@ def validate(
         None`` says every file is missing, which ``include-file-missing`` reports:
         to validate a loaded document without reading its files, validate it
         without its path (``dataclasses.replace(document, path=None)``). A path
-        a loader is not asked for (``relative_path``: one that leads out of the
-        document's directory, or holds a backslash) is not read, and an include of
-        one is ``include-file-missing``, as assembly refuses it. The one exception
-        is a path that is refused only because it leads out of the document's
-        directory, when a ``document_root`` is given and it stays within it: it is a
-        valid path (§2.3) that is not read, and says nothing (a known limitation; out
-        of the root it is path-outside-root). Only the referenced file's own
+        a loader is not asked for (``relative_path``) is not read. An include of
+        one that holds a backslash or a null byte is ``include-file-missing``, as
+        assembly refuses it. A path that is refused only because it leads out of
+        the document's directory (``../x.lgd``) is not that: it is a valid path
+        (§2.3), with a ``document_root`` or without one, that this implementation
+        does not read, and it says nothing (a known limitation, #109; given a root it
+        leaves, it is path-outside-root). Only the referenced file's own
         definitions are read, not those it refers to in turn; an include a
         fragment holds is not followed (``include-cycle`` is not implemented).
     document_root:
@@ -2227,7 +2227,6 @@ def _validate(
         template=template,
         first_level=first_level,
         unconditional=lambda include: units.presence(include.section, include.block, include.fragment) == ALWAYS,
-        rooted=document_root is not None,
         lex_fragment=lex_fragment,
     )
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped.

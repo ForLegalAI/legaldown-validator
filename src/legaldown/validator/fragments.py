@@ -385,7 +385,6 @@ def check_includes(
     template: bool,
     first_level: int | None,
     unconditional: Callable[[IncludeDirective], bool],
-    rooted: bool,
     lex_fragment: Callable[[str], Lexed] = lex,
 ) -> set[int]:
     """What the include paragraphs of *document* require (§12.2, §16.11), and what the
@@ -398,11 +397,11 @@ def check_includes(
     ``include-not-legaldown`` needs only the path, so it is made without *files*.
     With *files* (the validation has a ``resolve``) each fragment is read once.
     A path that is not there is ``include-file-missing`` at its include, one
-    finding for each include, as is a path a loader is never asked for, because it
-    leads out of the document's directory (§2.3) or holds a backslash: assembly
-    refuses the template for it too. The exception is a path that only leads out of the
-    directory, when a ``document_root`` is given and it stays within it: it is valid (§2.3),
-    and skipped, not read. A fragment
+    finding for each include, as is a path a loader is never asked for because it
+    holds a backslash or a null byte: assembly refuses the template for it too. A
+    path that only leads out of the document's directory (``../x.lgd``) is no
+    such finding, with a ``document_root`` or without one: it is valid (§2.3) and
+    this implementation does not read it, so it is skipped (#109). A fragment
     that is there is checked for its shape and, in a *template*, its content
     (``fragment_findings``), once for each file however often it is included, and
     its headings are joined to the document's for ``include-heading-skip``
@@ -417,8 +416,7 @@ def check_includes(
     fragment does not count for that when it is not known to be there (a condition
     on its include paragraph or on a section around it, *unconditional*) or when it is
     not read as a fragment (frontmatter, or a level 1 heading: it is reported, and not
-    spliced). *rooted*: the validation has a ``document_root``, so a path it does not
-    judge is valid, and a path the reader cannot ask for is skipped, not missing.
+    spliced).
 
     A path that file reference checks judged (*judged*: the places they reported,
     ``FileReferences.reported``) draws that finding alone (path-not-relative, an
@@ -462,11 +460,12 @@ def check_includes(
         # does for a file that is not there. It is not path-not-relative (an absolute path or a
         # URI scheme, judged above), nor path-outside-root, which judges where it leads.
         relative = relative_path(include.written)
-        if relative is None and rooted and relative_path_problem(include.written) == "leads-out":
-            # Not judged above, so within the root: a valid path (§2.3) that this implementation
-            # does not read, as it reads nothing outside the document's directory. A known
-            # limitation (CONFORMANCE.md), and nothing to say. A backslash or a null byte is
-            # not such a path, nor any other that cannot be asked for: still missing.
+        if relative is None and relative_path_problem(include.written) == "leads-out":
+            # Not judged above, so (given a root) within it: a valid path (§2.3), with a root or
+            # without, that this implementation does not read, as it reads nothing outside the
+            # document's directory. A known limitation (CONFORMANCE.md, #109), and nothing to
+            # say. A backslash or a null byte is not such a path, nor any other that cannot be
+            # asked for: still missing.
             unread.add(include.section)
             continue
         fragment = None if relative is None else files.read(relative)
@@ -478,8 +477,7 @@ def check_includes(
             result.error(
                 "include-file-missing",
                 f"The fragment '{include.written}' cannot be read: "
-                + ("it is outside the directory the document is read from, or is not a relative path "
-                   "that can be read (§2.3)." if relative is None
+                + ("it is not a relative path that can be read (§2.3)." if relative is None
                    else "there is no such file, or it is not UTF-8 text (§12.2, §16.11)."),
                 line=include.line,
             )

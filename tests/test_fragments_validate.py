@@ -163,17 +163,18 @@ def test_a_path_that_is_not_relative_is_path_not_relative_alone(tmp_path):
     assert _found(result) == [("path-not-relative", "main.lgd", 21 + 2 * k) for k in range(4)]
 
 
-def test_a_path_a_loader_is_not_asked_for_is_missing_as_assembly_says(tmp_path):
+def test_a_path_a_loader_is_not_asked_for_is_missing_only_when_it_is_no_valid_path(tmp_path):
     text = _FRONT + _SCOPE + "{{include: ../shared.lgd}}\n\n{{include: a\\b.lgd}}\n"
     result, loader = _run(text)
     assert loader.asked == []
-    # Neither is path-not-relative (an absolute path or a scheme) nor path-outside-root (no root).
-    assert _found(result) == [("include-file-missing", "main.lgd", 21), ("include-file-missing", "main.lgd", 23)]
-    assert "outside the directory" in result.diagnostics[-1].message or "relative path" in result.diagnostics[-1].message
-    # Assembly refuses the template for the same includes, so the two agree.
+    # ../shared.lgd is a valid path (§2.3) that is not read (#109): no finding, with a root or without one. A
+    # backslash is none: include-file-missing. Neither is path-not-relative nor path-outside-root (no root).
+    assert _found(result) == [("include-file-missing", "main.lgd", 23)]
+    assert "relative path" in result.diagnostics[-1].message
+    # Assembly still refuses the template for ../shared.lgd (a file it cannot read), which validation does not say.
     template = Template(_TEMPLATE_FRONT + _SCOPE + "{{include: ../shared.lgd}}\n", resolve=_Loader({}))
     assert [d.rule for d in template.problems] == ["include-file-missing"]
-    assert [d.rule for d in template.validation.diagnostics if d.rule == "include-file-missing"] == ["include-file-missing"]
+    assert [d.rule for d in template.validation.diagnostics if d.rule == "include-file-missing"] == []
     # With a root it leaves, path-outside-root says where it leads and is the only finding; within it, the
     # path is valid (§2.3) and not read outside the document's directory: skipped, not missing.
     root = tmp_path / "root"
@@ -730,7 +731,7 @@ def test_a_nested_include_is_quoted_as_written_in_a_templates_finding_too():
 
 # ── A root, a path the loader is not asked for, and what is not a fragment (#35 review) ─────
 
-def test_with_a_root_only_a_path_that_leads_out_of_the_directory_within_it_is_skipped(tmp_path):
+def test_a_path_that_leads_out_of_the_directory_is_skipped_unless_it_leaves_the_root(tmp_path):
     root = tmp_path / "root"
     (root / "sub").mkdir(parents=True)
     path = root / "sub" / "main.lgd"
@@ -745,8 +746,9 @@ def test_with_a_root_only_a_path_that_leads_out_of_the_directory_within_it_is_sk
     # ../ that stays within the root is a valid path this implementation does not read: nothing to say.
     assert found("../x.lgd", root) == []
     assert found("sub/../../x.lgd", root) == []
-    # Without a root, assembly refuses it (include-file-missing); out of the root it is #104's.
-    assert found("../x.lgd", None) == [("include-file-missing", "main.lgd", 21)]
+    # Without a root it is no less valid (§2.3): nothing to say either (#109); out of the root it is #104's.
+    assert found("../x.lgd", None) == []
+    assert found("sub/../../x.lgd", None) == []
     assert found("../../x.lgd", root) == [("path-outside-root", "main.lgd", 21)]
     # A backslash after a ../ is still a backslash.
     assert found("..\\x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
