@@ -16,7 +16,7 @@ frontmatter that cannot be read is a finding of its own, not an exception (#43).
 from __future__ import annotations
 
 from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache, cached_property
 from typing import Literal
 
@@ -374,6 +374,35 @@ def _message(title: str, last: int | None, level: int) -> str:
     )
 
 
+#: Why an include paragraph's fragment was not read, for ``skipped_categories`` (§17.5): no
+#: loader to ask (``resolve``), a path that leads out of the document's directory (valid, §2.3,
+#: and never asked for, #109), a loader that has no such file (``include-file-missing`` is
+#: reported), or the document itself (a cycle, which is not detected).
+UnreadReason = Literal["no-resolver", "leads-out", "unreadable", "own"]
+
+
+@dataclass(frozen=True, slots=True)
+class UnreadInclude:
+    """An include paragraph whose fragment was not read, and why."""
+    include: IncludeDirective
+    reason: UnreadReason
+
+
+@dataclass(slots=True)
+class IncludeOutcome:
+    """What ``check_includes`` leaves for its caller: the *filled* headings (below), and
+    what it did not do, for the Warning that §17.5 asks for (``ldv-check-skipped``): the
+    include paragraphs it did not read (*unread*, in order; not one already judged as a
+    path or found not LegalDown, which are Errors of their own), whether a
+    fragment it read is conditional (*conditional*: ``include-heading-skip`` is judged with
+    every include present, not under every combination of answers), and the limits it
+    reached (*caps*, each as a phrase)."""
+    filled: set[int] = field(default_factory=set)
+    unread: list[UnreadInclude] = field(default_factory=list)
+    conditional: bool = False
+    caps: list[str] = field(default_factory=list)
+
+
 def check_includes(
     document: Document,
     includes: list[IncludeDirective],
@@ -386,7 +415,7 @@ def check_includes(
     first_level: int | None,
     unconditional: Callable[[IncludeDirective], bool],
     lex_fragment: Callable[[str], Lexed] = lex,
-) -> set[int]:
+) -> IncludeOutcome:
     """What the include paragraphs of *document* require (§12.2, §16.11), and what the
     fragments they name require of themselves, recorded in *result* at the line
     of the include or, in a fragment, of its own text, with the fragment's path as
@@ -401,7 +430,7 @@ def check_includes(
     holds a backslash or a null byte: assembly refuses the template for it too. A
     path that only leads out of the document's directory (``../x.lgd``) is no
     such finding, with a ``document_root`` or without one: it is valid (§2.3) and
-    this implementation does not read it, so it is skipped (#109). A fragment
+    this implementation does not read it, so it is skipped (#109) and unread (below). A fragment
     that is there is checked for its shape and, in a *template*, its content
     (``fragment_findings``), once for each file however often it is included, and
     its headings are joined to the document's for ``include-heading-skip``
@@ -410,7 +439,7 @@ def check_includes(
     followed: ``include-cycle`` is not implemented, and outside a template they
     are allowed (§12.2).
 
-    Returned: the headings of the document whose ``heading-skip`` the combined document
+    Returned (``IncludeOutcome``): the headings of the document whose ``heading-skip`` the combined document
     makes valid (``include_heading_skips``), which the caller does not report, as the combined
     document is the one §4.1 judges when every fragment between is read (§12.2). A
     fragment does not count for that when it is not known to be there (a condition
@@ -421,7 +450,9 @@ def check_includes(
     A path that file reference checks judged (*judged*: the places they reported,
     ``FileReferences.reported``) draws that finding alone (path-not-relative, an
     absolute path or one with a URI scheme; path-outside-root): the same path is
-    not also missing, or not LegalDown."""
+    not also missing, or not LegalDown. Those are not *unread* of the outcome either: an include
+    paragraph is, when its fragment was not read for a reason that is no finding of its own."""
+    outcome = IncludeOutcome()
     splices: dict[int | None, list[FragmentFile]] = {}
     unread: set[int | None] = set()  # the sections with an include paragraph whose fragment is not known
     findings: dict[str, list[Finding]] = {}  # of each fragment, once
@@ -442,6 +473,7 @@ def check_includes(
                     f"it takes in (§12.2).",
                     line=include.line,
                 )
+            outcome.unread.append(UnreadInclude(include, "unreadable" if files is not None else "no-resolver"))
             unread.add(include.section)
             continue
         if not include.path.endswith(LEGALDOWN_EXTENSIONS):
@@ -454,6 +486,7 @@ def check_includes(
             unread.add(include.section)
             continue
         if files is None:
+            outcome.unread.append(UnreadInclude(include, "no-resolver"))
             continue
         # A path a LoadFile is never asked for (a backslash, a null byte, or leading out of the
         # document's directory, §2.3) is not read. One that leads out is valid and skipped below;
@@ -464,14 +497,16 @@ def check_includes(
         if relative is None and relative_path_problem(include.written) == "leads-out":
             # Not judged above, so (given a root) within it: a valid path (§2.3), with a root or
             # without, that this implementation does not read, as it reads nothing outside the
-            # document's directory. A known limitation (CONFORMANCE.md, #109), and nothing to
-            # say. A backslash or a null byte is not such a path, nor any other that cannot be
-            # asked for: still missing.
+            # document's directory. A known limitation (CONFORMANCE.md, #109), and no finding:
+            # it is *unread*, which the Warning of §17.5 says. A backslash or a null byte is not
+            # such a path, nor any other that cannot be asked for: still missing.
+            outcome.unread.append(UnreadInclude(include, "leads-out"))
             unread.add(include.section)
             continue
         fragment = None if relative is None else files.read(relative)
         # Asked about itself only when something was read: the file system is the loader's.
         if fragment is not None and files.is_own(fragment.path):
+            outcome.unread.append(UnreadInclude(include, "own"))
             unread.add(include.section)
             continue
         if fragment is None:
@@ -482,6 +517,7 @@ def check_includes(
                    else "there is no such file, or it is not UTF-8 text (§12.2, §16.11)."),
                 line=include.line,
             )
+            outcome.unread.append(UnreadInclude(include, "unreadable"))
             unread.add(include.section)
             continue
         if fragment.path not in findings:
@@ -496,6 +532,7 @@ def check_includes(
             continue
         splices.setdefault(include.section, []).append(fragment)
         if not unconditional(include):
+            outcome.conditional = True
             unread.add(include.section)  # it may not be there: it fills nothing
     if files is not None and template:
         # The attachment files of a template hold no include (§16.12); only that is checked
@@ -516,9 +553,9 @@ def check_includes(
             ):
                 result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
     if not splices:
-        return set()
-    skipped, filled = include_heading_skips(document, where, splices, first_level, unread)
+        return outcome
+    skipped, outcome.filled = include_heading_skips(document, where, splices, first_level, unread)
     for skip in skipped:
         result.error("include-heading-skip", skip.message, line=skip.line, file=skip.file)
-    return filled
+    return outcome
 

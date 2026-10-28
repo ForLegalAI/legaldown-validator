@@ -747,7 +747,7 @@ def test_cli_document_root_reports_a_path_that_escapes_it(tree, capsys):
     # does not read: no finding, not even include-file-missing (CONFORMANCE.md, #109).
     assert main(["validate", str(doc)]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "path-outside-root" not in out and "include-file-missing" not in out
+    assert "[path-outside-root]" not in out and "[include-file-missing]" not in out
 
 
 def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree, capsys, monkeypatch):

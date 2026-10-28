@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from ..definitions import PlacedLinkDefinition
 
 
-class _Reference(NamedTuple):
+class FileReference(NamedTuple):
     """A file reference met, to be judged in document order (``FileReferences.finish``)."""
 
     at: tuple[int, ...]
@@ -87,11 +87,15 @@ class FileReferences:
         self._depth: int | None = None
         if self._root is not None:
             self._depth = names_below(self._root if base is None else base, self._root)
-        self._met: list[_Reference] = []
+        self._met: list[FileReference] = []
         #: The places (*at*) of the references found wrong, once ``finish`` has judged
         #: them: a path that is reported is not also reported for the file it names
         #: (``include-file-missing``, #35).
         self.reported: set[tuple[int, ...]] = set()
+        #: The first image path in the document that is no finding, once ``finish`` has judged
+        #: them: the position of the existence checks of image paths that are not made
+        #: (``ldv-check-skipped``, §17.4).
+        self.first_image: FileReference | None = None
 
     def check(
         self,
@@ -120,16 +124,18 @@ class FileReferences:
         query or fragment) follows it, which a path of directives alone has not.
         A path that is empty is not this rule's concern (``attachment-file-missing``)."""
         if path.strip():
-            self._met.append(_Reference(at, path.strip(), what, line, url, literal, rest))
+            self._met.append(FileReference(at, path.strip(), what, line, url, literal, rest))
 
     def finish(self) -> None:
         """Judge the references recorded, in the order of the document."""
         said_outside = False
         for reference in sorted(self._met, key=lambda met: met.at):
             said_outside = self._judge(reference, said_outside)
+            if self.first_image is None and reference.what.startswith("image") and reference.at not in self.reported:
+                self.first_image = reference
         self._met = []
 
-    def _judge(self, reference: _Reference, said_outside: bool) -> bool:
+    def _judge(self, reference: FileReference, said_outside: bool) -> bool:
         """Record what is wrong with *reference*; True once a document outside
         the root has been said to be (*said_outside*)."""
         at, written, what, line, url, literal, rest = reference

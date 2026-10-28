@@ -44,9 +44,11 @@ The fixtures of five rules that read an include fragment — `include-file-missi
 extension check needs only the document) and runs as any other case, file included.
 
 The specification (§17.5) requires an implementation never to silently skip a check it cannot
-perform, so the remaining rules are named here. Most of them belong to conformance levels this
-implementation does not claim — Rendering (§17.3) and Full (§17.4) — because they need to open
-files other than the document itself.
+perform, so the remaining rules are named here, and a validation names them again, in the
+document's own diagnostics, when the document holds a construct that calls for one
+([Constructs beyond the level](#constructs-beyond-the-level-175)). Most of them belong to
+conformance levels this implementation does not claim — Rendering (§17.3) and Full (§17.4) —
+because they need to open files other than the document itself.
 
 ## Rules not implemented
 
@@ -444,13 +446,13 @@ Decisions the specification leaves open:
   (`legaldown.files.relative_path`), as for one that holds a backslash, and assembly refuses a template
   for it as for a file that is not there. **Known limitation**
   ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)): this implementation reads
-  nothing outside the document's directory, so such an include is skipped and nothing is said, never
+  nothing outside the document's directory, so such an include is skipped, never
   `include-file-missing`, whether a root contains it or there is none (it would break a document whose
-  `../shared/x.lgd` exists). Given a root it leaves, it is `path-outside-root` alone (#104), as ever. It is not
+  `../shared/x.lgd` exists). The skip is said once, by the Warning of §17.5 below. Given a root it leaves, it is `path-outside-root` alone (#104), as ever. It is not
   `path-not-relative` (an absolute path or a URI scheme, #104's). A backslash, a null byte or an empty
   path is not such a path, and stays `include-file-missing`, at the include, with a message that says it is
   not a readable relative path. (`amends.file` and attachment files outside the directory are still as if
-  not asked for.) A document with no path, and no `resolve`, reads nothing and says nothing.
+  not asked for.) A document with no path, and no `resolve`, reads nothing: the Warning of §17.5 says so.
 - **`resolve=` and the default loader.** A document loaded with `legaldown.load` (and so the CLI)
   now has its fragments read from beside it: a fragment that is missing is an Error on a file that
   was clean. `resolve=lambda path: None` says every file is missing, which `include-file-missing`
@@ -515,8 +517,59 @@ Decisions the specification leaves open:
   as one that names a file; in a plain fragment it is allowed (§12.2) and not followed, and assembly
   refuses it as it does any nested include.
 - **Silence.** An attachment file that is not there is not reported (`attachment-file-missing` is
-  not implemented). The Warning that §17.5 asks for a check that is skipped, because no file could be
-  read, is separate work.
+  not implemented); the Warning of §17.5 says that the existence of attachment files is not checked
+  ([below](#constructs-beyond-the-level-175)).
+
+## Constructs beyond the level (§17.5)
+
+§17.5: an implementation that meets a construct whose processing lies beyond its claimed level "MUST NOT
+ignore it silently": a validator emits a Warning identifying each check category it did not perform,
+and does not report the document as passing checks it did not run
+([#107](https://github.com/ForLegalAI/legaldown-validator/issues/107)). This implementation does so
+with **`ldv-check-skipped`**, a Warning. The id is the implementation's own, which §16.1 allows
+for a check of its own, namespaced with a prefix that ends in a hyphen (`ldv-`,
+`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`; `SKIPPED_RULE` is the id), so no id the specification
+assigns later can collide with it. It is not in the fixtures corpus (`coverage.json`) and no fixture
+expects or forbids it. It is a Warning for every output, so `is_valid` and the exit status are
+unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
+
+- **The trigger is a construct in the document**, never the conformance level: the specification's
+  example is "translations declared; bilingual validation not performed", and §17.1 says no construct
+  is ever mandatory in a document. A document without the constructs below draws none. A construct
+  that is text (an `{{include:}}` in code, a comment, a sentence, a list item or a drafting note; an
+  image in a code span) is no construct.
+- **One Warning for each category, for each validation**, at the line of the first construct of
+  the category (the first include paragraph; the `file` of the first attachment; the `file` of
+  `amends`; the `translations` key; the `file` of `supersedes`, or else the first image). A
+  fragment validated on its own (`validate(fragment=True)`) draws it too, for its own includes
+  and images; it is not `host_dependent`.
+- **Strict.** The Warning is made whenever the construct is present, also when the files were
+  read, since some of what the category asks is not done in any case. Each message lists exactly
+  what was *not* performed in this validation: a check that was made (a fragment that was read) is
+  not listed.
+
+| Category (§17.4) | Construct | Not performed |
+|---|---|---|
+| Includes (§12, §16.11) | an include paragraph | always: `include-cycle` and `include-anchor-duplicate` (not implemented), and the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document; [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)). For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, and in a template the part of `template-fragment-invalid` that reads a fragment. In a template with a conditional include: `include-heading-skip` under every combination of answers (it is judged with every include present) |
+| Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file also `attachment-has-frontmatter`, `attachment-has-h1` and `attachment-anchor-duplicate`, and, with no loader, importing its definitions |
+| Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not read, `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
+| Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch` |
+| Declared paths (§17.4) | `supersedes.file` (the object form), an image path | `supersedes-file-missing`; the existence of image paths (§8.7), which has no rule id |
+
+- **Not counted as unread.** An include whose path is already an Error (`path-not-relative`,
+  `path-outside-root`) or is not a LegalDown file (`include-not-legaldown`) is not an include that
+  was left unread: the finding is its own. An image path that is already `path-not-relative` or
+  `path-outside-root` is not an image to check either. An include that a loader cannot find is
+  `include-file-missing`, and the Warning counts its fragment as unread, since its content was not
+  checked. An include of the document itself is not read (`include-cycle` is not implemented).
+- **Core rules are not named here.** The Core rules this implementation lacks
+  (`translation-implicit-id`, `translation-authoritative-absent`, `language-code-invalid`,
+  `authoritative-not-declared`, `definition-used-before-declaration`) are gaps in Core, not
+  constructs beyond it, and are listed in the table above.
+- **Rendering** (§17.3) is a category of its own in §17.5's sense only for a `{{ref:}}` to an item
+  or paragraph anchor (`ref-not-enumerated`); it draws no Warning, and is listed above.
+- Assembly claims no check, so it adds nothing; `Template.validation` carries the Warning as advice, and
+  `Template.problems` does not (it is not a template rule).
 
 ## Checking this yourself
 

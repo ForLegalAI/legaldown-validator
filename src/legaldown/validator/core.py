@@ -68,11 +68,13 @@ from .patterns import (
     MAX_SECTION_LEVEL,
     PARTY_TYPES,
     RESERVED_VALUE_TYPES,
+    SKIPPED_RULE,
     VALID_DOC_TYPES,
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
 from .result import Blank, Depends, Diagnostic, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
+from .skipped import skipped_categories
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
@@ -957,6 +959,14 @@ def validate(
     when the document is parsed: a caller that repairs the metadata in code
     sets ``document.frontmatter_error = None`` to have it read as it is.
 
+    A document that holds a construct whose checks lie beyond Core (an include paragraph,
+    an attachment file, ``amends.file``, ``translations``, ``supersedes.file``, an image
+    path) draws the Warning ``ldv-check-skipped`` that §17.5 asks for, once for each category
+    and at its first construct, naming what this validation did not perform (the
+    combined-document checks of §16.11, ``include-cycle`` and ``include-anchor-duplicate``
+    always; a fragment that was not read, its checks). A document without such a construct
+    draws none.
+
     Parameters
     ----------
     document:
@@ -1038,7 +1048,7 @@ def validate(
         assembly refuses it. A path that is refused only because it leads out of
         the document's directory (``../x.lgd``) is not that: it is a valid path
         (§2.3), with a ``document_root`` or without one, that this implementation
-        does not read, and it says nothing (a known limitation, #109; given a root it
+        does not read, and says nothing but the Warning of §17.5 (a known limitation, #109; given a root it
         leaves, it is path-outside-root). Only the referenced file's own
         definitions are read, not those it refers to in turn; an include a
         fragment holds is not followed (``include-cycle`` is not implemented).
@@ -2224,7 +2234,7 @@ def _validate(
         for finding in content_findings(document, where, body, markers, mode.kind, noted=True):
             result.error(finding.rule, finding.message, line=finding.line)
     # ── Includes (§12.2, §16.11) ──
-    filled = check_includes(
+    included = check_includes(
         document, body.includes, result, where,
         judged=file_references.reported,
         files=None if mode.fragment else files,
@@ -2238,7 +2248,7 @@ def _validate(
     # needs the diagnostics since then only to have been added to. If one was moved or removed
     # (nothing does today), the place is not known: the skip is still reported, at the end.
     for index, (position, before, message, line) in reversed(heading_skips.items()):
-        if index in filled:
+        if index in included.filled:
             continue
         if not ((position == 0 and before is None) or (0 < position <= len(result.diagnostics) and result.diagnostics[position - 1] is before)):
             position = len(result.diagnostics)
@@ -2280,6 +2290,20 @@ def _validate(
     # that apply, as every check above read them.
     result.index.is_template = template
     result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
+
+    # §17.5: a Warning for each check category the constructs of the document call for and this
+    # validation did not perform, last, once all that was read and checked is known.
+    for category in skipped_categories(
+        document, where,
+        includes=body.includes,
+        outcome=included,
+        image=file_references.first_image,
+        template=template,
+        fragment=mode.fragment,
+        read_attachments=files is not None or import_attachment_definitions is not None,
+        amends_imported=_amends_is_legaldown and _amends_import_succeeded,
+    ):
+        result.warning(SKIPPED_RULE, category.message, line=category.line)
 
     # A finding in a fragment the document includes has its file already (#35).
     if document.filename:

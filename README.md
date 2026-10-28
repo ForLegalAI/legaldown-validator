@@ -112,6 +112,7 @@ legaldown validate contract.lgd                      # one document
 legaldown validate contracts/                        # a whole directory, recursively
 legaldown validate --format json contract.lgd        # machine-readable output
 legaldown validate --ignore def-unreferenced doc.lgd # mute one rule
+legaldown validate --ignore ldv-check-skipped doc.lgd # mute the Warning for a check not performed (§17.5)
 legaldown validate --warnings-as-errors doc.lgd      # tighten a CI gate
 legaldown validate --final signed-contract.lgd       # nothing left to fill in
 legaldown validate --fragment clauses/               # include fragments and attachment files, on their own
@@ -149,7 +150,11 @@ amended original defines was an Info (`amend-term-unresolvable`) and is now foun
 can start to fail for that reason: it is the specification's result, and the files must be beside the
 document. A file that is not there, or cannot be read, is as if it had not been asked for.
 
-**Changed in 0.5.0 (unreleased):** a document that includes fragments (`{{include:}}` paragraphs, §12.2)
+**Changed in 0.5.0 (unreleased):** a document that holds a construct beyond Core (an include paragraph,
+an attachment file, `amends.file`, `translations`, `supersedes.file`, an image path) now draws the
+Warning `ldv-check-skipped` that §17.5 asks for, for each category of checks not performed ([Scope](#scope));
+a CI gate on `--strict` or `--warnings-as-errors` can start to fail for it: `--ignore ldv-check-skipped`.
+A document that includes fragments (`{{include:}}` paragraphs, §12.2)
 now has them read from beside it, like the files above, and they are checked ([Include
 fragments](#include-fragments)): `include-file-missing` at the include of a fragment that is not there,
 `include-has-frontmatter`, `include-has-h1` and `include-heading-skip` in the fragment, at its own
@@ -705,6 +710,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
 | `LIST_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
+| `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), and the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5) |
 | `slugify_identifier(value, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term text, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
 | `is_valid_iso_date`, `is_valid_numeric`, `is_valid_money_amount`, `is_positive_numeric` | Value checks (§3.10, §10) |
 | `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units can never appear together |
@@ -810,8 +816,10 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
 | **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2 |
+| **Beyond Core** | `ldv-check-skipped` (Warning, this implementation's own id, §16.1): for each category of checks that a construct in the document calls for and the validation did not perform, as §17.5 requires, once and listing exactly what was not done ([below](#scope)) |
 
-Each check reports at the severity the specification assigns it — Error, Warning, or Info.
+Each check reports at the severity the specification assigns it — Error, Warning, or Info. The one
+exception is the Warning of this implementation's own, `ldv-check-skipped` ([Scope](#scope)).
 
 ## Assembly
 
@@ -978,6 +986,18 @@ and are covered by unit tests instead (the include cases it implements run with 
 the file and the line). The specification (§17.5) requires an implementation to be explicit about the
 checks it does not perform, so those are listed in
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md) rather than left to be discovered.
+
+**Checks that were not performed are said in the output.** A document that holds a construct whose
+checks lie beyond Core — an `{{include:}}` paragraph, an attachment file, `amends.file`, `translations`,
+`supersedes.file` (the object form), an image path — draws a Warning, `ldv-check-skipped`, for each
+such category: one, at the first construct, naming what this validation did not do (§17.5). Which
+checks are named depends on the validation: a fragment that was read (a document with a path, or
+`validate(resolve=)`) is not listed as unread, but the combined-document checks of §16.11 and
+`include-cycle` and `include-anchor-duplicate` are never performed, so a document with an include
+always draws it. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
+(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`). It is a Warning: the exit status is
+unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
+`--ignore ldv-check-skipped` once it has read what it says.
 
 ## Development
 

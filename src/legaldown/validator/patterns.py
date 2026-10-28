@@ -26,6 +26,11 @@ VALID_DURATION_UNITS: frozenset[str] = frozenset(DURATION_UNITS)
 _UNFILLED = "placeholder-unfilled"
 _CONSTRUCT_PRESENT = "template-construct-present"
 FINAL_CHECK_RULES: frozenset[str] = frozenset({_UNFILLED, _CONSTRUCT_PRESENT})
+# The prefix of the rule ids this implementation defines for checks of its own (§16.1: a
+# prefix ending in a hyphen, so that no id the specification assigns later collides), and
+# the one it reports for a check category it did not perform (§17.5).
+IMPLEMENTATION_RULE_PREFIX = "ldv-"
+SKIPPED_RULE = "ldv-check-skipped"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 

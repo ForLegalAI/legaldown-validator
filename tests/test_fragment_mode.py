@@ -176,9 +176,12 @@ def test_a_fragment_whose_host_is_a_template_is_checked_as_part_of_one():
     twice = _fragment("## Scope {#scope}\n\n{{include: p.lgd}}\n\n{{include: p.lgd}}\n", template=True)
     assert [(d.rule, d.line, d.host_dependent) for d in twice.diagnostics] == [
         ("template-fragment-invalid", 5, False), ("template-fragment-invalid", 3, False),
-        ("template-fragment-invalid", 5, False),
+        ("template-fragment-invalid", 5, False), ("ldv-check-skipped", 3, False),
     ]
-    assert _fragment("## Scope\n\n{{include: p.lgd}}\n\n{{include: p.lgd}}\n").diagnostics == []
+    # (An include is not read in a fragment: the Warning of §17.5 says so, once for the fragment.)
+    assert [d.rule for d in _fragment("## Scope\n\n{{include: p.lgd}}\n\n{{include: p.lgd}}\n").diagnostics] == [
+        "ldv-check-skipped"
+    ]
 
 
 def test_the_template_decision_is_one_for_the_index_and_the_markers():

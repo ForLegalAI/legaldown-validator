@@ -32,6 +32,7 @@ _RULES = {
     "include-not-legaldown", "template-fragment-invalid", "attachment-has-frontmatter", "attachment-has-h1",
     "path-not-relative", "path-outside-root", "heading-skip",
 }
+_SKIPPED = "ldv-check-skipped"
 
 
 class _Loader:
@@ -170,7 +171,7 @@ def test_a_path_a_loader_is_not_asked_for_is_missing_only_when_it_is_no_valid_pa
     # ../shared.lgd is a valid path (§2.3) that is not read (#109): no finding, with a root or without one. A
     # backslash is none: include-file-missing. Neither is path-not-relative nor path-outside-root (no root).
     assert _found(result) == [("include-file-missing", "main.lgd", 23)]
-    assert "relative path" in result.diagnostics[-1].message
+    assert "relative path" in next(d.message for d in result.diagnostics if d.rule == "include-file-missing")
     # Assembly still refuses the template for ../shared.lgd (a file it cannot read), which validation does not say.
     template = Template(_TEMPLATE_FRONT + _SCOPE + "{{include: ../shared.lgd}}\n", resolve=_Loader({}))
     assert [d.rule for d in template.problems] == ["include-file-missing"]
@@ -203,7 +204,7 @@ def test_a_path_that_is_not_a_legaldown_file_is_reported_without_a_resolver_and_
 
 def test_a_fragment_validated_on_its_own_still_judges_the_extension_of_its_includes():
     result = validate(parse("## A\n\n{{include: n.txt}}\n"), fragment=True, resolve=lambda _path: pytest.fail("read"))
-    assert [(d.rule, d.line) for d in result.diagnostics] == [("include-not-legaldown", 3)]
+    assert [(d.rule, d.line) for d in result.diagnostics] == [("include-not-legaldown", 3), (_SKIPPED, 3)]
 
 
 # ── The fragment's shape: frontmatter and a level 1 heading ───────
@@ -595,7 +596,8 @@ def test_an_include_in_a_drafting_note_of_a_template_fragment_is_reported_once()
 def test_a_fragment_on_its_own_reads_none_of_its_includes():
     loader = _Loader({"g.lgd": "# H {#h}\n"})
     result = validate(parse("## B {#b}\n\n{{include: g.lgd}}\n"), fragment=True, resolve=loader)
-    assert loader.asked == [] and result.diagnostics == []
+    assert loader.asked == [] and [d.rule for d in result.diagnostics] == [_SKIPPED]
+    assert "not followed" in result.diagnostics[0].message
 
 
 def test_fragment_kind_is_only_for_a_fragment_and_is_one_of_two():
@@ -908,7 +910,7 @@ def test_an_include_paragraph_that_names_no_file_is_missing_in_validate_and_in_a
         result, loader = _run(text)
         assert loader.asked == []  # no file to ask for
         assert _found(result) == [("include-file-missing", "main.lgd", line)]
-        assert "names no file" in result.diagnostics[-1].message
+        assert "names no file" in next(d.message for d in result.diagnostics if d.rule == "include-file-missing")
         # ... and says nothing of it when nothing is read (parse without a path / resolver).
         assert _found(validate(parse(text, filename="main.lgd"))) == []
     # Assembly refuses the template for it, at the same line, saying the same.
@@ -934,7 +936,7 @@ def test_an_include_that_names_no_file_in_a_templates_fragment_is_a_nested_inclu
     main = _TEMPLATE_FRONT + "# A {#a}\n\n{{include: part.lgd}}\n"
     result, _ = _run(main, {"part.lgd": part})
     expected = [(_TFR, "part.lgd", 5), (_TFR, "part.lgd", 7)]
-    assert [(d.rule, d.file, d.line) for d in result.diagnostics if d.file] == expected
+    assert [(d.rule, d.file, d.line) for d in result.diagnostics if d.file and d.rule != _SKIPPED] == expected
     template = Template(main, resolve={"part.lgd": part}.get)
     assert [(d.rule, d.file, d.line) for d in template.problems] == expected
     assert all("holds '{{include:}}'" in d.message for d in template.problems)
@@ -995,7 +997,7 @@ def test_an_include_in_a_drafting_note_is_a_drafting_note_whether_or_not_it_name
         part = {**files, "part.lgd": "## P {#p}\n\n" + note}
         text = front + "# A {#a}\n\n{{include: part.lgd}}\n"
         result, _ = _run(text, part)
-        found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.file]
+        found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.file and d.rule != _SKIPPED]
         assert found == [(d.rule, d.file, d.line) for d in Template(text, resolve=part.get).problems]
         assert bool(found) == in_template
 
