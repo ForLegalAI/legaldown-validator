@@ -842,9 +842,10 @@ class TestCurrentBlockStructure:
             pytest.param("- a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-an-item-with-a-paragraph"),
             pytest.param("> a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-a-quote-with-a-paragraph"),
             pytest.param("-    a\n    code\n{{placeholder: name}}\n", "3) x", "3\\) x", id="short-of-an-items-lazy-text"),
-            # No escape: "=" under "- a" is the item's lazy text, not an underline (CommonMark: an
-            # underline cannot set a paragraph in an item that it is short of). It begins nothing, so
-            # §15.7.3 adds no backslash; conformers must agree byte for byte.
+            # No backslash (was "\\=" before the line-start check read the parser): a line short of the
+            # item's indentation cannot underline the item's paragraph (CommonMark: a setext underline
+            # is not a lazy continuation line), so "=" is the paragraph's text and begins nothing that
+            # §15.7.3 names. Conformers must agree byte for byte, hence no escape.
             pytest.param("- a\n{{placeholder: name}}\n", "=", "=", id="an-underline-short-of-an-item"),
             pytest.param("text\n> {{placeholder: name}}\n", "1.", "> 1\\.", id="in-a-quote-after-text"),
             pytest.param("text\n{{placeholder: name}}\n", "2. two", "2. two", id="after-text-it-cannot-interrupt"),
