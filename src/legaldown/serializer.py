@@ -198,13 +198,24 @@ def _joins_definition(text: str) -> bool:
     under them, where the parser read it (§4.7, #92: a definition is peeled
     off a closed paragraph, so what is left of it can look like the start
     of a block). Escaping it with a backslash would not give the same
-    paragraph back."""
+    paragraph back. A first line that starts a block under them as it is
+    (``- c``, ``# c``, ``1. c``, as the parser reads it when it was indented
+    four columns) is written four columns in, as a line of a paragraph is
+    (``_joined_lines``)."""
     lines = [line.lstrip(" \t") for line in text.split("\n") if not is_blank(line)]
     return (
         bool(lines)
         and _paragraph_line(lines[0], in_item=False, alone=len(lines) == 1) != lines[0]
-        and _continues(["[a]: b", *_lines_of_paragraph(lines[0], lines[1:])])
+        and _continues(["[a]: b", *_joined_lines(lines[0], lines[1:])])
     )
+
+
+def _joined_lines(first: str, rest: list[str]) -> list[str]:
+    """The lines of a paragraph written under a link reference definition
+    (``_joins_definition``): *first* as it is when that continues the
+    definition's paragraph, else four columns in, then *rest* as
+    ``_lines_of_paragraph`` has them."""
+    return _lines_of_paragraph(first if _continues(["[a]: b", first]) else "    " + first, rest)
 
 
 def _paragraph(text: str, *, in_item: bool = False, joined: bool = False) -> str:
@@ -219,9 +230,10 @@ def _paragraph(text: str, *, in_item: bool = False, joined: bool = False) -> str
     if not lines:
         return ""
     first = lines[0].lstrip(" \t")
-    written = _lines_of_paragraph(
-        first if joined else _paragraph_line(first, in_item=in_item, alone=len(lines) == 1), lines[1:]
-    )
+    if joined:
+        written = _joined_lines(first, lines[1:])
+    else:
+        written = _lines_of_paragraph(_paragraph_line(first, in_item=in_item, alone=len(lines) == 1), lines[1:])
     if split_link_definitions(written)[0]:
         # The parser makes a block of every definition a paragraph opens with
         # (§4.7, #92), so text that reads as one, which only a model built in
@@ -616,7 +628,7 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
                 text is not None and after_definition and _joins_definition(text)
                 and _reads_apart(
                     definition_lines[index - 1], reads[index - 1],
-                    [line.lstrip(" \t") for line in text.split("\n") if not is_blank(line)],
+                    _paragraph(text, joined=True).split("\n"),
                 )
             )
             rendered = _render_block(block, in_item=in_item, joined=joined)

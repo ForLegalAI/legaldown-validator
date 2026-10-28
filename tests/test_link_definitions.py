@@ -540,6 +540,21 @@ def test_a_document_with_definitions_reads_back_the_same(body):
     round_trips(body)
 
 
+@pytest.mark.parametrize("line", ["- c", "# c", "1. c"])
+def test_a_paragraph_indented_four_columns_after_a_definition_is_written_under_it(line):
+    # What is left of the paragraph reads as the start of a block alone, and is text under the
+    # definition only when it is indented: a backslash would give another text back.
+    document = parse(f"[x]: /u\n    {line}\n")
+    assert [(b.kind, b.text) for b in document.preamble] == [("link_definition", ""), ("paragraph", line)]
+    written = serialize(document)
+    assert written == f"[x]: /u\n    {line}\n"
+    again = parse(written)
+    assert [b.text for b in again.preamble] == ["", line]
+    assert serialize(again) == written
+    round_trips(f"[x]: /u\n    {line}\nmore\n")
+    round_trips(f"- [x]: /u\n      {line}\n")
+
+
 @pytest.mark.parametrize(
     "line",
     ["- b", "1. b", "# h", "## h", "> q", "---", "***", "```", "~~~", "===", "<div>", "    code", "| a |", "+ b"],
