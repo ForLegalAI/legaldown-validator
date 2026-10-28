@@ -149,12 +149,9 @@ class Reach:
     """Which of the paths a document names may be read (§2.3): with a *root* configured,
     the document's *depth* below it (``names_below``; None when the document is not
     within it, so that nothing it names is); without one, nothing that leads out of the
-    document's directory (``../x`` is valid, and not read). *directory* is where the document is,
-    absolute (the root of the file system for a document that is not loaded, where nothing it
-    names can lead out), to tell two spellings of one path apart (``key``)."""
+    document's directory (``../x`` is valid, and not read)."""
     root: Path | None = None
     depth: int | None = None
-    directory: str = os.sep
 
     @classmethod
     def of(
@@ -162,10 +159,9 @@ class Reach:
     ) -> Reach:
         """The reach of a document in *directory* (None: at the root, as a document that is
         not loaded is taken to be) under *root* (None: none is configured)."""
-        where = os.sep if directory is None else os.path.abspath(directory)
         if root is None:
-            return cls(directory=where)
-        return cls(Path(os.path.abspath(root)), names_below(root if directory is None else directory, root), where)
+            return cls()
+        return cls(Path(os.path.abspath(root)), names_below(root if directory is None else directory, root))
 
     def check(self, path: str) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
         """``relative_path_check`` of *path* for this reach."""
@@ -176,12 +172,6 @@ class Reach:
     def relative(self, path: str) -> str | None:
         """``relative_path`` of *path* for this reach."""
         return self.check(path)[0]
-
-    def key(self, relative: str) -> str:
-        """What makes two spellings of *relative*, a path from the document's directory, one file: that
-        path joined to the directory and normalized (``a.lgd``, and ``../dir/a.lgd`` from a document in
-        ``dir``). Symbolic links are not followed (a link is another file), nor the case of a name."""
-        return os.path.normpath(os.path.join(self.directory, relative))
 
 
 def file_loader(base: str | os.PathLike[str], *, root: str | os.PathLike[str] | None = None) -> LoadFile:

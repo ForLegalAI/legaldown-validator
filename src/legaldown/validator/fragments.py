@@ -91,6 +91,9 @@ class Files:
         self._resolve = resolve
         self._path = document.path
         self._filename = posixpath.normpath(document.filename) if document.filename else ""
+        #: Where the document is, to tell two spellings of one path apart; a document with no path is
+        #: taken to be at the root of the file system, where nothing it names can lead out.
+        self._directory = os.path.abspath(document.path.parent) if document.path is not None else os.sep
         #: Which paths may be read (§2.3): given a document *root*, those that stay within it,
         #: ``../`` included, and none when the document is not itself within it.
         self._reach = Reach.of(root, document.path.parent if document.path is not None else None)
@@ -117,7 +120,7 @@ class Files:
         """What makes two spellings of *relative*, a path from the document's directory, one file: that
         path joined to the directory and normalized. Symbolic links are not followed (a link is another
         file), nor the case of a name."""
-        return self._reach.key(relative)
+        return os.path.normpath(os.path.join(self._directory, relative))
 
     def locate(
         self, base: str, written: str
