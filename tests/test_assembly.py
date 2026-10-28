@@ -429,6 +429,108 @@ class TestLineStarts:
         )
 
 
+class TestLineStartsInContext:
+    """A line is escaped when the parser reads it, in the output as written so far, as beginning a
+    block that it reads the template line (each insertion a word) as not beginning: the container
+    of an open paragraph, a lazy line, a deleted line before it all count (§15.7.3)."""
+
+    @staticmethod
+    def _assembled(body: str, answers: dict, questions: str = _TEXT) -> str:
+        return _body(assemble(_template(body, questions), answers)).removeprefix("\n")
+
+    @pytest.mark.parametrize(("body", "answer", "written"), [
+        # What the template line begins, the output may begin too: the template's own marker stays.
+        ("a\n> 2. {{placeholder: name}}\n", "y", "a\n> 2. y\n"),
+        ("a\n> 2. {{placeholder: name}}\n", "# h", "a\n> 2. \\# h\n"),
+        # The open paragraph is the item's, the quote's, or the list's, and the line is short of it.
+        ("1. a\n{{placeholder: name}}\n", "2. b", "1. a\n2\\. b\n"),
+        ("3. a\n{{placeholder: name}}\n", "4. b", "3. a\n4\\. b\n"),
+        ("3. a\n{{placeholder: name}}\n", "4) b", "3. a\n4\\) b\n"),
+        ("10) a\n    {{placeholder: name}}\n", "11) b", "10) a\n11\\) b\n"),
+        ("- a\n  - b\n{{placeholder: name}}\n", "2. c", "- a\n  - b\n2\\. c\n"),
+        ("> - a\n{{placeholder: name}}\n", "2. c", "> - a\n2\\. c\n"),
+        ("> - a\n> {{placeholder: name}}\n", "2. c", "> - a\n> 2\\. c\n"),
+        ("> > a\n{{placeholder: name}}\n", "> b", "> > a\n\\> b\n"),
+        ("> > a\n> {{placeholder: name}}\n", "> b", "> > a\n> \\> b\n"),
+        # A bare marker on the line before holds no paragraph; a bare one after text underlines it.
+        ("text\n2.\n{{placeholder: name}}\n", "=", "text\n2.\n\\=\n"),
+        ("Intro\n--\n{{placeholder: name}}\n", "2. two", "Intro\n--\n2\\. two\n"),
+        ("- - {{placeholder: name}}\n", "-", "- - \\-\n"),
+        ("a\n{{placeholder: name}}\n", "- - -", "a\n\\- - -\n"),
+        # Tabs in the spacing of the template's markers.
+        ("-\t{{placeholder: name}}\n", "# h", "-\t\\# h\n"),
+        ("1.\t{{placeholder: name}}\n", "2. b", "1.\t2\\. b\n"),
+        (">\t{{placeholder: name}}\n", "- b", ">\t\\- b\n"),
+        # An item numbered 1 inside an item: the later items of the list are read from the parser too.
+        ("1. Terms\n   1. {{placeholder: name}} applies.\n   2. {{placeholder: x}} too.\n", "- a",
+         "1. Terms\n   1. \\- a applies.\n   2. \\- a too.\n"),
+    ])
+    def test_a_line_that_would_begin_a_block_in_its_context_is_escaped(self, body, answer, written):
+        answers = {"name": answer, "x": answer}
+        assert self._assembled(body, answers, _TEXT + "  x:\n    type: text\n") == written
+
+    @pytest.mark.parametrize(("body", "answer"), [
+        # "=" is no underline under "[x]: y" (a definition leaves no paragraph) nor under "- a" (lazy).
+        ("[x]: y\n{{placeholder: name}}\n", "==="),
+        ("[x]: y\n{{placeholder: name}}\n", "2. b"),
+        # "2." cannot interrupt the paragraph "text", so it is text, as the markers of the template are.
+        ("text\n{{placeholder: name}}\n", "2. two"),
+        ("text\n2. {{placeholder: name}}\n", "# h"),
+        ("1. a\n2. {{placeholder: name}} second\n", "Ann"),
+    ])
+    def test_nothing_is_escaped_that_begins_no_block(self, body, answer):
+        assert self._assembled(body, {"name": answer}) == body.replace("{{placeholder: name}}", answer)
+
+    def test_a_marker_the_template_has_as_text_is_an_item_after_a_deleted_line(self):
+        """``2.`` is text after "Then:" but starts an item once the paragraph is gone."""
+        body = 'text\n\n{{choose: x, true="", false="Then:"}}\n2. {{placeholder: name}}\n'
+        template = _template(body, _BOOL + _TEXT)
+        assert _body(assemble(template, {"x": True, "name": "Ann"})) == "\ntext\n\n2\\. Ann\n"
+        assert _body(assemble(template, {"x": False, "name": "Ann"})) == "\ntext\n\nThen:\n2. Ann\n"
+
+    def test_a_number_the_output_reads_as_text_leaves_what_follows_it_alone(self):
+        """In the output "3." is text after "lazy" (an item numbered 3 cannot interrupt it), so the
+        ">" after it begins nothing; the template line, where "3." is an item, did not either."""
+        body = '- 2. {{choose: x, true="", false="T"}}\nlong nolist\nlazy\n3. {{placeholder: name}}. more\n'
+        result = assemble(_template(body, _BOOL + _TEXT), {"x": True, "name": "> -"})
+        assert _body(result) == "\n- 2. \nlong nolist\nlazy\n3. > -. more\n"
+
+    @pytest.mark.parametrize(("body", "written"), [
+        # Indented code is prevented by removing the indentation the line has past the item it is in.
+        ("- a\n\n  {{choose: x, true=\"\", false=\"T\"}}\n      code\n", "- a\n\n  code\n"),
+        ("1. a\n\n   {{choose: x, true=\"\", false=\"T\"}}\n       code\n", "1. a\n\n   code\n"),
+        ("- a\n  - b\n\n    {{choose: x, true=\"\", false=\"T\"}}\n        code\n", "- a\n  - b\n\n    code\n"),
+        ("- a\n\n  {{choose: x, true=\"\", false=\"T\"}}\n      # h\n", "- a\n\n  \\# h\n"),
+        ("a\n\n{{choose: x, true=\"\", false=\"T\"}}\n      code\n", "a\n\ncode\n"),
+    ])
+    def test_indented_code_after_a_deleted_line_stays_in_its_item(self, body, written):
+        assert self._assembled(body, {"x": True}, _BOOL) == written
+
+    @pytest.mark.parametrize("body", [
+        # Open question for the specification (§15.7.3): the construct is begun by the template's own
+        # markers, which hold no paragraph once their insertion is empty, so no position for a
+        # backslash is given; conformers must agree here. Pinned as written, as before the line-start
+        # check read the parser; tracked with #106.
+        'text\n- {{choose: x, true="", false="T"}}\n',  # the bare "-" underlines "text"
+        '- - - {{choose: x, true="", false="T"}}\n',  # three bare markers are a thematic break
+        '* * * {{choose: x, true="", false="T"}}\n',
+        '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n',  # a lazy line detaches
+        '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n',
+    ])
+    def test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question(self, body):
+        template = _template(body, _BOOL + _TEXT)
+        written = _body(assemble(template, {"x": True, "name": "- - -"}))
+        assert written.removeprefix("\n") == {
+            'text\n- {{choose: x, true="", false="T"}}\n': "text\n- \n",
+            '- - - {{choose: x, true="", false="T"}}\n': "- - - \n",
+            '* * * {{choose: x, true="", false="T"}}\n': "* * * \n",
+            '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n':
+                "> 2. \n\tcode\n> 2. \\- - -\n",
+            '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n':
+                "  > \n  lazy\na\n  > \\- - --y\n",
+        }[body]
+
+
 # ── Drafts: blanks left unanswered ───────────────────────────────
 
 
