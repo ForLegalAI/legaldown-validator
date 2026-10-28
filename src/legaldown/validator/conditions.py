@@ -7,10 +7,11 @@ document: its own condition and those of every unit enclosing it.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .result import Depends
 from .templates import question_type
 
 _CONDITION_RE = re.compile(r"(!?)([a-z][a-z0-9-]*)(?::([a-z][a-z0-9-]*))?")
@@ -49,54 +50,114 @@ def parse_condition(text: str) -> Condition | None:
     return Condition(question, value, bool(negated))
 
 
-def condition_problem(text: str, questions: Any) -> str | None:
-    """Why *text* is not a valid condition for *questions* (the document's
-    ``metadata.questions``; condition-invalid, §15.3), or None."""
+def condition_issue(text: str, questions: Any) -> tuple[Depends | None, str] | None:
+    """What is wrong with *text* as a condition for *questions* (the document's
+    ``metadata.questions``; condition-invalid, §15.3): ``(depends, problem)``,
+    or None when it is valid. *depends* is what only the including document's
+    frontmatter can settle (``Depends.FRONTMATTER``): the condition names a
+    question that is not declared here, which a fragment (§12.2) may well
+    leave to its host (#39). It is None for a problem the condition has
+    whatever is declared: a malformed condition, or the wrong form for a
+    question that is declared."""
     condition = parse_condition(text)
     if condition is None:
-        return "must be '[!]question' or '[!]question:value', in the identifier format"
+        return None, "must be '[!]question' or '[!]question:value', in the identifier format"
     qtype = question_type(questions, condition.question)
     if qtype not in ("boolean", "choice"):
-        return f"names '{condition.question}', which is not a declared boolean or choice question"
+        # Undeclared, or declared with no usable type: the declaration is not here
+        # to read. Declared as a value question it is wrong wherever it is read.
+        depends = Depends.FRONTMATTER if qtype is None else None
+        return depends, f"names '{condition.question}', which is not a declared boolean or choice question"
     if qtype == "boolean" and condition.value is not None:
-        return f"'{condition.question}' is a boolean question: write '{condition.question}' or '!{condition.question}'"
+        return None, f"'{condition.question}' is a boolean question: write '{condition.question}' or '!{condition.question}'"
     if qtype == "choice":
         if condition.value is None:
-            return f"'{condition.question}' is a choice question: write '{condition.question}:value'"
+            return None, f"'{condition.question}' is a choice question: write '{condition.question}:value'"
         choices = questions[condition.question].get("choices")
         if not isinstance(choices, dict) or condition.value not in choices:
-            return f"'{condition.value}' is not a declared choice of '{condition.question}'"
+            return None, f"'{condition.value}' is not a declared choice of '{condition.question}'"
     return None
 
 
-def _answers(question: str, questions: Any) -> list[Any]:
+def condition_problem(text: str, questions: Any) -> str | None:
+    """Why *text* is not a valid condition for *questions* (the document's
+    ``metadata.questions``; condition-invalid, §15.3), or None."""
+    issue = condition_issue(text, questions)
+    return issue[1] if issue else None
+
+
+_BOOLEAN_ANSWERS = (True, False)
+
+
+def question_answers(question: str, questions: Any) -> Collection[Any]:
     """Every answer *question* can have: true and false, or its choices."""
     if question_type(questions, question) == "boolean":
-        return [True, False]
+        return _BOOLEAN_ANSWERS
     choices = questions[question].get("choices")
-    return list(choices) if isinstance(choices, dict) else []
+    return choices if isinstance(choices, dict) else ()  # a dict is read as its keys
+
+
+def by_question(presence: Iterable[Condition]) -> dict[str, list[Condition]]:
+    """The conditions in *presence* on each question they name."""
+    grouped: dict[str, list[Condition]] = {}
+    for condition in presence:
+        grouped.setdefault(condition.question, []).append(condition)
+    return grouped
+
+
+def condition_values(conditions: Iterable[Condition]) -> tuple[set[Any], set[Any]]:
+    """The values that *conditions*, all on one question, want, and refuse. A
+    condition holds for the answer equal to its value, or for every answer but
+    that one when it is negated (``Condition.holds``); a boolean test's value
+    is true."""
+    wanted: set[Any] = set()
+    refused: set[Any] = set()
+    for condition in conditions:
+        (refused if condition.negated else wanted).add(True if condition.value is None else condition.value)
+    return wanted, refused
+
+
+def _some_answer_holds(conditions: Iterable[Condition], answers: Collection[Any]) -> bool:
+    """True if some answer in *answers* makes every one of *conditions*
+    (all on one question) hold, without trying each: the answers are those
+    equal to the one value wanted, if there is one, less the values refused."""
+    wanted, refused = condition_values(conditions)
+    if len(wanted) > 1:
+        return False
+    if wanted:
+        (value,) = wanted
+        return value in answers and value not in refused
+    return len(answers) > sum(1 for value in refused if value in answers)
+
+
+def satisfiable_in(presence: Iterable[Condition], answers_of: Callable[[str], Collection[Any]]) -> bool:
+    """``satisfiable``, with the answers of a question given by *answers_of*:
+    for a caller that asks many times and keeps them."""
+    return all(
+        _some_answer_holds(conditions, answers_of(question))
+        for question, conditions in by_question(presence).items()
+    )
 
 
 def satisfiable(presence: Iterable[Condition], questions: Any) -> bool:
     """True if some answers make every condition in *presence* hold — decided
     per question, as §15.4 describes. Defaults play no part."""
-    by_question: dict[str, list[Condition]] = {}
-    for condition in presence:
-        by_question.setdefault(condition.question, []).append(condition)
-    return all(
-        any(all(c.holds(answer) for c in conditions) for answer in _answers(question, questions))
-        for question, conditions in by_question.items()
-    )
+    return satisfiable_in(presence, lambda question: question_answers(question, questions))
+
+
+def exclusive_in(first: Presence, second: Presence, answers_of: Callable[[str], Collection[Any]]) -> bool:
+    """``exclusive``, with the answers of a question given by *answers_of*."""
+    return not satisfiable_in(first | second, answers_of)
 
 
 def exclusive(first: Presence, second: Presence, questions: Any) -> bool:
     """True if two units, appearing under the conditions *first* and
     *second* (their ``Presence``), can never appear together for any answers
     to the document's *questions* (``document.metadata.questions``, §15.4)."""
-    return not satisfiable(first | second, questions)
+    return exclusive_in(first, second, lambda question: question_answers(question, questions))
 
 
-def always_covered(presence: Presence, targets: list[Presence], questions: Any) -> bool:
+def always_covered(presence: Presence, targets: Sequence[Presence], questions: Any) -> bool:
     """True if, whenever a reference with *presence* appears, a declaration
     with one of the *targets* presences appears too (§15.4).
 
@@ -109,7 +170,7 @@ def always_covered(presence: Presence, targets: list[Presence], questions: Any) 
         return True  # a target present whenever the reference is: no search
     involved = {c.question for c in presence.union(*targets)}
     possible = {
-        q: [a for a in _answers(q, questions) if all(c.holds(a) for c in presence if c.question == q)]
+        q: [a for a in question_answers(q, questions) if all(c.holds(a) for c in presence if c.question == q)]
         for q in involved
     }
     if not all(possible.values()):
@@ -117,7 +178,7 @@ def always_covered(presence: Presence, targets: list[Presence], questions: Any) 
     return _covered(possible, targets)
 
 
-def _covered(possible: dict[str, list[Any]], targets: list[Presence]) -> bool:
+def _covered(possible: dict[str, list[Any]], targets: Sequence[Presence]) -> bool:
     """True if every combination of the *possible* answers makes one of the
     *targets* hold."""
     live: list[Presence] = []

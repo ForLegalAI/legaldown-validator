@@ -879,7 +879,7 @@ def test_a_form_as_data_is_json_and_says_what_each_question_is():
     assert by_id["client"]["state"] == "unanswered" and by_id["client"]["hint"] == "text"
     assert by_id["extras"]["reached"] and by_id["extras"]["label"] == "Include the extras?"
     assert [d["question"] for d in data["diagnostics"]] == ["forum"]
-    assert all(set(d) == {"rule", "level", "message", "line", "question"} for d in data["diagnostics"])
+    assert all(set(d) == {"rule", "level", "message", "line", "file", "question"} for d in data["diagnostics"])
 
 
 def test_a_default_is_a_state_and_dates_are_text_in_the_data():

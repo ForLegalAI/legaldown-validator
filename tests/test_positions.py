@@ -102,6 +102,15 @@ def test_frontmatter_that_cannot_be_read_names_its_line():
     assert raised.value.line == 3  # where the quote opens
 
 
+def test_frontmatter_that_is_kept_unread_names_the_same_line():
+    # on_frontmatter_error="keep" (#43) keeps the error parse raises, with its line.
+    source = "---\ntitle: Fixture\n  bad indent: [unclosed\n---\n\n# A\n"
+    with pytest.raises(FrontmatterError) as raised:
+        parse(source)
+    kept = parse(source, on_frontmatter_error="keep").frontmatter_error
+    assert (str(kept), kept.line) == (str(raised.value), raised.value.line) == (str(raised.value), 3)
+
+
 # ── Body ───────────────────────────────────────────────────────────
 
 
@@ -250,3 +259,11 @@ def test_each_reference_is_reported_at_its_own_line(seed):
         (int(d.message.split("'")[1].split("-")[1]), d.line) for d in result.diagnostics if d.rule == "ref-broken"
     )
     assert got == sorted(real)
+
+
+def test_line_breaks_are_the_line_feeds_only():
+    from legaldown.positions import line_breaks
+
+    # YAML ends a line at CR, NEL, LS and PS too; the format's only line end is the line feed.
+    assert line_breaks("") == [] and line_breaks("abc") == []
+    assert line_breaks("a\n\nb\r\nc\x85d e\n") == [1, 2, 5, 11]

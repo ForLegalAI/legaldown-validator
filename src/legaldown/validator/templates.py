@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from functools import partial
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
+from ..markdown import find_all
 from ..models import Block, Document
 from ..positions import Locator
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
@@ -25,7 +27,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Line, _Recorder
+from .result import Depends, Line, _Recorder
 
 _CURRENCY_RE = re.compile(r"[A-Z]{3}")
 _LINE_BREAK_RE = re.compile(r"[\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
@@ -58,6 +60,12 @@ class _BlankState:
     mixed: bool = False
     #: The line of the first occurrence fixing each code (§16.9).
     code_lines: dict[str, Any] = field(default_factory=dict)  # a ``result.Line`` each
+    #: Whether an occurrence is outside every drafting note, which assembly
+    #: removes before anything is inserted (§15.7.2); one only in notes is never
+    #: filled in, so what it would be asked is no one's concern.
+    kept: bool = False
+    #: The line of the first such occurrence (§16.9), a ``result.Line``.
+    line: Any = None
 
 
 def question_type(questions: Any, question_id: str) -> str | None:
@@ -204,7 +212,8 @@ def check_questions(
     *blanks* are the document's placeholders by id: a default must agree with
     the currency or unit its question's placeholders fix, and in a *template*
     an undeclared placeholder id is a question id too. *where* gives each
-    diagnostic's line: the question's, or the key's.
+    diagnostic's line: the question's, or the key's; for a blank whose id
+    YAML reads as a boolean or null, the blank's own.
     """
     def line_of(*path: Any) -> int | None:
         return where.key(*path) if where is not None else None
@@ -252,13 +261,15 @@ def check_questions(
                 + (", each entry beginning with '- id:'" if key == "attachments" else "")
                 + ", so that assembly can edit it line by line (§15.2)."
             )
-    line = line_of("questions")
     if template:
-        for pid in blanks:
-            if pid not in declared and pid in YAML_KEYWORDS:
-                invalid(
+        for pid, blank in blanks.items():
+            if blank.kept and pid not in declared and pid in YAML_KEYWORDS:
+                # It is the blank that cannot be answered, whatever `questions` holds.
+                result.error(
+                    "question-invalid",
                     f"Placeholder id '{pid}' is read by YAML as a boolean or null, so it "
-                    f"cannot be answered portably in a template (§15.2)."
+                    f"cannot be answered portably in a template (§15.2).",
+                    line=blank.line,
                 )
 
 
@@ -290,6 +301,13 @@ class Quote:
         ``]``) but is not a drafting note's: an ordinary quote, whose
         guidance would reach the finished document (§15.6)."""
         return _ALERT_RE.match(self.first_line) is not None and not self.is_drafting_note
+
+
+def in_drafting_note(notes: list[Quote], fragment: int) -> bool:
+    """True if fragment *fragment* of a block's ``block_fragments`` is in one of
+    its drafting *notes*: assembly removes it before anything is inserted
+    (§15.7.2)."""
+    return any(fragment in note.fragments for note in notes)
 
 
 def is_drafting_note(quote: Block) -> bool:
@@ -344,6 +362,7 @@ _AFTER_INSERTION = frozenset(".,;:)!?\"'”’»/-")
 _COMBINING = "&<\\"
 # A line's container markers: block quote markers, then a list item marker.
 _CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?")
+_NON_BLANK_RE = re.compile(r"\S")
 # A link reference definition: its label, destination, and optional title.
 _LINK_REFERENCE_RE = re.compile(
     r" {0,3}\[[^\]]+\]:[ \t]*\S*(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
@@ -357,56 +376,106 @@ def template_text(text: str, directives: list[Directive]) -> str:
     return mask_directives(text, directives)
 
 
-def insertion_boundary_problem(
-    text: str, template: str, insertion: Directive, directives: list[Directive]
-) -> str | None:
-    """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in body
-    *text* — is not kept apart from template text as §15.7.3 requires, or
-    None. *directives* are all the directives lexed from *text*, and
-    *template* is ``template_text(text, directives)``."""
-    start, end = insertion.start, insertion.end
-    line_start = text.rfind("\n", 0, start) + 1
-    line_end = text.find("\n", end)
-    line_end = len(text) if line_end < 0 else line_end
-    # The line's content begins after its container markers.
-    content_start = min(_CONTAINER_RE.match(text, line_start).end(), start)
+class _InsertionScan:
+    """The text of one fragment and what its insertions' boundaries (§15.7.3)
+    are judged by. A fragment can hold thousands of insertions on one line, so
+    the places that a check looks back or ahead for are indexed once, and
+    found by bisect: a scan of the line for each insertion would be
+    quadratic (#94).
 
-    if start > content_start:
-        before = text[start - 1]
-        if not (
-            before.isalnum()
-            or before in " \t"
-            or any(directive.end == start for directive in directives)
-            or (before in _BEFORE_INSERTION and not (before == "(" and text[start - 2:start - 1] == "]"))
+    *directives* are all the directives lexed from *text*, and *template* is
+    ``template_text(text, directives)``."""
+
+    def __init__(self, text: str, template: str, directives: list[Directive]) -> None:
+        self.text = text
+        self.template = template
+        self._newlines = find_all(text, "\n")
+        self._directive_ends = {directive.end for directive in directives}
+        self._blanks = _merged(template, " ", "\t")
+        self._combining = _merged(template, *_COMBINING)
+        self._destination_starts = find_all(template, "](")  # it cannot overlap itself
+        self._closing_parentheses = find_all(template, ")")
+        # Per line, which the insertions of a line share: where its content
+        # begins, and what its link reference definition covers.
+        self._content_starts: dict[int, int] = {}
+        self._references: dict[int, int] = {}
+
+    def _line_content(self, line_start: int) -> int:
+        """Where the content of the line at *line_start* begins: after its
+        container markers."""
+        if line_start not in self._content_starts:
+            self._content_starts[line_start] = _CONTAINER_RE.match(self.text, line_start).end()
+        return self._content_starts[line_start]
+
+    def _reference_end(self, content_start: int) -> int:
+        """Where the link reference definition at *content_start* ends, or -1."""
+        if content_start not in self._references:
+            reference = _LINK_REFERENCE_RE.match(self.template, content_start)
+            self._references[content_start] = reference.end() if reference else -1
+        return self._references[content_start]
+
+    def problem(self, insertion: Directive) -> str | None:
+        """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in the
+        text — is not kept apart from template text as §15.7.3 requires, or
+        None."""
+        text, template = self.text, self.template
+        start, end = insertion.start, insertion.end
+        before_start = bisect_left(self._newlines, start)  # the newlines before it
+        line_start = self._newlines[before_start - 1] + 1 if before_start else 0
+        after_end = bisect_left(self._newlines, end)  # the first newline from its end on
+        line_end = self._newlines[after_end] if after_end < len(self._newlines) else len(text)
+        # The line's content begins after its container markers.
+        content_start = min(self._line_content(line_start), start)
+
+        if start > content_start:
+            before = text[start - 1]
+            if not (
+                before.isalnum()
+                or before in " \t"
+                or start in self._directive_ends
+                or (before in _BEFORE_INSERTION and not (before == "(" and text[start - 2:start - 1] == "]"))
+            ):
+                return f"'{before}' directly before it"
+            # The run of text just before it begins after the last space or tab.
+            last_blank = bisect_left(self._blanks, start) - 1
+            run_start = content_start
+            if last_blank >= 0 and self._blanks[last_blank] >= content_start:
+                run_start = self._blanks[last_blank] + 1
+            first_combining = bisect_left(self._combining, run_start)
+            if first_combining < len(self._combining) and self._combining[first_combining] < start:
+                return f"'{template[self._combining[first_combining]]}' in the text just before it"
+        if end < line_end:
+            after = text[end]
+            if not (
+                after.isalnum()
+                or after in " \t"
+                or text.startswith("{{", end)
+                or after in _AFTER_INSERTION
+            ):
+                return f"'{after}' directly after it"
+        reference_end = self._reference_end(content_start)
+        # A definition is the whole line; text after it on the line makes the
+        # line a paragraph's. (One a later line follows is still a definition:
+        # a paragraph keeps its lines.)
+        if (
+            reference_end >= 0
+            and start < reference_end
+            and _NON_BLANK_RE.search(template, reference_end, line_end) is None
         ):
-            return f"'{before}' directly before it"
-        run_start = max(
-            template.rfind(" ", content_start, start),
-            template.rfind("\t", content_start, start),
-            content_start - 1,
-        ) + 1
-        combining = next((ch for ch in template[run_start:start] if ch in _COMBINING), None)
-        if combining:
-            return f"'{combining}' in the text just before it"
-    if end < line_end:
-        after = text[end]
-        if not (
-            after.isalnum()
-            or after in " \t"
-            or text.startswith("{{", end)
-            or after in _AFTER_INSERTION
-        ):
-            return f"'{after}' directly after it"
-    reference = _LINK_REFERENCE_RE.match(template, content_start)
-    # A definition is the whole line; text after it on the line makes the
-    # line a paragraph's. (One a later line follows is still a definition:
-    # a paragraph keeps its lines.)
-    if reference and start < reference.end() and not template[reference.end():line_end].strip():
-        return "it is in a link reference definition"
-    destination = template.rfind("](", line_start, start)
-    if destination >= 0 and template.find(")", destination + 2, start) < 0:
-        return "it is inside a link or image destination"
-    return None
+            return "it is in a link reference definition"
+        # The last ``](`` before it, with no ``)`` between.
+        last_destination = bisect_right(self._destination_starts, start - 2) - 1
+        if last_destination >= 0 and self._destination_starts[last_destination] >= line_start:
+            destination = self._destination_starts[last_destination]
+            closing = bisect_left(self._closing_parentheses, destination + 2)
+            if closing == len(self._closing_parentheses) or self._closing_parentheses[closing] >= start:
+                return "it is inside a link or image destination"
+        return None
+
+
+def _merged(text: str, *needles: str) -> list[int]:
+    """The offsets in *text* of each of *needles*, in order."""
+    return sorted(at for needle in needles for at in find_all(text, needle))
 
 
 # ── Inline choices (§15.5) ────────────────────────────────────────
@@ -415,14 +484,20 @@ def insertion_boundary_problem(
 BRACE_STRAY = "'{{' does not begin a directive and is literal text; write '\\{{' if that is intended (§11.4)."
 
 
-def _choose_problems(directive: Directive, questions: Any) -> list[str]:
+def _choose_issues(directive: Directive, questions: Any) -> list[tuple[Depends | None, str]]:
     """Every way a ``{{choose:}}`` fails to list exactly the answers of a
-    declared decision question (choose-invalid, §15.5), as messages."""
-    problems: list[str] = []
+    declared decision question (choose-invalid, §15.5), as ``(depends,
+    message)``. *depends* is ``Depends.FRONTMATTER`` for a question that is not
+    declared here, which a fragment's host may declare (#39); the phrases are
+    only compared with a declared question's answers, so a problem with them is
+    the directive's own."""
+    problems: list[tuple[Depends | None, str]] = []
     qid = directive.positional or ""
     qtype = question_type(questions, qid)
     if qtype not in DECISION_QUESTION_TYPES:
-        problems.append(f"'{directive.source}' must name a declared boolean or choice question (§15.5).")
+        # Declared as a value question it is wrong wherever it is read.
+        depends = Depends.FRONTMATTER if qtype is None else None
+        problems.append((depends, f"'{directive.source}' must name a declared boolean or choice question (§15.5)."))
     elif qtype == "boolean" or _choices_problem(questions[qid].get("choices")) is None:
         # Malformed choices are question-invalid; there is nothing to match.
         answers = (
@@ -432,20 +507,23 @@ def _choose_problems(directive: Directive, questions: Any) -> list[str]:
         extra = [param for param in directive.params if param not in answers]
         repeated = [param for param in dict.fromkeys(directive.duplicates) if param in answers]
         if missing:
-            problems.append(
+            problems.append((
+                None,
                 f"'{directive.source}' lists no phrase for {', '.join(missing)}: every answer "
-                f"to '{qid}' needs one (§15.5)."
-            )
+                f"to '{qid}' needs one (§15.5).",
+            ))
         if extra:
-            problems.append(
+            problems.append((
+                None,
                 f"'{directive.source}' lists {', '.join(extra)}, which "
-                f"{'is not an answer' if len(extra) == 1 else 'are not answers'} to '{qid}' (§15.5)."
-            )
+                f"{'is not an answer' if len(extra) == 1 else 'are not answers'} to '{qid}' (§15.5).",
+            ))
         if repeated:
-            problems.append(
+            problems.append((
+                None,
                 f"'{directive.source}' lists {', '.join(repeated)} more than once; each answer "
-                f"has one phrase (§15.5)."
-            )
+                f"has one phrase (§15.5).",
+            ))
     return problems
 
 
@@ -459,16 +537,20 @@ def choose_problem(directive: Directive, questions: Any) -> str | None:
     never as choose-invalid."""
     if directive.name != "choose" or directive.malformed:
         raise ValueError(f"not a well-formed {{{{choose:}}}}: {directive.source!r}")
-    problems = _choose_problems(directive, questions)
-    return problems[0] if problems else None
+    issues = _choose_issues(directive, questions)
+    return issues[0][1] if issues else None
 
 
-def check_choose(directive: Directive, questions: Any, result: _Recorder) -> None:
+def check_choose(
+    directive: Directive, questions: Any, result: _Recorder, *, host_declares: bool = True
+) -> None:
     """Report a ``{{choose:}}`` that does not list exactly the answers of a
     declared decision question (choose-invalid, §15.5), and any ``{{`` in
-    its phrases, which is literal text (brace-stray)."""
-    for problem in _choose_problems(directive, questions):
-        result.error("choose-invalid", problem)
+    its phrases, which is literal text (brace-stray). *host_declares*: False
+    when no other document declares questions for it, so naming one that is not
+    declared is its own fault."""
+    for depends, problem in _choose_issues(directive, questions):
+        result.error("choose-invalid", problem, depends=depends if host_declares else None)
     for offset in range(2, len(directive.source) - 1):
         if directive.source.startswith("{{", offset) and not is_escaped(directive.source, offset):
             result.warning("brace-stray", BRACE_STRAY)
@@ -479,6 +561,45 @@ def check_choose(directive: Directive, questions: Any, result: _Recorder) -> Non
 _INSERTIONS = ("placeholder", "choose")
 
 
+@dataclass(frozen=True, slots=True)
+class IncludeDirective:
+    """An ``{{include:}}`` in a document's body (§12.2), wherever it is."""
+    #: The path as the document writes it, and normalised (``posixpath.normpath``):
+    #: the key assembly and the validator read a fragment by. Both "" for an include that
+    #: names no file.
+    written: str
+    path: str
+    #: The directive as written (``{{include: part.lgd}}``).
+    source: str
+    line: Line
+    #: Where it is: the section (None in the preamble), the block, the fragment of
+    #: the block's text and the offset in it, as ``FileReferences.check`` places it.
+    section: int | None
+    block: int
+    fragment: int
+    offset: int
+    #: Whether it is in a drafting note, which assembly removes unread (§15.6).
+    in_note: bool
+    #: Whether its paragraph holds only it and at most its marker (§12.2): the one
+    #: kind of include a fragment replaces, and so the only one that is read. Any
+    #: other is text that the include rules do not look at.
+    paragraph: bool
+
+    @property
+    def at(self) -> tuple[int, int, int, int]:
+        """Its place as ``FileReferences.check`` was given it."""
+        return (-1 if self.section is None else self.section, self.block, self.fragment, self.offset)
+
+
+@dataclass(frozen=True, slots=True)
+class BodyScan:
+    """What ``check_template_body`` met in a document's body besides what it
+    reported: its drafting notes, each with its line, and every
+    ``{{include:}}`` (``IncludeDirective``), in document order."""
+    notes: list[tuple[Quote, Line]]
+    includes: list[IncludeDirective]
+
+
 def check_template_body(
     document: Document,
     lex_fragment: Callable[[str], Lexed],
@@ -486,16 +607,18 @@ def check_template_body(
     *,
     template: bool,
     where: Locator | None = None,
-) -> list[tuple[Quote, Line]]:
+) -> BodyScan:
     """Report what §16.12 checks in the body of a document: drafting notes
     (drafting-note-unrecognized, drafting-note-def), a blank or choice in a
     defined term (def-term-variable) or against template text
     (insertion-boundary), and, in a *template*, the Core parts of
-    template-fragment-invalid. Return the document's drafting notes, each
-    with its line. *where* gives the lines."""
+    template-fragment-invalid. Return what it met (``BodyScan``): the
+    document's drafting notes, each with its line, and its includes. *where*
+    gives the lines."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, text_fragments
+    from .units import include_key, paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
              nth: int = 0) -> Line:
@@ -507,12 +630,15 @@ def check_template_body(
 
     for heading, section in enumerate(document.sections):  # headings are body text too
         lexed = lex_fragment(section.title)
+        scan: _InsertionScan | None = None  # the title's, for its first insertion
         for directive in lexed.directives:
             if directive.name in _INSERTIONS and not directive.malformed:
-                masked = template_text(section.title, lexed.directives)
+                scan = scan or _InsertionScan(
+                    section.title, template_text(section.title, lexed.directives), lexed.directives
+                )
                 line = where.heading(heading) if where is not None else None
-                _check_insertion(section.title, masked, directive, lexed.directives, result, line)
-    includes: list[tuple[str, Line]] = []
+                _check_insertion(scan, directive, result, line)
+    includes: list[IncludeDirective] = []
     all_notes: list[tuple[Quote, Line]] = []
     for block_section, block_index, block in document.iter_indexed_blocks():
         notes: list[Quote] = []
@@ -534,8 +660,11 @@ def check_template_body(
                 all_notes.append((quote, line))
         for index, fragment in enumerate(text_fragments(block)):
             lexed = lex_fragment(fragment)
-            masked: str | None = None  # template text, for the fragment's first insertion
-            in_note = any(index in note.fragments for note in notes)
+            scan = None  # the fragment's, for its first insertion
+            in_note = in_drafting_note(notes, index)
+            # The include of a paragraph that holds only it (§12.2): only a top-level
+            # paragraph's first fragment is one, an include in a quote, a list or a table is text.
+            only = paragraph_include(block, fragment, lexed) if index == 0 else None
             for directive in lexed.directives:
                 if directive.malformed:
                     continue
@@ -547,10 +676,15 @@ def check_template_body(
                         f"with the definition (§15.6).",
                         line=line,
                     )
-                if directive.name == "include" and directive.positional:
-                    if not in_note:
-                        includes.append((posixpath.normpath(directive.positional), line))
-                    elif template:
+                # One that names no file (``{{include:}}``) is recorded too, with the path "": an
+                # include paragraph of it is refused as missing, and in a template it is a nested
+                # include as any other, wherever it is (§15.3).
+                if directive.name == "include":
+                    includes.append(IncludeDirective(
+                        directive.positional or "", include_key(directive), directive.source, line, block_section, block_index, index, directive.start, in_note,
+                        only is directive,
+                    ))
+                    if in_note and template:
                         result.error(
                             "template-fragment-invalid",
                             f"'{directive.source}' is inside a drafting note; in a template an "
@@ -560,8 +694,10 @@ def check_template_body(
                 # A drafting note is removed before anything is inserted
                 # (§15.7.2 step 2), so a blank in one is never filled.
                 if directive.name in _INSERTIONS and not in_note:
-                    masked = masked or template_text(fragment, lexed.directives)
-                    _check_insertion(fragment, masked, directive, lexed.directives, result, line)
+                    scan = scan or _InsertionScan(
+                        fragment, template_text(fragment, lexed.directives), lexed.directives
+                    )
+                    _check_insertion(scan, directive, result, line)
             for anchor in find_definition_anchors(
                 fragment, language=document.metadata.language, lexed=lexed
             ):
@@ -577,20 +713,13 @@ def check_template_body(
                             line=find(block_section, block_index, directive.source, index, directive.start),
                         )
     if template:
-        _check_fragments(document, includes, result, where)
-    return all_notes
+        _check_fragments(document, [(i.path, i.line) for i in includes if i.path and not i.in_note], result, where)
+    return BodyScan(all_notes, includes)
 
 
-def _check_insertion(
-    text: str,
-    masked: str,
-    insertion: Directive,
-    directives: list[Directive],
-    result: _Recorder,
-    line: Line = None,
-) -> None:
+def _check_insertion(scan: _InsertionScan, insertion: Directive, result: _Recorder, line: Line = None) -> None:
     """Report *insertion*, at *line*, if it is not kept apart from template text."""
-    problem = insertion_boundary_problem(text, masked, insertion, directives)
+    problem = scan.problem(insertion)
     if problem:
         result.error(
             "insertion-boundary",

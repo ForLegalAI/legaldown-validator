@@ -7,11 +7,14 @@ across implementations (§16.9).
 """
 from __future__ import annotations
 
+import os
 import re
 import warnings
-from collections.abc import Callable, Iterator
-from dataclasses import replace
+from collections import Counter
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from functools import cache, partial
+from types import MappingProxyType
 from typing import Any
 
 from .._deprecation import LegaldownDeprecationWarning
@@ -26,12 +29,26 @@ from ..directives import (
     lex,
     mask_directives,
 )
-from ..files import LoadFile, file_loader, relative_path, within
-from ..markdown import HTML_COMMENT_RE, INLINE_HTML_RE, is_comment_only
-from ..models import LIST_KINDS, Amends, Document
+from ..files import LoadFile, file_loader, relative_path
+from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
+from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
-from .conditions import ALWAYS, Presence, always_covered, condition_problem, exclusive, parse_condition, satisfiable
+from .conditions import (
+    ALWAYS,
+    Presence,
+    always_covered,
+    by_question,
+    condition_issue,
+    condition_values,
+    exclusive,
+    exclusive_in,
+    parse_condition,
+    question_answers,
+    satisfiable,
+    satisfiable_in,
+)
+from .fragments import Files, FragmentKind, check_includes, content_findings, shape_findings
 from .helpers import (
     format_section_number,
     generate_identifier,
@@ -40,6 +57,7 @@ from .helpers import (
     is_valid_money_amount,
     slugify_identifier,
 )
+from .paths import FileReferences, ReferenceImages, check_fragment_images, check_frontmatter_paths, check_heading_images
 from .patterns import (
     _CONSTRUCT_PRESENT,
     _UNFILLED,
@@ -54,7 +72,7 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Blank, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
+from .result import Blank, Depends, Diagnostic, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
@@ -65,6 +83,7 @@ from .templates import (
     check_choose,
     check_questions,
     check_template_body,
+    in_drafting_note,
     question_type,
 )
 from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
@@ -305,10 +324,12 @@ def _check_placeholder(
     questions: Any,
     *,
     in_frontmatter: bool = False,
+    in_note: bool = False,
     line: Line = None,
 ) -> None:
     """Validate one ``{{placeholder:}}`` directive, its arguments included,
-    and record it in *blanks*; *line* is where it is.
+    and record it in *blanks*; *line* is where it is, and *in_note* whether it
+    is in a drafting note.
 
     Shared by the body-block scan and the frontmatter scan so a placeholder id
     used in both is treated as the *same* blank (consistent type, currency,
@@ -329,6 +350,10 @@ def _check_placeholder(
         )
         return
     blank = blanks.setdefault(pid, _BlankState())
+    if not in_note:
+        blank.kept = True
+        if blank.line is None:
+            blank.line = line
     blank.in_frontmatter |= in_frontmatter
     type_valid = written_type is None or written_type in VALID_PLACEHOLDER_TYPES
     if not type_valid:
@@ -431,10 +456,281 @@ def _check_final(
         construct("A drafting note", line)
 
 
-def _clashes(presence: Presence, others: list[Presence], questions: Any) -> bool:
+def _clashes(presence: Presence, others: Sequence[Presence], questions: Any) -> bool:
     """True if a declaration with *presence* can appear together with one of
     the earlier declarations of the same identifier (§15.4)."""
     return any(not exclusive(presence, other, questions) for other in others)
+
+
+# The identifier ``stem-k`` is the suffix k of ``stem`` (§5.5), as written: no
+# leading zero, and k at least 2.
+_SUFFIXED_RE = re.compile(r"(.*)-([2-9]|[1-9][0-9]+)")
+
+
+class _Declarations(Sequence[Presence]):
+    """The presences an identifier is declared with, to read: only its
+    ``_FreeIdentifiers`` adds to them (``_add``)."""
+
+    def __init__(self) -> None:
+        self._presences: list[Presence] = []
+
+    def _add(self, presence: Presence) -> None:
+        self._presences.append(presence)
+
+    def __len__(self) -> int:
+        return len(self._presences)
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._presences[index]
+
+    def __iter__(self) -> Iterator[Presence]:
+        return iter(self._presences)
+
+    def __contains__(self, presence: object) -> bool:
+        return presence in self._presences
+
+    def __eq__(self, other: object) -> bool:
+        return list(self._presences) == list(other) if isinstance(other, Sequence) else NotImplemented
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return repr(self._presences)
+
+
+class _AnswerTally:
+    """What the declarations at one place — an identifier, or the suffixes of
+    a base — say about one question, counted by the answers they allow, so
+    that how many a presence excludes is a lookup, not a test of each (#94).
+
+    A declaration that can appear and conditions the question allows either
+    the one answer it wants (*positive*) or every answer but those it refuses
+    (*negative*)."""
+
+    def __init__(self) -> None:
+        self.positive: Counter[Any] = Counter()  # declarations wanting a value, by value
+        self.positive_total = 0
+        self.negative = 0
+        self.refusing: Counter[Any] = Counter()  # negative declarations refusing a value, by value
+        self.refusals: Counter[frozenset[Any]] = Counter()  # negative declarations, by the answers they refuse
+        self.widest = 0  # the most answers one negative declaration refuses
+
+    @property
+    def mentions(self) -> int:
+        return self.positive_total + self.negative
+
+    def add(self, wanted: frozenset[Any], refusal: frozenset[Any]) -> None:
+        """Count a declaration that can appear and wants *wanted* and refuses
+        *refusal* of the question's answers (``_FreeIdentifiers._values``)."""
+        if wanted:
+            (value,) = wanted
+            self.positive[value] += 1
+            self.positive_total += 1
+        else:
+            self.negative += 1
+            self.refusing.update(refusal)
+            self.refusals[refusal] += 1
+            self.widest = max(self.widest, len(refusal))
+
+    def excluded(self, wanted: frozenset[Any], refusal: frozenset[Any], size: int) -> int:
+        """How many of the declarations that name the question a presence
+        excludes, when it wants *wanted* and refuses *refusal* of its *size*
+        answers (it can appear): those with no answer in common with it."""
+        if wanted:
+            (value,) = wanted
+            # A positive declaration wants another value; a negative one refuses this.
+            return self.positive_total - self.positive[value] + self.refusing[value]
+        count = sum(self.positive[value] for value in refusal)  # wanting a value it refuses
+        # A negative declaration is excluded if between them they refuse every
+        # answer, which they cannot when the widest refuses too few.
+        if self.negative and len(refusal) + self.widest >= size:
+            count += sum(
+                tally for refused_by, tally in self.refusals.items() if len(refused_by | refusal) == size
+            )
+        return count
+
+
+class _FreeIdentifiers:
+    """The identifiers headings get when theirs is missing or taken (§5.5).
+
+    Called with a heading's base identifier and presence, it returns the
+    lowest suffix of the base — none, -2, -3, … — not taken by an explicit
+    identifier or by an earlier heading that can appear with this one. The
+    caller declares each identifier it takes (``declare``), explicit or not,
+    and reads the declarations of each identifier back (``anchors``).
+
+    Probing every suffix for each heading would be quadratic in a document of
+    many headings with one title (#94). Three things avoid it:
+
+    - A suffix taken for a presence stays taken, as declarations only grow,
+      so a call for the same base and presence resumes after the suffixes
+      known to be taken.
+    - A presence can appear together with a declaration unless some question
+      they both condition has no answer that satisfies both (``satisfiable``
+      decides per question, §15.4). When no declaration at a base's suffixes
+      is excluded by the heading's own conditions on any question, every
+      suffix with a declaration is taken, and the lowest free one is the
+      first with none.
+    - Whether the heading's conditions on one question exclude the
+      declarations at a suffix, or all of them, is counted from what they
+      want and refuse (``_AnswerTally``), not tested for each.
+
+    Two shapes remain superlinear:
+
+    - Headings whose presences are all different and all clash, like
+      ``p_k ∧ q`` and ``p_k ∧ !q`` for every k: each is looked at against every
+      earlier suffix, which the counts decide without testing a condition, so
+      n headings cost O(n²) cheap lookups. A heading with conditions on several
+      questions that together exclude each declaration at a suffix, no one
+      question excluding them all, is tested against each declaration there.
+    - A choice question with many distinct refusals of several values each
+      (``!c:a ∧ !c:b …``): a negative presence sums over the distinct sets of
+      answers refused at a suffix, whenever the widest of them and its own
+      might cover every answer.
+    """
+
+    def __init__(self, explicit_ids: Collection[str], questions: Any) -> None:
+        self._explicit_ids = frozenset(explicit_ids)  # the pointers below rely on its not changing
+        self._declarations: dict[str, _Declarations] = {}
+        #: The declarations of each identifier, by presence. Read-only: they
+        #: are made by ``declare``, which the indexes below follow.
+        self.anchors: Mapping[str, Sequence[Presence]] = MappingProxyType(self._declarations)
+        self._questions = questions
+        #: How many leading suffixes of a base are taken for a presence.
+        self._taken: dict[tuple[str, Presence], int] = {}
+        #: Per pool, what is asked of one question or presence again and again.
+        self._answers: dict[str, Collection[Any]] = {}
+        self._grouped: dict[Presence, dict[str, Presence]] = {}
+        self._wanted_refused: dict[tuple[str, Presence], tuple[frozenset[Any], frozenset[Any]]] = {}
+        self._appears: dict[Presence, bool] = {}
+        self._excludes: dict[tuple[Presence, Presence], bool] = {}
+        #: How many declarations that can appear an identifier has.
+        self._occupants: dict[str, int] = {}
+        #: What those declarations say of a question: at an identifier, and
+        #: across a base's suffixes.
+        self._at: dict[tuple[str, str], _AnswerTally] = {}
+        self._across: dict[tuple[str, str], _AnswerTally] = {}
+        #: Per base, the lowest suffix that is not explicit, and the lowest
+        #: that is not explicit either and has no declaration that can appear.
+        #: Both only move up.
+        self._lowest: dict[str, int] = {}
+        self._lowest_empty: dict[str, int] = {}
+
+    def declare(self, identifier: str, presence: Presence) -> None:
+        """Record that *identifier* is declared with *presence*."""
+        self._declarations.setdefault(identifier, _Declarations())._add(presence)
+        if not self._can_appear(presence):
+            return  # it clashes with nothing
+        self._occupants[identifier] = self._occupants.get(identifier, 0) + 1
+        suffixed = _SUFFIXED_RE.fullmatch(identifier)
+        bases = (identifier, suffixed.group(1)) if suffixed else (identifier,)
+        for question, conditions in self._by_question(presence).items():
+            wanted, refusal = self._values(question, conditions)
+            self._at.setdefault((identifier, question), _AnswerTally()).add(wanted, refusal)
+            for base in bases:
+                self._across.setdefault((base, question), _AnswerTally()).add(wanted, refusal)
+
+    def __call__(self, base: str, presence: Presence) -> str:
+        if not self._can_appear(presence):
+            return self._suffixed(base, self._first(self._lowest, base, occupied=False))
+        empty = self._first(self._lowest_empty, base, occupied=True)
+        if not self._excludes_some(base, presence):
+            return self._suffixed(base, empty)  # every suffix with a declaration is taken
+        key = (base, presence)
+        suffix = self._taken.get(key, 0) + 1
+        while suffix < empty:
+            candidate = self._suffixed(base, suffix)
+            if candidate not in self._explicit_ids and not self._appears_with(candidate, presence):
+                return candidate
+            self._taken[key] = suffix
+            suffix += 1
+        return self._suffixed(base, empty)
+
+    @staticmethod
+    def _suffixed(base: str, suffix: int) -> str:
+        return base if suffix == 1 else f"{base}-{suffix}"
+
+    def _first(self, lowest: dict[str, int], base: str, *, occupied: bool) -> int:
+        """The lowest suffix of *base* from ``lowest[base]`` on that is not
+        explicit and, with *occupied*, has no declaration that can appear."""
+        suffix = lowest.get(base, 1)
+        while (candidate := self._suffixed(base, suffix)) in self._explicit_ids or (
+            occupied and self._occupants.get(candidate)
+        ):
+            suffix += 1
+        lowest[base] = suffix
+        return suffix
+
+    def _excludes_some(self, base: str, presence: Presence) -> bool:
+        """True if *presence* (that can appear) excludes some declaration at
+        some suffix of *base*, on some question."""
+        for question, conditions in self._by_question(presence).items():
+            declared = self._across.get((base, question))
+            if declared is None:
+                continue
+            if declared.excluded(*self._values(question, conditions), len(self._answers_of(question))):
+                return True
+        return False
+
+    def _appears_with(self, identifier: str, presence: Presence) -> bool:
+        """True if *presence* (that can appear) can appear together with a
+        declaration of *identifier* (``_clashes``)."""
+        occupants = self._occupants.get(identifier, 0)
+        if not occupants:
+            return False  # nothing, or only what never appears
+        grouped = self._by_question(presence)
+        excluded = 0  # the declarations the questions exclude, counted for each question
+        for question, conditions in grouped.items():
+            declared = self._at.get((identifier, question))
+            if declared is None or declared.mentions < occupants:
+                if len(grouped) == 1:
+                    return True  # a declaration that says nothing of the one question
+                if declared is None:
+                    continue
+            count = declared.excluded(*self._values(question, conditions), len(self._answers_of(question)))
+            if count == occupants:
+                return False  # this question alone excludes every declaration
+            excluded += count
+        if excluded < occupants:
+            return True  # some declaration is excluded by no question
+        # The questions together might exclude each declaration, one for each.
+        return any(not self._exclude(presence, other) for other in self._declarations[identifier])
+
+    def _answers_of(self, question: str) -> Collection[Any]:
+        if question not in self._answers:
+            self._answers[question] = question_answers(question, self._questions)
+        return self._answers[question]
+
+    def _by_question(self, presence: Presence) -> dict[str, Presence]:
+        if presence not in self._grouped:
+            self._grouped[presence] = {
+                question: frozenset(conditions) for question, conditions in by_question(presence).items()
+            }
+        return self._grouped[presence]
+
+    def _values(self, question: str, conditions: Presence) -> tuple[frozenset[Any], frozenset[Any]]:
+        """The values *conditions* on *question* want, and those of its
+        answers they refuse."""
+        key = (question, conditions)  # the refusal is filtered by this question's answers
+        if key not in self._wanted_refused:
+            wanted, refused = condition_values(conditions)
+            answers = self._answers_of(question)
+            self._wanted_refused[key] = (
+                frozenset(wanted),
+                frozenset(value for value in refused if value in answers),
+            )
+        return self._wanted_refused[key]
+
+    def _can_appear(self, presence: Presence) -> bool:
+        if presence not in self._appears:
+            self._appears[presence] = satisfiable_in(presence, self._answers_of)
+        return self._appears[presence]
+
+    def _exclude(self, first: Presence, second: Presence) -> bool:
+        key = (first, second)
+        if key not in self._excludes:
+            self._excludes[key] = exclusive_in(first, second, self._answers_of)
+        return self._excludes[key]
 
 
 # A link's pointy-bracket destination, ``](<…>)``, then an optional title and
@@ -505,7 +801,7 @@ def _check_raw_html(
     for section_index, block_index, top in document.iter_indexed_blocks():
         for block in nested_blocks(top):
             if block.kind == "html" and not is_comment_only(block.text):
-                source = HTML_COMMENT_RE.sub("", block.text)
+                source = strip_comments(block.text)
                 first = source.strip().split("\n", 1)[0]
                 warn("block", source, where.find(section_index, block_index, first))
         for fragment_index, (text, _position) in enumerate(block_fragments(top)):
@@ -589,15 +885,77 @@ def _is_template(
     )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Mode:
+    """How ``_validate`` reads a document that is not a complete, readable one
+    (#39, #43). Internal: only ``validate(fragment=)`` is public. The default is
+    an ordinary document; the other presets below are plain data, so each issue
+    that needs one picks it where it knows the case.
+
+    ``empty_metadata``: validate with the empty metadata of a document without
+    frontmatter in place of the document's own (the source map still fits: it
+    describes the body, ``positions.document_shape``), so that nothing is
+    checked of, or resolved against, frontmatter that is not to be read as
+    declarations, and every rule that waits on ``frontmatter_absent`` (§3.1,
+    §16.6) is silent. ``suppress``: the findings that need these (``Depends``)
+    are not reported. ``report_frontmatter_absent``: whether the document draws
+    frontmatter-absent (§3.2); it does not when its frontmatter is there but
+    is not read. ``check_first_heading``: the first heading is required at
+    level 1 (§4.1) although the metadata is the empty one, because the block
+    that is not read still is the frontmatter of a main document. ``fragment``:
+    the document is an include fragment or an attachment file validated on its
+    own (§12.2, §12.4): its findings with a reason are ``host_dependent``.
+    ``template``: whether the document is a template, when the caller knows
+    (the fragment's host is one, or is not); None leaves it to the document
+    (``is_template``). ``kind``: what the fragment is to its host, an include
+    fragment or a LegalDown attachment file (#35): the ids of the findings on its
+    shape, and what §15.3 asks of it in a template."""
+    empty_metadata: bool = False
+    suppress: frozenset[Depends] = frozenset()
+    report_frontmatter_absent: bool = True
+    check_first_heading: bool = False
+    fragment: bool = False
+    template: bool | None = None
+    kind: FragmentKind = "include"
+
+
+#: A complete document.
+_DOCUMENT = _Mode()
+#: An include fragment or attachment file on its own (#39): all the findings
+#: are made, and those the including document may settle are flagged.
+_FRAGMENT = _Mode(empty_metadata=True, report_frontmatter_absent=False, fragment=True)
+#: A document whose frontmatter cannot be read (#43): its body is validated, but
+#: not against what the frontmatter might have declared.
+_UNREADABLE_FRONTMATTER = _Mode(
+    empty_metadata=True,
+    suppress=frozenset({Depends.FRONTMATTER}),
+    report_frontmatter_absent=False,
+    check_first_heading=True,
+)
+
+
 def validate(
     document: Document,
     *,
     final: bool = False,
+    fragment: bool = False,
+    fragment_kind: FragmentKind | None = None,
+    template: bool | None = None,
     resolve: LoadFile | None = None,
+    document_root: str | os.PathLike[str] | None = None,
     import_definitions: DefinitionsImporter | None = None,
     import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
 ) -> ValidationResult:
     """Validate a LegalDown document and build lookup indices.
+
+    A document whose frontmatter could not be read (``parse`` or ``load`` with
+    ``on_frontmatter_error="keep"``, #43) draws frontmatter-invalid-yaml, and
+    its body is validated all the same, as one whose metadata is empty:
+    nothing is reported for want of what the frontmatter might have declared
+    (a title, sides, and the party, side, attachment or question the body uses).
+    It is so for as long as ``Document.frontmatter_error`` is set, not only
+    when the document is parsed: a caller that repairs the metadata in code
+    sets ``document.frontmatter_error = None`` to have it read as it is.
 
     Parameters
     ----------
@@ -606,24 +964,117 @@ def validate(
     final:
         Apply the final check (§15.9): the document is meant for signature,
         so a remaining blank or template construct is an Error.
+    fragment:
+        The document is an include fragment (§12.2) or a LegalDown attachment
+        file (§12.4) validated on its own: body-only, so it is not asked for
+        frontmatter, a title, parties or sides, and a level-1 first heading is
+        not required (§4.1). What it cannot settle alone, because the document
+        that includes it declares it (a party, a side, an attachment or a
+        question) or defines it (the target of a ``{{ref:}}`` or a
+        ``{{term:}}``), is still reported, with the same rule id and level it
+        has in a complete document, but marked ``Diagnostic.host_dependent``:
+        a finding to set aside when the host is not known, and to take
+        seriously once the fragment is validated in it. What is wrong with the
+        fragment itself is not marked. Frontmatter in the fragment is
+        include-has-frontmatter (§16.11) and a level-1 heading include-has-h1
+        (attachment-has-frontmatter and attachment-has-h1 for an attachment
+        file, *fragment_kind*); the metadata is then not read, so nothing is
+        checked of it. The fragment's own includes are not read: *resolve*
+        belongs to the document that includes it. A
+        definition the fragment declares and does not reference is still
+        reported (def-unreferenced), as ``host_dependent``: the host may
+        reference it (§12.2). Default False: a complete document, as before.
+    fragment_kind:
+        Only with *fragment*: what the file is to the document that uses it,
+        ``"include"`` (an ``{{include:}}`` fragment, §12.2) or ``"attachment"`` (a
+        LegalDown attachment file, ``attachments[].file``, §12.4). They share
+        a file model, but their findings have other ids: the frontmatter or
+        level-1 heading of an attachment file is attachment-has-frontmatter or
+        attachment-has-h1 (§16.10), of a fragment include-has-frontmatter or
+        include-has-h1 (§16.11). And with ``template=True`` an include fragment is
+        held to what §15.3 asks of a template's fragments, as assembly asks it: no
+        condition, no drafting note, no ``{{include:}}``, and an explicit identifier
+        on every heading (template-fragment-invalid, §16.12), while an attachment
+        file may hold conditions and notes of its own, and only an ``{{include:}}``
+        in it is reported. Those checks are made for ``template=True`` only: a
+        fragment's host is not known to be a template otherwise. By default
+        (None) the file is an include fragment, as before. Raises ``ValueError``
+        without *fragment*, or for any other value.
+    template:
+        Only with *fragment*: whether the document that includes the fragment
+        is a template (§15.1), which a fragment cannot tell by itself (a
+        blank or a drafting note is legal in any document). True checks it as
+        part of a template: the checks only a template has are made (a
+        blank whose id YAML reads as a boolean or null; what §15.3 asks of a
+        template's fragment, ``template-fragment-invalid``, per *fragment_kind*)
+        and a preamble paragraph's condition is placed (§5.7, §15.3). False says it is not one, so it declares no
+        questions either: a condition or ``{{choose:}}`` naming a question is
+        then ``condition-invalid`` / ``choose-invalid`` without being
+        ``host_dependent``, and the fragment is no template. By default
+        (None) a fragment is a template exactly when it holds a condition or a
+        ``{{choose:}}``, as any document does, but is then not held to what §15.3
+        asks of a template's fragments, for it is not known to be in one;
+        ``DocumentIndex.is_template`` and ``placed_markers`` follow the
+        decision. Raises ``ValueError`` without *fragment*.
     resolve:
-        Reads a file the document refers to — the document it amends
-        (``amends.file``, §7.5) and its LegalDown attachment files (§12.4) —
-        for the definitions they declare: ``(relative_path) -> text | None``,
-        with ``None`` for a file that is not there or cannot be read. By
-        default the files are read from the directory of ``document.path``
-        (``file_loader``), as far as that is within it (§2.3); a document
-        without a ``path`` (from ``parse``) has none, so the checks that need
-        them are skipped, as they are with ``resolve=lambda path: None``, for
-        a loaded document that is to be validated without reading anything.
-        Only the referenced file's own definitions are read, not those it
-        refers to in turn.
+        Reads a file the document refers to: ``(relative_path) -> text | None``,
+        with ``None`` for a file that is not there or cannot be read. These are
+        the document it amends (``amends.file``, §7.5) and its LegalDown
+        attachment files (§12.4), for the definitions they declare, and its
+        include fragments (§12.2), which are checked: ``include-file-missing`` at
+        the include of one that is not there, and, at their own lines and with
+        ``Diagnostic.file`` the fragment's path, ``include-has-frontmatter``,
+        ``include-has-h1`` and ``include-heading-skip`` (§16.11), and, in a
+        template, the parts of ``template-fragment-invalid`` that read a file
+        (§15.3, §16.12). By default the files are read from the directory of
+        ``document.path`` (``file_loader``), as far as that is within it (§2.3);
+        a document without a ``path`` (from ``parse``) has none, so nothing is
+        read and the checks that need a file are not made. ``resolve=lambda path:
+        None`` says every file is missing, which ``include-file-missing`` reports:
+        to validate a loaded document without reading its files, validate it
+        without its path (``dataclasses.replace(document, path=None)``). A path
+        a loader is not asked for (``relative_path``) is not read. An include of
+        one that holds a backslash or a null byte is ``include-file-missing``, as
+        assembly refuses it. A path that is refused only because it leads out of
+        the document's directory (``../x.lgd``) is not that: it is a valid path
+        (§2.3), with a ``document_root`` or without one, that this implementation
+        does not read, and it says nothing (a known limitation, #109; given a root it
+        leaves, it is path-outside-root). Only the referenced file's own
+        definitions are read, not those it refers to in turn; an include a
+        fragment holds is not followed (``include-cycle`` is not implemented).
+    document_root:
+        The directory every file the document refers to must lie within
+        (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
+        image, draws path-outside-root. Without one (the default) the
+        containment check does not run, and ``../shared/definitions.lgd`` is
+        valid. A document from ``load`` is read from the directory of its
+        ``path``, which must be within the root (else the document is
+        reported once as outside it); one from ``parse`` is taken to be at the
+        root. Only the text of the paths is read, never a file, and a symbolic
+        link is not followed. A path that is not relative (an absolute one, or
+        one beginning with a URI scheme) draws path-not-relative, with or
+        without a root. Both checks cover ``{{include:}}``, an image's path
+        (``![alt](path)``, not a reference-style one) and ``attachments[].file``,
+        ``amends.file``, ``supersedes.file`` and ``translations`` of the
+        frontmatter, and are Core checks: whether the file exists is Full
+        (§17.4). In a *fragment* the include and image paths are the
+        fragment's own, so they are checked and never ``host_dependent``;
+        its frontmatter is never read, so it has no paths to check.
     import_definitions, import_attachment_definitions:
         Deprecated since 0.4.0, removed in 0.5.0: use *resolve*. They give the
         definitions themselves, which *resolve* leaves to the validator.
     """
+    if template is not None and not fragment:
+        raise ValueError("validate(template=) is only meaningful with fragment=True")
+    if fragment_kind is not None and not fragment:
+        raise ValueError("validate(fragment_kind=) is only meaningful with fragment=True")
+    if fragment_kind not in (None, "include", "attachment"):
+        raise ValueError(f"fragment_kind must be 'include' or 'attachment', not {fragment_kind!r}")
     resolve = _resolver(document, resolve, import_definitions, import_attachment_definitions, stacklevel=3)
-    return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
+    mode = replace(_FRAGMENT, template=template, kind=fragment_kind or "include") if fragment else _DOCUMENT
+    return _validate(
+        document, final, resolve, import_definitions, import_attachment_definitions, mode, document_root=document_root
+    )
 
 
 def validate_document(
@@ -642,7 +1093,7 @@ def validate_document(
         stacklevel=2,
     )
     resolve = _resolver(document, None, import_definitions, import_attachment_definitions, stacklevel=3)
-    return _validate(document, final, resolve, import_definitions, import_attachment_definitions)
+    return _validate(document, final, resolve, import_definitions, import_attachment_definitions, _DOCUMENT)
 
 
 def _resolver(
@@ -671,32 +1122,27 @@ def _resolver(
     return resolve
 
 
-def _definitions_in(document: Document, resolve: LoadFile | None, path: str) -> dict[str, str] | None:
+def _definitions_in(document: Document, files: Files | None, path: str) -> dict[str, str] | None:
     """The definitions the file at *path* declares (``{id: term}``), or None
-    when it cannot be read as a LegalDown document: not there, no *resolve*,
-    or frontmatter that cannot be read (that file's problem, not this
-    document's). Any other exception is the parser's fault, as it is anywhere."""
+    when it cannot be read as a LegalDown document: not there, no *files* (the
+    validation has no ``resolve``), or frontmatter that cannot be read (that
+    file's problem, not this document's). Any other exception is the parser's
+    fault, as it is anywhere."""
     # Imported here for the reason given in ``_validate``.
     from ..definitions import collect_definitions, definition_lookup
-    from ..parser import FrontmatterError, parse
 
     # Asked for as assembly asks (§15.7): normalized, and only a path within
     # the document's directory (§2.3).
     relative = relative_path(path)
-    if resolve is None or relative is None:
+    if files is None or relative is None:
         return None
-    path = relative
     # A document that names itself has nothing to add to itself.
-    if document.path is not None and within(document.path.parent, path) == document.path.resolve():
+    if files.is_own(relative):
         return None
-    text = resolve(path)
-    if text is None:
+    other = files.read(relative)
+    if other is None or other.document.frontmatter_error is not None:
         return None
-    try:
-        other = parse(text)
-    except FrontmatterError:
-        return None
-    return definition_lookup(collect_definitions(other))
+    return definition_lookup(collect_definitions(other.document))
 
 
 def _validate(
@@ -705,10 +1151,34 @@ def _validate(
     resolve: LoadFile | None,
     import_definitions: DefinitionsImporter | None,
     import_attachment_definitions: AttachmentDefinitionsImporter | None,
+    mode: _Mode,
+    document_root: str | os.PathLike[str] | None = None,
 ) -> ValidationResult:
-    result = _Recorder()
+    # A document whose frontmatter could not be read (parse(on_frontmatter_error=
+    # "keep"), #43) is validated by its body. A fragment is not: it must have no
+    # frontmatter, which is then not read either (§12.2), so what it asks is
+    # the same, and its mode is already that of a body that is not declared.
+    unreadable = document.frontmatter_error if not mode.fragment else None
+    if unreadable is not None:
+        mode = _UNREADABLE_FRONTMATTER
+    result = _Recorder(suppress=mode.suppress, fragment=mode.fragment)
+    # A fragment's own frontmatter, if it wrongly has any, is reported below
+    # and then not read: the host's frontmatter is the one that declares.
+    # Everything after this reads the document as a body-only one, whose
+    # source map is the same (it describes the body, positions.document_shape).
+    original = document
+    if mode.empty_metadata:
+        document = replace(document, metadata=Metadata(frontmatter_absent=True))
     # Where each part is, for the line of each diagnostic (§16.9).
     where = Locator(document)
+    # The files the document refers to, each read and parsed once: the original it
+    # amends, its attachment files, and its include fragments (#35). A fragment
+    # validated on its own reads none: its own includes are the host's concern.
+    files = Files(resolve, document) if resolve is not None else None
+    # The paths the document names (§2.3, #104), from the directory it is in.
+    file_references = FileReferences(
+        result, document_root, document.path.parent if document.path is not None else None, where.start()
+    )
     # §3.2: a newer declared version draws a Warning, never a failure, and
     # softens unknown directives to Warnings (§11.5).
     declared_version = parse_version(document.metadata.legaldown)
@@ -723,10 +1193,14 @@ def _validate(
             f"be recognized (§3.2).",
             line=where.field("legaldown"),
         )
+    # §16.6: an Error, but "prevents rendering" (§16.1), not "stops validating":
+    # the block is not read (the metadata is empty, above), and the body still is.
+    if unreadable is not None:
+        result.error("frontmatter-invalid-yaml", frontmatter_message(unreadable), line=unreadable.line or 1)
     # Without frontmatter a document is valid, but has no metadata to
     # check: it draws this Warning alone (§3.2, §16.6).
     frontmatter_absent = document.metadata.frontmatter_absent
-    if frontmatter_absent:
+    if frontmatter_absent and mode.report_frontmatter_absent:
         result.warning(
             "frontmatter-absent",
             "The document has no frontmatter (§3.1), so it has no title, parties, or other "
@@ -734,6 +1208,11 @@ def _validate(
             "very start and a closing '---' line.",
             line=where.start(),
         )
+    if mode.fragment:
+        # The file's own text has no frontmatter and no level-1 heading, whatever it is
+        # used for (§12.2, §12.4): an include fragment's ids, or an attachment file's.
+        for finding in shape_findings(original, where, mode.kind):
+            result.error(finding.rule, finding.message, line=finding.line)
     title = document.metadata.title.strip()
     if not title and not frontmatter_absent:
         result.error("title-missing", "The document title is required.", line=where.field("title"))
@@ -741,12 +1220,14 @@ def _validate(
     # Imported here to avoid a module-level import cycle (definitions ->
     # validator.helpers -> validator/__init__ -> core).
     from ..definitions import (
+        DefinitionRef,
         block_fragments,
         collect_definitions,
         find_definition_anchors,
         id_term,
         text_fragments,
     )
+    from .circular import TermUse, circular_message, find_circular_definitions, term_owners
 
     # Each text is lexed once per validation and shared by the passes below.
     lex_fragment = cache(lex)
@@ -777,8 +1258,12 @@ def _validate(
     # Markers are found first: only a template gives a preamble paragraph's
     # condition its place (§5.7).
     markers = find_markers(document, lex_fragment)
-    template = _is_template(document, markers, lex_fragment)
+    template = _is_template(document, markers, lex_fragment) if mode.template is None else mode.template
     units = Units(document, markers, questions, template=template)
+    # A host that is not a template declares no questions: a question that a
+    # condition or a {{choose:}} names and the fragment does not declare is then
+    # nobody's to declare (#39).
+    host_declares = mode.template is not False
     body_directives = {
         directive.name
         for _s, _i, block in document.iter_indexed_blocks()
@@ -983,6 +1468,9 @@ def _validate(
             line=where.key("supersedes", "title"),
         )
 
+    # ── File references of the frontmatter (§2.3, §16.2) ──
+    check_frontmatter_paths(document.metadata, where, file_references)
+
     # ── Section numbering and identifiers ──
     # Explicit identifiers share the anchor namespace with attachment ids
     # (§5.6). Two declarations of one identifier are duplicates only when
@@ -998,19 +1486,10 @@ def _validate(
         | {found.marker.identifier for found in placed_anchors}
         | attachment_ids
     )
+    free_identifier = _FreeIdentifiers(explicit_ids, questions)
     # Each anchor's declarations, by presence. While sections are numbered,
     # it holds only earlier headings' identifiers.
-    anchors: dict[str, list[Presence]] = {}
-
-    def free_identifier(base: str, presence: Presence) -> str:
-        """The lowest suffix of *base* — none, -2, -3, … — not taken by an
-        explicit identifier or by an earlier heading that can appear with
-        this one (§5.5)."""
-        candidate, suffix = base, 1
-        while candidate in explicit_ids or _clashes(presence, anchors.get(candidate, []), questions):
-            suffix += 1
-            candidate = f"{base}-{suffix}"
-        return candidate
+    anchors = free_identifier.anchors
 
     counters = [0] * 7
     # Numbers count from the shallowest heading level: a document whose
@@ -1023,11 +1502,18 @@ def _validate(
     # heading must be at level 1 (§4.1). A document without frontmatter may
     # be an include fragment or an attachment file validated on its own,
     # which has no level-1 heading and to which §4.1 does not apply alone
-    # (§12): its first heading sets the level.
-    last_level: int | None = None if document.metadata.frontmatter_absent else 0
+    # (§12): its first heading sets the level. Not so when the frontmatter is
+    # there but is not read (#43): it still is a main document's.
+    first_level: int | None = None if document.metadata.frontmatter_absent and not mode.check_first_heading else 0
+    last_level = first_level
     # The last section at each open level: (identifier, presence). An
     # alternative to it shares its number (§15.8).
     previous_sibling: dict[int, tuple[str, Presence]] = {}
+    # Each heading-skip, with the place among the diagnostics it is recorded at (and the
+    # diagnostic before that place, which must still be there), until the headings that a
+    # fragment between them makes valid in the combined document are known (check_includes,
+    # #35): it is recorded then, if it stands, with the line it has here.
+    heading_skips: dict[int, tuple[int, Diagnostic | None, str, Line]] = {}
 
     for section_index, section in enumerate(document.sections):
         # An out-of-range level is an Error, but the section still gets an
@@ -1044,15 +1530,19 @@ def _validate(
             )
             level = min(max(level, 1), MAX_SECTION_LEVEL)
         if last_level == 0 and level > 1:
-            result.error(
-                "heading-skip",
+            heading_skips[section_index] = (
+                len(result.diagnostics),
+                result.diagnostics[-1] if result.diagnostics else None,
                 f"Heading levels must not skip. '{section.title}' is at level {level}, but the "
-                f"document has no level-1 heading before it.", line=where.heading(section_index),
+                f"document has no level-1 heading before it.",
+                where.heading(section_index),
             )
         elif last_level and level - last_level > 1:
-            result.error(
-                "heading-skip",
-                f"Heading levels must not skip. '{section.title}' jumps from level {last_level} to {level}.", line=where.heading(section_index),
+            heading_skips[section_index] = (
+                len(result.diagnostics),
+                result.diagnostics[-1] if result.diagnostics else None,
+                f"Heading levels must not skip. '{section.title}' jumps from level {last_level} to {level}.",
+                where.heading(section_index),
             )
         if re.match(
             r"^(article\s+[ivxlcdm]+|\d+(?:\.\d+)*)",
@@ -1098,7 +1588,7 @@ def _validate(
                     f"identifier. It was adjusted to '{identifier}'; give the heading an "
                     f"explicit identifier (§5.5).", line=where.heading(section_index),
                 )
-        anchors.setdefault(identifier, []).append(presence)
+        free_identifier.declare(identifier, presence)
 
         if _clashes(presence, attachment_presence.get(identifier, []), questions):
             result.error(
@@ -1189,7 +1679,7 @@ def _validate(
                 line=where.key("attachments", attachment_entry[anchor_id]),
             )
         else:
-            anchors.setdefault(anchor_id, []).append(presence)
+            free_identifier.declare(anchor_id, presence)
             result.index.section_lookup.setdefault(anchor_id, result.index.sections[found.section])
 
     # ── Definitions (§7) ──
@@ -1207,6 +1697,10 @@ def _validate(
 
     # Each identifier's declarations: (term, auto-generated, presence).
     declared_terms: dict[str, list[tuple[str, bool, Presence]]] = {}
+    # The definitions that are registered, and the {{term:}} uses outside
+    # drafting notes, for definition-circular (§16.3, #105).
+    registered: list[tuple[DefinitionRef, Presence]] = []
+    term_uses: list[TermUse] = []
     for ref in definition_refs:
         def_id = ref.id
         if not IDENTIFIER_RE.fullmatch(def_id):
@@ -1245,6 +1739,7 @@ def _validate(
                 )
             continue
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
+        registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
 
     # ── Definition source-form checks (§7.2 validation table) ──
@@ -1289,7 +1784,7 @@ def _validate(
             if import_definitions is not None:
                 imported = import_definitions(amends_file, document.filename)
             else:
-                imported = _definitions_in(document, resolve, amends_file)
+                imported = _definitions_in(document, files, amends_file)
             if imported is not None:
                 _amends_import_succeeded = True
                 _imported_definitions = imported
@@ -1317,7 +1812,7 @@ def _validate(
         if import_attachment_definitions is not None:
             att_defs = import_attachment_definitions(att.file)
         else:
-            att_defs = _definitions_in(document, resolve, att.file)
+            att_defs = _definitions_in(document, files, att.file)
         if not att_defs:
             continue
         # Its definitions are present when the attachment is (§15.3).
@@ -1375,6 +1870,10 @@ def _validate(
         chooses.append((directive, line))
         result.error("choose-invalid", f"'{directive.source}' is {misplaced} (§15.5).", line=line)
 
+    # The images that name their file by a link reference definition (#92, #104):
+    # the definition's path is judged once, where it is written.
+    reference_images = ReferenceImages(document)
+
     # Every {{ref:}}, {{term:}}, and {{attach:}}: (target, presence, in a
     # drafting note, line), for reference safety (§15.4).
     references: dict[str, list[tuple[str, Presence, bool, Line]]] = {"ref": [], "term": [], "attach": []}
@@ -1388,10 +1887,19 @@ def _validate(
             lifted_line = partial(where.lifted, section_index, block_index, "{{" + block.kind)
             (ref_targets if block.kind == "ref" else term_targets).append((block.target.strip(), lifted_line))
             references[block.kind].append((block.target.strip(), block_presence, False, lifted_line))
+            if block.kind == "term":
+                term_uses.append(TermUse(section_index, block_index, None, block.target.strip(), block_presence))
         notes = [quote for quote in block_quotes(block) if quote.is_drafting_note]
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
+            owner_of = None  # for definition-circular, once a {{term:}} asks
+            if "![" in fragment:
+                check_fragment_images(
+                    fragment, lexed, file_references, where, section_index, block_index, fragment_index,
+                    reference_images,
+                )
             presence = units.presence(section_index, block_index, fragment_index)
+            in_note = bool(lexed.directives) and in_drafting_note(notes, fragment_index)  # only a directive asks
             for offset in lexed.stray_braces:
                 result.warning(
                     "brace-stray", BRACE_STRAY,
@@ -1407,7 +1915,7 @@ def _validate(
                     placeholders.append((directive, line))
                     # Its effective type decides which parameters it defines.
                     with result.at(line):
-                        _check_placeholder(directive, result, blanks, questions, line=line)
+                        _check_placeholder(directive, result, blanks, questions, in_note=in_note, line=line)
                     continue
                 with result.at(line):
                     well_formed = _check_directive_arguments(directive, result)
@@ -1427,9 +1935,14 @@ def _validate(
                 value = directive.positional or ""
                 params = directive.params
                 if name in references and value:
-                    in_note = any(fragment_index in note.fragments for note in notes)
                     references[name].append((value, presence, in_note, line))
+                    if name == "term" and not in_note:
+                        owner_of = owner_of or term_owners(fragment, lexed, document.metadata.language)
+                        term_uses.append(
+                            TermUse(section_index, block_index, fragment_index, value, presence, owner_of(directive))
+                        )
                 if name in ("ref", "term") and not value:
+                    # Whatever the host holds, a reference with no target is wrong.
                     result.error(
                         "ref-broken" if name == "ref" else "term-undefined",
                         f"'{directive.source}' has no target.", line=line,
@@ -1485,6 +1998,7 @@ def _validate(
                         result.error(
                             "party-unknown",
                             f"Party directive references unknown party: '{value}'.", line=line,
+                            depends=Depends.FRONTMATTER,
                         )
                 elif name == "side":
                     if not value or not IDENTIFIER_RE.fullmatch(value):
@@ -1496,6 +2010,7 @@ def _validate(
                         result.error(
                             "side-unknown",
                             f"Side directive references unknown side: '{value}'.", line=line,
+                            depends=Depends.FRONTMATTER,
                         )
                 elif name == "field":
                     ftype = params.get("type", "")
@@ -1520,13 +2035,20 @@ def _validate(
                     result.index.values.fields.append((value, ftype))
                 elif name == "choose":
                     with result.at(line):
-                        check_choose(directive, questions, result)
+                        check_choose(directive, questions, result, host_declares=host_declares)
+                elif name == "include":
+                    # §2.3: a path of the fragment's own, whoever includes it
+                    file_references.check(
+                        value, "{{include:}}", line,
+                        at=(-1 if section_index is None else section_index, block_index, fragment_index, directive.start),
+                    )
                 elif name == "attach":
                     referenced_attachments.add(value)
                     if value not in attachment_ids:
                         result.error(
                             "attach-undeclared",
                             f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.", line=line,
+                            depends=Depends.FRONTMATTER,
                         )
         for target, line in ref_targets:
             if target in result.index.section_lookup:
@@ -1538,9 +2060,16 @@ def _validate(
                     "ref-targets-attachment",
                     f"Reference '{{{{ref: {target}}}}}' targets an attachment id. "
                     f"Use '{{{{attach: {target}}}}}' instead.", line=line,
+                    depends=Depends.FRONTMATTER,
                 )
             else:
-                result.error("ref-broken", f"Broken section reference: '{target}'.", line=line)
+                # A target that is no identifier names nothing in any document
+                # (§6.2, §5.2); an identifier that is not here may be a section or an
+                # anchor of the including document (#39).
+                result.error(
+                    "ref-broken", f"Broken section reference: '{target}'.", line=line,
+                    depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
+                )
         for target, line in term_targets:
             result.used_terms.add(target)
             if target not in result.index.definition_lookup:
@@ -1550,6 +2079,7 @@ def _validate(
                             "amend-term-undefined",
                             f"Undefined term reference: '{target}' (not found in "
                             f"amendment or imported original).", line=line,
+                            depends=Depends.FRONTMATTER,  # `amends` is the frontmatter's
                         )
                     else:
                         # Original unavailable or not LegalDown source:
@@ -1559,10 +2089,13 @@ def _validate(
                             f"Term reference '{target}' is not defined in the "
                             f"amendment; the original document is not available "
                             f"to verify it.", line=line,
+                            depends=Depends.FRONTMATTER,
                         )
                 else:
+                    # As for ref-broken: a term is defined by an id (§7.2).
                     result.error(
-                        "term-undefined", f"Undefined term reference: '{target}'.", line=line
+                        "term-undefined", f"Undefined term reference: '{target}'.", line=line,
+                        depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
                     )
 
     _check_blank_codes(blanks, result)
@@ -1598,10 +2131,30 @@ def _validate(
         if att.when
     )
     for place, text, line in conditions:
-        problem = condition_problem(text, questions)
-        if problem:
-            result.error("condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).", line=line)
+        issue = condition_issue(text, questions)
+        if issue:
+            depends, problem = issue
+            result.error(
+                "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
+                line=line, depends=depends if host_declares else None,
+            )
     _check_never_true(document, markers, units, questions, result, where)
+
+    # Circular definitions (§16.3, §7.2): one Warning for each set of
+    # definitions explained in terms of each other, where the last of them, in
+    # document order, is declared. Alternatives (§15.4) that cannot appear
+    # together do not refer to each other; only a template has them.
+    for circle in find_circular_definitions(
+        document,
+        registered,
+        term_uses,
+        (lambda first, second: exclusive(first, second, questions)) if template else None,
+    ):
+        result.warning(
+            "definition-circular",
+            circular_message(registered[number][0].id for number in circle),
+            line=definition_line(registered[circle[-1]][0]),
+        )
 
     # Reference safety (§15.4): a reference resolves in every assembled
     # document it is in. References in drafting notes are exempt: assembly
@@ -1637,7 +2190,8 @@ def _validate(
         | {directive.positional for directive, _line in chooses if directive.positional}
     )
     # A question may be used in an include fragment or a LegalDown attachment
-    # file, which a single-document validator does not read (Full, §17.4).
+    # file. The files are read for their shape and what a template may hold in
+    # them (#35), not for the questions they use, so none is unused for certain.
     reads_other_files = "include" in body_directives or any(
         att.file.endswith(LEGALDOWN_EXTENSIONS) for att in meta.attachments
     )
@@ -1659,10 +2213,38 @@ def _validate(
         not_line_editable=meta.not_line_editable,
         where=where,
     )
-    notes = check_template_body(document, lex_fragment, result, template=template, where=where)
+    body = check_template_body(document, lex_fragment, result, template=template, where=where)
     _check_raw_html(document, lex_fragment, result, where)
+    check_heading_images(document, lex_fragment, file_references, where, reference_images)
+    reference_images.check(file_references, where)
+    file_references.finish()
+    # A fragment on its own is asked what a template's fragment must hold, when its host is
+    # one (§15.3, §16.12); the shape of its own text was checked at the start.
+    if mode.fragment and mode.template is True:
+        for finding in content_findings(document, where, body, markers, mode.kind, noted=True):
+            result.error(finding.rule, finding.message, line=finding.line)
+    # ── Includes (§12.2, §16.11) ──
+    filled = check_includes(
+        document, body.includes, result, where,
+        judged=file_references.reported,
+        files=None if mode.fragment else files,
+        template=template,
+        first_level=first_level,
+        unconditional=lambda include: units.presence(include.section, include.block, include.fragment) == ALWAYS,
+        lex_fragment=lex_fragment,
+    )
+    # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
+    # rest are recorded where the loop met them, the last first so that the places hold. That
+    # needs the diagnostics since then only to have been added to. If one was moved or removed
+    # (nothing does today), the place is not known: the skip is still reported, at the end.
+    for index, (position, before, message, line) in reversed(heading_skips.items()):
+        if index in filled:
+            continue
+        if not ((position == 0 and before is None) or (0 < position <= len(result.diagnostics) and result.diagnostics[position - 1] is before)):
+            position = len(result.diagnostics)
+        result.error_at(position, "heading-skip", message, line=line)
     if final:
-        _check_final(placeholders, chooses, notes, conditions, questions, result, where.key("questions"))
+        _check_final(placeholders, chooses, body.notes, conditions, questions, result, where.key("questions"))
 
     # Warn about declared but unreferenced attachments (§16.10): once per id,
     # which alternatives share (§15.3).
@@ -1689,6 +2271,9 @@ def _validate(
                 "def-unreferenced",
                 f"Definition '{ref.id}' is declared but never referenced via {{{{term:}}}}.",
                 line=definition_line(ref),
+                # A fragment's definitions are document-wide (§7.2, §12.2): the
+                # including document may well reference them (#39).
+                depends=Depends.BODY,
             )
 
     # What a renderer builds from: the template decision and the markers
@@ -1696,8 +2281,9 @@ def _validate(
     result.index.is_template = template
     result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
 
+    # A finding in a fragment the document includes has its file already (#35).
     if document.filename:
-        result.diagnostics = [replace(d, file=document.filename) for d in result.diagnostics]
+        result.diagnostics = [d if d.file else replace(d, file=document.filename) for d in result.diagnostics]
     return result.result()
 
 

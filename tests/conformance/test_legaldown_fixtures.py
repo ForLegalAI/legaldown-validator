@@ -31,6 +31,7 @@ import pytest
 import yaml
 
 from legaldown import CAPABILITIES, Template, assemble, parse_template
+from legaldown.files import file_loader
 from legaldown.parser import parse
 from legaldown.validator import validate
 
@@ -60,18 +61,22 @@ IMPLEMENTED_RULES = {
     "def-autogen-collision", "def-duplicate-id", "def-emphasis", "def-lossy-slug",
     "def-term-variable",
     "def-no-quoted-span", "def-single-quote-ambiguous", "def-unreferenced",
+    "definition-circular",
     "directive-duplicate-param", "directive-malformed", "directive-unknown",
     "directive-unknown-param", "document-type-invalid", "drafting-note-def",
     "drafting-note-unrecognized",
     "duration-invalid-unit", "duration-invalid-value",
     "field-type-key-format", "field-type-key-reserved", "field-type-missing",
-    "field-type-undeclared",
-    "heading-depth", "heading-hardcoded-number", "heading-skip", "insertion-boundary",
+    "field-type-undeclared", "frontmatter-invalid-yaml",
+    "heading-depth", "heading-hardcoded-number", "heading-skip",
+    "include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
+    "include-not-legaldown", "insertion-boundary",
     "issuer-side-required", "legaldown-version-newer", "metadata-date-invalid",
     "money-invalid-amount", "money-missing-currency", "money-unknown-currency",
     "note-invalid", "parties-minimum",
     "party-name-duplicate", "party-name-malformed", "party-type-invalid",
     "party-unknown",
+    "path-not-relative", "path-outside-root",
     "placeholder-id-malformed", "placeholder-in-structural-field",
     "placeholder-question-mismatch", "placeholder-type-inconsistent",
     "placeholder-type-invalid", "placeholder-unfilled", "placeholder-unknown-currency",
@@ -80,6 +85,16 @@ IMPLEMENTED_RULES = {
     "side-name-duplicate", "side-name-malformed", "side-party-name-format",
     "side-unknown", "sides-absent", "sides-minimum", "supersedes-title-empty",
     "template-construct-present", "template-fragment-invalid", "term-undefined", "title-missing",
+}
+
+
+# The Full rules a validator that reads the include fragments through a loader reports
+# (#35): their cases are multi-file, so they are run with the loader of their directory,
+# and judged by file as well as by line. The others of the Includes group stay unimplemented
+# (include-cycle, include-anchor-duplicate); include-not-legaldown is Core and runs as any case.
+_FULL_WITH_A_LOADER = {
+    "include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
+    "template-fragment-invalid",
 }
 
 
@@ -133,9 +148,10 @@ def _iter_valid_cases():
 
 
 # Runner configuration this harness can supply (fixtures README): the final
-# option (§15.9), and an answers set for the Assembly capability (§17.6).
-# Cases needing anything else are skipped.
-_SUPPORTED_CONFIG = {"final", "answers"}
+# option (§15.9), an answers set for the Assembly capability (§17.6), and the
+# document root (§2.3, relative to the case's directory). Cases needing
+# anything else are skipped.
+_SUPPORTED_CONFIG = {"final", "answers", "document_root"}
 
 
 def _read(path: Path) -> str:
@@ -167,13 +183,32 @@ def _assemble_case_with_a_form(template: Path, answers: Path):
     return form, form.assemble()
 
 
+def _validate_with_a_loader(path: Path):
+    """Validate a multi-file case's entry with a loader for the files beside it, as ``legaldown
+    validate`` reads them."""
+    document = parse(path.read_text(encoding="utf-8"), filename=path.name, on_frontmatter_error="keep")
+    return validate(document, resolve=file_loader(path.parent))
+
+
 def _validate_file(path: Path, config: dict):
     """Validate *path*; with an answers set, assemble it instead, which
     reports the answer rules (§16.12)."""
     if "answers" in config:
         return _assemble_case(path, path.parent / config["answers"])
-    document = parse(path.read_text(encoding="utf-8"), filename=path.name)
-    return validate(document, final=bool(config.get("final")))
+    # "keep": a fixture with frontmatter that cannot be read is validated, as the
+    # CLI does, not refused: validate reports frontmatter-invalid-yaml (#43).
+    document = parse(path.read_text(encoding="utf-8"), filename=path.name, on_frontmatter_error="keep")
+    if "document_root" not in config:
+        # A document without a path reads nothing, and does not say that anything is missing:
+        # the single-file cases are validated alone, and `resolve=lambda _: None` would say
+        # that every include is (include-file-missing, #35).
+        return validate(document, final=bool(config.get("final")))
+    # The root is the case's directory by the config; the document is where its file is, as
+    # it is for a loaded one, so its paths are read from there, and so are the files it names,
+    # as `legaldown validate --document-root` reads them.
+    root = path.parent / config["document_root"]
+    document = replace(document, path=path.absolute())
+    return validate(document, final=bool(config.get("final")), document_root=root, resolve=file_loader(path.parent))
 
 
 @pytest.mark.parametrize("case", list(_iter_valid_cases()))
@@ -203,17 +238,18 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
     rule_id = (case if case.is_dir() else case.parent).name
     if rule_id not in IMPLEMENTED_RULES:
         pytest.skip(f"rule {rule_id} not implemented")
-    if expected.get("requires_level", "core") != "core":
+    with_a_loader = rule_id in _FULL_WITH_A_LOADER
+    if expected.get("requires_level", "core") != "core" and not with_a_loader:
         pytest.skip(f"requires conformance level {expected['requires_level']}")
     if expected.get("requires_capability") not in (None, *CAPABILITIES):
         pytest.skip(f"requires the {expected['requires_capability']} capability")
     config = expected.get("requires_config") or {}
     if not set(config) <= _SUPPORTED_CONFIG:
         pytest.skip("requires runner configuration")
-    if case.is_dir() and len(list(case.glob("*.lgd"))) > 1:
+    if case.is_dir() and len(list(case.glob("*.lgd"))) > 1 and not with_a_loader:
         pytest.skip("multi-file case (single-document harness)")
 
-    result = _validate_file(entry, config)
+    result = _validate_with_a_loader(entry) if with_a_loader else _validate_file(entry, config)
     produced = {(d.rule, d.level) for d in result.diagnostics}
     located = {(d.rule, d.level, d.line) for d in result.diagnostics}
     for diag in expected.get("diagnostics", []):
@@ -231,6 +267,14 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
             assert (*want, line) in located, (
                 f"expected {want} at line {line}; got it at "
                 f"{sorted(d.line or 0 for d in result.diagnostics if (d.rule, d.level) == want)}"
+            )
+        # The file too (§16.9) for the cases that name a fragment's: the entry's own name for
+        # what is in the entry, else the fragment's.
+        file = diag.get("file")
+        if file is not None and line is not None and (with_a_loader or rule_id == "include-not-legaldown"):
+            assert (*want, line, file) in {(d.rule, d.level, d.line, d.file) for d in result.diagnostics}, (
+                f"expected {want} at {file}:{line}; got "
+                f"{sorted((d.file, d.line or 0) for d in result.diagnostics if (d.rule, d.level) == want)}"
             )
 
 

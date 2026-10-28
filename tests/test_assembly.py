@@ -397,6 +397,14 @@ class TestLineStarts:
         assert _body(assemble(template, {"x": "2. two"})) == "\nIntro\n2. two more.\n"
         assert _body(assemble(template, {"x": "1. one"})) == "\nIntro\n1\\. one more.\n"
 
+    @pytest.mark.xfail(strict=True, reason="assembly reads only the line before; escaping in containers is a follow-up (#94 review)")
+    def test_text_that_only_the_open_paragraph_makes_text_is_read_through_every_line(self):
+        """``2.      x`` is text after ``text`` (an item numbered 2 cannot interrupt it),
+        and so is the line after it, however many such lines come between."""
+        template = _template("text\n2.      x\n3.      y\n{{placeholder: x}}\n")
+        assert _body(assemble(template, {"x": "2. two"})) == "\ntext\n2.      x\n3.      y\n2. two\n"
+        assert _body(assemble(template, {"x": "1. one"})) == "\ntext\n2.      x\n3.      y\n1\\. one\n"
+
     def test_inside_a_list_item_after_its_marker(self):
         result = assemble(_template("- {{placeholder: x}}\n- second\n"), {"x": "# Portal"})
         assert _body(result) == "\n- \\# Portal\n- second\n"
@@ -650,6 +658,13 @@ class TestQuestions:
 # ── The parser's current block structure (legaldown-validator) ────
 
 
+# Where the container of an open paragraph is not known, the line-start check (§15.7.3)
+# reads the output as if the paragraph were the line's own; escaping there is a follow-up.
+_CONTAINER_UNKNOWN = pytest.mark.xfail(
+    strict=True, reason="line-start check does not know the container of an open paragraph (follow-up, #94 review)"
+)
+
+
 class TestCurrentBlockStructure:
     """Assembly reads block positions from the parser's own walk, so every
     block kind it knows is handled, and handled as the validator reads it."""
@@ -724,6 +739,27 @@ class TestCurrentBlockStructure:
         body = "# A\n\n1. first {when=x}\n2. {{placeholder: name}} second\n"
         result = assemble(_template(body, _BOOL + _TEXT), {"x": False, "name": "Tee"})
         assert _body(result) == "\n# A\n\n2. Tee second\n"
+
+    @pytest.mark.parametrize(
+        ("body", "answer", "written"),
+        [
+            pytest.param("  2. b\n1.\n{{placeholder: name}}\n", "2. two", "2\\. two", id="after-an-empty-item"),
+            pytest.param("1.\n1. x\n*\n{{placeholder: name}}\n", "2. two", "2\\. two", id="after-an-empty-bullet"),
+            pytest.param("- a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-an-item-with-a-paragraph", marks=_CONTAINER_UNKNOWN),
+            pytest.param("> a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-a-quote-with-a-paragraph", marks=_CONTAINER_UNKNOWN),
+            pytest.param("-    a\n    code\n{{placeholder: name}}\n", "3) x", "3\\) x", id="short-of-an-items-lazy-text", marks=_CONTAINER_UNKNOWN),
+            pytest.param("- a\n{{placeholder: name}}\n", "=", "\\=", id="an-underline-short-of-an-item"),
+            pytest.param("text\n> {{placeholder: name}}\n", "1.", "> 1\\.", id="in-a-quote-after-text", marks=_CONTAINER_UNKNOWN),
+            pytest.param("text\n{{placeholder: name}}\n", "2. two", "2. two", id="after-text-it-cannot-interrupt"),
+            pytest.param("text\n{{placeholder: name}}\n", "=", "\\=", id="after-text-an-underline"),
+        ],
+    )
+    def test_text_that_starts_a_block_where_the_container_is_not_known_is_escaped(self, body, answer, written):
+        """A marker that cannot interrupt a paragraph is text only in the container
+        that holds the paragraph: short of a list item or a quote, at the top, it
+        starts an item. Where the container is not known, it is escaped."""
+        result = assemble(_template(body, _TEXT), {"name": answer})
+        assert _body(result).splitlines()[-1] == written
 
     def test_spacing_after_an_empty_choice_goes_in_an_item_numbered_2(self):
         body = '# A\n\n1. first\n2. {{choose: x, true="", false=""}}  rest\n'
@@ -1059,7 +1095,11 @@ class TestFrontmatterThatCannotBeRead:
         result = assemble(template, {}, load_file=lambda path: "---\ntitle: [x\n---\n\nText.\n")
         assert not result.ok
         assert [d.rule for d in result.diagnostics] == ["frontmatter-invalid-yaml"]
-        assert "'f.lgd'" in result.diagnostics[0].message
+        # The same diagnostic as validate's, in the file it is in (#43).
+        assert (result.diagnostics[0].file, result.diagnostics[0].line) == ("f.lgd", 2)
+        assert result.diagnostics[0].message == "The frontmatter cannot be read: " + (
+            "expected ',' or ']', but got '<stream end>' (while parsing a flow sequence)"
+        )
 
 
 class TestTables:

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from .directives import is_escaped
-from .markdown import LINE_ENDING_RE, paragraph_text
+from .markdown import LINE_ENDING_RE, find_all, paragraph_text
 
 if TYPE_CHECKING:
     from .models import Block, Document
@@ -25,7 +25,7 @@ def _block_shape(block: Block) -> tuple[Any, ...]:
     of its texts, and its items' blocks."""
     return (
         block.kind,
-        *(len(text) for text in (block.text, block.prefix, block.suffix, block.term, block.target)),
+        *(len(text) for text in (block.text, block.prefix, block.suffix, block.term, block.target, block.label, block.title)),
         tuple(len(cell) for row in [block.headers, *block.rows] for cell in row),
         tuple(tuple(_block_shape(child) for child in getattr(item, "blocks", ())) for item in block.items),
     )
@@ -46,16 +46,36 @@ def document_shape(document: Document) -> tuple[Any, ...]:
 MERGE = object()
 
 
-def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], int]:
+def line_breaks(text: str) -> list[int]:
+    """The index of each line feed in *text*: the only line end of this format
+    (YAML also ends a line at CR, NEL, LS and PS, so ``yaml.Mark.line`` is not
+    the file's)."""
+    return find_all(text, "\n")
+
+
+def line_at(breaks: list[int], index: int, first_line: int) -> int:
+    """The file line of character *index* of a text whose line feeds are
+    *breaks* (``line_breaks``), the text's first line being *first_line*."""
+    return first_line + bisect.bisect_left(breaks, index)
+
+
+def frontmatter_keys(root: yaml.Node, block: str, first_line: int) -> dict[tuple[Any, ...], int]:
     """The line of each node in the frontmatter's YAML *root*, by its path:
     a mapping key's line, and a sequence entry's (its ``-`` line). A
     sequence's entries are counted as the model counts them, mappings only
     (``models``: a side, a party, an attachment, a representative or a
     custom field that is not a mapping is left out), so a path indexes the
-    model's lists. *first_line* is the file line of the YAML's first line.
+    model's lists. *block* is the YAML's text and *first_line* the file line
+    of its first line. Lines are counted from the character index of a mark
+    in *block*, at each LF: YAML also ends a line at CR, NEL, LS and PS,
+    which the format does not, so ``mark.line`` would shift what follows one.
     A merged or aliased node is where it is written, not where it is used;
     a mapping that merges keys in has ``(*path, MERGE)`` too."""
     keys: dict[tuple[Any, ...], int] = {}
+    breaks = line_breaks(block)
+
+    def line_of(mark: yaml.Mark) -> int:
+        return line_at(breaks, mark.index, first_line)
 
     def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
         if id(node) in seen:
@@ -66,10 +86,10 @@ def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], 
             for key, value in node.value:
                 if isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge":
                     merged.append(value)  # its keys are this mapping's, below its own
-                    keys.setdefault((*path, MERGE), key.start_mark.line + first_line)
+                    keys.setdefault((*path, MERGE), line_of(key.start_mark))
                 elif isinstance(key, yaml.ScalarNode):
                     inner = (*path, key.value)
-                    keys.setdefault(inner, key.start_mark.line + first_line)
+                    keys.setdefault(inner, line_of(key.start_mark))
                     walk(value, inner, seen)
             for value in merged:
                 for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
@@ -78,7 +98,7 @@ def frontmatter_keys(root: yaml.Node, first_line: int) -> dict[tuple[Any, ...], 
             entries = [entry for entry in node.value if isinstance(entry, yaml.MappingNode)]
             for index, entry in enumerate(entries):
                 inner = (*path, index)
-                keys.setdefault(inner, entry.start_mark.line + first_line)
+                keys.setdefault(inner, line_of(entry.start_mark))
                 walk(entry, inner, seen)
 
     walk(root, (), frozenset())
@@ -182,7 +202,9 @@ class SourceMap:
 
     def heading(self, section: int) -> int:
         """The first line of section *section*'s heading."""
-        return self.body_start + self.layout.headings[section].start + 1
+        # Not ``layout.headings[section]``, which lists every heading for each
+        # call: a document of thousands of duplicate titles would be quadratic (#94).
+        return self.body_start + self.layout.sections[section][0].start + 1
 
     def span(self, section: int | None, index: int) -> Any:
         """Where top-level block *index* of the preamble (*section* None) or
@@ -358,6 +380,7 @@ class Locator:
         self._map: SourceMap | None = source_map if source_map is not None and source_map.fits(document) else None
         self._document = document
         self._leaves: dict[tuple[int | None, int], list[_Leaf] | None] = {}
+        self._definition_lines: dict[tuple[int | None, int], list[int]] = {}
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
 
     def start(self) -> int | None:
@@ -390,6 +413,11 @@ class Locator:
         if self._map is None:
             return None
         return self._map.keys.get((name,)) or self._map.first_key()
+
+    def first_key(self) -> int | None:
+        """The frontmatter's first key's line, or its opening line when it has
+        no key; None without frontmatter."""
+        return self._map.first_key() if self._map else None
 
     def heading(self, section: int) -> int | None:
         return self._map.heading(section) if self._map else None
@@ -426,6 +454,29 @@ class Locator:
                     )
         return self._map.find(start, end, needle, [], None, 0, nth, self._cache)
 
+    def definition(self, section: int | None, index: int, ordinal: int) -> int | None:
+        """The first line of the link reference definition (#92) with *ordinal*
+        (``definitions.PlacedLinkDefinition``) among the ``link_definition`` blocks
+        of a top-level block, in an item or a quote too: the lines of its own
+        block, not a search for its text. None without a source map, or when the
+        document no longer fits it."""
+        if self._map is None:
+            return None
+        key = (section, index)
+        if key not in self._definition_lines:
+            blocks = self._document.preamble if section is None else self._document.sections[section].blocks
+            body = self._map.body_start
+            try:
+                self._definition_lines[key] = [
+                    body + base + span.start + 1
+                    for span, block, _depth, base in _walk_spans([self._map.span(section, index)], [blocks[index]], 0, 0)
+                    if block.kind == "link_definition"
+                ]
+            except ValueError:
+                self._definition_lines[key] = []  # items or quote content that no longer match the source
+        lines = self._definition_lines[key]
+        return lines[ordinal] if ordinal < len(lines) else None
+
     def lifted(self, section: int | None, index: int, needle: str) -> int | None:
         """The line of the directive the parser lifted out of a top-level
         paragraph into its fields (a ``{{ref:}}``, a ``{{term:}}``, a
@@ -451,27 +502,17 @@ class Locator:
         # The parser, and so this module, builds on these modules.
         from .definitions import _own_fragments, block_fragments
         from .models import LIST_KINDS
-        from .parser import MAX_QUOTE_DEPTH, quote_content
+        from .parser import MAX_QUOTE_DEPTH
 
         assert self._map is not None
         blocks = self._document.preamble if section is None else self._document.sections[section].blocks
         top = blocks[index]
         body = self._map.body_start
 
-        def walk(spans: Any, blocks: Any, depth: int, base: int) -> Iterator[tuple[Any, Block, int, int]]:
-            for span, block in zip(spans, blocks, strict=True):
-                yield span, block, depth, base
-                if block.kind in LIST_KINDS:
-                    for item_span, item in zip(span.items, block.items, strict=True):
-                        yield from walk(item_span.blocks, item.blocks, depth + 1, base)
-                elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
-                    children, inner = quote_content(block.text, depth + 1)
-                    yield from walk(inner, children, depth + 1, base + span.start)
-
         leaves: list[_Leaf] = []
         count = 0
         try:
-            for span, block, depth, base in walk([self._map.span(section, index)], [top], 0, 0):
+            for span, block, depth, base in _walk_spans([self._map.span(section, index)], [top], 0, 0):
                 if block.kind in LIST_KINDS or (block.kind == "quote" and depth < MAX_QUOTE_DEPTH):
                     continue  # its blocks hold its text
                 own = [text for text, _position in _own_fragments(block)]
@@ -490,6 +531,25 @@ class Locator:
         if count != len(block_fragments(top)):
             return None
         return leaves
+
+
+def _walk_spans(spans: Any, blocks: Any, depth: int, base: int) -> Iterator[tuple[Any, Block, int, int]]:
+    """Every block of *blocks* and of their list items and block quotes, in the order
+    ``definitions.nested_blocks`` gives, each as ``(span, block, depth, base)``: its
+    span (``parser._BlockSpan``), the items and quotes it is in, and the line
+    offset *base* its span is counted from (a quote's content is counted from the
+    quote's first line)."""
+    from .models import LIST_KINDS
+    from .parser import MAX_QUOTE_DEPTH, quote_content
+
+    for span, block in zip(spans, blocks, strict=True):
+        yield span, block, depth, base
+        if block.kind in LIST_KINDS:
+            for item_span, item in zip(span.items, block.items, strict=True):
+                yield from _walk_spans(item_span.blocks, item.blocks, depth + 1, base)
+        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+            children, inner = quote_content(block.text, depth + 1)
+            yield from _walk_spans(inner, children, depth + 1, base + span.start)
 
 
 def _lifted(block: Block, own: list[str], first: int, lines: list[str], start: int, end: int) -> _Leaf | None:

@@ -47,9 +47,10 @@ __all__ = ["AnswersError", "Form", "Template", "load_answers", "load_template", 
 #: The rules of the validator that a template must satisfy for assembly
 #: (§15.7.2 gives assembly a template that validates without Errors): those of
 #: questions, conditions, ``{{choose:}}``, placeholders and insertions. Any
-#: other Error of ``Template.validation`` is advice — the validator reads a
-#: template alone, without the files it includes, so a reference to a section
-#: of a fragment is ``ref-broken`` to it while assembly reads the fragment.
+#: other Error of ``Template.validation`` is advice — the validator reads the
+#: files a template includes only for what they must hold (§12.2, §15.3), and
+#: does not resolve a reference into one, so a reference to a section of a
+#: fragment is ``ref-broken`` to it while assembly reads the fragment.
 TEMPLATE_RULES: frozenset[str] = frozenset({
     "question-invalid",
     "condition-invalid",
@@ -157,8 +158,15 @@ def _jsonable(value: Any, budget: list[int] | None = None, depth: int = 0) -> An
     return _text(value)
 
 
-def _diagnostic_dict(diagnostic: Diagnostic) -> dict[str, Any]:
-    return {"rule": diagnostic.rule, "level": diagnostic.level, "message": diagnostic.message, "line": diagnostic.line}
+def diagnostic_dict(diagnostic: Diagnostic) -> dict[str, Any]:
+    """A template's problem or diagnostic as JSON-ready data, as ``Form.as_dict``
+    and ``legaldown questions`` give it."""
+    # No host_dependent: assembly output is never a fragment-mode result (#39).
+    # "file": the fragment or attachment file it is in, "" for the template itself (#43).
+    return {
+        "rule": diagnostic.rule, "level": diagnostic.level, "message": diagnostic.message,
+        "line": diagnostic.line, "file": diagnostic.file,
+    }
 
 
 def _placeholder_problems(t: _Template) -> list[Diagnostic]:
@@ -234,8 +242,9 @@ class Template:
 
     @cached_property
     def validation(self) -> ValidationResult:
-        """What ``validate`` says of the template read alone. Advice: only the
-        rules in ``problems`` stop assembly."""
+        """What ``validate`` says of the template, and of the fragments and
+        attachment files it reads (``Diagnostic.file`` names the file, #35).
+        Advice: only the rules in ``problems`` stop assembly."""
         return validate(self._t.document, resolve=self._resolve)
 
     @cached_property
@@ -249,7 +258,17 @@ class Template:
         if self._check:
             includes = any(include.path in t.subs for include in t.main.includes)
             rules = TEMPLATE_RULES if includes else TEMPLATE_RULES | _ALONE_ONLY
-            problems += [d for d in self.validation.diagnostics if d.level == "error" and d.rule in rules]
+            # The validator reads the fragments and attachment files as well, and says what
+            # is wrong with them where it is (#35). Assembly has read the same files and
+            # reports the same findings in `t.problems`, so those are not counted twice:
+            # template-fragment-invalid is the one rule of both (`TEMPLATE_RULES`).
+            # (A file assembly could not parse is in `t.problems` by its path, with the
+            # error that stopped it, and nothing else of it is counted.)
+            read = set(t.subs) | {d.file for d in t.problems if d.file}
+            problems += [
+                d for d in self.validation.diagnostics
+                if d.level == "error" and d.rule in rules and d.file not in read
+            ]
             problems += _placeholder_problems(t)
         return tuple(problems)
 
@@ -378,8 +397,8 @@ class Form:
         return {
             "ready": self.ready,
             "complete": self.complete,
-            "problems": [_diagnostic_dict(d) for d in self._template.problems],
-            "diagnostics": [{**_diagnostic_dict(d), "question": qid} for qid, d in self._pairs],
+            "problems": [diagnostic_dict(d) for d in self._template.problems],
+            "diagnostics": [{**diagnostic_dict(d), "question": qid} for qid, d in self._pairs],
             "questions": questions,
         }
 

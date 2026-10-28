@@ -51,7 +51,7 @@ from .markdown import (
     is_blank,
 )
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
-from .models import LIST_KINDS, Block, Document
+from .models import LIST_KINDS, Block, Document, frontmatter_message
 from .parser import (
     FRONTMATTER_RE,
     LIST_ITEM_RE,
@@ -70,6 +70,7 @@ from .parser import (
 from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
+from .validator.fragments import FragmentFile, FragmentKind, fragment_findings, nested_includes, noun
 from .validator.helpers import is_positive_numeric, is_valid_money_amount
 from .validator.patterns import DURATION_UNITS, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
 from .validator.result import Diagnostic
@@ -80,7 +81,7 @@ from .validator.templates import (
     is_drafting_note,
     question_type,
 )
-from .validator.units import find_markers, is_include_only, own_presence
+from .validator.units import block_include, find_markers, include_key, own_presence
 
 __all__ = [
     "frontmatter_diagnostic",
@@ -357,6 +358,8 @@ _KINDS = {
     "paragraph": "paragraph", "definition": "paragraph", "ref": "paragraph", "term": "paragraph",
     "ordered_list": "list", "unordered_list": "list",
     "quote": "quote", "code": "code", "table": "table", "rule": "rule", "html": "html",
+    # No text and no unit (§4.7, #92): its lines are left as they are.
+    "link_definition": "link_definition",
 }
 
 
@@ -398,7 +401,7 @@ def _content(
     are in."""
     for span, block in zip(spans, blocks, strict=True):
         read = block.kind == "quote" and depth < MAX_QUOTE_DEPTH
-        leaf = not read and block.kind not in (*LIST_KINDS, "code", "rule", "html")
+        leaf = not read and block.kind not in (*LIST_KINDS, "code", "rule", "html", "link_definition")
         yield span, block, base, leaf
         for item_span, item in zip(span.items, block.items, strict=True):
             yield from _content(item_span.blocks, item.blocks, depth + 1, base)
@@ -468,6 +471,7 @@ class _Include:
     start: int
     end: int
     path: str
+    source: str  # the directive as written
 
 
 @dataclass(slots=True)
@@ -486,7 +490,6 @@ class _Source:
     #: marker there is a container marker (§15.7.3).
     item_lines: frozenset[int] = frozenset()
     malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
-    include_lines: list[int] = field(default_factory=list)  # where ``{{include:}}`` is written
 
 
 def _unix(text: str) -> tuple[str, str]:
@@ -530,7 +533,7 @@ def _read_body(
         for inner, inner_block, base, _leaf in _content([span], [block]):
             if inner_block.kind == "quote" and is_drafting_note(inner_block):
                 source.notes.update(range(base + inner.start, base + inner.end))
-    source.occurrences, source.malformed, source.include_lines = _occurrences(layout, document, lines)
+    source.occurrences, source.malformed = _occurrences(layout, document, lines)
     source.item_lines = frozenset(items)
     return source
 
@@ -579,13 +582,11 @@ def _read_paragraph(
                                   line, marker.source))
     if block.kind != "paragraph":
         return
-    at = _last_marker_at(block.text, marker.source) if marker is not None else -1
-    text = block.text[:at] if at >= 0 else block.text
-    directives = lex(block.text).directives
-    if is_include_only(text, directives):
-        include = next(d for d in directives if d.name == "include")
-        path = posixpath.normpath(include.positional)
-        source.includes.append(_Include(span.start, span.end, path))
+    # The validator's own reading of an include paragraph, of the same text, so that both agree
+    # (#35). One that names no file (``{{include:}}``) has the path "", refused in ``_read_files``.
+    include = block_include(block)
+    if include is not None:
+        source.includes.append(_Include(span.start, span.end, include_key(include), include.source))
 
 
 def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:
@@ -608,7 +609,9 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
         if not marker.marker.condition or marker.fragment >= len(paths) or not paths[marker.fragment]:
             continue
         item = items[paths[marker.fragment][-1]]
-        first_end = item.blocks[0].end if item.blocks else item.start + 1  # its first paragraph
+        # Its first paragraph: link reference definitions before it are no text (#92).
+        opening = next((block for block in item.blocks if block.kind != "link_definition"), None)
+        first_end = opening.end if opening is not None else item.start + 1
         line = _marker_line(lines, item.start, first_end, marker.source)
         source.units.append(_Unit(item.start, _trim(lines, item.start, item.end),
                                   _test(marker.marker.condition, questions), line, marker.source))
@@ -616,16 +619,14 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
 
 def _occurrences(
     layout: _Layout, document: Document, lines: list[str]
-) -> tuple[list[_Occurrence], list[Directive], list[int]]:
+) -> tuple[list[_Occurrence], list[Directive]]:
     """Every placeholder and choice in the body, lexed block by block as the
     validator lexes them (``_content``), so a code span or comment hides the
     same ones and one left open in a block does not run into the next. No
     directive is recognized in code or raw HTML (§11.4), in list items and
-    block quotes too. Also the malformed ones, and the lines each
-    ``{{include:}}`` is written on."""
+    block quotes too. Also the malformed ones."""
     found: list[_Occurrence] = []
     malformed: list[Directive] = []
-    includes: list[int] = []
     for _section, _index, span, top in _pairs(layout, document):
         for block, model, base, leaf in _content([span], [top]):
             if not leaf:
@@ -640,8 +641,6 @@ def _occurrences(
             offsets = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
             for directive in lex(text).directives:
                 row = bisect.bisect_right(offsets, directive.start) - 1
-                if directive.name == "include" and not directive.malformed:
-                    includes.append(start + row)
                 if directive.name not in ("placeholder", "choose"):
                     continue
                 if directive.malformed:
@@ -653,7 +652,7 @@ def _occurrences(
                 found.append(_Occurrence(directive, start + row, column,
                                          column + directive.end - directive.start,
                                          in_table=_kind(block) == "table"))
-    return found, malformed, includes
+    return found, malformed
 
 
 # ── Frontmatter ──────────────────────────────────────────────────
@@ -678,6 +677,7 @@ class _Frontmatter:
     items: list[_Attachment] = field(default_factory=list)
     occurrences: list[_Occurrence] = field(default_factory=list)
     malformed: list[Directive] = field(default_factory=list)
+    rows: int = 0  # how many lines it takes in the file: the offset of the body
 
     def text(self, lines: list[str] | None = None, drop: frozenset[int] = frozenset()) -> str:
         """The frontmatter, delimiters included, written from *lines* (its
@@ -694,9 +694,10 @@ def _split(source: str, document: Document) -> tuple[_Frontmatter | None, str]:
     if not match or document.metadata.frontmatter_absent:
         return None, source
     if match.group(1) is None:
-        return _Frontmatter(source[:match.end()], [], ""), source[match.end():]
+        return _Frontmatter(source[:match.end()], [], "", rows=source[:match.end()].count("\n")), source[match.end():]
     head, tail = source[:match.start(1)], source[match.end(1):match.end()]
-    return _Frontmatter(head, match.group(1).split("\n"), tail), source[match.end():]
+    rows = source[:match.end()].count("\n")
+    return _Frontmatter(head, match.group(1).split("\n"), tail, rows=rows), source[match.end():]
 
 
 def _is_comment(line: str) -> bool:
@@ -907,17 +908,29 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     """Read every include fragment and LegalDown attachment file — the absent
     ones too: their placeholders are the template's (answer-unknown) and their
     headings take part in identifier generation (step 7)."""
-    wanted = [(include.path, "include") for include in main.includes]
+    wanted: list[tuple[str, FragmentKind]] = [(include.path, "include") for include in main.includes if include.path]
     items = front.items if front else []
     wanted += [(item.file, "attachment") for item in items if item.file]
     subs: dict[str, _Source] = {}
-    problems: list[Diagnostic] = []
+    # An include paragraph that names no file, at its line (the validator's include-file-missing).
+    rows = front.rows if front else 0  # the body's lines are the file's, after the frontmatter's
+    problems: list[Diagnostic] = [
+        Diagnostic(
+            "include-file-missing", "error",
+            f"'{include.source}' names no file: an include paragraph names the LegalDown file it takes in "
+            f"(§12.2); the template is not assembled.",
+            line=include.start + 1 + rows,
+        )
+        for include in main.includes if not include.path
+    ]
+    unreadable: set[str] = set()  # reported once, however often it is referenced
     for path, kind in wanted:
-        if path in subs:
+        relative = relative_path(path)
+        if path in subs or relative in unreadable:
             continue
         # Only a path within the template's directory (§2.3) is asked for: a loader is
         # not handed ``../x``, an absolute path or a drive letter to open.
-        text = load_file(path) if load_file is not None and relative_path(path) is not None else None
+        text = load_file(path) if load_file is not None and relative is not None else None
         if text is None:
             reason = "cannot be read" if load_file else "needs the Full level (§17.6)"
             message = f"'{path}' {reason}; the template is not assembled."
@@ -927,62 +940,52 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
         try:
             sub_document = parse(text)
         except FrontmatterError as exc:
-            problems.append(Diagnostic(
-                "frontmatter-invalid-yaml", "error",
-                f"The frontmatter of '{path}' cannot be read, so the template is not assembled: {exc}",
-            ))
+            # What plain `validate` reports of a document with this frontmatter, with
+            # its message and line, in the file it is in. (`validate(fragment=True)`
+            # reports include-has-frontmatter instead, by design: a fragment must
+            # have none.) A text was read only for a path that `relative_path` accepts: *relative*.
+            unreadable.add(relative)
+            problems.append(frontmatter_diagnostic(exc, file=relative))
             continue
-        sub_front, body = _split(text, sub_document)
+        _front, body = _split(text, sub_document)
         subs[path] = _read_body(path, body, sub_document, declared, template=template)
         subs[path].newline = newline
-        problems += _file_problems(path, kind, subs[path], sub_front, sub_document, template)
+        problems += _file_problems(path, kind, sub_document, template)
     return subs, problems
 
 
-def _file_problems(path: str, kind: str, source: _Source, front: _Frontmatter | None,
-                   document: Document, template: bool) -> list[Diagnostic]:
+def _file_problems(path: str, kind: FragmentKind, document: Document, template: bool) -> list[Diagnostic]:
     """The Full checks on a loaded file (§16.10, §16.11, §16.12) that the
     assembled output depends on; the file is read here, so they are made
-    here rather than left to a validator that may not read it."""
-    what = "fragment" if kind == "include" else "attachment file"
-    problems = []
-
-    def error(rule: str, message: str) -> None:
-        problems.append(Diagnostic(rule, "error", f"The {what} '{path}' {message}"))
-
-    if front is not None:
-        error(f"{kind}-has-frontmatter", "has frontmatter, which it cannot have; the template is "
-                                         "not assembled.")
-    if any(section.level == 1 for section in document.sections):
-        error(f"{kind}-has-h1", "has a level 1 heading, which it cannot have; the template is "
-                                "not assembled.")
-    # Outside a template, an include in a drafting note is removed with it,
-    # unread (§15.6); in one, it is template-fragment-invalid wherever it is.
-    if any(template or line not in source.notes for line in source.include_lines):
-        if template:
-            error("template-fragment-invalid", "holds an {{include:}}; in a template an include "
-                                               "belongs in the template's own body (§15.3).")
-        else:
-            error("include-file-missing", "holds an {{include:}}; an include in an included or "
-                                          "attached file is not assembled, so the template is not "
-                                          "assembled.")
-    if template and kind == "include":
-        # §15.3: a fragment holds no conditions or drafting notes and gives
-        # every heading an explicit identifier. An attachment file may hold
-        # conditions: its own, beneath its attachment's `when`.
-        conditions = any(section.condition for section in document.sections) or any(
-            marker.marker is not None and marker.marker.condition and marker.placed(True)
-            for marker in find_markers(document, cache(lex))
+    here rather than left to a validator that may not read it. They are the
+    validator's own (``fragment_findings``, #35), one for each offender, at
+    its line in the file: this refuses the template, the validator reports them."""
+    fragment = FragmentFile(path, document)
+    lexed = cache(lex)
+    problems = [
+        Diagnostic(
+            finding.rule, "error",
+            # Frontmatter and a level 1 heading are why the file is not read, and so
+            # why the template is not assembled; the others say what to do.
+            finding.message if finding.rule == "template-fragment-invalid"
+            else f"{finding.message} The template is not assembled.",
+            line=finding.line, file=path,
         )
-        if conditions:
-            error("template-fragment-invalid", "holds a condition; to make a fragment conditional, "
-                                               "put the condition on its {{include:}} paragraph (§15.3).")
-        if source.notes:
-            error("template-fragment-invalid", "holds a drafting note, which belongs in the "
-                                               "template's own body (§15.3).")
-        if any(not section.identifier for section in document.sections):
-            error("template-fragment-invalid", "has a heading without an explicit identifier, "
-                                               "which every heading of a fragment has (§15.3).")
+        for finding in fragment_findings(fragment, kind=kind, template=template, lex_fragment=lexed)
+    ]
+    # Outside a template an include in a fragment or attachment file is allowed (§12.2), but
+    # assembly does not assemble it, and refuses (an include in a drafting note is removed
+    # with it, unread, §15.6). In a template it is template-fragment-invalid (reported above).
+    if not template:
+        problems += [
+            Diagnostic(
+                "include-file-missing", "error",
+                f"{noun(kind, 'the').capitalize()} holds '{source}'; an include in an included "
+                f"or attached file is not assembled, so the template is not assembled.",
+                line=line, file=path,
+            )
+            for source, line in nested_includes(fragment, lexed)
+        ]
     return problems
 
 
@@ -1801,11 +1804,13 @@ def assemble(
     return _emit_result(t, resolved, decision, diagnostics)
 
 
-def frontmatter_diagnostic(exc: FrontmatterError) -> Diagnostic:
-    """The error assembly reports for frontmatter that cannot be read."""
+def frontmatter_diagnostic(exc: FrontmatterError, file: str | None = None) -> Diagnostic:
+    """The error assembly reports for frontmatter that cannot be read: the one
+    ``validate`` reports for it, with the same message and line (#43). *file* is
+    the normalised path of the include fragment or attachment file it is in,
+    when it is not the template's own."""
     return Diagnostic(
-        "frontmatter-invalid-yaml", "error",
-        f"The template's frontmatter cannot be read, so it is not assembled: {exc}",
+        "frontmatter-invalid-yaml", "error", frontmatter_message(exc), line=exc.line or 1, file=file or ""
     )
 
 

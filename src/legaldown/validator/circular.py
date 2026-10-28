@@ -1,0 +1,273 @@
+"""Circular definitions (spec §16.3 ``definition-circular``, §7.2).
+
+Per §7.2 a definition's scope, "for purposes such as circular-reference
+detection", is the paragraph containing its ``{{def:}}``: one definition is
+explained in terms of another when a ``{{term:}}`` of the other is in that
+paragraph. A set of definitions that are each explained in terms of the next,
+round to the first, is circular (#105).
+
+The relation is a graph with two kinds of node: the definitions that are
+registered (``DefinitionRef``) and the paragraphs they are in. A definition
+has an edge to its own paragraph, and a paragraph to every definition one of
+its ``{{term:}}`` names. A circle is a *strongly connected component* with at
+least two distinct definitions, reported once however many circles it holds (a
+large one holds exponentially many).
+
+A reference in a definition's own paragraph does not make it circular: the
+specification's own fixtures write ``"Services" {{def: services}} means x. See
+{{term: services}}.`` as ordinary wording, so one definition and its paragraph
+are never a circle. The one self-reference reported is the one the definition
+cannot mean anything else by: a ``{{term:}}`` to itself in its own quoted term
+(``"Self {{term: s}}" {{def: s}}``). The paragraph cannot tell which definition
+in it a reference explains, so two definitions in one paragraph that it
+references both are taken to explain each other: the approximation of
+paragraph scope (#105).
+
+The graph is built from the paragraphs and references, so the work is linear
+in them, even when one paragraph holds thousands of definitions and
+references, and the components are found without recursion: a document can be
+a ring of any length (#94).
+"""
+from __future__ import annotations
+
+from bisect import bisect_right
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import NamedTuple
+
+from ..definitions import DefinitionRef, find_definition_anchors, fragment_scopes
+from ..directives import Directive, Lexed
+from ..models import Document
+from .conditions import Presence
+
+
+class TermUse(NamedTuple):
+    """A ``{{term:}}`` outside a drafting note (assembly removes those, §15.6):
+    the *target* it names, its *presence* (§15.3), and where it is --
+    ``fragment`` indexes ``block_fragments(block)``, and is None for the
+    target the parser lifted into the block's fields."""
+
+    section: int | None
+    block: int
+    fragment: int | None
+    target: str
+    presence: Presence
+    #: The offset in its fragment of the ``{{def:}}`` whose quoted term holds
+    #: this use (``"Self {{term: s}}" {{def: s}}``), or None.
+    owner: int | None = None
+
+
+def term_owners(
+    fragment: str, lexed: Lexed, language: str | None = None
+) -> Callable[[Directive], int | None]:
+    """For the text *fragment* (lexed as *lexed*), a function that gives, for
+    a directive in it, the offset of the ``{{def:}}`` whose quoted term holds
+    it (``TermUse.owner``), or None."""
+    if not any(directive.name == "def" for directive in lexed.directives):
+        return lambda _directive: None
+    # Each quoted term, from its opening mark to the offset of its {{def:}}.
+    spans = sorted(
+        (anchor.start, anchor.directive.start)
+        for anchor in find_definition_anchors(fragment, language=language, lexed=lexed)
+        if anchor.term is not None and not anchor.directive.malformed
+    )
+    starts = [start for start, _def in spans]
+
+    def owner(directive: Directive) -> int | None:
+        at = bisect_right(starts, directive.start) - 1
+        return spans[at][1] if at >= 0 and directive.end <= spans[at][1] else None
+
+    return owner
+
+
+def strongly_connected_components(
+    count: int, successors: Callable[[int], Iterable[int]]
+) -> list[list[int]]:
+    """The strongly connected components of the graph of the nodes
+    ``range(count)`` whose edges from a node are ``successors(node)``
+    (Tarjan's algorithm; ``successors`` is called once for each node).
+
+    Iterative: a chain of any length takes no recursion, and the time is linear
+    in the nodes and edges. A component is a list of nodes, in no order."""
+    index = [-1] * count  # the order a node was first reached in
+    low = [0] * count  # the lowest index a node reaches through a descendant
+    on_stack = [False] * count
+    stack: list[int] = []
+    components: list[list[int]] = []
+    order = 0
+    for root in range(count):
+        if index[root] != -1:
+            continue
+        index[root] = low[root] = order
+        order += 1
+        stack.append(root)
+        on_stack[root] = True
+        work: list[tuple[int, Iterator[int]]] = [(root, iter(successors(root)))]
+        while work:
+            node, remaining = work[-1]
+            for follow in remaining:
+                if index[follow] == -1:
+                    index[follow] = low[follow] = order
+                    order += 1
+                    stack.append(follow)
+                    on_stack[follow] = True
+                    work.append((follow, iter(successors(follow))))
+                    break
+                if on_stack[follow]:
+                    low[node] = min(low[node], index[follow])
+            else:
+                work.pop()
+                if low[node] == index[node]:
+                    component: list[int] = []
+                    while True:
+                        member = stack.pop()
+                        on_stack[member] = False
+                        component.append(member)
+                        if member == node:
+                            break
+                    components.append(component)
+                if work:
+                    parent = work[-1][0]
+                    low[parent] = min(low[parent], low[node])
+    return components
+
+
+def find_circular_definitions(
+    document: Document,
+    registered: Sequence[tuple[DefinitionRef, Presence]],
+    uses: Iterable[TermUse],
+    excluded: Callable[[Presence, Presence], bool] | None = None,
+) -> list[list[int]]:
+    """The circles among the definitions of *document*.
+
+    *registered* are the definitions that count -- those registered, so not a
+    duplicate or one with an invalid id -- each with its presence, in document
+    order; *uses* are the document's ``{{term:}}`` references. A reference to
+    an id none of *registered* declares (an imported definition, §7.5,
+    §12.4, or none) leads nowhere: imported definitions are targets only,
+    and a circle through several files is Full (§17.4).
+
+    A circle is a set of definitions with at least two ids that lead round to
+    each other, or a single definition whose quoted term holds a
+    ``{{term:}}`` to its own id. A reference in a definition's own paragraph
+    is no circle by itself.
+
+    *excluded* tells whether two presences can never hold together (§15.4);
+    it is given only for a template. A reference does not lead to a
+    declaration it can never appear with: of the alternatives of one id
+    (§15.4) it reaches those it can appear with. That prunes a circle only
+    where an edge is impossible, one reference and one alternative at a time:
+    a circle whose members exclude each other further round (``d1`` when
+    ``q``, ``d3`` when not ``q``, with ``d2`` and ``d4`` between) is still
+    found, as a Warning is better given than withheld. The work is a test of
+    each distinct pair of presences, once.
+
+    Each circle is a list of indices into *registered*, ascending. They are
+    ordered by their last index: the definition where the circle closes, in
+    document order, which a diagnostic is reported at."""
+    count = len(registered)
+    # The scopes of the blocks that hold a definition: a reference in another
+    # block cannot be on a circle, and its scopes are not worked out.
+    scopes: dict[tuple[int | None, int], list[int]] = {}
+    for ref, _presence in registered:
+        section, index = ref.section_index, ref.block_index
+        if (section, index) not in scopes:
+            block = document.preamble[index] if section is None else document.sections[section].blocks[index]
+            scopes[section, index] = fragment_scopes(block)
+
+    def scope_of(section: int | None, block: int, fragment: int | None) -> tuple[int | None, int, int]:
+        # Everything in a top-level block that has no fragments of its own (a
+        # definition block, a lifted target) is its scope 0.
+        return section, block, 0 if fragment is None else scopes[section, block][fragment]
+
+    # Nodes: the definitions, then their paragraphs, then the ids of several
+    # alternatives (below).
+    scope_node: dict[tuple[int | None, int, int], int] = {}
+    own_scope: list[int] = []
+    declarations: dict[str, list[int]] = {}
+    for number, (ref, _presence) in enumerate(registered):
+        scope = scope_of(ref.section_index, ref.block_index, ref.fragment_index)
+        own_scope.append(scope_node.setdefault(scope, count + len(scope_node)))
+        declarations.setdefault(ref.id, []).append(number)
+    # The declarations of an id are one node when a reference reaches them
+    # all: a paragraph that mentions thousands of alternatives of one id, or a
+    # thousand paragraphs that mention the same alternatives, are then not a
+    # product of edges.
+    id_node: dict[str, int] = {}
+    for def_id, numbers in declarations.items():
+        if len(numbers) > 1:
+            id_node[def_id] = count + len(scope_node) + len(id_node)
+
+    # The distinct (target, presence) each paragraph with a definition names.
+    references: dict[int, dict[tuple[str, Presence], None]] = {}  # in order
+    defined_at = {
+        (ref.section_index, ref.block_index, ref.fragment_index, ref.offset): number
+        for number, (ref, _presence) in enumerate(registered)
+    }
+    own_term: set[int] = set()  # the definitions whose quoted term holds a {{term:}} to their id
+    for use in uses:
+        if use.target not in declarations or (use.section, use.block) not in scopes:
+            continue
+        if use.owner is not None:
+            owner = defined_at.get((use.section, use.block, use.fragment, use.owner))
+            if owner is not None and registered[owner][0].id == use.target:
+                own_term.add(owner)
+        scope = scope_of(use.section, use.block, use.fragment)
+        if scope in scope_node:
+            references.setdefault(scope_node[scope], {})[use.target, use.presence] = None
+
+    excludes: dict[tuple[Presence, Presence], bool] = {}
+    reached: dict[tuple[str, Presence], list[int]] = {}
+
+    def reach(target: str, presence: Presence) -> list[int]:
+        if (target, presence) not in reached:
+            numbers = declarations[target]
+            keep = []
+            for number in numbers:
+                pair = (presence, registered[number][1])
+                if excluded is not None and pair not in excludes:
+                    excludes[pair] = excluded(*pair)
+                if excluded is None or not excludes[pair]:
+                    keep.append(number)
+            reached[target, presence] = [id_node[target]] if len(keep) == len(numbers) > 1 else keep
+        return reached[target, presence]
+
+    total = count + len(scope_node) + len(id_node)
+    ids_of_node = {node: def_id for def_id, node in id_node.items()}
+
+    def successors(node: int) -> Iterable[int]:
+        if node < count:
+            return (own_scope[node],)
+        if node < count + len(scope_node):
+            return (
+                reached_node
+                for target, presence in references.get(node, ())
+                for reached_node in reach(target, presence)
+            )
+        return declarations[ids_of_node[node]]
+
+    circles = []
+    for component in strongly_connected_components(total, successors):
+        members = sorted(member for member in component if member < count)
+        if len({registered[member][0].id for member in members}) > 1:
+            circles.append(members)
+    # A definition whose own quoted term holds a {{term:}} to itself.
+    in_circle = {member for circle in circles for member in circle}
+    circles.extend([number] for number in sorted(own_term - in_circle))
+    circles.sort(key=lambda circle: circle[-1])
+    return circles
+
+
+def circular_message(ids: Iterable[str]) -> str:
+    """The Warning for a circle of definitions with these *ids*, in document
+    order (§16.3): at most five are named."""
+    named = list(dict.fromkeys(ids))
+    quoted = [f"'{def_id}'" for def_id in named[:5]]
+    if len(named) == 1:
+        return f"Definition {quoted[0]} is circular: its own term refers to it (§7.2)."
+    listed = ", ".join(quoted[:-1]) + f" and {quoted[-1]}"
+    if len(named) > 5:
+        listed = ", ".join(quoted) + f" and {len(named) - 5} more"
+    return (
+        f"Definitions {listed} are circular: each is explained, directly or through the others, "
+        f"in terms of itself (§7.2)."
+    )

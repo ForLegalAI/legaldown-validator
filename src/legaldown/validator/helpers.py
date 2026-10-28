@@ -6,7 +6,7 @@ import re
 import unicodedata
 from datetime import date as date_type
 
-from ..markdown import HTML_COMMENT_RE
+from ..markdown import strip_comments
 
 # The §5.3 transliteration table, exhaustive: exactly these mappings.
 _TRANSLITERATION = str.maketrans({
@@ -43,7 +43,7 @@ def generate_identifier(value: str, fallback: str = "section") -> tuple[str, boo
     Deterministic, so that every conformant implementation generates the
     same identifier. Comments are not part of the rendered text (§8.6).
     """
-    text, lossy = _ascii_text(HTML_COMMENT_RE.sub("", value or ""))
+    text, lossy = _ascii_text(strip_comments(value or ""))
     text = re.sub(r"[ \t_]", "-", text.lower())
     text = re.sub(r"[^a-z0-9-]", "", text)
     text = re.sub(r"-{2,}", "-", text).strip("-")

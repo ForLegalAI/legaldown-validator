@@ -18,12 +18,15 @@ from .directives import format_value
 from .files import write_atomically
 from .markdown import (
     FENCE_OPEN_RE,
+    LinkDefinitionSource,
     close_fences,
     dedent,
+    format_link_definition,
     html_block_end,
     indent_width,
     is_blank,
     is_indented_code,
+    split_link_definitions,
     split_lone_tag,
     strip_text,
 )
@@ -37,6 +40,7 @@ from .models import (
     Metadata,
     Party,
     Side,
+    _check_frontmatter_read,
     heading_level,
     heading_text,
     list_items,
@@ -151,25 +155,107 @@ def _opens_block(text: str, *, in_item: bool = False) -> bool:
     return bool(FENCE_OPEN_RE.match(text) or heading.match(text) or html_block_end([text], 0) is not None)
 
 
-def _paragraph(text: str, *, in_item: bool = False) -> str:
+def _definition_lines(block: Block) -> list[str]:
+    """The lines a ``link_definition`` block is written as: a label or title over
+    several lines as the lines of a paragraph are (Revision 2 of #92), ``- b`` in
+    a title being no item."""
+    first, *rest = format_link_definition(block.label, block.target, block.title).split("\n")
+    return _lines_of_paragraph(first, rest)
+
+
+def _read_definition(lines: list[str]) -> list[LinkDefinitionSource] | None:
+    """What the parser reads *lines*, those a ``link_definition`` block is written as
+    (``_definition_lines``), as: the one definition they are, or None when they are
+    not read back as exactly one. Not so for a definition a model built in code
+    holds a directive in (the parser keeps such a definition paragraph text, #92),
+    nor for a label of more than 999 characters. Written, those stand apart from
+    the blocks around them, and read back as the text they are."""
+    found, taken = split_link_definitions(lines)
+    return found if len(found) == 1 and taken == len(lines) else None
+
+
+def _reads_apart(
+    own: list[str], read: list[LinkDefinitionSource], lines: list[str],
+    next_read: list[LinkDefinitionSource] | None = None,
+) -> bool:
+    """True if *lines*, the block after a definition (*own*, which the parser reads as
+    *read*) written directly under it, are read back as that block and leave the
+    definition as it is: no title from a line of them (``"t"`` under ``[x]: u``), and
+    no definition made of them unless they are one, which the parser reads as
+    *next_read*."""
+    expected, size = read, len(own)
+    if next_read is not None:
+        expected, size = [*read, *next_read], len(own) + len(lines)
+    found, taken = split_link_definitions([*own, *lines])
+    return found == expected and taken == size
+
+
+def _joins_definition(text: str, *, in_item: bool = False) -> bool:
+    """True if the paragraph *text*, after link reference definitions, is
+    written on the line under them (``_paragraph`` with *joined*): its first
+    line starts a block where it is alone — a complete HTML tag (kind 7), a
+    list item that could not interrupt a paragraph — but is paragraph text
+    under them, where the parser read it (§4.7, #92: a definition is peeled
+    off a closed paragraph, so what is left of it can look like the start
+    of a block). Escaping it with a backslash would not give the same
+    paragraph back. A first line that starts a block under them as it is
+    (``- c``, ``# c``, ``1. c``, as the parser reads it when it was indented
+    four columns) is written four columns in, as a line of a paragraph is
+    (``_joined_lines``). *in_item*: the paragraph is in a list item, where ``#``
+    alone starts a block too (a heading)."""
+    lines = [line.lstrip(" \t") for line in text.split("\n") if not is_blank(line)]
+    return bool(lines) and _paragraph_line(lines[0], in_item=in_item, alone=len(lines) == 1) != lines[0]
+
+
+def _joined_lines(first: str, rest: list[str]) -> list[str]:
+    """The lines of a paragraph written under a link reference definition
+    (``_joins_definition``): *first* as it is when that continues the
+    definition's paragraph, else four columns in, then *rest* as
+    ``_lines_of_paragraph`` has them."""
+    return _lines_of_paragraph(first if _continues(["[a]: b", first]) else "    " + first, rest)
+
+
+def _paragraph(text: str, *, in_item: bool = False, joined: bool = False) -> str:
     """A paragraph's text, written at the margin as its lines
     (``_paragraph_line``, ``_continues``). *in_item*: in a list item's
-    content, where ``#`` alone is a heading too. A blank line, which only a
-    model built in code holds, would end the paragraph: it is left out."""
+    content, where ``#`` alone is a heading too. *joined*: the paragraph is
+    written under link reference definitions, in the same paragraph as they
+    (``_joins_definition``), so that its first line is written as it is. A
+    blank line, which only a model built in code holds, would end the
+    paragraph: it is left out."""
     lines = [line for line in text.split("\n") if not is_blank(line)]
     if not lines:
         return ""
-    written = [_paragraph_line(lines[0].lstrip(" \t"), in_item=in_item, alone=len(lines) == 1)]
-    for line in lines[1:]:
-        # A line's indentation is not its text (``paragraph_text``).
+    first = lines[0].lstrip(" \t")
+    if joined:
+        written = _joined_lines(first, lines[1:])
+    else:
+        written = _lines_of_paragraph(_paragraph_line(first, in_item=in_item, alone=len(lines) == 1), lines[1:])
+    if split_link_definitions(written)[0]:
+        # The parser makes a block of every definition a paragraph opens with
+        # (§4.7, #92), so text that reads as one, which only a model built in
+        # code holds, gets a backslash: ``\[x]: u`` is text. The same function
+        # decides as in the parser, so a paragraph it leaves whole (one with
+        # a directive in the definition) is not escaped.
+        written[0] = "\\" + written[0]
+    return "\n".join(written)
+
+
+def _lines_of_paragraph(first: str, rest: list[str]) -> list[str]:
+    """The lines of a paragraph written at the margin: *first*, then *rest*,
+    each without its indentation (``paragraph_text``) and, when it would not
+    continue the paragraph, four columns in."""
+    written = [first]
+    for line in rest:
         line = line.lstrip(" \t")
         # Written as it is where the parser reads it as continuing the
         # paragraph: else four columns in, where a line always does, and is
         # read without its indentation. The parser never makes a paragraph
         # of lines that need it but for lazy ones (``===`` under a quote's
-        # or an item's paragraph, where it is no underline).
+        # or an item's paragraph, where it is no underline), nor a title or
+        # label of a definition (``- b`` in its title, #92).
         written.append(line if _continues([*written, line]) else "    " + line)
-    return "\n".join(written)
+    return written
 
 
 def _continues(lines: list[str]) -> bool:
@@ -248,16 +334,11 @@ def _table_row(cells: list[str]) -> str:
     return "| " + " | ".join(_table_cell(cell) for cell in cells) + " |"
 
 
-def _render_block(block: Block, *, in_item: bool = False) -> str:
-    """*block* as source; *in_item*: in a list item's content."""
+def _paragraph_source(block: Block) -> str | None:
+    """The text of a block that is written as a paragraph (a paragraph, a definition, a
+    ``{{ref:}}`` or a ``{{term:}}``), or None for another."""
     if block.kind == "paragraph":
-        return _paragraph(strip_text(block.text), in_item=in_item)
-    if block.kind == "heading":
-        # A heading at the margin would be a section's: outside an item —
-        # only a model built in code has one there — it is written as a
-        # paragraph of its line, with a backslash before it.
-        line = _heading(block)
-        return line if in_item else "\\" + line
+        return strip_text(block.text)
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()
@@ -267,14 +348,34 @@ def _render_block(block: Block, *, in_item: bool = False) -> str:
             else f'"{term}" {{{{def:}}}}'
         )
         body = strip_text(block.text)
-        return _paragraph(f"{anchor} {body}" if body else anchor)
+        return f"{anchor} {body}" if body else anchor
     if block.kind == "ref":
         target = format_value(block.target, positional=True)
-        return _paragraph(strip_text(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}"))
+        return strip_text(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}")
     if block.kind == "term":
         target = format_value(block.target, positional=True)
         label_part = f", label={format_value(block.label)}" if block.label else ""
-        return _paragraph(strip_text(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}"))
+        return strip_text(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}")
+    return None
+
+
+def _render_block(block: Block, *, in_item: bool = False) -> str:
+    """*block* as source; *in_item*: in a list item's content."""
+    if (text := _paragraph_source(block)) is not None:
+        # (A lifted directive's block is written as at the margin, as it always was.)
+        return _paragraph(text, in_item=in_item and block.kind == "paragraph")
+    if block.kind == "heading":
+        # A heading at the margin would be a section's: outside an item —
+        # only a model built in code has one there — it is written as a
+        # paragraph of its line, with a backslash before it.
+        line = _heading(block)
+        return line if in_item else "\\" + line
+    if block.kind == "link_definition":
+        if is_blank(block.label):
+            return ""
+        # A label or title over several lines is written as the lines of a
+        # paragraph are (Revision 2 of #92): ``- b`` in a title is no item.
+        return "\n".join(_definition_lines(block))
     if block.kind in _LISTS:
         return _render_list(block) or ""
     if block.kind == "quote":
@@ -391,7 +492,7 @@ def _item_content(item: ListItem, *, open_end: bool) -> str:
 
 
 def _render_list(
-    block: Block, last_column: int = 0, *, own: str = "", close_last: bool = False, in_item: bool = False,
+    block: Block, last_column: int = 0, *, own: str = "", close_last: bool = False,
 ) -> str | None:
     """A list: each item's marker, then its content (``_item_content``),
     later lines indented to the item's content column; an empty item is its
@@ -422,19 +523,11 @@ def _render_list(
             # the marker cannot tell: the content starts on the next line,
             # after the bare marker.
             rows = ["", *rows]
-        needed = 0
-        if not in_item:
-            # A later line that reads as an ATX heading at the margin is
-            # written at least four columns in, where the parser keeps it
-            # the item's (``parser._scan_list``).
-            headings = [row for row in rows[1:] if HEADING_RE.match(row)]
-            needed = 4 - min((indent_width(row) for row in headings), default=4)
-        if k == last and rows:
-            needed = max(needed, last_column)
+        needed = last_column if k == last and rows else 0
         if len(marker) < needed:
             spacing = needed - len(marker.rstrip())
             if spacing > 4:
-                return None  # past last_column only: a heading line needs less
+                return None  # no spacing of at most four columns reaches last_column
             marker = marker.rstrip() + " " * spacing
         if not rows or not rows[0]:
             if rows and k == last and last_column > len(marker.rstrip()) + 1:
@@ -479,26 +572,38 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
     blocks = _written(blocks)
     final = len(blocks) - 1
     markers = _list_markers(blocks)
+    # The definitions among the blocks: the lines each is written as, once, and what the parser
+    # reads of those that are read back as definitions (#92).
+    definition_lines: dict[int, list[str]] = {}
+    reads: dict[int, list[LinkDefinitionSource]] = {}
+    for index, block in enumerate(blocks):
+        if block.kind == "link_definition":
+            definition_lines[index] = _definition_lines(block)
+            if (read := _read_definition(definition_lines[index])) is not None:
+                reads[index] = read
     for index, block in enumerate(blocks):
         following = blocks[index + 1] if index + 1 < len(blocks) else None
         keep_open = last and index == final
+        joined = False
+        text = _paragraph_source(block)  # for a paragraph, a definition, a ref or a term: the text it is written as
+        after_definition = index - 1 in reads  # the block before is a definition read back as one
         if block.kind in _LISTS and following is not None and following.kind in ("code", "html", "source"):
             # A block indented to the last item's content would continue it:
             # the item is written with its content further in.
             rendered = _render_list(
-                block, indent_width(following.text) + 1, own=markers[index], in_item=in_item
+                block, indent_width(following.text) + 1, own=markers[index]
             )
             if rendered is not None:
                 as_written.add(index + 1)
             else:
-                rendered = _render_list(block, own=markers[index], close_last=True, in_item=in_item) or ""
+                rendered = _render_list(block, own=markers[index], close_last=True) or ""
         elif block.kind in _LISTS:
             # Only where the items leave no other bullet does a list follow
             # one with its marker.
             same = following is not None and following.kind == block.kind and markers[index + 1] == markers[index]
             # What follows the list starts short of its items' content, where
             # a fence left open in them ends.
-            rendered = _render_list(block, own=markers[index], close_last=same, in_item=in_item) or ""
+            rendered = _render_list(block, own=markers[index], close_last=same) or ""
         elif index in as_written:
             rendered = (block.text if keep_open else close_fences(block.text)) if block.kind != "html" else block.text
         elif index > 0 and blocks[index - 1].kind in _LISTS and block.kind == "code":
@@ -509,25 +614,48 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # As it stands, but for a fence it leaves open, which would run
             # on into what follows it: closed unless nothing does.
             rendered = block.text if keep_open else close_fences(block.text)
+        elif block.kind == "link_definition":
+            rendered = "\n".join(definition_lines[index])
         else:
-            rendered = _render_block(block, in_item=in_item)
+            # What is left of a paragraph that opened with definitions may read as the start of a
+            # block alone: it is written under them, as the parser read it (#92).
+            under = None
+            if text is not None and after_definition and _joins_definition(
+                text, in_item=in_item and block.kind == "paragraph"
+            ):
+                under = _paragraph(text, joined=True)
+                lines = under.split("\n")
+                # Written under the definition they are its paragraph's, one paragraph, and no more of it.
+                if not (_continues(["[a]: b", *lines]) and _reads_apart(definition_lines[index - 1], reads[index - 1], lines)):
+                    under = None
+            joined = under is not None
+            rendered = _render_block(block, in_item=in_item) if under is None else under
         if rendered:
-            # In an item, what may interrupt a paragraph follows it directly,
-            # and so does a list another list (CommonMark), keeping the list
-            # tight as it is written.
+            # In an item, a quote or a fence follows a paragraph directly, and
+            # so does a list another list (CommonMark), keeping the list tight
+            # as it is written. A heading after a paragraph is written after a
+            # blank line, which the parser reads as the item's too (#84).
             before = blocks[index - 1] if index > 0 else None
             closed = before is not None and before.kind == "code" and FENCE_OPEN_RE.match(before.text.split("\n")[0])
-            heading = block.kind == "heading"
-            tight = in_item and before is not None and (
-                # A heading's line, which a blank line before it would make a
-                # section's (``parser._scan_list``), follows any block that
-                # ends at it.
-                (heading and before.kind != "html")
-                or
-                (block.kind in _LISTS and before.kind in ("paragraph", "heading", *_LISTS) and not _bare(rendered))
-                or (before.kind == "paragraph" and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered.split("\n")[0])))
+            # A definition read back as one ends its paragraph as a paragraph does (#92)
+            # and is no text, so what follows it follows it directly, where it is read as itself:
+            # a list, a quote or a fence end the paragraph the definition is in; a paragraph or
+            # another definition does not when nothing in it is read into the definition (a
+            # title on its next line, for one). A blank line would make a list loose, and a
+            # renderer wrap its items in paragraphs.
+            tight = joined or in_item and before is not None and (
+                (block.kind in _LISTS and (before.kind in ("paragraph", "heading", *_LISTS) or after_definition)
+                 and not _bare(rendered))
+                or ((before.kind == "paragraph" or after_definition)
+                    and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered.split("\n")[0])))
                 # After a closed fence a block starts on the next line.
                 or (closed and close_fences(before.text) == before.text and not _bare(rendered))
+                or (
+                    after_definition and (text is not None or index in reads)
+                    and _reads_apart(
+                        definition_lines[index - 1], reads[index - 1], rendered.split("\n"), reads.get(index)
+                    )
+                )
             )
             # A fence left open at the end of the block before would take a
             # blank line into its code: what follows, starting short of its
@@ -570,7 +698,12 @@ def serialize(document: Document) -> str:
 
     A document parsed without frontmatter (§3.1) is written without it, as
     long as its metadata is still empty; a thematic break opening it is then
-    written ``***``, which cannot open frontmatter."""
+    written ``***``, which cannot open frontmatter.
+
+    Raises ``FrontmatterError`` for a document whose frontmatter could not be
+    read (``parse`` with ``on_frontmatter_error="keep"``, #43): it has no
+    metadata to write, and what was written would not be the source's."""
+    _check_frontmatter_read(document)
     payload = _metadata_to_frontmatter(document.metadata)
     bare = document.metadata.frontmatter_absent and payload == _metadata_to_frontmatter(metadata_from_dict({}))
     parts: list[str] = []
@@ -624,8 +757,13 @@ def save(document: Document, path: str | os.PathLike[str] | None = None) -> Path
     Raises ``ValueError`` when both *path* and ``Document.path`` are None (a
     document parsed from text or built in code has no path; pass one), and
     ``OSError`` when the file cannot be written; the document's path and
-    filename are then unchanged.
+    filename are then unchanged. It raises ``FrontmatterError`` for a
+    document whose frontmatter could not be read (see ``serialize``), and
+    leaves the file as it is: the text of its block is not lost.
     """
+    # serialize checks too; this call is only for the order of the errors: the document that
+    # cannot be written is said before the path that is missing.
+    _check_frontmatter_read(document)
     target = document.path if path is None else path
     if target is None:
         raise ValueError("a document parsed from text or built in code has no path; pass one")

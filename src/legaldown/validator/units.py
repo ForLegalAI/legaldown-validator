@@ -9,15 +9,18 @@ sections and list items enclosing it.
 """
 from __future__ import annotations
 
+import posixpath
 import re
+from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from itertools import accumulate
 from typing import Any
 
 from ..directives import Directive, Lexed, is_escaped, lex
-from ..markdown import HTML_COMMENT_RE
+from ..markdown import comment_closers, comment_end, find_all, strip_comments
 from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
-from ..models import Document
+from ..models import Block, Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 from .patterns import MAX_SECTION_LEVEL
 
@@ -34,8 +37,8 @@ def is_include_only(text: str, directives: list[Directive]) -> bool:
         len(inside) == 1
         and inside[0].name == "include"
         and not inside[0].malformed
-        and not HTML_COMMENT_RE.sub("", text[: inside[0].start]).strip()
-        and not HTML_COMMENT_RE.sub("", text[inside[0].end:]).strip()
+        and not strip_comments(text[: inside[0].start]).strip()
+        and not strip_comments(text[inside[0].end:]).strip()
     )
 
 
@@ -94,13 +97,119 @@ def marker_matches(text: str, lexed: Lexed) -> Iterator[re.Match[str]]:
     """The markers and look-alikes in *text*, whose lexing is *lexed*: not
     in code or comments (blanked in the lexer's view), not escaped, and not
     in a directive's value (§11.4)."""
+    # Whether an offset is in a directive is a bisect, not a pass over them
+    # all: a paragraph of many markers and directives would be quadratic
+    # (#94). ``reach[i]`` is how far the first ``i + 1`` directives reach,
+    # so overlapping ones, which a custom lexer may give, count as well.
+    spans = sorted((d.start, d.end) for d in lexed.directives if not d.malformed)
+    starts = [start for start, _end in spans]
+    reach = list(accumulate((end for _start, end in spans), max))
     for match in MARKER_RE.finditer(lexed.view):
         if not is_look_alike(match.group(0)):
             continue
-        if not is_escaped(text, match.start()) and not any(
-            d.start <= match.start() < d.end for d in lexed.directives if not d.malformed
-        ):
+        at = bisect_right(starts, match.start())  # the directives starting at or before it
+        if not is_escaped(text, match.start()) and not (at and reach[at - 1] > match.start()):
             yield match
+
+
+_NOT_SPACE_RE = re.compile(r"\S")
+
+
+def blank_from(text: str) -> Callable[[int], bool]:
+    """A test of whether *text* from an offset on holds nothing but
+    whitespace and comments, which are not rendered (§8.6): the offset is
+    in marker position when it does. Each answer equals
+    ``not strip_comments(text[offset:]).strip()``, but costs no scan of the
+    rest of the text (#94).
+
+    A comment opening at *p* — as ``HTML_COMMENT_RE`` would match on
+    ``text[p:]`` — ends at some *e*, and the text from *p* on is blank when
+    the text from *e* is. It is judged right to left, with the end of each
+    comment found by a bisect among the ``-->`` of the text."""
+    closers = comment_closers(text)
+    openers = find_all(text, "<!--")
+
+    blank_at: dict[int, bool] = {}  # an offset past a comment: the rest is blank
+    blank_comment: dict[int, bool] = {}  # an opener: the rest after its comment is blank
+
+    def rest_blank(offset: int) -> bool:
+        if offset not in blank_at:
+            found = _NOT_SPACE_RE.search(text, offset)
+            blank_at[offset] = found is None or blank_comment.get(found.start(), False)
+        return blank_at[offset]
+
+    for opener in reversed(openers):
+        end = comment_end(text, opener, closers)
+        if end is not None:
+            blank_comment[opener] = rest_blank(end)
+    return rest_blank
+
+
+def include_paragraph(text: str, lexed: Lexed) -> Directive | None:
+    """The ``{{include:}}`` of a paragraph that holds only it and, at most, its
+    marker (§12.2): *text* is the paragraph, *lexed* its lexing. Anything else
+    — an include in a sentence or a list item, a second directive, text — is
+    not an include paragraph and is not replaced by a fragment. A marker that
+    is no marker (``{#id class=x}``) is text, as assembly reads it."""
+    if "{{include" not in text:
+        return None
+    head = text
+    if "{" in text and ("#" in text or "when=" in text):
+        blank = blank_from(text)
+        # Only the last marker can end the paragraph.
+        last = None
+        for match in marker_matches(text, lexed):
+            if blank(match.end()):
+                last = match
+        if last is not None and parse_marker(last.group(0)) is not None:
+            head = text[: last.start()]
+    if not is_include_only(head, lexed.directives):
+        return None
+    return next(d for d in lexed.directives if d.name == "include" and d.end <= len(head))
+
+
+def paragraph_include(block: Block, text: str, lexed: Lexed) -> Directive | None:
+    """The ``{{include:}}`` of *block*, if it is an include paragraph (§12.2): a top-level
+    paragraph (one in a quote, a list or a table is text) whose first text fragment,
+    *text* (lexed as *lexed*), holds only it and, at most, its marker. The one place
+    that says what an include paragraph is, for the body check and for the files a
+    template refuses."""
+    return include_paragraph(text, lexed) if block.kind == "paragraph" else None
+
+
+def include_key(directive: Directive) -> str:
+    """The key an ``{{include:}}`` is read by: its path, normalised (``posixpath.normpath``),
+    or "" for one that names no file. The one place that says so, for assembly and the
+    validator."""
+    return posixpath.normpath(directive.positional) if directive.positional else ""
+
+
+def block_include(block: Block, lex_fragment: Callable[[str], Lexed] = lex) -> Directive | None:
+    """The ``{{include:}}`` of *block* if it is an include paragraph (``paragraph_include``),
+    read from its first text fragment, which is what the validator and assembly both
+    read. The text is lexed only if it can hold an include; a block with no text fragment
+    (one built in code) holds none."""
+    # Only to skip the lazy import and ``text_fragments`` for a block that cannot be one:
+    # ``paragraph_include`` stays the rule.
+    if block.kind != "paragraph":
+        return None
+    from ..definitions import text_fragments  # definitions -> validator.helpers -> validator: a cycle at import
+
+    texts = text_fragments(block)
+    if not texts or "{{include" not in texts[0]:
+        return None
+    return paragraph_include(block, texts[0], lex_fragment(texts[0]))
+
+
+def iter_include_paragraphs(
+    document: Document, lex_fragment: Callable[[str], Lexed] = lex
+) -> Iterator[tuple[int | None, int, Directive]]:
+    """The include paragraphs of *document*, in order, each as (section, block, directive):
+    a light walk that lexes only the first text fragment of a paragraph that can hold one."""
+    for section, index, block in document.iter_indexed_blocks():
+        directive = block_include(block, lex_fragment)
+        if directive is not None:
+            yield section, index, directive
 
 
 def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex) -> list[FoundMarker]:
@@ -120,12 +229,15 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex)
             if "{" not in fragment or ("#" not in fragment and "when=" not in fragment):
                 continue
             lexed = lex_fragment(fragment)
+            fragment_blank_from = None
             for m in marker_matches(fragment, lexed):
                 marker = parse_marker(m.group(0))
                 # Only whitespace and comments may follow a marker, to the
                 # end of its paragraph: a comment is not rendered (§8.6),
                 # but a code span is text.
-                at_end = position and not HTML_COMMENT_RE.sub("", fragment[m.end():]).strip()
+                if position and fragment_blank_from is None:
+                    fragment_blank_from = blank_from(fragment)
+                at_end = position and fragment_blank_from(m.end())
                 include_only = (
                     at_end
                     and block.kind == "paragraph"

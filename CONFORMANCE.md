@@ -6,11 +6,12 @@ parse and validate a single document in memory. It also claims the **Assembly** 
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **85 of the
-corpus's 113 rules are implemented, and every one the corpus can exercise at Core level passes**,
-at the line each case gives.
+validation rule, paired with the diagnostic a conforming validator must produce. **94 of the
+corpus's 113 rules are implemented, and every case the harness runs passes**, at the line each
+case gives and, for a finding in a file the document includes, in that file.
 
 Every diagnostic names its file and line (§16.9, [#27](https://github.com/ForLegalAI/legaldown-validator/issues/27)):
+the file is the document's, or the include fragment it was found in ([#35](https://github.com/ForLegalAI/legaldown-validator/issues/35));
 the line of the directive, marker, heading or block it is about, or of the frontmatter node — a
 mapping key, or a list entry's `-` line, at whatever depth — and for a missing key, the key that
 holds it (`amends:` for a missing `amends.title`) or the frontmatter's first key. Two cases are
@@ -28,14 +29,19 @@ document alone cannot exercise them. This implementation covers two of the three
 `anchor-autogen-collision` and `legaldown-version-newer`, with unit tests. The third,
 `ref-not-enumerated`, depends on the style template and is listed below.
 
-Eight implemented rules — `amend-def-override`, `amend-term-undefined`, `amend-term-unresolvable`,
-`attachment-id-collision`, `attachment-id-duplicate`, `attachment-title-empty`,
-`attachment-unreferenced`, and `template-fragment-invalid` — have fixtures that span several files
-or are marked for the Full level, so this single-document harness skips them. They are covered by
-the unit tests in `tests/test_spec_alignment.py` and `tests/test_templates.py` instead. Of
-`template-fragment-invalid`, the parts that need only the template are implemented (a fragment
-included twice, a LegalDown attachment file declared twice or also included, an include inside a
-drafting note); the parts that read a fragment's content are Full (§17.4).
+Seven implemented rules — `amend-def-override`, `amend-term-undefined`, `amend-term-unresolvable`,
+`attachment-id-collision`, `attachment-id-duplicate`, `attachment-title-empty` and
+`attachment-unreferenced` — have fixtures that span several files or are marked for the Full
+level, so this single-document harness skips them. They are covered by the unit tests in
+`tests/test_spec_alignment.py` and `tests/test_templates.py` instead.
+
+The fixtures of five rules that read an include fragment — `include-file-missing`,
+`include-has-frontmatter`, `include-has-h1`, `include-heading-skip` and
+`template-fragment-invalid` — are marked Full and span files, and are run all the same: with
+`validate(resolve=file_loader(<the case's directory>))`, asserting the rule, the level, the line
+**and the file** each gives ([#35](https://github.com/ForLegalAI/legaldown-validator/issues/35),
+[Include fragments](#include-fragments-122-1611-1612)). `include-not-legaldown` is Core (§17.2: the
+extension check needs only the document) and runs as any other case, file included.
 
 The specification (§17.5) requires an implementation never to silently skip a check it cannot
 perform, so the remaining rules are named here. Most of them belong to conformance levels this
@@ -46,32 +52,108 @@ files other than the document itself.
 
 | Group | Rules |
 |---|---|
-| Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`, `path-not-relative`, `path-outside-root` |
-| Includes (Full, §17.4) | `include-file-missing`, `include-not-legaldown`, `include-cycle`, `include-has-frontmatter`, `include-has-h1`, `include-anchor-duplicate`, `include-heading-skip` |
+| Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`; of these, `attachment-has-frontmatter` and `attachment-has-h1` are reported for an attachment file validated on its own (`validate(fragment=True, fragment_kind="attachment")`, below), and by assembly, but not for an attachment file `validate(resolve=)` reads (see [Include fragments](#include-fragments-122-1611-1612)) |
+| Includes (Full, §17.4) | `include-cycle`, `include-anchor-duplicate`. The rest of the group is implemented ([#35](https://github.com/ForLegalAI/legaldown-validator/issues/35)): `include-not-legaldown` at Core; `include-file-missing`, `include-has-frontmatter`, `include-has-h1` and `include-heading-skip` when the validation can read the fragments; and the parts of `template-fragment-invalid` that read them |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
 | Rendering (§17.3) | `ref-not-enumerated` |
-| Other | `frontmatter-invalid-yaml` (reported by the CLI and assembly, not the validator), `definition-circular`, `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
+| Other | `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
-In practice this means validating a set of files is out of scope: the validator does not resolve
-or cross-check includes, attachment file contents, or bilingual document sets. The one thing it
-reads from another file is the definitions the amended original (§7.5) and the LegalDown
-attachment files (§12.4) declare, from beside a document that has a path (`legaldown.load`; the
-CLI) or through `validate(resolve=)`; an unreadable file is as if it were not asked for. Single-document
-authoring, editing, and CI validation are fully covered. Assembly is the exception: it reads a
-template's include fragments and LegalDown attachment files, and reports the checks on them that
-its output depends on (see [Assembly](#assembly-157-176)); the validator still does not.
+In practice this means validating a set of files is out of scope: the validator does not
+cross-check attachment file contents or bilingual document sets, nor the identifiers or
+cycles across a document and its fragments. What it reads from another file is the definitions the
+amended original (§7.5) and the LegalDown attachment files (§12.4) declare, and, to check them
+([Include fragments](#include-fragments-122-1611-1612)), the include fragments (§12.2), from beside a
+document that has a path (`legaldown.load`; the CLI) or through `validate(resolve=)`; an
+attachment or original that is unreadable is as if it were not asked for, and a fragment that is not
+there is `include-file-missing`. Single-document authoring, editing, and CI validation are fully
+covered. Assembly reads a template's include fragments and LegalDown attachment files as well, and
+reports the checks on them that its output depends on, from the same implementation (see
+[Assembly](#assembly-157-176)).
 
 The template constructs of specification 0.2 (§15) are validated within the document: questions,
 conditions and alternatives, reference safety, `{{choose:}}`, drafting notes, insertion
 boundaries, and the final option (§15.9, `validate(final=True)` or
 `legaldown validate --final`); assembly is described below. Two limits apply:
 
-- A template's include fragments and LegalDown attachment files are not read (Full, §17.4) — the
-  attachment files only for the definitions they declare — so
-  `question-unused` is not reported for a template that has either: a question may be used there.
-- A LegalDown attachment file or include fragment validated on its own is checked as a
-  standalone document: conditions, placeholders, and terms that refer to its template's
-  questions and definitions are reported as undeclared.
+- A template's include fragments and LegalDown attachment files are read for what a template may
+  hold in them and for the definitions of the attachment files, not for the questions they use,
+  so `question-unused` is not reported for a template that has either: a question may be used there.
+- A LegalDown attachment file or include fragment validated on its own (`validate(fragment=True)`,
+  `legaldown validate --fragment`) is checked as a body-only fragment (§12.2, §12.4): no frontmatter,
+  title, parties or sides are expected, and a first heading at any level is accepted. What it
+  refers to in its host's frontmatter or body (a party, side, attachment or question it does not
+  declare, a `{{ref:}}` or `{{term:}}` it does not hold) is still reported, with the rule id and
+  level it has in a complete document, but with `Diagnostic.host_dependent` set: only the including
+  document can settle it. So is a definition it declares and does not reference
+  (`def-unreferenced`), which the host may reference. A fragment cannot tell
+  whether its host is a template, so it is one exactly when it holds a condition or a `{{choose:}}`,
+  unless `validate(template=)` (`legaldown validate --fragment --template` / `--no-template`) says
+  so: a blank or a drafting note is legal in any document. A host that is no template declares no
+  question, so a condition or a `{{choose:}}` naming one is then the fragment's own
+  `condition-invalid` or `choose-invalid`, not `host_dependent`. What §15.3 asks of a template's
+  fragment is asked in this mode only when `template=True` says the host is a template (below).
+  `legaldown validate --fragment` marks the host-dependent findings in its text output, counts them apart in its
+  summary, and its exit status ignores them. Rule ids and levels are unchanged, and without `fragment=True` nothing is
+  flagged and a document is checked as a complete one. The fragment's own frontmatter is
+  `include-has-frontmatter` and its level-1 heading `include-has-h1`, or, for `fragment_kind="attachment"`
+  (`--fragment-kind attachment`), `attachment-has-frontmatter` and `attachment-has-h1` (§16.10);
+  the fragment's own `{{include:}}` paths are judged (`path-not-relative`, `include-not-legaldown`) and
+  its includes are never read.
+  *Kind* (`fragment_kind=`, default `"include"`) says what the file is to its host. With
+  `template=True` an include fragment is held to §15.3 as assembly holds it, and each offender is a
+  `template-fragment-invalid`: a condition (on a heading, a paragraph or a list item), a drafting note,
+  an `{{include:}}` wherever it is, and a heading without an explicit identifier. An attachment file
+  is held to the `{{include:}}` alone (§12.4, §16.12: "on `{{include:}}` inside an attachment file");
+  its conditions are its own, beneath its attachment's `when`, and a drafting note is legal in it.
+  Without `template=True` (the default `None`, or `False`) none of these is asked: a conditional
+  fragment is only inferred a template, and its host may be a document.
+
+`definition-circular` (§16.3, [#105](https://github.com/ForLegalAI/legaldown-validator/issues/105))
+reads a definition's scope as §7.2 gives it "for purposes such as circular-reference detection": the
+paragraph holding its `{{def:}}`. A definition is explained in terms of another when a
+`{{term:}}` of the other is in that paragraph, and definitions that are each explained in terms of
+the next, round to the first, are circular. A list item's paragraph, each block of a block quote
+and a heading in a quote are paragraphs; a table's scope is a row, so a glossary row
+(`| "Foo" {{def: foo}} | means {{term: bar}} |`) is one definition's paragraph, and so is its
+header row; a block quote nested deeper than the parser reads is one paragraph. A definition in a
+list item has its own paragraph as scope, as §7.2 says, so the references in the item's sub-list
+(the layout `- "Fee" {{def: fee}} means:` over `(a)` and `(b)` items) are not part of the
+definition, and a circle that runs only through them is not reported.
+
+The specification does not say how many diagnostics a circle gets, nor where. One Warning is
+given for each set of definitions that lead round to each other (a strongly connected component of
+the "explained in terms of" relation, however many circles it holds), at the line of the last of
+them in document order, where the circle closes, which is where the fixture has it (line 23);
+the message names up to five ids. The Warnings come in that order, so the output does not depend
+on the order the search visits the definitions. A circle has at least two distinct definitions.
+**A reference in a definition's own paragraph is not a circle:** `"Services" {{def: services}} means
+x. See {{term: services}}.` is ordinary wording, and the specification's own fixtures write it in
+17 cases (the translation, amendment and single-quote cases), none of which expects a Warning. The
+one self-reference reported is a `{{term:}}` to itself in the definition's own quoted term
+(`"Self {{term: s}}" {{def: s}}`), which cannot be read any other way.
+
+Only definitions that are registered count (not a duplicate, or an invalid id); a `{{term:}}`
+in code or a comment, or an undeclared id, is no reference; a `{{term:}}` in a drafting note
+is not either, as assembly removes it (§15.6). A definition imported from the amended original or
+an attachment file is a target and never a source (the validator reads only the ids of those
+files), so a circle through several files is Full (§17.4), but a definition of the document that
+shadows an imported id still is a source. The check is linear in the paragraphs and references,
+and takes no recursion, so a ring of any length, or a paragraph holding thousands of definitions,
+is as cheap as the rest.
+
+Two approximations, both towards giving a Warning (a Warning is better given than withheld):
+
+- **Paragraph scope.** A paragraph cannot tell which of its definitions a reference explains, so
+  two definitions in one paragraph that references both are reported as explaining each other
+  (`"A" {{def: a}} and "B" {{def: b}} use {{term: a}} and {{term: b}}.`). A reference to one of them
+  only is not (`"A" {{def: a}} means x. "B" {{def: b}} means {{term: a}}.`).
+- **Alternatives (§15.4).** In a template, a reference does not lead to a declaration it can never
+  appear with (their conditions exclude each other), so alternatives that share an id do not make a
+  circle together. Only a reference and the declaration it names are compared, each pair of
+  conditions once, so a circle whose members exclude each other further round (`d1` when `q` names
+  `d2`, which names `d3` when not `q`, which names `d4`, which names `d1`) is still reported; an
+  exact answer needs the answers to every question tried together. The tests are at most the
+  references' distinct conditions times the alternatives of the id they name.
 
 `raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
 each HTML block that holds more than comments (text after a comment's `-->` on its line
@@ -83,6 +165,67 @@ spans are found by the directive lexer (§11.4), which reads comments by CommonM
 no tags, so a few rare texts are read differently from cmark-gfm: a comment holding `--`, text
 after an unclosed `<!--` (where cmark-gfm finds no more inline HTML), and a backtick or `<!--`
 inside a CDATA section, declaration or processing instruction.
+
+`path-not-relative` and `path-outside-root` (§2.3, §16.2, §17.2,
+[#104](https://github.com/ForLegalAI/legaldown-validator/issues/104)) are Core checks, and syntactic:
+they read the text of a path and never a file or the file system, so a symbolic link is not followed,
+and whether the file exists is Full (§17.4): for an include, `include-file-missing` when the validation can read files ([Include fragments](#include-fragments-122-1611-1612)). The paths are the ones §2.3 lists: `{{include:}}`, an
+image's path, `attachments[].file`, `amends.file`, `supersedes.file` (the object form only: a string is
+a description of the document, §3.2) and `translations`. Each is reported at its own line: the directive,
+the image, or the key (the entry of a list). An empty path is `attachment-file-missing`'s, not these.
+
+- A path is not relative when it begins with a URI scheme (`[A-Za-z][A-Za-z0-9+.-]*:`: `https://`,
+  `file://`, `data:`, `mailto:`, and a drive letter, `C:/x` or `C:x`) or with `/` or `\` (`//host`,
+  `\\host`), whitespace around it ignored. `../x` is relative. A relative name whose first segment holds a
+  colon (`a:b.lgd`) reads as having the scheme `a`, as RFC 3986 does; write `./a:b.lgd`. A path that is
+  not relative is one finding, not also outside the root.
+- No document root is configured by default (§2.3): `validate(document_root=)` and
+  `legaldown validate --document-root DIR` set it (the fixtures' `requires_config` `document_root`,
+  relative to the case's directory). Without one the containment check does not run, and
+  `../shared/definitions.lgd` is valid. With one, `normpath(directory of the document / path)` must be at
+  or below the root, by names alone, with `/` and `\` both separating names (`a/../b` stays, `a/../../b`
+  leaves). The document and the root are made absolute first, so a relative `path` and `.` compare; a document
+  from `parse` has no path and is taken to be at the root, so any leading `..` leaves it. A loaded document
+  below the root may climb up to it. A document outside the root cannot name a file within it: that is
+  reported once, as `path-outside-root` at line 1 saying so, not once for each path, and only when it
+  names a relative path at all.
+- Reading is stricter than validating: `files.relative_path`, which assembly and the definitions read for
+  `amends` and attachments use, still refuses `../` always (a file outside the document's directory is never
+  read, §2.3), and now every URI scheme as well (it let `https://example.com/a.lgd` through as
+  `https:/example.com/a.lgd`). So `../shared/x.lgd` validates clean, with a root that permits it or without one, but
+  such a file is not read ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)). Assembly does not report these two rules.
+- An image is the inline `![alt](destination)` (§8.7), in a paragraph, list item, quote, table cell, heading
+  or definition, and in the alt text of another image (both are checked). The destination is `<…>` or a
+  raw one with balanced parentheses, then an optional title; backslash escapes and character references in
+  it are decoded (`&#47;etc` is `/etc`). A destination is a URL, so it is read as one: a query or fragment
+  (`?…`, `#…`, the first of either) is not part of the path (`x.png?p=/../..` stays in the root), and **it is
+  also read percent-decoded**: `%2Fetc` is not relative and `%2E%2E/%2E%2E/x.png` leaves a root, since a tool
+  that opens the file decodes the URL first; a `%` not followed by two hex digits stays as written. Only
+  a `/` or `\` that decoding yields at the start, or a drive, one letter of either case and a colon
+  (`C%3A/x`, `c%3A%5Cx`, `C%3Ax`, `a%3Ab.png`, as `C:x` written is), makes a path absolute: otherwise a
+  scheme is the one written, so `https%3A//x` and `ab%3Ax` are relative. No other reference is percent-decoded or loses a query.
+  Not an image: one in a code span, fenced or indented code, a comment or a raw HTML block, `\![a](x)`
+  (a link after a literal `!`), a link or autolink (valid, §8.7), `<img src>` (that is `raw-html`),
+  and a reference-style image whose label no definition has. A reference-style image (`![a][r]`, `![a][]` or
+  `![a]` with `[r]: path`, [#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)) names its file
+  by the first definition of its label (`collect_link_definitions`): the definition's destination is read as an
+  image's is, and checked **once, where it is written** (the line of `[r]: path`, in an item or a quote too),
+  however many images name it; a definition no image names is no file reference. As in CommonMark a label that
+  follows the text decides (`![a][r]` with only `[a]` defined is no image), `![a][]` and `![a]` take the text as
+  the label if it holds no bracket, and no space may come between the text and the label. A definition with a
+  directive in it is paragraph text (below), so no image names it. A directive in
+  an image's destination (`![a](https://{{placeholder: host}}/x.png)`) leaves its path unknown until it is
+  filled in (assembly's output is validated again, §15.7.4), but the text before the first directive may
+  decide already: one that begins with a scheme or a `/` or `\` (`![a](/abs/{{placeholder: p}}.png)`) is
+  `path-not-relative` whatever is filled in. The rest is not judged for being relative, and for the root only the
+  names before the last separator of that text are (`../../../{{placeholder: p}}.png` leaves the root; the
+  name before the directive is partial, as `..` may be `..x` once filled in) unless a `?` or `#` ends the
+  path before the directive (`..?{{placeholder: p}}` leaves it). A destination of directives alone, or whose
+  path is a query or fragment only (`?{{placeholder: p}}`), names no file: `![a]({{placeholder: p}}.png)` does. A directive in the alt text is no matter.
+- In a fragment (`validate(fragment=True)`) the include and image paths are its own, whoever includes it:
+  they are checked and never `host_dependent`. Its frontmatter is never read, so none of its keys is checked.
+  A document whose frontmatter cannot be read is validated by its body alone, as for the other rules.
+- A document that validated clean may now carry these Errors, and so `legaldown validate` exit with status 1.
 
 Code is literal (§11.4): fenced code anywhere, and indented code at the top level of the body,
 in list items and in block quotes.
@@ -123,13 +266,73 @@ numbered, without an identifier, and not checked by the heading rules. Its direc
 checked as a paragraph's are, and a marker after it is text, as it is no paragraph for an item's
 anchor (§5.7): `- # Title {#x}` is `anchor-misplaced`. As in CommonMark, a heading ends the
 paragraph before it, so a line after it is not a lazy continuation line, and a setext underline
-never lazily continues a paragraph into a heading. Outside items and quotes, a section's heading
-needs text: a line of `#` alone is paragraph text there, where CommonMark reads an empty heading.
+never lazily continues a paragraph into a heading. After a blank line, a heading indented to an
+item's content is the item's too, as CommonMark has it
+([#84](https://github.com/ForLegalAI/legaldown-validator/issues/84)); indented less, or not at
+all, it is a section's. Outside items and quotes, a section's heading needs text: a line of `#`
+alone is paragraph text there, where CommonMark reads an empty heading.
+
+A link reference definition (CommonMark §4.7,
+[#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)) is a `link_definition` block, in an
+item or a quote too: its `label` as written (without the spaces around it), its `target` without
+`<>` and its `title` without its delimiters, each raw — backslash escapes and character references
+are not decoded, so the model keeps what was written. It is read from a closed paragraph, as
+CommonMark reads it: the definitions a paragraph *opens with* are blocks of their own, and what is
+left of it is the paragraph (or a heading's text). So a definition cannot interrupt a paragraph (`a`
+then `[x]: u` is one paragraph), a lazy line is part of the paragraph it continues, a title that is
+not closed, or is followed by text on its line, is not read (the definition stands without it if its
+destination's line ends there, and the title's line is then text), and a setext underline under
+nothing but definitions is no underline: `===` starts a paragraph and `---` is a thematic break. A
+label is matched case-folded (`str.casefold`) with each run of spaces, tabs and line breaks one space,
+and the first definition of a label wins, wherever it is in the document
+(`collect_link_definitions`, which a quote deeper than 16 or an item deeper than 64 is not read for).
+A definition is no text to the validator and no unit to assembly: it holds no directive, marker or
+anchor, an item's first paragraph (where an anchor may end, and a condition applies, §5.7, §15.3)
+is the first block after any definitions it opens with, and `[x]: u` over a lone `{{include:}}`
+line leaves the line an include paragraph. Written back, each definition is a paragraph of its own,
+blank-separated: the layout is normalized and the model is the same on a second reading. In a list item
+a definition and the block after it (another definition, a paragraph, a list, a quote, a fence) are
+written directly under one another where that is read back as the same two blocks, so that a tight list
+stays tight (a blank line there would make a renderer wrap its items in paragraphs); a title-like
+line under a definition is not, as it would become its title. (A list is always written tight, as the model
+keeps no looseness (below), so a loose list with a definition in it is written tight after it too.) A reference-style
+image (`![a][r]`, `![a][]`, `![a]`) is checked for `path-not-relative` and `path-outside-root` on its
+definition's destination, once, at the definition, however many images name it (#104, above).
+
+Where this differs from CommonMark, or is read more simply:
+
+- **A definition with `{{` in it stays paragraph text** (the run of definitions ends before it). CommonMark
+  reads it as a definition whose destination or title holds the directive's text as written, but that is not
+  final until assembly fills the directive in, and the validator must see the line as written
+  (`[x]: {{ref: nope}}` is a `ref` block, `ref-broken`; `[label]: {{placeholder: p}}` is an
+  `insertion-boundary` Error). The definitions before it are blocks, it and everything after it one paragraph.
+  A `link_definition` that a model built in code holds a directive in (or a label of more than 999 characters)
+  is not read back as a definition: it is written as it is, always apart from the blocks around it by blank
+  lines, and read back as the text it is.
+- **A setext underline under only definitions, in a quote or an item, followed by a line without the
+  container's marker:** CommonMark starts a paragraph at `===` that the line continues; here the quote or
+  item has closed its paragraph at the underline, so the line is not read into it (`> [x]: u`, `> ===`,
+  `text`). Outside containers the paragraph is as CommonMark has it.
+- At `MAX_LIST_DEPTH` an item is one paragraph, and `[x]: u` there is text: the serializer writes it with a
+  backslash, as it does `# h`. The same holds for a quote deeper than `MAX_QUOTE_DEPTH`.
+- A paragraph of a model that reads as a definition (`[x]: u`) is written `\[x]: u`, so it stays a paragraph; one
+  that would be a block alone only because definitions were peeled off before it (`<span>`, `2. x`) is written
+  directly under them, as the parser read it.
+- A label longer than 999 characters, built in code, is written and read back as paragraph text; a blank line in
+  a label or a title is a space (it would end the paragraph), a line break in a target is dropped, and an
+  unescaped bracket in a label, a `<` or `>` in a destination written in `<>`, or a title delimiter in a title is
+  escaped when written.
+- A bare destination is one with no space or control character, balanced parentheses (at most 32 deep) and not
+  beginning with `<`; one that is not is written in `<>`.
+- The differential test (`tests/test_link_definitions_differential.py`) compares the definitions and the blocks
+  with pandoc (`commonmark`) and markdown-it-py over generated documents. They disagree with each other in a few
+  places: pandoc leaves a title or destination on a lazy continuation line (`1. [a]: /u`, then `  "t"`) out of the
+  definition, which markdown-it and cmark's algorithm (the lazy line is paragraph text) keep in, and this package
+  follows the latter; markdown-it differs from pandoc after a line holding only a tag, and where a setext
+  underline stands under a lone label. The test asks that no definition here is neither pandoc's nor markdown-it's.
 
 What the model does not keep, or reads more simply than CommonMark:
 
-- An ATX heading indented after a list, after a blank line, stays a section heading, where
-  CommonMark reads it in the item.
 - An ordered item's number is not kept: a list is written numbered from 1. Whether a list is
   loose or tight is not kept either: items are written without blank lines between them.
 - A fence left open in an item, under an item nested on its first line and short of that
@@ -166,11 +369,37 @@ failed to resolve. From assembly, which reads the file, it means the file could 
 and for one whose `---` block holds YAML that is a scalar or a list rather than a mapping of
 fields: that block is not frontmatter, its `---` lines are thematic breaks, and the whole document
 is validated as body. A block that cannot be read at all — YAML that is malformed, nested too
-deep, or a mapping of another kind (`!!set`) — is `frontmatter-invalid-yaml`: `parse` (and `load`)
-raises `FrontmatterError` for it, which the CLI reports and assembly returns as a diagnostic, for
-the template or for a fragment or attachment file it reads. Any other exception while parsing is
-a fault of this implementation: the CLI reports it as an internal error (exit status 2), never as
-a diagnostic. As §16.6 requires, a document without frontmatter draws that Warning alone: not
+deep, or a mapping of another kind (`!!set`), as prose between two `---` lines is — is
+`frontmatter-invalid-yaml`. `parse` (and `load`) raise `FrontmatterError` for it by default;
+given `on_frontmatter_error="keep"`, which the CLI and the conformance run use, they keep the
+error as `Document.frontmatter_error` and read the rest as the body. `validate` then reports it
+(an Error, at the line of the problem) and goes on to validate that body (#43): §16.1 says an
+Error prevents rendering, not that it stops the validation, and the fixture is not exhaustive.
+The block is still the frontmatter, so the document is not `frontmatter-absent`, and its first
+heading must still be level 1 (`heading-skip`, §4.1). Its metadata is read as empty, so nothing
+is reported for want of what it might have declared (`title-missing`, `sides-absent`,
+`sides-minimum`, `parties-minimum`, `issuer-side-required`), and nothing that needs those
+declarations is reported either: `party-unknown`, `side-unknown`, `attach-undeclared`,
+`ref-targets-attachment`, `amend-term-undefined`, `amend-term-unresolvable`, and
+`condition-invalid` and `choose-invalid` where they name a question that is not declared (a
+malformed condition, or the wrong form for a declared question, is not). What the body decides
+alone is reported, `ref-broken`, `heading-*`, `anchor-*`, `directive-*`, `def-*` and `raw-html`
+among them, and `term-undefined` too, although the original an `amends` names might have defined
+the term. A block of comments only, such as a heading written as a comment between two `---`
+lines, is valid YAML: it is present and empty (§3.1) and not body, so `title-missing` and
+`sides-absent` point at it. `serialize`, `save`, `Document.to_dict` and `document_to_dict` raise a new
+`FrontmatterError` for such a document, so that nothing written from it loses the block; it
+keeps being reported and read as empty until `Document.frontmatter_error` is set to None. The
+message is one line, without position or snippet; assembly and `validate` give the same message
+and line. Assembly
+returns it as a diagnostic, for the template or for a fragment or attachment file it reads, the
+latter with that file's normalised path as the diagnostic's `file` and the line in it
+(`parse_template` and `load_template` still raise the template's own). A fragment validated on its own (`validate(fragment=True)`,
+`legaldown validate --fragment`) never reads its frontmatter: a block it has, readable or not, is
+`include-has-frontmatter`, at the line of the problem for one that cannot be read, and
+`frontmatter-invalid-yaml` is not reported as well. Any other exception while parsing is a fault of
+this implementation: the CLI reports it as an internal error (exit status 2), never as a
+diagnostic. As §16.6 requires, a document without frontmatter draws that Warning alone: not
 `title-missing`, and not `sides-absent`.
 
 `heading-skip` covers the first heading too: in a document with frontmatter, a main document,
@@ -184,6 +413,111 @@ is reported (§11.2, §11.5), as is one left unclosed at the end of its paragrap
 table cell. So is a `{{def:}}` whose quoted term is on the line before it: §7.2 puts the term on
 the same line (`def-no-quoted-span`).
 
+## Include fragments (§12.2, §16.11, §16.12)
+
+When the validation can read files (`validate(resolve=)`, or a document with a path, which is read
+from its own directory), it reads the fragment of each **include paragraph** (§12.2): a top-level or
+preamble paragraph that holds a single `{{include:}}` and at most its marker. An include in a
+sentence, a list item, a table cell or a quote is text, is not replaced by a fragment, and is not
+read, as assembly reads it; neither is one in a drafting note, which assembly removes unread (§15.6).
+Each file is asked for once and parsed once, whoever wants it (the definitions of an attachment
+file, the checks below, `include-heading-skip`), and what is reported is in that file's own
+`Diagnostic.file` (its normalised path from the document's directory, the key `Template`
+reads it by) at the line in it:
+
+| Rule | Reported |
+|---|---|
+| `include-not-legaldown` (Core) | at the include whose path does not end in `.lgd`, `.legaldown` or `.legal.md`; no resolver needed, and the file is never read |
+| `include-file-missing` | at the include (once for each include) of a fragment the loader does not find |
+| `include-has-frontmatter` | at the first key of the fragment's frontmatter, or line 1 for an empty block; for a block that cannot be read, at the line of the problem (#43) |
+| `include-has-h1` | at each level-1 heading of the fragment |
+| `include-heading-skip` | at the heading that skips a level once the fragments are spliced in |
+| `template-fragment-invalid` | in a template, at each condition, drafting note, `{{include:}}` or heading without an identifier in a fragment, and at each `{{include:}}` in a LegalDown attachment file |
+
+Decisions the specification leaves open:
+
+- **A path already judged is judged once.** An include path that file reference checks reported
+  (`path-not-relative`, an absolute path or one with a URI scheme; `path-outside-root`, given a
+  `document_root`) draws that finding alone: it is not also `include-file-missing` or
+  `include-not-legaldown`. A path that leads out of the document's directory (`../x.lgd`) is valid as a
+  path (§2.3), with a `document_root` or without one, but a `LoadFile` is never asked for it
+  (`legaldown.files.relative_path`), as for one that holds a backslash, and assembly refuses a template
+  for it as for a file that is not there. **Known limitation**
+  ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)): this implementation reads
+  nothing outside the document's directory, so such an include is skipped and nothing is said, never
+  `include-file-missing`, whether a root contains it or there is none (it would break a document whose
+  `../shared/x.lgd` exists). Given a root it leaves, it is `path-outside-root` alone (#104), as ever. It is not
+  `path-not-relative` (an absolute path or a URI scheme, #104's). A backslash, a null byte or an empty
+  path is not such a path, and stays `include-file-missing`, at the include, with a message that says it is
+  not a readable relative path. (`amends.file` and attachment files outside the directory are still as if
+  not asked for.) A document with no path, and no `resolve`, reads nothing and says nothing.
+- **`resolve=` and the default loader.** A document loaded with `legaldown.load` (and so the CLI)
+  now has its fragments read from beside it: a fragment that is missing is an Error on a file that
+  was clean. `resolve=lambda path: None` says every file is missing, which `include-file-missing`
+  reports; to validate a loaded document without reading its files, validate it without its path
+  (`dataclasses.replace(document, path=None)`, or `parse(text)`).
+- **Nested includes.** In a template an `{{include:}}` in a fragment or an attachment file is
+  `template-fragment-invalid` (§15.3), in a sentence or a list item too. Outside a template §12.2
+  allows it; it is **not followed** and nothing is reported of it, which is also why `include-cycle`
+  is not implemented. A document that includes itself is not read as its own fragment.
+- **The identifiers and the combined document.** `include-heading-skip` is **one pass with every
+  include present**: a partial implementation of §16.11, which asks for the hierarchy under every
+  combination of answers to the conditions on the includes of a template (§15.3). Each fragment's headings are placed after
+  the heading of the section holding its include paragraph (before the first heading, for the
+  preamble), and are reported where they are: a fragment's heading in its file, a heading of the
+  document that follows a fragment's at its own line; the document's own `heading-skip` is not
+  reported a second time. Conversely, a `heading-skip` of the document that a fragment read between
+  the headings fills is dropped (`# One`, an include of `## Deep`, `### Three`): §4.1 judges the
+  combined document (§12.2). That holds only when every include paragraph in the section before the
+  heading was read and present for certain; with one missing, not LegalDown, judged as a path,
+  unreadable, conditional (on its paragraph or a section around it), or reported as not a fragment
+  (`include-has-frontmatter`, `include-has-h1`: it is not spliced), the plain per-document judgement
+  stands. `include-anchor-duplicate` is not implemented. A reference into a
+  fragment (`{{ref:}}` to its section) is still `ref-broken`: fragments are not joined to the
+  document's identifiers.
+- **What of a fragment is not reported by the document that includes it.** The fragment is not
+  validated there, only checked for what the specification asks of a fragment. What
+  `check_template_body` says of its body (`insertion-boundary`, `drafting-note-def`,
+  `def-term-variable`, `drafting-note-unrecognized`) is left to the fragment's own validation
+  (`validate(fragment=True)`), because `insertion-boundary`, `drafting-note-def` and `def-term-variable`
+  are in the validator's template rules (`TEMPLATE_RULES`): reporting them through the including
+  template would newly stop its assembly. `attachment-has-frontmatter` and `attachment-has-h1` are
+  not reported for an attachment file that `validate(resolve=)` reads either (assembly refuses a
+  template for them, with the file and line); they are reported for the file validated on its own
+  with `fragment_kind="attachment"`.
+- **One implementation.** The findings come from one module that assembly (`Template.problems`),
+  `validate(resolve=)` and `validate(fragment=True)` share, so one file is never judged two ways.
+  Assembly reports them as it always did, now one for each offender and with the file and line
+  (`Diagnostic.file`, shown by `legaldown assemble` as `part.lgd:3`). `Template.problems` does not
+  count the validator's `template-fragment-invalid` of a file assembly read a second time (its
+  `d.file` is one of the files it read, or one it could not parse, which is in `problems` by its
+  path with the error that stopped it); `Template.validation` keeps both, as advice. The
+  other `include-*` ids are not template rules. Assembly and the validator read an include paragraph
+  with the same function (`include_paragraph`). Assembly's own refusal of an `{{include:}}` in a
+  fragment or attachment file of a document that is not a template (§12.2 allows it; it is not
+  assembled) is an `include-file-missing` at the include's line, in the fragment's file, one for
+  each include paragraph (an `{{include:}}` in a sentence, a list item or a quote is text, §12.2),
+  quoting the directive as written.
+- **Several documents, one fragment.** `legaldown validate a.lgd b.lgd`, where both include `part.lgd`,
+  reports a finding in `part.lgd` once, in the output and in the counts: findings in a file other than
+  the target's, with the same file (the same device and inode when it is there, so a link or a spelling in another case on a
+  file system that ignores case is the file; otherwise the same absolute path), line, rule and message as another
+  target's, are one, in any order of the arguments. A finding in a fragment does not name the fragment
+  in its message (`Diagnostic.file` does), so it reads the same from every directory. A message that
+  carries the including document's context is another diagnosis and is reported for each: an
+  `include-heading-skip` "from level 1 to 4" in one document and "from level 2 to 4" in the other. A
+  target's own findings are never collapsed. A file reached twice as a target (named twice, or by a
+  directory and by itself, or by a link beside it) is validated once; a link to a document in another
+  directory is a target of its own, as `load` reads the includes from beside the link.
+- **An include that names no file.** An include paragraph `{{include:}}` is `include-file-missing`
+  ("names no file") at its line when the validation can read files, and assembly refuses the template
+  for it at the same line. In a template's fragment any `{{include:}}` is `template-fragment-invalid`,
+  as one that names a file; in a plain fragment it is allowed (§12.2) and not followed, and assembly
+  refuses it as it does any nested include.
+- **Silence.** An attachment file that is not there is not reported (`attachment-file-missing` is
+  not implemented). The Warning that §17.5 asks for a check that is skipped, because no file could be
+  read, is separate work.
+
 ## Checking this yourself
 
 The conformance harness runs against a checkout of the specification repository:
@@ -194,10 +528,12 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Each case's expected rule is asserted at its expected line, where the case gives one (above).
-Cases for the rules above are skipped by name, so the 28 `not implemented` skips reproduce this
+Cases for the rules above are skipped by name, so the 19 `not implemented` skips reproduce this
 table one for one, except `ref-not-enumerated`, which has no fixture. Each fixture document is
 also written back (`serialize`) and validated again, which must report the same diagnostics. The
-run reports 234 passed and 39 skipped: eight of the other skips are the implemented rules named
+run reports 244 passed and 29 skipped (238 and 35 before #35: the five include cases and
+`template-fragment-invalid`, six, now run, and the 19 are the 24 less the five include rules, which
+the table no longer lists): seven of the other skips are the implemented rules named
 above, skipped as `multi-file case` or `requires conformance level full`, two are the `multi-file`
 assembly case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py`
 assembles it with a loader instead — and one is the write-back of the `frontmatter-invalid-yaml`
@@ -228,10 +564,13 @@ template with Errors in the validator's template rules (`Template.problems`); th
   level 1 heading (`include-has-h1`, `attachment-has-h1`), and, in a template,
   `template-fragment-invalid` for an `{{include:}}` in a fragment or attachment file, or a
   condition, a drafting note, or a heading without an explicit identifier in a fragment. An
-  attachment file may hold conditions of its own (§15.3). An `{{include:}}` in a fragment or
-  attachment file of a document that is not a template is not assembled: it is refused with
-  `include-file-missing`. The other Full checks — `include-cycle`, the `*-anchor-duplicate` and
-  `include-heading-skip` rules, and the path rules — are not made.
+  attachment file may hold conditions of its own (§15.3). These are the validator's own findings
+  ([Include fragments](#include-fragments-122-1611-1612)), one for each offender, each with the file
+  and the line in it (`Diagnostic.file`, `legaldown assemble` prints `part.lgd:3`). An
+  `{{include:}}` in a fragment or attachment file of a document that is not a template is not
+  assembled: it is refused with `include-file-missing`. The other Full checks — `include-cycle`, the
+  `*-anchor-duplicate` rules, `include-heading-skip` (which the validator reports) and the path rules
+  — are not made by assembly.
 - A `{{placeholder:}}` or `{{choose:}}` written across two lines is refused with
   `directive-malformed`, which the validator reports too (see above): it could not be filled.
 - A template with `translations` is refused with `translation-file-missing`: its linked templates

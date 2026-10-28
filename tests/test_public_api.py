@@ -40,6 +40,13 @@ def _markers(body: str) -> list[PlacedMarker]:
     return validate(parse(_FRONTMATTER + body)).index.placed_markers
 
 
+@pytest.mark.parametrize("function", [legaldown.parse, legaldown.load])
+def test_unreadable_frontmatter_raises_unless_kept_by_a_keyword_only_option(function):
+    # #43: the default is as it was; "keep" is opt-in and, like filename= and final=, keyword-only.
+    option = inspect.signature(function).parameters["on_frontmatter_error"]
+    assert (option.kind, option.default) == (inspect.Parameter.KEYWORD_ONLY, "raise")
+
+
 @pytest.mark.parametrize("module", [legaldown, legaldown.validator])
 def test_every_public_name_is_importable(module):
     assert [name for name in module.__all__ if not hasattr(module, name)] == []
