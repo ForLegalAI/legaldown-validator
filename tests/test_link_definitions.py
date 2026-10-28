@@ -901,6 +901,14 @@ def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body
 
 # ── Known differences from CommonMark (CONFORMANCE.md) ────────────
 
+@pytest.mark.parametrize("body", ['1. [a]: /u\n  "t"\n', '1. [a]: /u\n   "t"\n', '1. [a]: /u\n"t"\n'])
+def test_a_title_on_a_lazy_line_belongs_to_the_definition(body):
+    """The lazy line is paragraph text (CommonMark 5.2), and a definition is read from the closed paragraph (4.7),
+    as cmark does: markdown-it agrees. pandoc (commonmark-hs, which reads per line) leaves the title out (#111)."""
+    [listed] = blocks(body)
+    assert [shape(item.blocks) for item in list_items(listed)] == [[definition("a", "/u", "t")]]
+
+
 
 def content_tree(found: list[Block], depth: int = 0) -> list:
     """The blocks as nested tuples: a quote or a list with what it holds, a definition by its label."""
