@@ -222,7 +222,7 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
   Assembly does not report `path-not-relative` or `path-outside-root`.
 - An image is the inline `![alt](destination)` (§8.7), in a paragraph, list item, quote, table cell, heading
   or definition, and in the alt text of another image (both are checked). The destination is `<…>` or a
-  raw one with balanced parentheses, then an optional title (read as a definition's is, below); backslash escapes and character references in
+  raw one with balanced parentheses, then an optional title (read as a definition's is, but permissively, below); backslash escapes and character references in
   it are decoded (`&#47;etc` is `/etc`). A destination is a URL, so it is read as one: a query or fragment
   (`?…`, `#…`, the first of either) is not part of the path (`x.png?p=/../..` stays in the root), and **it is
   also read percent-decoded**: `%2Fetc` is not relative and `%2E%2E/%2E%2E/x.png` leaves a root, since a tool
@@ -350,12 +350,14 @@ Where this differs from CommonMark, or is read more simply:
   unescaped bracket in a label, a `<` or `>` in a destination written in `<>`, or a title delimiter in a title is
   escaped when written.
 - A bare destination is one with no space, control character or DEL, balanced parentheses (at most 32 deep) and not
-  beginning with `<`; one that is not is written in `<>`. (A NUL is text, below.)
+  beginning with `<`; one that is not is written in `<>`, and so is one that holds a NUL (text to the reader, below, but written
+  in `<>` as ever).
 - **One scanner for the destination and the title of a link** ([#113](https://github.com/ForLegalAI/legaldown-validator/issues/113)):
   the definitions parser, the image paths (`path-not-relative`, `path-outside-root`) and the `raw-html` check
   (a link's `<…>` destination is no raw HTML) read them with the same functions (`scan_destination`,
   `scan_title`, `scan_inline_link`), by CommonMark 0.31.2 §4.7 and §6.3 and as markdown-it reads them
-  (`tests/test_destination_oracles.py` compares an inline link with it over generated text):
+  (`tests/test_destination_oracles.py` compares an inline link with it over generated text). The image paths read
+  them **permissively**, below:
   - `<…>` holds no `<`, `>` or line break but escaped; a bare destination ends at a space, a control character
     (U+0000–U+001F, but for NUL: below) or DEL (U+007F, §2.1 counts it a control character), or at a `)` that
     closes no `(` of it, and holds at most 32 deep.
@@ -363,14 +365,22 @@ Where this differs from CommonMark, or is read more simply:
     (`[a]: u\0v` is a definition). pandoc and markdown-it read it so. It is also how a directive is
     masked in a destination of an image.
   - **A title is told apart by the space before it**, and the parts of an inline link are separated by spaces,
-    tabs and up to one line break (§6.3): `[a](<b>"t")` is no link (nor an image), `[a](<b>\n"t")` is one, and
+    tabs and up to one line break (§6.3): `[a](<b>"t")` is no link (to `raw-html`: the `<b>` is a tag), `[a](<b>\n"t")` is one, and
     two line breaks end the paragraph, so `[a](\n\n<b>)` is none. A line break may now precede the `<…>` of a link
     or the `)` that ends it (`raw-html` no longer reads `[a](\n<b>)` as a tag), a title may hold `\"` or `\)`,
     and a title directly after `<…>` makes the `<b>` a tag, as it is the text of no link.
+  - **The path checks read permissively** (`scan_inline_link(permissive=True)`, for `path-not-relative` and
+    `path-outside-root`): a rule that keeps a document from naming a file outside its root must cover everything
+    *any* supported renderer reads as an image, as the insertion boundary over-approximates (§15.7.3). So an image
+    is also `![b](/etc/passwd\x7f)` (a DEL or other control character in a bare destination, which ends it only at a space,
+    a tab or a line break) and `![a](</etc/passwd>"t")` (a title glued to `<…>`), which pandoc renders (below) and the
+    specification and markdown-it do not. Elsewhere (the definitions, `raw-html`, the model) the strict reading holds.
+    (A definition's destination is read strictly for `![a][r]` too: `[r]: /etc/passwd\x7f` is no definition here,
+    where pandoc reads one; that gap is not new.)
   - **pandoc (`commonmark`) deviates in two places, accepted**: it reads `[a](<b>"t")` as a link (a title glued
     to the `>`), and it keeps a control character or DEL in a bare destination (`[a](b\x7fc)`, `[a](b\x01c)`), where
     the specification (§6.3 "does not include ASCII control characters") and markdown-it read no link. This package
-    follows the specification. (`test_pandoc_reads_a_link_where_the_specification_and_markdown_it_read_none`
+    follows the specification, but for the path checks. (`test_pandoc_reads_a_link_where_the_specification_and_markdown_it_read_none`
     holds them to what pandoc does.) markdown-it reads a backslash
     before *any* character as a pair, not only before punctuation, and breaks a paragraph at a `>` line; these
     are its own.

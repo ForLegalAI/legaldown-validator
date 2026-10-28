@@ -859,6 +859,17 @@ def test_a_percent_encoded_colon_is_a_character_of_the_name_not_a_scheme(destina
     assert _found(validate(_body(f"![a]({destination})"), document_root=_root(tmp_path))) == [], destination
 
 
+@pytest.mark.parametrize(
+    "image",
+    ["![b](/etc/passwd\x7f)", "![b](/etc/passwd\x01)", "![b](/etc/passwd\x1f)", '![a](</etc/passwd>"t")', "![a](</etc/passwd>'t')",
+     "![a](</etc/passwd>(t))", '![a](</etc/passwd> "t")', "![a](\n</etc/passwd>\n)"],
+)
+def test_an_image_any_renderer_reads_is_checked_whichever_reads_it(image):
+    """pandoc keeps a DEL or a control character in a bare destination and reads a title glued to ``<…>``; the
+    specification and markdown-it read no image there. The path rules over-approximate: they cover them all."""
+    assert _found(validate(_body(image))) == [("path-not-relative", 7)], image
+
+
 def test_the_decoded_form_is_still_absolute_with_a_slash_and_still_escapes():
     for destination in ("%2Fetc", "%2fetc/passwd", "%5Cwindows", "%2F%2Fhost/x.png"):
         assert _found(validate(_body(f"![a]({destination})"))) == [("path-not-relative", 7)], destination
