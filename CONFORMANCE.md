@@ -865,11 +865,12 @@ Assembly edits the template's source and so inherits a few limits of the parser'
 
 - The line-start check (§15.7.3) reads the output with the parser, line by line, against the
   template line read the same way, so a marker is judged in the container that holds it (`> 2. x`,
-  a lazy line, a line after a deleted one). It cannot give a backslash a position where an empty
-  insertion leaves the template's own markers bare, and they begin the construct (`text` over
-  `- {{choose:}}` with an empty phrase: the bare `-` underlines `text`; `- - - {{choose:}}`: a
-  thematic break; a bare `> 2. ` that detaches the lazy lines after it, so that the next `> ` opens
-  a quote of its own). The specification gives no position for these; the output keeps the
+  a lazy line, a line after a deleted one, and the line after one that an empty insertion leaves as
+  bare container markers, `> `). It cannot give a backslash a position where the template's own
+  markers, left bare by an empty phrase, begin the construct (`text` over `- {{choose:}}` with an
+  empty phrase: the bare `-` underlines `text`; `- - - {{choose:}}`: a thematic break; a bare `> 2. `
+  that holds no paragraph for the lazy lines after it to continue, so that the next template `> `
+  opens a quote of its own). The specification gives no position for these; the output keeps the
   template's markers as written. Inserted text in the one top-level block of a long list item or
   quote, each answer beginning a block (`- `, `# `), is read against that block's earlier lines:
   quadratic in the size of the block.
