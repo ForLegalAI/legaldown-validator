@@ -49,6 +49,7 @@ from .markdown import (
     FENCE_OPEN_RE,
     LINE_ENDING_RE,
     ItemMarkers,
+    advance_column,
     html_block_opening,
     indent_width,
     is_blank,
@@ -56,6 +57,7 @@ from .markdown import (
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import LIST_KINDS, Block, Document, frontmatter_message
 from .parser import (
+    _QUOTE_MARKERS_RE,
     FRONTMATTER_RE,
     LIST_ITEM_RE,
     MAX_QUOTE_DEPTH,
@@ -1574,13 +1576,18 @@ def _could_begin(text: str) -> bool:
 
 def _marker_end(text: str, items: int, limit: int | None, base: int = 0) -> int:
     """Where the content of *text* begins: after its block quote markers and the
-    *items* list item markers that it starts, never past *limit*. A quote marker is up
-    to three columns in, past the content column *base* of the item that holds the line."""
+    *items* list item markers that it starts, never past *limit*. A quote marker is up to three
+    columns in past what holds it: the content column *base* of the innermost item that holds the
+    line, if the marker is at or past it, else the end of the marker before."""
     pos = 0
     while True:
         found = _TEMPLATE_QUOTE_RE.match(text, pos)
-        if found is not None and indent_width(found.group(1)) > (base if pos == 0 else 0) + 3:
-            found = None  # four columns in, it is paragraph text (or code)
+        if found is not None:
+            column = advance_column(0, text[:found.end(1)])
+            here = advance_column(0, text[:pos])
+            held = max(base, here) if column >= base else here
+            if column - held > 3:
+                found = None  # four columns in, it is paragraph text (or code)
         if found is None and items:
             found = _ITEM_MARKER_RE.match(text, pos)
             if found:
@@ -1591,9 +1598,10 @@ def _marker_end(text: str, items: int, limit: int | None, base: int = 0) -> int:
 
 
 def _item_column(line: str, count: int) -> int:
-    """The column where the content of the *count*-th list item that *line* opens begins."""
+    """The column where the content of the *count*-th list item that *line* opens begins, past any
+    block quote markers before it."""
     column = 0
-    for found in islice(ItemMarkers(line), count):
+    for found in islice(ItemMarkers(line, between=_QUOTE_MARKERS_RE), count):
         column = found.column
     return column
 
@@ -1627,17 +1635,17 @@ def _signatures(
                 begun[line][found] += 1
 
     def walk(
-        spans: list[_BlockSpan], model: list[Block], base: int, depth: int, opened: tuple[int, ...] | None,
-        around: tuple[int, ...] = (),
+        spans: list[_BlockSpan], model: list[Block], base: int, depth: int, opened: tuple[int, ...],
+        around: tuple[int, ...] = (), pure: bool = True,
     ) -> None:
-        """*opened*: the lines the items around these blocks start on, or None in a quote;
-        *around*: their content columns."""
+        """*opened*: the lines the items around these blocks start on; *around*: their content
+        columns; *pure*: no quote is among what the blocks are in."""
         for span, block in zip(spans, model, strict=True):
             start, end = base + span.start, base + span.end
             if last is not None and not start <= last < end:
                 continue
             mark(start, end, span.kind)
-            if last is not None and span.kind == "paragraph" and opened is not None:
+            if last is not None and span.kind == "paragraph" and pure:
                 leaf[:] = [(around, start)]
             for item_span, item in zip(span.items, block.items, strict=True):
                 first, stop = base + item_span.start, base + item_span.end
@@ -1645,16 +1653,14 @@ def _signatures(
                     continue
                 if last is None or first == last:
                     begun[first]["item"] += 1
-                inside = None if opened is None else (*opened, first)
-                column = 0
-                if inside is not None:
-                    column = _item_column(lines[first], inside.count(first))
-                    if last is None:
-                        columns.update(dict.fromkeys(range(first, stop), column))
-                walk(item_span.blocks, item.blocks, base, depth + 1, inside, (*around, column))
+                inside = (*opened, first)
+                column = _item_column(lines[first], inside.count(first))
+                if last is None:
+                    columns.update(dict.fromkeys(range(first, stop), column))
+                walk(item_span.blocks, item.blocks, base, depth + 1, inside, (*around, column), pure)
             if block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
                 children, inner = quote_content(block.text, depth + 1)
-                walk(inner, children, start, depth + 1, None)
+                walk(inner, children, start, depth + 1, opened, around, False)
 
     for heading in layout.headings:
         mark(heading.start, heading.end, "heading")
@@ -1919,7 +1925,7 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
         # block are read. Once a top-level block starts, in the output and in the template at the same line,
         # after the differing line, a closed block cannot change how later lines are read.
         perturbed = differs >= 0 and not (
-            differs < window.top and lines[window.top].slot in reading.tops()
+            window.known > window.top > differs and lines[window.top].slot in reading.tops()
         )
         if not line.check:
             window.written(k)
@@ -1982,12 +1988,12 @@ def _line_start(
     if not content.strip(" \t"):
         return candidate, None
     if not (_surely_markers(candidate[:prefix], begun, perturbed) and _always_begins(candidate[prefix:], plain[prefix:])):
-        tail = _kept(candidate, before, begun, plain, prefix, base)
+        tail = _kept(candidate, before, begun, plain, prefix, base, perturbed)
         if tail is not None:
             return candidate, tail
     # A line the template placed in an item stays in it when its indentation goes.
-    column = len(keep) if begins else reading.column(line.slot) if not prefix and not begun["item"] else 0
-    return _fix(candidate, prefix, before, begun, plain, column, base)
+    column = len(keep) if begins else base if not prefix and not begun["item"] else 0
+    return _fix(candidate, prefix, before, begun, plain, column, base, perturbed)
 
 
 def _surely_markers(markers: str, begun: Counter[str], perturbed: bool) -> bool:
@@ -2012,13 +2018,17 @@ def _always_begins(content: str, template: str) -> bool:
 
 
 def _kept(
-    line: str, before: list[str], template: Counter[str], plain: str, prefix: int, base: int
+    line: str, before: list[str], template: Counter[str], plain: str, prefix: int, base: int, perturbed: bool
 ) -> _Tail | None:
     """How the parser reads *line* after the output lines *before*, if it begins no construct that
     *template* (what the parser reads the template line, *plain*, as beginning) does not. *prefix*:
     where the template's content begins, after its container markers; *base*: the content column
-    of the item that holds the line."""
+    of the item that holds the line; *perturbed*: see ``_line_starts``. Where the output is as the
+    template reads it, a form that no longer begins a quote or an item that the template line
+    begins has lost one of its markers, and is none of ours."""
     tail = _tail([*before, line])
+    if not perturbed and any(tail.begun[kind] < template[kind] for kind in ("quote", "item")):
+        return None
     # The content is read after the markers that the output has: where a template marker is
     # text in the output (a ``3.`` that no item holds), what follows it may begin a block.
     content = line[_marker_end(line, tail.begun["item"], prefix, base):]
@@ -2035,7 +2045,8 @@ def _free(content: str, template: str) -> bool:
 
 
 def _fix(
-    candidate: str, prefix: int, before: list[str], template: Counter[str], plain: str, column: int, base: int
+    candidate: str, prefix: int, before: list[str], template: Counter[str], plain: str, column: int, base: int,
+    perturbed: bool,
 ) -> tuple[str, _Tail | None]:
     """*candidate* with the first form that begins nothing new: its content without leading
     spaces and tabs (keeping the *column* of the item it is in), or with a backslash before
@@ -2050,7 +2061,7 @@ def _fix(
         at = ordered.start("delim") if ordered else lead
         if not body[at:at + 1] or body[at] not in _PUNCTUATION:
             return None  # a backslash before a letter or digit is text
-        if body[at] == "\\" and body[at + 1:at + 2] in _PUNCTUATION and body[at + 1:at + 2]:
+        if body[at] == "\\" and body[at + 1:at + 2] in _PUNCTUATION:
             return None  # that character is escaped already (by ``_escape``): another backslash would escape the backslash
         return body[:at] + "\\" + body[at:]
 
@@ -2061,7 +2072,7 @@ def _fix(
     forms = [form for form in forms if form is not None]
     tail = None
     for form in forms:
-        tail = _kept(head + form, before, template, plain, prefix, base)
+        tail = _kept(head + form, before, template, plain, prefix, base, perturbed)
         if tail is not None:
             return head + form, tail
     return head + (forms[-1] if forms else body), None

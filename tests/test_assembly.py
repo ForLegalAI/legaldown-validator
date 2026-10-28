@@ -528,6 +528,20 @@ class TestLineStartsInContext:
         assert self._assembled(body, {"name": "n"}) == "text\n     >   n\n"
         assert self._assembled(body, {"name": "# h"}) == "text\n     >   # h\n"
 
+    @pytest.mark.parametrize(("body", "answer", "written"), [
+        # A quote marker is up to three columns past the content column of the item that holds it, whether
+        # the item is in a quote or not, and past the marker before it.
+        ("> 10. Terms\n>     > {{placeholder: name}}\n", "# h", "> 10. Terms\n>     > \\# h\n"),
+        ("> - a\n>     > {{placeholder: name}}\n", "2. b", "> - a\n>     > 2\\. b\n"),
+        ("> - a\n>     > {{placeholder: name}}\n", "-", "> - a\n>     > \\-\n"),
+        ("> - a\n>     > {{placeholder: name}}\n", "> q", "> - a\n>     > \\> q\n"),
+        # A tab after a marker reaches the next tab stop: here the second marker is two columns in.
+        ("> \t> {{placeholder: name}}\n", "# h", "> \t> \\# h\n"),
+        ("- a\n\n  >\t> {{placeholder: name}}\n", "# h", "- a\n\n  >\t> \\# h\n"),
+    ])
+    def test_a_quote_marker_is_judged_by_its_column_past_what_holds_it(self, body, answer, written):
+        assert self._assembled(body, {"name": answer}) == written
+
     def test_a_marker_in_an_item_is_one_as_far_in_as_the_item_is(self):
         body = "- 1. Terms\n     > {{placeholder: name}} x\n"
         assert self._assembled(body, {"name": "> q"}) == "- 1. Terms\n     > \\> q x\n"
@@ -580,6 +594,9 @@ class TestLineStartsInContext:
         '> text\n> {{choose: x, true="", false="T"}}\n> <x>\n',  # <x> now begins an HTML block
         '> {{choose: x, true="", false="T"}}\n> 2. b\n',  # 2. now begins a list
         '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n',  # the line is now indented code
+        # Likewise a bare item that its next line was indented to: the item holds no paragraph and the
+        # line, short of its content column, is indented code (#120). The indentation is the template's.
+        '   2. {{choose: x, true="", false="T"}}\n    {{placeholder: name}} x\n',
     ])
     def test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question(self, body):
         template = _template(body, _BOOL + _TEXT)
@@ -595,6 +612,7 @@ class TestLineStartsInContext:
             '> text\n> {{choose: x, true="", false="T"}}\n> <x>\n': "> text\n> \n> <x>\n",
             '> {{choose: x, true="", false="T"}}\n> 2. b\n': "> \n> 2. b\n",
             '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n': "> a\n>\n> \n>     code\n",
+            '   2. {{choose: x, true="", false="T"}}\n    {{placeholder: name}} x\n': "   2. \n    \\- - - x\n",
         }[body]
 
 
