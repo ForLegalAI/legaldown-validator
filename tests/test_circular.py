@@ -847,3 +847,22 @@ def test_a_dead_alternative_does_not_make_each_reference_an_edge_to_each_alterna
     assert len(found) == 1 and len(found[0]) == 2 * count - 2
     assert tests.calls == 0
     assert search.edges <= 3 * len(registered)  # 4 million before
+
+
+def test_a_validation_builds_one_exclusivity_for_the_identifiers_and_the_circles(monkeypatch):
+    built = []
+    init = Exclusivity.__init__
+
+    def counted(self, questions):
+        built.append(questions)
+        init(self, questions)
+
+    monkeypatch.setattr(Exclusivity, "__init__", counted)
+    body = (
+        '"Services" {{def: services}} means work under the {{term: agreement}}. {when=q}\n\n'
+        '"Agreement" {{def: agreement}} means the {{term: services}}.\n'
+    )
+    document = parse(_source(body, _Q), filename="t.lgd")
+    result = validate(document)
+    assert [d.rule for d in result.diagnostics if d.rule == "definition-circular"] == ["definition-circular"]
+    assert len(built) == 1

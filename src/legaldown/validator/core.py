@@ -633,16 +633,19 @@ class _FreeIdentifiers:
       O(n²) machine words (n / 64 for each of the answers), 0.3 s for 4,000 (#110).
     """
 
-    def __init__(self, explicit_ids: Collection[str], questions: Any) -> None:
+    def __init__(
+        self, explicit_ids: Collection[str], questions: Any, exclusivity: Exclusivity | None = None
+    ) -> None:
         self._explicit_ids = frozenset(explicit_ids)  # the pointers below rely on its not changing
         self._declarations: dict[str, _Declarations] = {}
         #: The declarations of each identifier, by presence. Read-only: they
         #: are made by ``declare``, which the indexes below follow.
         self.anchors: Mapping[str, Sequence[Presence]] = MappingProxyType(self._declarations)
         #: The answers of each question and what each presence wants and refuses
-        #: of them, worked out once for the pool; the pairs it excludes are tested
-        #: as they are asked, with no cache of their own.
-        self._exclusivity = Exclusivity(questions)
+        #: of them, worked out once for the pool (or for the validation, given its
+        #: *exclusivity*); the pairs it excludes are tested as they are asked, with
+        #: no cache of their own.
+        self._exclusivity = Exclusivity(questions) if exclusivity is None else exclusivity
         #: How many leading suffixes of a base are taken for a presence.
         self._taken: dict[tuple[str, Presence], int] = {}
         #: How many declarations that can appear an identifier has.
@@ -1307,6 +1310,9 @@ def _validate(
     lex_fragment = cache(lex)
     meta = document.metadata
     questions = meta.questions
+    #: What each presence wants and refuses of the questions, worked out once for the validation:
+    #: the identifiers of headings, circular definitions and the headings of included fragments share it.
+    exclusivity = Exclusivity(questions)
     structural_fields, value_fields = _frontmatter_fields(meta, where)
     frontmatter_texts = [(text, path) for _label, text, path in structural_fields] + value_fields
     headings = [section.title for section in document.sections]
@@ -1560,7 +1566,7 @@ def _validate(
         | {found.marker.identifier for found in placed_anchors}
         | attachment_ids
     )
-    free_identifier = _FreeIdentifiers(explicit_ids, questions)
+    free_identifier = _FreeIdentifiers(explicit_ids, questions, exclusivity)
     # Each anchor's declarations, by presence. While sections are numbered,
     # it holds only earlier headings' identifiers.
     anchors = free_identifier.anchors
@@ -2234,7 +2240,7 @@ def _validate(
         document,
         registered,
         term_uses,
-        Exclusivity(questions) if template else None,
+        exclusivity if template else None,
     ):
         result.warning(
             "definition-circular",
