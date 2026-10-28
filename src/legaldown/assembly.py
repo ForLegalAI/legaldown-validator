@@ -1745,22 +1745,33 @@ class _Reading:
             self._begun, self._columns, _ = _signatures(self.plains)
 
 
+_QUOTED_RE = re.compile(r" {0,3}>")
+
+
 class _Window:
     """Which of the output lines before a line the parser must read to read it as the whole
     output would: from the last top-level block on. Inside a paragraph of plain text (``para``)
-    that is the line before it: whether a line begins a construct there depends on the
-    paragraph being open, and not on the lines in it."""
+    that is its first line and the line before this one: whether a line begins a construct there
+    depends on the paragraph being open (and on the line before it, for a table), and not on the
+    other lines in it. A paragraph that may be a link definition is not one of plain text."""
 
     def __init__(self, lines: list[_Line]) -> None:
         self.lines = lines
         self.sync = 0  # where the last top-level block of lines[:known] starts
         self.known = 0
+        self.kind = ""  # the kind of that block
         self.para: int | None = None  # where the paragraph of plain text that lines[:known] end in starts
 
     def before(self, k: int) -> list[str]:
         """The lines to read line *k* after."""
         if self.para is not None:
-            return [self.lines[k - 1].text]
+            # The first line of the paragraph says it is open, and the line before this one is what
+            # it follows (a lone ``<x>`` or ``2.`` read from the start of the lines is a block).
+            return [self.lines[i].text for i in sorted({self.para, k - 1})]
+        if self.known < k and self.kind == "quote" and all(
+            _QUOTED_RE.match(line.text) for line in self.lines[self.known - 1:k]
+        ):
+            self.known = k  # lines of a quote each begin with ">", and none of them is where a quote ends
         if self.known < k:
             texts = [line.text for line in self.lines[self.sync:k]]
             self.sync += _last_block(_layout(texts))[0]
@@ -1773,6 +1784,7 @@ class _Window:
         if self.para is None and tail is not None:
             self.sync += tail.start
             self.known = k + 1
+            self.kind = tail.kind
             first = self.lines[self.sync].text
             if tail.kind == "paragraph" and _plain_text(text) and not first.lstrip(" ").startswith("["):
                 self.para = self.sync  # a link definition may be what the paragraph is made of
@@ -1788,9 +1800,9 @@ class _Window:
 
 
 def _plain_text(text: str) -> bool:
-    """True if *text* continues a paragraph that is open, whatever the lines in it: it begins no
-    block behind any markers, and is no part of a table or a directive."""
-    return bool(text.strip(" \t")) and "|" not in text and "{{" not in text and not _could_begin(text)
+    """True if *text*, after paragraph text, is more of it, whatever the lines in the paragraph are: it
+    begins no block that can interrupt a paragraph, and is no part of a table or a directive."""
+    return bool(text.strip(" \t")) and "|" not in text and "{{" not in text and _construct(text, in_paragraph=True) is None
 
 
 def _line_starts(lines: list[_Line], plains: list[str]) -> None:
@@ -1809,7 +1821,9 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
         return
     reading = _Reading(plains, checked)
     window = _Window(lines)
+    perturbed = False  # some line before is not as the template reads it: a deleted one, or bare markers
     for k, line in enumerate(lines):
+        perturbed = perturbed or line.after
         if not line.check:
             window.written(k)
             continue
@@ -1819,7 +1833,8 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
             window.written(k)
             continue
         before = window.before(k)
-        line.text, tail = _line_start(line, before, reading)
+        line.text, tail = _line_start(line, before, reading, perturbed)
+        perturbed = perturbed or tail is None
         window.read(k, before, tail)
 
 
@@ -1848,11 +1863,14 @@ def _simple_start(line: _Line, reading: _Reading) -> str | None:
     return text[:prefix] + keep + content if not _could_begin(content) else None
 
 
-def _line_start(line: _Line, before: list[str], reading: _Reading) -> tuple[str, _Tail | None]:
+def _line_start(
+    line: _Line, before: list[str], reading: _Reading, perturbed: bool
+) -> tuple[str, _Tail | None]:
     """The line-start check (§15.7.3) of *line*, which follows the output lines *before* it
     (from the last top-level block on): the line as assembled, with the whitespace that the
     insertion at its start replaces removed, kept from beginning a block construct that the
-    template line did not. And how the parser read the line (None if it did not)."""
+    template line did not. And how the parser read the line (None if it did not). *perturbed*: the
+    output before it differs from the template's reading in what it holds open (``_line_starts``)."""
     text = line.text
     plain = reading.plains[line.slot]
     begun = reading.begun(line.slot)
@@ -1863,12 +1881,34 @@ def _line_start(line: _Line, before: list[str], reading: _Reading) -> tuple[str,
     candidate = text[:prefix] + content
     if not content.strip(" \t"):
         return candidate, None
-    tail = _kept(candidate, before, begun, plain, prefix)
-    if tail is not None:
-        return candidate, tail
+    if not (_surely_markers(candidate[:prefix], begun, perturbed) and _always_begins(candidate[prefix:], plain[prefix:])):
+        tail = _kept(candidate, before, begun, plain, prefix)
+        if tail is not None:
+            return candidate, tail
     # A line the template placed in an item stays in it when its indentation goes.
     column = len(keep) if begins else reading.column(line.slot) if not prefix and not begun["item"] else 0
     return _fix(candidate, prefix, before, begun, plain, column)
+
+
+def _surely_markers(markers: str, begun: Counter[str], perturbed: bool) -> bool:
+    """True if the template's *markers* before an insertion are container markers in the output as
+    they are in the template: quotes, bullets and ``1.`` always; others if the parser reads them as
+    the items they look like (*begun*) and nothing before the line changed what is open."""
+    if _SIMPLE_RE.fullmatch(markers):
+        return True
+    return not perturbed and _ITEM_RUN_RE.fullmatch(markers) is not None and len(_ITEM_UNIT_RE.findall(markers)) == begun["item"]
+
+
+_ALWAYS = frozenset({"heading", "quote", "fence", "list", "break", "html"})
+
+
+def _always_begins(content: str, template: str) -> bool:
+    """True if *content* begins a construct in any container, after paragraph text too, that the
+    template content does not (a heading, a quote, a fence, a bullet with text, a thematic break, an
+    HTML block of kinds 1 to 6): there is no need to ask the parser whether it does (but see
+    ``_surely_markers``)."""
+    kind = _construct(content, in_paragraph=True)
+    return kind in _ALWAYS and _construct(template, in_paragraph=True) != kind
 
 
 def _kept(line: str, before: list[str], template: Counter[str], plain: str, prefix: int) -> _Tail | None:

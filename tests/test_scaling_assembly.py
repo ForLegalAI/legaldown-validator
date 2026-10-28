@@ -52,7 +52,8 @@ def _assembled(lines: list[str], answer: str) -> tuple[str, int, float]:
 
 class _Parses:
     def __init__(self) -> None:
-        self.calls = 0
+        self.calls = 0  # how often the parser was asked to read lines
+        self.lines = 0  # and how many lines it was given in all
 
 
 PARSES = _Parses()
@@ -60,12 +61,13 @@ PARSES = _Parses()
 
 @pytest.fixture(autouse=True)
 def _count_parses(monkeypatch):
-    PARSES.calls = 0
+    PARSES.calls = PARSES.lines = 0
     parse_body = assembly_module._parse_body
 
-    def counted(*args, **kwargs):
+    def counted(lines, *args, **kwargs):
         PARSES.calls += 1
-        return parse_body(*args, **kwargs)
+        PARSES.lines += len(lines)
+        return parse_body(lines, *args, **kwargs)
 
     monkeypatch.setattr(assembly_module, "_parse_body", counted)
 
@@ -92,3 +94,21 @@ def test_a_long_list_with_answers_that_begin_blocks_is_read_by_item(shape: str) 
     body, _parses, seconds = _assembled(lines, "- a")
     assert "\\- a applies." in body
     assert seconds < 12
+
+
+@pytest.mark.parametrize("shape", ["blanks", "after-text"])
+def test_a_long_paragraph_is_read_from_its_first_line_and_the_line_before(shape: str) -> None:
+    """1600 lines of one paragraph, none of them blank, each answer one that begins a block
+    (``- a``), or text after a paragraph (``2. a``): whether a line begins a block there depends
+    on the paragraph being open, not on the lines in it, so each is read after two lines, not
+    after all the lines before it (some twenty seconds for the first shape, thirteen for the second)."""
+    if shape == "blanks":
+        lines = [f"{{{{placeholder: p{n}}}}} applies." for n in range(1600)]
+        body, _parses, seconds = _assembled(lines, "- a")
+        assert body.splitlines()[-1] == "\\- a applies."
+    else:
+        lines = ["text"] + [f"{{{{placeholder: p{n + 1}}}}}" for n in range(1600)]
+        body, _parses, seconds = _assembled(lines, "2. a")
+        assert body.splitlines()[-1] == "2. a"
+    assert PARSES.lines < 8 * len(lines)  # two or three lines for each, and the template once
+    assert seconds < 8
