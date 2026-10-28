@@ -160,7 +160,8 @@ Two approximations, both towards giving a Warning (a Warning is better given tha
 each HTML block that holds more than comments (text after a comment's `-->` on its line
 included), in list items and quotes too, and once for each text — a paragraph, a table cell, a
 heading — holding an inline tag, processing instruction, declaration or CDATA section, as
-cmark-gfm reads them. Comments, autolinks, code spans, escaped `<`, a link's `<…>` destination
+CommonMark 0.31.2 §6.6 reads them (a declaration is `<!`, an ASCII letter, anything but `>`, and `>`).
+Comments, autolinks, code spans, escaped `<`, a link's `<…>` destination
 and a directive's values are not raw HTML; frontmatter values are not Markdown. Comments and code
 spans are found by the directive lexer (§11.4), which reads comments by CommonMark 0.31 and knows
 no tags, so a few rare texts are read differently from cmark-gfm: a comment holding `--`, text
@@ -334,7 +335,8 @@ Where this differs from CommonMark, or is read more simply:
 - **A setext underline under only definitions, in a quote or an item, followed by a line without the
   container's marker:** CommonMark starts a paragraph at `===` that the line continues; here the quote or
   item has closed its paragraph at the underline, so the line is not read into it (`> [x]: u`, `> ===`,
-  `text`). Outside containers the paragraph is as CommonMark has it.
+  `text`; also in a list in a quote, a quote in a quote or in an item: `tests/test_link_definitions.py` pins the
+  seven shapes). Outside containers the paragraph is as CommonMark has it.
 - At `MAX_LIST_DEPTH` an item is one paragraph, and `[x]: u` there is text: the serializer writes it with a
   backslash, as it does `# h`. The same holds for a quote deeper than `MAX_QUOTE_DEPTH`.
 - A paragraph of a model that reads as a definition (`[x]: u`) is written `\[x]: u`, so it stays a paragraph; one
@@ -352,13 +354,22 @@ Where this differs from CommonMark, or is read more simply:
   definition, which markdown-it and cmark's algorithm (the lazy line is paragraph text) keep in, and this package
   follows the latter; markdown-it differs from pandoc after a line holding only a tag, and where a setext
   underline stands under a lone label. The test asks that no definition here is neither pandoc's nor markdown-it's.
+- **Where the shapes differ from pandoc or markdown-it** ([#111](https://github.com/ForLegalAI/legaldown-validator/issues/111)):
+  over 1.5 million generated documents the block structure here differs from pandoc's in three classes, each
+  deliberate or the reference's own deviation, none a link definition:
+  - *An empty ATX heading* (`#` alone, outside items and quotes) is paragraph text here, by design (above): a
+    section's heading needs text. pandoc and markdown-it read an empty heading.
+  - *A declaration with a lowercase letter* (`<!c`) is an HTML block, kind 4 of CommonMark 0.31.2 §4.6 (`<!`
+    and an ASCII letter; 0.30 dropped the restriction to capitals, commonmark-spec #620), and inline HTML in
+    text (§6.6, as above). pandoc and markdown-it still need a capital letter and read `<!c` as a paragraph.
+  - *A degenerate end*: `<!-->`, `<!--->` and `<?>` end the HTML block on the line they start (the end condition
+    is tested from the `<`, so it overlaps the start), where the next line is a paragraph. markdown-it reads the
+    same; pandoc runs the block on to the next end marker.
 
 What the model does not keep, or reads more simply than CommonMark:
 
 - An ordered item's number is not kept: a list is written numbered from 1. Whether a list is
   loose or tight is not kept either: items are written without blank lines between them.
-- A fence left open in an item, under an item nested on its first line and short of that
-  item's content, can run on where CommonMark ends it.
 - Lists nested more than 64 deep are read that far: deeper, an item's content is one paragraph
   of its text.
 
