@@ -105,8 +105,9 @@ def paragraph(rng: random.Random, *, underline: bool = False) -> list[str]:
     return lines
 
 
-def block(rng: random.Random, depth: int = 0) -> list[str]:
-    """The lines of a block, with the blank line after it when it needs one."""
+def block(rng: random.Random, depth: int = 0, *, lazy: bool = True) -> list[str]:
+    """The lines of a block. Without *lazy*, every line of an item is indented to its content and
+    none of a quote or an item lacks its marker."""
     kind = rng.choice(["paragraph"] * 4 + ["setext"] * 2 + ["list", "list", "quote", "quote", "heading", "rule"])
     if depth >= 2 and kind in ("list", "quote"):
         kind = "paragraph"
@@ -122,32 +123,33 @@ def block(rng: random.Random, depth: int = 0) -> list[str]:
         case "list":
             lines = []
             bullet = rng.choice(["-", "*", "1."])
+            indent = " " * (len(bullet) + 1) if not lazy else "  "  # (two columns under "1." is short of its content)
             for _ in range(rng.randint(1, 3)):
-                inner = block(rng, depth + 1) if rng.random() < 0.3 else paragraph(rng)
-                if rng.random() < 0.15:
+                inner = block(rng, depth + 1, lazy=lazy) if rng.random() < 0.3 else paragraph(rng)
+                if lazy and rng.random() < 0.15:
                     inner = [*inner[:1], "lazy " + rng.choice(TEXT)] + inner[1:]  # a line that continues, not indented
-                    lines += [f"{bullet} {inner[0]}", inner[1], *("  " + each for each in inner[2:])]
+                    lines += [f"{bullet} {inner[0]}", inner[1], *(indent + each for each in inner[2:])]
                 else:
-                    lines += [f"{bullet} {inner[0]}", *("  " + each for each in inner[1:])]
+                    lines += [f"{bullet} {inner[0]}", *(indent + each for each in inner[1:])]
                 if rng.random() < 0.3:
                     lines.append("")
             return lines
         case _:
-            inner = block(rng, depth + 1) if rng.random() < 0.3 else paragraph(rng)
+            inner = block(rng, depth + 1, lazy=lazy) if rng.random() < 0.3 else paragraph(rng)
             lines = ["> " + each if each else ">" for each in inner]
             # (A line after an underline under only definitions, which CommonMark reads into a
             # paragraph the underline starts: a known difference, CONFORMANCE.md, #92.)
-            if rng.random() < 0.2 and not re.fullmatch(r" *(?:=+|-+) *", inner[-1]):
+            if lazy and rng.random() < 0.2 and not re.fullmatch(r" *(?:=+|-+) *", inner[-1]):
                 lines.append("lazy " + rng.choice(TEXT))
             return lines
 
 
-def generate(seed: int) -> str:
-    """A document body of a few blocks, then a probe for each label."""
+def generate(seed: int, *, lazy: bool = True) -> str:
+    """A document body of a few blocks."""
     rng = random.Random(seed)
     lines: list[str] = []
     for _ in range(rng.randint(1, 4)):
-        lines += block(rng)
+        lines += block(rng, lazy=lazy)
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -308,6 +310,8 @@ def comparable(destination: str) -> str:
 # ── The comparisons ───────────────────────────────────────────────
 
 SEEDS = range(300)
+#: Documents with lazy continuation lines and without.
+LAZY = [True, False]
 
 
 def asked(definitions: dict[str, tuple[str, str]]) -> dict[str, tuple[str, str]]:
@@ -338,15 +342,24 @@ def test_the_definitions_are_a_references(seed):
 
 
 @pytest.mark.parametrize("seed", SEEDS)
-def test_the_blocks_are_pandocs(seed):
-    source = generate(seed)
+def test_the_definitions_of_a_document_without_lazy_lines_are_pandocs(seed):
+    source = generate(seed, lazy=False)
+    _blocks, pandoc_reads = pandoc_definitions(source)
+    assert asked(ours(source)) == asked(pandoc_reads), source
+
+
+@pytest.mark.parametrize("lazy", LAZY)
+@pytest.mark.parametrize("seed", SEEDS)
+def test_the_blocks_are_pandocs(seed, lazy):
+    source = generate(seed, lazy=lazy)
     blocks, _reference = pandoc_definitions(source)
     assert document_nodes(source) == blocks, source
 
 
+@pytest.mark.parametrize("lazy", LAZY)
 @pytest.mark.parametrize("seed", SEEDS)
-def test_a_document_with_definitions_reads_back_the_same(seed):
-    source = generate(seed)
+def test_a_document_with_definitions_reads_back_the_same(seed, lazy):
+    source = generate(seed, lazy=lazy)
     document = parse(FRONTMATTER + source)
     written = parse(serialize(document))
     assert (written.preamble, written.sections) == (document.preamble, document.sections), source
