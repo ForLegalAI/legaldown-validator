@@ -289,12 +289,38 @@ def _table_row(cells: list[str]) -> str:
     return "| " + " | ".join(_table_cell(cell) for cell in cells) + " |"
 
 
+def _paragraph_source(block: Block) -> str | None:
+    """The text of a block that is written as a paragraph (a paragraph, a definition, a
+    ``{{ref:}}`` or a ``{{term:}}``), or None for another."""
+    if block.kind == "paragraph":
+        return strip_text(block.text)
+    if block.kind == "definition":
+        term = block.term.strip() or block.definition_id.replace("-", " ").title()
+        did = block.definition_id.strip()
+        anchor = (
+            f'"{term}" {{{{def: {format_value(did, positional=True)}}}}}'
+            if did
+            else f'"{term}" {{{{def:}}}}'
+        )
+        body = strip_text(block.text)
+        return f"{anchor} {body}" if body else anchor
+    if block.kind == "ref":
+        target = format_value(block.target, positional=True)
+        return strip_text(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}")
+    if block.kind == "term":
+        target = format_value(block.target, positional=True)
+        label_part = f", label={format_value(block.label)}" if block.label else ""
+        return strip_text(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}")
+    return None
+
+
 def _render_block(block: Block, *, in_item: bool = False, joined: bool = False) -> str:
     """*block* as source; *in_item*: in a list item's content; *joined*: a
     paragraph written in the paragraph of the definitions before it
     (``_paragraph``)."""
-    if block.kind == "paragraph":
-        return _paragraph(strip_text(block.text), in_item=in_item, joined=joined)
+    if (text := _paragraph_source(block)) is not None:
+        # (A lifted directive's block is written as at the margin, as it always was.)
+        return _paragraph(text, in_item=in_item and block.kind == "paragraph", joined=joined)
     if block.kind == "heading":
         # A heading at the margin would be a section's: outside an item —
         # only a model built in code has one there — it is written as a
@@ -308,23 +334,6 @@ def _render_block(block: Block, *, in_item: bool = False, joined: bool = False) 
         # paragraph are (Revision 2 of #92): ``- b`` in a title is no item.
         first, *rest = format_link_definition(block.label, block.target, block.title).split("\n")
         return "\n".join(_lines_of_paragraph(first, rest))
-    if block.kind == "definition":
-        term = block.term.strip() or block.definition_id.replace("-", " ").title()
-        did = block.definition_id.strip()
-        anchor = (
-            f'"{term}" {{{{def: {format_value(did, positional=True)}}}}}'
-            if did
-            else f'"{term}" {{{{def:}}}}'
-        )
-        body = strip_text(block.text)
-        return _paragraph(f"{anchor} {body}" if body else anchor)
-    if block.kind == "ref":
-        target = format_value(block.target, positional=True)
-        return _paragraph(strip_text(f"{block.prefix}{{{{ref: {target}}}}}{block.suffix}"))
-    if block.kind == "term":
-        target = format_value(block.target, positional=True)
-        label_part = f", label={format_value(block.label)}" if block.label else ""
-        return _paragraph(strip_text(f"{block.prefix}{{{{term: {target}{label_part}}}}}{block.suffix}"))
     if block.kind in _LISTS:
         return _render_list(block) or ""
     if block.kind == "quote":
@@ -555,9 +564,10 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
         else:
             # What is left of a paragraph that opened with definitions may read as the start of a
             # block alone: it is written under them, as the parser read it (#92).
+            text = _paragraph_source(block)
             joined = (
-                block.kind == "paragraph" and index > 0 and blocks[index - 1].kind == "link_definition"
-                and _joins_definition(strip_text(block.text))
+                text is not None and index > 0 and blocks[index - 1].kind == "link_definition"
+                and _joins_definition(text)
             )
             rendered = _render_block(block, in_item=in_item, joined=joined)
         if rendered:

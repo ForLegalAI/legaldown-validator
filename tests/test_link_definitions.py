@@ -525,6 +525,8 @@ def test_a_conditional_item_after_a_definition_is_one_unit():
         "[a]: u\n[b]: {{placeholder: p}}\n",
         "[x]: u\n<span>\n",
         "[x]: u\n2. not a list\n",
+        "[x]: u\n<span>\n{{ref: a}}\n",
+        "[x]: u\n2. z\n{{term: a, label=\"b\"}} c\n",
         "[x]: u\n    indented text\n",
         "# H\n\n[x]: u\n\ntext\n",
     ],
