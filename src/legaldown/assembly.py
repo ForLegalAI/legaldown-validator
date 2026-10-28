@@ -1594,15 +1594,18 @@ def _item_column(line: str, count: int) -> int:
 
 def _signatures(
     lines: list[str], last: int | None = None
-) -> tuple[defaultdict[int, Counter[str]], dict[int, int], _Layout]:
+) -> tuple[defaultdict[int, Counter[str]], dict[int, int], _Layout, tuple[tuple[int, ...], int] | None]:
     """What the parser reads *lines* as beginning, line by line, of the constructs
     §15.7.3 names: ``item``, ``quote``, ``heading`` (ATX), ``setext`` (for the underline
     of a heading that began on an earlier line), ``code``, ``rule`` and ``html``; and the
-    content column of the list item each line lies in. Only line *last* if it is given."""
+    content column of the list item each line lies in. Only line *last* if it is given,
+    and then also the paragraph it lies in, if that is in list items alone: the content
+    columns of the items around it, outer first, and the line it starts on."""
     layout = _Layout()
     blocks, sections = _parse_body(lines, layout)
     begun: defaultdict[int, Counter[str]] = defaultdict(Counter)
     columns: dict[int, int] = {}
+    leaf: list[tuple[tuple[int, ...], int]] = []
 
     def mark(start: int, end: int, kind: str) -> None:
         """Record the construct of *kind* on lines ``[start, end)``: where it begins, or for
@@ -1617,13 +1620,19 @@ def _signatures(
             if last is None or line == last:
                 begun[line][found] += 1
 
-    def walk(spans: list[_BlockSpan], model: list[Block], base: int, depth: int, opened: tuple[int, ...] | None) -> None:
-        """*opened*: the lines the items around these blocks start on, or None in a quote."""
+    def walk(
+        spans: list[_BlockSpan], model: list[Block], base: int, depth: int, opened: tuple[int, ...] | None,
+        around: tuple[int, ...] = (),
+    ) -> None:
+        """*opened*: the lines the items around these blocks start on, or None in a quote;
+        *around*: their content columns."""
         for span, block in zip(spans, model, strict=True):
             start, end = base + span.start, base + span.end
             if last is not None and not start <= last < end:
                 continue
             mark(start, end, span.kind)
+            if last is not None and span.kind == "paragraph" and opened is not None:
+                leaf[:] = [(around, start)]
             for item_span, item in zip(span.items, block.items, strict=True):
                 first, stop = base + item_span.start, base + item_span.end
                 if last is not None and not first <= last < stop:
@@ -1631,10 +1640,12 @@ def _signatures(
                 if last is None or first == last:
                     begun[first]["item"] += 1
                 inside = None if opened is None else (*opened, first)
-                if inside is not None and last is None:
+                column = 0
+                if inside is not None:
                     column = _item_column(lines[first], inside.count(first))
-                    columns.update(dict.fromkeys(range(first, stop), column))
-                walk(item_span.blocks, item.blocks, base, depth + 1, inside)
+                    if last is None:
+                        columns.update(dict.fromkeys(range(first, stop), column))
+                walk(item_span.blocks, item.blocks, base, depth + 1, inside, (*around, column))
             if block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
                 children, inner = quote_content(block.text, depth + 1)
                 walk(inner, children, start, depth + 1, None)
@@ -1644,7 +1655,7 @@ def _signatures(
     walk(layout.preamble, blocks, 0, 0, ())
     for (_heading, section_blocks), (_span, spans) in zip(sections, layout.sections, strict=True):
         walk(spans, section_blocks, 0, 0, ())
-    return begun, columns, layout
+    return begun, columns, layout, leaf[0] if leaf else None
 
 
 class _Tail(NamedTuple):
@@ -1653,15 +1664,16 @@ class _Tail(NamedTuple):
     begun: Counter[str]  #: the constructs it begins
     start: int  #: where the last top-level block starts, after any link definitions before it
     kind: str  #: and its kind
+    paragraph: tuple[tuple[int, ...], int] | None = None  #: the paragraph it ends in (``_signatures``)
 
 
 def _tail(lines: list[str]) -> _Tail:
     """What the parser reads the last of *lines* as beginning, and where its last top-level block
     starts: the lines before that are closed, and later lines cannot change their reading."""
     last = len(lines) - 1
-    begun, _columns, layout = _signatures(lines, last)
+    begun, _columns, layout, paragraph = _signatures(lines, last)
     start, kind = _last_block(layout)
-    return _Tail(begun[last], start, kind)
+    return _Tail(begun[last], start, kind, paragraph)
 
 
 def _last_block(layout: _Layout) -> tuple[int, str]:
@@ -1731,7 +1743,7 @@ class _Reading:
         return " " * min(self._columns.get(line.slot, 0), indent_width(line.plain[:line.first]))
 
     def _read(self) -> None:
-        self._begun, self._columns, _ = _signatures(self.plains)
+        self._begun, self._columns, *_ = _signatures(self.plains)
         changed = False
         for line in self._checked:
             if line.first is None or not _PLAINISH_RE.fullmatch(line.plain[:line.first]):
@@ -1743,32 +1755,52 @@ class _Reading:
                 self.plains[line.slot] = stripped
                 changed = True
         if changed:
-            self._begun, self._columns, _ = _signatures(self.plains)
+            self._begun, self._columns, *_ = _signatures(self.plains)
 
 
 _QUOTED_RE = re.compile(r" {0,3}>")
 
 
+def _headers(columns: tuple[int, ...]) -> list[str] | None:
+    """One line of text for each list item around a paragraph, whose content columns are *columns*,
+    outer first: nested items that put the paragraph's lines where they are in the output. None if a
+    column is not two to five past the one before, which a bullet and its spaces can be."""
+    lines = []
+    before = 0
+    for column in columns:
+        if not 2 <= column - before <= 5:
+            return None
+        lines.append(" " * before + "-" + " " * (column - before - 1) + "x")
+        before = column
+    return lines
+
+
 class _Window:
     """Which of the output lines before a line the parser must read to read it as the whole
-    output would: from the last top-level block on. Inside a paragraph of plain text (``para``)
-    that is its first line and the line before this one: whether a line begins a construct there
-    depends on the paragraph being open (and on the line before it, for a table), and not on the
-    other lines in it. A paragraph that may be a link definition is not one of plain text."""
+    output would: from the last top-level block on. Inside a paragraph of plain text
+    (``mode`` "para") that is its first line and the line before this one, after the items it is
+    in, if any (``_headers``): whether a line begins a construct there depends on the paragraph
+    being open (and on the line before it, for a table), and not on the other lines in it. A
+    paragraph that may be a link definition is not one of plain text. After a blank line in items
+    (``mode`` "blank"), when the paragraph before it was one of plain text, it is the blank line:
+    a line begins a construct there as it does after any blank line in those items."""
 
     def __init__(self, lines: list[_Line]) -> None:
         self.lines = lines
         self.sync = 0  # where the last top-level block of lines[:known] starts
         self.known = 0
         self.kind = ""  # the kind of that block
-        self.para: int | None = None  # where the paragraph of plain text that lines[:known] end in starts
+        self.mode = ""
+        self.chain: tuple[int, ...] = ()  # the content columns of the items around the paragraph
+        self.first = 0  # where the paragraph starts ("para")
 
     def before(self, k: int) -> list[str]:
         """The lines to read line *k* after."""
-        if self.para is not None:
-            # The first line of the paragraph says it is open, and the line before this one is what
-            # it follows (a lone ``<x>`` or ``2.`` read from the start of the lines is a block).
-            return [self.lines[i].text for i in sorted({self.para, k - 1})]
+        if self.mode:
+            head = _headers(self.chain) or []
+            if self.mode == "blank":
+                return [*head, ""]
+            return [*head, *(self.lines[i].text for i in sorted({self.first, k - 1}))]
         if self.known < k and self.kind == "quote" and all(
             _QUOTED_RE.match(line.text) for line in self.lines[self.known - 1:k]
         ):
@@ -1782,23 +1814,54 @@ class _Window:
 
     def read(self, k: int, before: list[str], tail: _Tail | None) -> None:
         """Line *k*, which was read after *before* as *tail*, is written."""
-        text = self.lines[k].text
-        if self.para is None and tail is not None:
+        if not self.mode and tail is not None:
+            window = self.sync
             self.sync += tail.start
             self.known = k + 1
             self.kind = tail.kind
-            first = self.lines[self.sync].text
-            if tail.kind == "paragraph" and _plain_text(text) and not first.lstrip(" ").startswith("["):
-                self.para = self.sync  # a link definition may be what the paragraph is made of
+            if tail.kind == "paragraph":
+                if self._starts(self.lines[self.sync].text, ()) and self._plain(self.lines[k].text, ()):
+                    self.mode, self.chain, self.first = "para", (), self.sync
+            elif tail.kind in LIST_KINDS and tail.paragraph is not None and tail.paragraph[0]:
+                chain, start = tail.paragraph[0], window + tail.paragraph[1]
+                if _headers(chain) is not None and self._starts(self.lines[start].text, chain) and self._plain(self.lines[k].text, chain):
+                    self.mode, self.chain, self.first = "para", chain, start
         self.written(k)
 
     def written(self, k: int) -> None:
         """Line *k* is as it will be written."""
-        if self.para is not None:
-            if _plain_text(self.lines[k].text):
+        text = self.lines[k].text
+        if self.mode == "para":
+            if self._plain(text, self.chain):
                 self.known = k + 1
+            elif self.chain and not text.strip(" \t"):
+                self.mode, self.known = "blank", k + 1
             else:
-                self.para = None
+                self.mode = ""
+        elif self.mode == "blank":
+            if not text.strip(" \t"):
+                self.known = k + 1
+            elif self._starts(text, self.chain):
+                self.mode, self.first, self.known = "para", k, k + 1
+            else:
+                self.mode = ""
+
+    def _starts(self, text: str, chain: tuple[int, ...]) -> bool:
+        """True if *text* is a line of plain text that can start a paragraph in the items: not one
+        that may be a link definition."""
+        column = chain[-1] if chain else 0
+        return (
+            self._plain(text, chain)
+            and not text.lstrip(" ").startswith("[")
+            and _construct(text[column:], in_paragraph=False) is None  # after a blank line, 4 columns in is code
+        )
+
+    @staticmethod
+    def _plain(text: str, chain: tuple[int, ...]) -> bool:
+        """True if *text* is more of a paragraph in the items *chain* that is open: it is indented to
+        their content (by spaces), and what is left of it is plain text (``_plain_text``)."""
+        column = chain[-1] if chain else 0
+        return text[:column] == " " * column and _plain_text(text[column:])
 
 
 def _plain_text(text: str) -> bool:
@@ -1829,7 +1892,7 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
         if not line.check:
             window.written(k)
             continue
-        simple = _simple_start(line, reading)
+        simple = _simple_start(line, reading, perturbed)
         if simple is not None:
             line.text = simple
             window.written(k)
@@ -1840,12 +1903,14 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
         window.read(k, before, tail)
 
 
-def _simple_start(line: _Line, reading: _Reading) -> str | None:
+def _simple_start(line: _Line, reading: _Reading, perturbed: bool) -> str | None:
     """The checked *line* when the parser need not be asked: what it begins cannot start a
     block, and the markers before the insertion are the template's own. None if it must be
     read. Only the template's ``-``, ``+``, ``*``, ``1.``, ``1)`` and ``>`` are known to be
     markers without asking the parser; any other run of item markers is, if the parser reads
-    the template line as beginning that many items and no line before it was deleted."""
+    the template line as beginning that many items and no line before it was deleted. And a line that
+    keeps the indentation of its item needs the parser if the items of the output may not be the
+    template's (*perturbed*, ``_line_starts``)."""
     text, first = line.text, line.first
     if first is None:
         return None if _could_begin(text) else text
@@ -1861,6 +1926,8 @@ def _simple_start(line: _Line, reading: _Reading) -> str | None:
     keep = ""
     if not prefix and head:  # only whitespace before the insertion: indentation
         keep = reading.start(line)[2]
+        if keep and perturbed:
+            return None  # it is code if the items of the output are not those of the template
     content = text[prefix:].lstrip(" \t")
     return text[:prefix] + keep + content if not _could_begin(content) else None
 

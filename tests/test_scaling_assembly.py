@@ -112,3 +112,20 @@ def test_a_long_paragraph_is_read_from_its_first_line_and_the_line_before(shape:
         assert body.splitlines()[-1] == "2. a"
     assert PARSES.lines < 8 * len(lines)  # two or three lines for each, and the template once
     assert seconds < 8
+
+
+@pytest.mark.parametrize("shape", ["paragraphs", "one-paragraph"])
+def test_paragraphs_in_one_item_are_read_from_the_item_and_the_lines_before(shape: str) -> None:
+    """Every answer is ``- a``, in the paragraphs of one item: 600 paragraphs, each after a blank
+    line, or one paragraph of 800 lines. The lines around the item and its paragraph say what a line
+    begins there; the other paragraphs and lines do not (some eleven seconds for the first shape)."""
+    if shape == "paragraphs":
+        lines = ["- Terms"]
+        while len(lines) < 1200:
+            lines += ["", f"  {{{{placeholder: p{len(lines) + 1}}}}} applies."]
+    else:
+        lines = ["- Terms", ""] + [f"  {{{{placeholder: p{n + 2}}}}} applies." for n in range(800)]
+    body, _parses, seconds = _assembled(lines, "- a")
+    assert body.splitlines()[-1] == "  \\- a applies."
+    assert PARSES.lines < 8 * len(lines)  # a few lines for each, and the template once
+    assert seconds < 8
