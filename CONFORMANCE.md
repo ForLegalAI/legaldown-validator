@@ -206,8 +206,14 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
   scheme is the one written, so `https%3A//x` and `ab%3Ax` are relative. No other reference is percent-decoded or loses a query.
   Not an image: one in a code span, fenced or indented code, a comment or a raw HTML block, `\![a](x)`
   (a link after a literal `!`), a link or autolink (valid, §8.7), `<img src>` (that is `raw-html`),
-  and a reference-style image (`![a][r]`, `[r]: path`), which waits for link reference definitions in the
-  model ([#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)). A directive in
+  and a reference-style image whose label no definition has. A reference-style image (`![a][r]`, `![a][]` or
+  `![a]` with `[r]: path`, [#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)) names its file
+  by the first definition of its label (`collect_link_definitions`): the definition's destination is read as an
+  image's is, and checked **once, where it is written** (the line of `[r]: path`, in an item or a quote too),
+  however many images name it; a definition no image names is no file reference. As in CommonMark a label that
+  follows the text decides (`![a][r]` with only `[a]` defined is no image), `![a][]` and `![a]` take the text as
+  the label if it holds no bracket, and no space may come between the text and the label. A definition with a
+  directive in it is paragraph text (below), so no image names it. A directive in
   an image's destination (`![a](https://{{placeholder: host}}/x.png)`) leaves its path unknown until it is
   filled in (assembly's output is validated again, §15.7.4), but the text before the first directive may
   decide already: one that begins with a scheme or a `/` or `\` (`![a](/abs/{{placeholder: p}}.png)`) is
@@ -265,6 +271,59 @@ item's content is the item's too, as CommonMark has it
 ([#84](https://github.com/ForLegalAI/legaldown-validator/issues/84)); indented less, or not at
 all, it is a section's. Outside items and quotes, a section's heading needs text: a line of `#`
 alone is paragraph text there, where CommonMark reads an empty heading.
+
+A link reference definition (CommonMark §4.7,
+[#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)) is a `link_definition` block, in an
+item or a quote too: its `label` as written (without the spaces around it), its `target` without
+`<>` and its `title` without its delimiters, each raw — backslash escapes and character references
+are not decoded, so the model keeps what was written. It is read from a closed paragraph, as
+CommonMark reads it: the definitions a paragraph *opens with* are blocks of their own, and what is
+left of it is the paragraph (or a heading's text). So a definition cannot interrupt a paragraph (`a`
+then `[x]: u` is one paragraph), a lazy line is part of the paragraph it continues, a title that is
+not closed, or is followed by text on its line, is not read (the definition stands without it if its
+destination's line ends there, and the title's line is then text), and a setext underline under
+nothing but definitions is no underline: `===` starts a paragraph and `---` is a thematic break. A
+label is matched case-folded (`str.casefold`) with each run of spaces, tabs and line breaks one space,
+and the first definition of a label wins, wherever it is in the document
+(`collect_link_definitions`, which a quote deeper than 16 or an item deeper than 64 is not read for).
+A definition is no text to the validator and no unit to assembly: it holds no directive, marker or
+anchor, an item's first paragraph (where an anchor may end, and a condition applies, §5.7, §15.3)
+is the first block after any definitions it opens with, and `[x]: u` over a lone `{{include:}}`
+line leaves the line an include paragraph. Written back, each definition is a paragraph of its own,
+blank-separated: the layout is normalized and the model is the same on a second reading. A reference-style
+image (`![a][r]`, `![a][]`, `![a]`) is checked for `path-not-relative` and `path-outside-root` on its
+definition's destination, once, at the definition, however many images name it (#104, above).
+
+Where this differs from CommonMark, or is read more simply:
+
+- **A definition with `{{` in it stays paragraph text** (the run of definitions ends before it). CommonMark
+  reads it as a definition whose destination or title holds the directive's text as written, but that is not
+  final until assembly fills the directive in, and the validator must see the line as written
+  (`[x]: {{ref: nope}}` is a `ref` block, `ref-broken`; `[label]: {{placeholder: p}}` is an
+  `insertion-boundary` Error). The definitions before it are blocks, it and everything after it one paragraph.
+  A `link_definition` that a model built in code holds a directive in is written as it is and read back as
+  that text.
+- **A setext underline under only definitions, in a quote or an item, followed by a line without the
+  container's marker:** CommonMark starts a paragraph at `===` that the line continues; here the quote or
+  item has closed its paragraph at the underline, so the line is not read into it (`> [x]: u`, `> ===`,
+  `text`). Outside containers the paragraph is as CommonMark has it.
+- At `MAX_LIST_DEPTH` an item is one paragraph, and `[x]: u` there is text: the serializer writes it with a
+  backslash, as it does `# h`. The same holds for a quote deeper than `MAX_QUOTE_DEPTH`.
+- A paragraph of a model that reads as a definition (`[x]: u`) is written `\[x]: u`, so it stays a paragraph; one
+  that would be a block alone only because definitions were peeled off before it (`<span>`, `2. x`) is written
+  directly under them, as the parser read it.
+- A label longer than 999 characters, built in code, is written and read back as paragraph text; a blank line in
+  a label or a title is a space (it would end the paragraph), a line break in a target is dropped, and an
+  unescaped bracket in a label, a `<` or `>` in a destination written in `<>`, or a title delimiter in a title is
+  escaped when written.
+- A bare destination is one with no space or control character, balanced parentheses (at most 32 deep) and not
+  beginning with `<`; one that is not is written in `<>`.
+- The differential test (`tests/test_link_definitions_differential.py`) compares the definitions and the blocks
+  with pandoc (`commonmark`) and markdown-it-py over generated documents. They disagree with each other in a few
+  places: pandoc leaves a title or destination on a lazy continuation line (`1. [a]: /u`, then `  "t"`) out of the
+  definition, which markdown-it and cmark's algorithm (the lazy line is paragraph text) keep in, and this package
+  follows the latter; markdown-it differs from pandoc after a line holding only a tag, and where a setext
+  underline stands under a lone label. The test asks that no definition here is neither pandoc's nor markdown-it's.
 
 What the model does not keep, or reads more simply than CommonMark:
 

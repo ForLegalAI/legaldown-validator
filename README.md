@@ -517,7 +517,9 @@ validate(document, document_root="/srv/contracts")
   permits `../shared/x.lgd` validates clean, but assembly and the definitions read for `amends` and
   attachments (`resolve=`) never ask for it.
 
-[CONFORMANCE.md](CONFORMANCE.md) gives the details, what counts as an image included.
+A reference-style image (`![alt][r]`, `![alt][]` or `![alt]`, with `[r]: path`) is judged by the destination
+of the definition it names, once, at the line where the definition is written. [CONFORMANCE.md](CONFORMANCE.md)
+gives the details, what counts as an image included.
 
 ### Reading and editing the document model
 
@@ -600,20 +602,41 @@ the party's fields), they are written as the party's `custom_fields` list of `la
 field. A value that is a list or a mapping is not kept: a custom field holds text.
 
 A list block's `items` are `ListItem`s, each holding the blocks of its content in order: its
-first paragraph, then later paragraphs, headings, nested lists (a list block of their own kind),
-code, quotes, tables and raw HTML. An empty item holds none. A paragraph in an item is always of
-kind `paragraph`: a directive in it stays in its text. A heading in an item or a quote is a
-`heading` block, not a section: its `text` without the `#` syntax, and its `level` (1–6; `level`
-is 0 on every other block). Written outside an item, where it would be a section's heading, a
-`heading` block becomes paragraph text with a backslash before it. `item_text(item)` gives an
-item's first paragraph's text, and `render_item(item)` its content as written after its marker
-(both in `legaldown.syntax`); a string item in `Document.from_dict` (as models before 0.3 held
-them) is read as such content.
+first paragraph, then later paragraphs, headings, link reference definitions (`link_definition`
+blocks, below; any before the first paragraph are no text, so that paragraph is still the first),
+nested lists (a list block of their own kind), code, quotes, tables and raw HTML. An empty item
+holds none. A paragraph in an item is always of kind `paragraph`: a directive in it stays in its
+text. A heading in an item or a quote is a `heading` block, not a section: its `text` without
+the `#` syntax, and its `level` (1–6; `level` is 0 on every other block). Written outside an
+item, where it would be a section's heading, a `heading` block becomes paragraph text with a
+backslash before it. `item_text(item)` gives an item's first paragraph's text (link reference
+definitions before it are no text), and `render_item(item)` its content as written after its
+marker (both in `legaldown.syntax`); a string item in `Document.from_dict` (as models before
+0.3 held them) is read as such content.
 A nested item's condition applies within those of the items it is nested in (§15.3).
 
 A quote block keeps its `text`: its content, one line per source line without the `>` marker.
 The validator and assembly read that content as blocks, as they read an item's, so code and raw
 HTML in a quote hold no directive.
+
+A link reference definition (CommonMark §4.7), `[label]: destination "title"`, is a
+`link_definition` block, at the top level and in an item or a quote too. Its `label` is as
+written (without the spaces around it), its `target` the destination without `<>`, and its
+`title` the title without its quotes or parentheses (`""` for none), each raw: backslash
+escapes and character references are not decoded, so the model keeps what was written.
+`title` is a field of every `Block` (`""` on the other kinds), so `to_dict()` has
+`"title": ""` on each block, and a dict without it loads. As in CommonMark, the definitions
+a paragraph *opens with* are read, each a block of its own, and what is left is the
+paragraph: `a` then `[x]: u` on the next line is one paragraph. A definition that holds a
+`{{` directive is paragraph text instead, as its destination or title is not final until
+assembly fills the directive in, and the validator sees the line as written. A paragraph that
+was only definitions leaves no `paragraph` block, so a document that had `[x]: u` as
+a `paragraph` now has a `link_definition` (a **behaviour change**), and `serialize` writes each definition
+as a paragraph of its own, separated by blank lines. A model's `paragraph` that would read as a
+definition when written is written with a backslash before it, to stay a paragraph.
+`collect_link_definitions(document)` (`legaldown.syntax`) gives the document's definitions
+by label, the first of a label winning, as CommonMark has it. See
+[CONFORMANCE.md](CONFORMANCE.md) for how this differs from CommonMark.
 
 Tables follow GFM: a table needs a delimiter row with one cell per header, rows take the
 header's width, and a `|` inside a cell — a code span's included — is written `\|`. A
@@ -623,7 +646,7 @@ table block's `headers` and `rows` hold the cell text with those escapes removed
 A paragraph's `text` (a definition's, and a ref's or term's `prefix` and `suffix`, too) keeps
 its lines, joined with `\n` and without their indentation, as CommonMark reads them: a line
 ending in `\` or in two spaces is a hard line break, and each other line break a soft one,
-which a renderer shows as a space. Link reference definitions stay on their lines. It is written
+which a renderer shows as a space. It is written
 back as those lines; a line that would, at the margin, end the paragraph (a list item, a
 heading, a setext underline, a table's delimiter row, and the like — only a lazy line or a model
 built in code holds one) is written four columns in, where it continues the paragraph and is
@@ -708,12 +731,13 @@ for _section, _index, block in document.iter_blocks():
 | `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`) |
 | `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `text_fragments`, `list_items`, `item_text` | Where a block's text is, and a list's items |
 | `collect_definitions(document)` → `DefinitionRef`, `definition_lookup`, `id_term` | The definitions a document declares in its own source (§7), in document order, each with where it is; `definition_lookup(refs)` is their id-to-term map as `validate` builds `result.index.definition_lookup` (but for definitions imported from other files); `id_term(id)` is the term an empty one reads as |
+| `collect_link_definitions(document)` → `{label: LinkDefinition(url, title)}`, `normalize_label(label)` | The link reference definitions of a document (`link_definition` blocks, CommonMark §4.7), in an item or a quote too, by label, the first of each label winning: the key is `normalize_label(label)`, the label with each run of whitespace one space and case-folded, so look a label up with `definitions[normalize_label("Foo  Bar")]`. `url` and `title` are raw as the block holds them (backslash escapes and character references not decoded); `title` is `""` for none. Derived on each call; a definition with a directive in it is paragraph text and is none |
 | `find_definition_anchors(text)` → `DefinitionAnchor` | Every `{{def:}}` in a text, with the quoted term it anchors and where that term starts (§7.2) |
 | `render_block(block)`, `render_item(item)` | The other way: a block written as LegalDown source, and a list item's content as written after its marker, as `serialize` writes them |
 | `Quote`, `block_quotes`, `is_drafting_note(block)` | The block quotes in a block and whether each is a drafting note; whether a quote block is one (§15.6) |
 | `quote_blocks(block, *, depth=0)`, `drafting_note_blocks(block, *, depth=0)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6). `depth` is how many list items and quotes the quote is in, the count before entering it (a quote in a list item is at 1); past `MAX_QUOTE_DEPTH` the validator reads a quote as one text, so you get one paragraph of its text as written |
 | `code_content(block)` → `CodeContent(info, text, fenced)` | A code block read as CommonMark reads it: the info string, and the code without its fences or indentation |
-| `FRONTMATTER_RE`, `LINE_ENDING_RE`, `HTML_COMMENT_RE`, `comment_spans`, `strip_comments`, `FENCE_OPEN_RE`, `closes_fence`, `fence_end`, `dedent`, `indent_width`, `strip_text` | The Markdown rules the reading is built on: frontmatter, line endings, comments, fenced code, indentation. To find or remove comments in text you do not trust, use `comment_spans(text)` and `strip_comments(text)`: they read comments as `HTML_COMMENT_RE` does, in linear time, where the regex is quadratic on many unclosed `<!--` |
+| `FRONTMATTER_RE`, `LINE_ENDING_RE`, `HTML_COMMENT_RE`, `comment_spans`, `strip_comments`, `FENCE_OPEN_RE`, `closes_fence`, `fence_end`, `dedent`, `indent_width`, `strip_text`, `normalize_label` | The Markdown rules the reading is built on: frontmatter, line endings, comments, fenced code, indentation. To find or remove comments in text you do not trust, use `comment_spans(text)` and `strip_comments(text)`: they read comments as `HTML_COMMENT_RE` does, in linear time, where the regex is quadratic on many unclosed `<!--` |
 
 **Where things are in the file.** `document.layout()` gives a `SourceLayout`: the frontmatter's
 `(start, end)`, the preamble's `BlockSpan`s, and per section a `SectionSpan` (its `HeadingSpan` and

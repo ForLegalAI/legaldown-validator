@@ -460,6 +460,25 @@ def test_diagnostics_after_definitions_keep_their_lines():
 # ── Assembly ──────────────────────────────────────────────────────
 
 
+def test_a_definition_over_an_include_line_leaves_an_include_paragraph():
+    """A definition is no text, so the line under it is the paragraph's alone (§12.2)."""
+    from legaldown.validator.units import iter_include_paragraphs
+
+    document = parse(FRONTMATTER + "# A\n\n[x]: u\n{{include: part.lgd}}\n")
+    assert [b.kind for b in document.sections[0].blocks] == ["link_definition", "paragraph"]
+    assert [(section, index, directive.positional) for section, index, directive in iter_include_paragraphs(document)] == [
+        (0, 1, "part.lgd")
+    ]
+    template = (
+        "---\ntitle: T\n---\n\n# A\n\n[x]: u\n{{include: part.lgd}}\n"
+    )
+    assembled_template = parse_template(
+        template, resolve=lambda path: "Included text.\n" if path == "part.lgd" else None
+    ).form({}).assemble()
+    assert "[x]: u\n{{include: part.lgd}}\n" in assembled_template.output
+    assert assembled_template.files == {"part.lgd": "Included text.\n"}  # read: it is an include paragraph
+
+
 def test_a_template_with_definitions_assembles_with_its_lines_unchanged():
     template = (
         "---\ntitle: T\nquestions:\n  name:\n    type: text\n    prompt: Name?\n---\n\n# A\n\n"
@@ -771,6 +790,23 @@ def test_a_reference_style_image_in_a_heading_is_checked():
     assert [(d.rule, d.line) for d in validate(document).diagnostics if d.rule.startswith("path-")] == [
         ("path-not-relative", 7)
     ]
+
+
+def test_a_fragment_on_its_own_is_checked_as_a_document_is():
+    """#39: its definition and its images are its own; nothing is the host's to settle."""
+    fragment = parse("## Scope\n\n![a][r]\n\n[r]: /etc/x\n")
+    result = validate(fragment, fragment=True)
+    assert [(d.rule, d.line, d.host_dependent) for d in result.diagnostics] == [("path-not-relative", 5, False)]
+    assert result.rules() == validate(fragment, fragment=True, fragment_kind="include").rules()
+
+
+def test_a_document_with_unreadable_frontmatter_is_checked_to_the_line():
+    """#43: the body is read as it is, and its lines are the file's."""
+    document = parse("---\ntitle: [\n---\n\n# A\n\n![a][r]\n\n- [r]: /etc/x\n", on_frontmatter_error="keep")
+    assert document.frontmatter_error is not None
+    result = validate(document)
+    assert [(d.rule, d.line) for d in result.diagnostics if d.rule.startswith("path-")] == [("path-not-relative", 9)]
+    assert [b.kind for b in document.sections[0].blocks[1:]] == ["unordered_list"]
 
 
 # ── The verdicts of the insertion boundary (§15.7.3) ─────────────
