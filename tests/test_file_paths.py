@@ -999,7 +999,7 @@ def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
         if read:
             judged = judge(text)
             for source in read:
-                assert source in judged, (text, source, judged)
+                assert source.strip() in judged, (text, source, judged)  # (a path is judged without its outer blanks)
             compared += 1
     assert compared > 3000
 
@@ -1018,7 +1018,7 @@ def test_every_image_pandoc_reads_has_its_destination_judged(monkeypatch):
         if read:
             judged = judge(text)
             for source in read:
-                assert source in judged, (text, source, judged)
+                assert source.strip() in judged, (text, source, judged)  # (a path is judged without its outer blanks)
             compared += 1
     assert compared == 250
 
