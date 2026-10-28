@@ -609,15 +609,19 @@ class _FreeIdentifiers:
     Two shapes remain superlinear:
 
     - Headings whose presences are all different and all clash, like
-      ``p_k ∧ q`` and ``p_k ∧ !q`` for every k: each is looked at against every
-      earlier suffix, which the counts decide without testing a condition, so
-      n headings cost O(n²) cheap lookups. A heading with conditions on several
+      ``p_k ∧ q`` and ``p_k ∧ !q`` for every k (each needs a declared question):
+      each is looked at against every earlier suffix, which the counts decide
+      without testing a condition, so n headings cost O(n²) cheap lookups: about
+      0.7 s for 1,000, 3 s for 2,000 and 14 s for 4,000. The identifiers are
+      exact and the work is not capped, which would make them depend on the
+      size of the document (#110). A heading with conditions on several
       questions that together exclude each declaration at a suffix, no one
       question excluding them all, is tested against each declaration there.
     - A choice question with many distinct refusals of several values each
-      (``!c:a ∧ !c:b …``): a negative presence sums over the distinct sets of
-      answers refused at a suffix, whenever the widest of them and its own
-      might cover every answer.
+      (``!c:a ∧ !c:b …``): a negative presence intersects, whenever the widest
+      refusal at a suffix and its own might cover every answer, the bitmaps of
+      the declarations that refuse each answer it does not: n such headings cost
+      O(n²) machine words (n / 64 for each of the answers), 0.3 s for 4,000 (#110).
     """
 
     def __init__(self, explicit_ids: Collection[str], questions: Any) -> None:

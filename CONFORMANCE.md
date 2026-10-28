@@ -153,8 +153,14 @@ Two approximations, both towards giving a Warning (a Warning is better given tha
   circle together. Only a reference and the declaration it names are compared, each pair of
   conditions once, so a circle whose members exclude each other further round (`d1` when `q` names
   `d2`, which names `d3` when not `q`, which names `d4`, which names `d1`) is still reported; an
-  exact answer needs the answers to every question tried together. The tests are at most the
-  references' distinct conditions times the alternatives of the id they name.
+  exact answer needs the answers to every question tried together. A reference is tested only
+  against the alternatives that name a question it names (an alternative that can never appear
+  is not reached at all), and **at most 4,000,000 pairs are tested in a document**
+  (`legaldown.validator.circular.MAX_EXCLUSION_TESTS`; the cap is this implementation's, the
+  specification has none). Past it a reference reaches every alternative of the id it names, as in
+  a document that is no template. That can only join circles, so no circular definition goes
+  unreported, but circles may merge into fewer Warnings, at other lines. The cap needs thousands of
+  alternatives of one id under one question, named from as many places under it.
 
 `raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
 each HTML block that holds more than comments (text after a comment's `-->` on its line
@@ -769,6 +775,30 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
   or paragraph anchor (`ref-not-enumerated`); it draws no Warning, and is listed above.
 - Assembly claims no check, so it adds nothing; `Template.validation` carries the Warning as advice, and
   `Template.problems` does not (it is not a template rule).
+
+## Cost on large or hostile input (#94, #110)
+
+Parsing and validating take time linear in the size of the document, with the exceptions below.
+Each is a document built to be slow, none occurs in a document written by a person, and none
+changes a result: the identifiers and the findings do not depend on the size of the input.
+(`tests/test_scaling.py` counts the work of each shape that was made linear, and sets a generous
+time budget.)
+
+- **Headings of one title under pairs of conditions** are quadratic: `p_k ∧ q` and `p_k ∧ !q` for
+  every k, where each heading's identifier is the lowest suffix (`same`, `same-2`, …, §5.5) no
+  heading that can appear with it has taken. Each new heading is compared with the suffixes taken
+  before it, by counts, without testing a condition: **O(n²) in the number n of such headings,
+  about 0.7 s for 1,000, 3 s for 2,000 and 14 s for 4,000**, and each needs a question to
+  be declared. The identifiers are exact; there is no cap on this work, as a cap would make an
+  identifier depend on the size of the document.
+- **Lists nested to the depth cap** read the lines of an item again for each of the up to
+  `MAX_LIST_DEPTH` (64) lists that enclose it: linear in the size of the document, with a larger
+  constant, and no slower per byte than a long flat list of short items (2,000 nested items, 4 MB,
+  take about 8 s; 250,000 flat items, 4.5 MB, about 13 s). Deeper than the cap an item is one paragraph.
+- **Circular definitions** test at most `MAX_EXCLUSION_TESTS` (4,000,000) pairs of conditions,
+  about 5 s, past which alternatives are not told apart (see Alternatives above).
+- The walk of includes and the combinations of answers are capped as documented
+  ([Include fragments](#include-fragments-122-1611-1612)).
 
 ## Checking this yourself
 

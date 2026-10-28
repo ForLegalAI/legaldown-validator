@@ -585,3 +585,30 @@ def test_each_block_of_a_flat_list_is_built_once(monkeypatch):
 def test_a_flat_list_in_a_time_budget():
     source = "- item number one\n" * 100_000
     assert _seconds(parse, source) < 15.0  # 4 s now; 7.4 s before #110
+
+
+# ── The shapes that stay superlinear, as CONFORMANCE.md documents them ──
+
+
+def test_headings_with_pairs_of_conditions_in_a_time_budget():
+    """``p_k ∧ q`` and ``p_k ∧ !q``: quadratic, documented. 1,000 take 0.7 s; 4,000 take 14 s."""
+    n = 1000
+    questions = _boolean_questions(n)
+    presences = [
+        units_module.own_presence(f"q{k // 2 + 1}", questions)
+        | units_module.own_presence("q0" if k % 2 else "!q0", questions)
+        for k in range(n)
+    ]
+    pool = core._FreeIdentifiers(set(), questions)
+
+    def declare_all():
+        for presence in presences:
+            pool.declare(pool("same", presence), presence)
+
+    assert _seconds(declare_all) < 10.0
+
+
+def test_lists_nested_to_the_depth_cap_in_a_time_budget():
+    """Linear in the bytes, at a larger constant: 1,000 nested items, 1 MB, take 3 s."""
+    source = "".join(" " * (2 * depth) + "- item\n" for depth in range(1000))
+    assert _seconds(parse, source) < 20.0
