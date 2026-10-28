@@ -198,16 +198,17 @@ def strip_comments(text: str, *, blank: bool = False) -> str:
     return "".join(kept)
 
 
-# Inline raw HTML other than a comment (CommonMark 0.31 §6.6, as cmark-gfm
-# reads it): an open tag, whose ``/`` is directly before its ``>``; a closing
-# tag, which takes no attributes; a processing instruction; a declaration,
-# its name of capital letters followed by whitespace; a CDATA section.
+# Inline raw HTML other than a comment (CommonMark 0.31.2 §6.6): an open tag,
+# whose ``/`` is directly before its ``>``; a closing tag, which takes no
+# attributes; a processing instruction; a declaration, ``<!`` and an ASCII
+# letter, then anything up to the next ``>`` (before 0.30 it was capital
+# letters and whitespace); a CDATA section.
 _INLINE_ATTRIBUTE = r"""(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
 INLINE_HTML_RE = re.compile(
     r"<[A-Za-z][A-Za-z0-9-]*" + _INLINE_ATTRIBUTE + r"*\s*/?>"
     r"|</[A-Za-z][A-Za-z0-9-]*\s*>"
     r"|<\?.*?\?>"
-    r"|<![A-Z]+\s[^>]*>"
+    r"|<![A-Za-z][^>]*>"
     r"|<!\[CDATA\[.*?\]\]>",
     re.DOTALL,
 )

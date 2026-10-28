@@ -1158,17 +1158,24 @@ def _scan_list(
                 # where it starts no block. (A quote's lazy lines are its own.)
                 text[end] = content_indent + offset + 4
                 content = " " * 4 + content.strip(" \t")
-            if quote is not None and not content.startswith(">"):
+            # A line short of the item's content and four or more columns into the container
+            # it is in is lazy text of the quote's paragraph, though it starts with ``>``
+            # (CommonMark: indented code cannot interrupt a paragraph, so no quote starts there, #111).
+            lazy_quote_text = (
+                quote is not None and content.startswith(">") and width < content_indent
+                and (_columns_in(width, chain[depth - 1], nests[depth - 1]) if depth else width) >= 4
+            )
+            if quote is not None and (not content.startswith(">") or lazy_quote_text):
                 # A lazy line (unindented) always continues the quote here:
                 # the list is lazy only while the quote's paragraph is open.
                 # Whether the line is lazy is read in the innermost item it
                 # is in, where its indentation may keep it from starting a block.
                 within = dedent(line, chain[depth - 1] + shift, expand=True) if depth else line
                 if lazy_line or quote.continues(within):
-                    if not lazy_line and not depth and (
+                    if lazy_quote_text or (not lazy_line and not depth and (
                         width >= 4 or _delimiter_row(line) is not None
                         or SETEXT_UNDERLINE_RE.match(line)
-                    ):
+                    )):
                         # As a paragraph's lazy line above: four columns into
                         # the item's content, where it still continues the
                         # quote (``_read_quote``) and starts no block.

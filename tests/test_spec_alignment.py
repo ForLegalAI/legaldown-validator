@@ -2020,12 +2020,22 @@ def test_an_html_block_runs_to_a_blank_line():
     [
         "<!-- a -->", "<!-->", "<!--->", "<?php echo 1; ?>", "<!DOCTYPE html>", "<![CDATA[ x ]]>",
         "<script>\nlet a;\n\n# not a heading\n</script>", "<?\n# x\n?>", "<!X\n# x\n>", "<![CDATA[\n# x\n]]>",
+        "<!x\n# x\n>",  # lowercase: see the next test
     ],
 )
 def test_html_block_kinds_one_to_five_end_at_their_marker(html):
     titles, blocks = _html(f"{html}\nAfter.\n")
     assert titles == ["Terms"]
     assert blocks == [("html", html), ("paragraph", "After.")]
+
+
+@pytest.mark.parametrize("html", ["<!c>", "<!C>", "<!doctype html>", "<!c x>"])
+def test_a_declaration_with_a_lowercase_letter_is_an_html_block(html):
+    """CommonMark 0.31.2 §4.6 kind 4 is ``<!`` and an ASCII letter (0.30 dropped the capitals-only restriction,
+    commonmark-spec #620). pandoc and markdown-it still read ``<!c`` as a paragraph (CONFORMANCE.md)."""
+    assert _html(f"{html}\nAfter.\n")[1] == [("html", html), ("paragraph", "After.")]
+    assert _html(f"a\n{html}\nAfter.\n")[1] == [("paragraph", "a"), ("html", html), ("paragraph", "After.")]  # it interrupts
+    assert _html(f"{html[:-1]}\nAfter.\n")[1] == [("html", f"{html[:-1]}\nAfter.")]  # unclosed: to the end of the line
 
 
 @pytest.mark.parametrize("opener", ["<!--", "<?", "<!DOCTYPE", "<![CDATA[", "<pre>"])
@@ -3087,6 +3097,12 @@ def test_a_table_under_a_quotes_paragraph_not_an_items(body, kinds):
     ("| a | b |\n|---|---|\n| <b>x</b> | c |\n", ["in text ('<b>')"]),
     ("A <br /> and <b\nclass=x>.\n", ["in text ('<br />')"]),
     ("A <?php x ?>, <!DOCTYPE html>, <![CDATA[x]]>.\n", ["in text ('<?php x ?>')"]),
+    # A declaration (0.31.2 §6.6): ``<!``, an ASCII letter, anything but ``>``, ``>``. Before 0.30 it took
+    # capital letters and whitespace; pandoc and markdown-it read the new rule too (#111).
+    ("A <!D> b.\n", ["in text ('<!D>')"]),
+    ("A <!doctype x> b.\n", ["in text ('<!doctype x>')"]),
+    ("A <!Cx> b.\n", ["in text ('<!Cx>')"]),
+    ("A <!c x\ny> b.\n", ["in text ('<!c x')"]),  # it may span lines
     ("x ](<ab> and b)](<a>\n", ["in text ('<ab>')"]),  # no link, so no destination
     ('<a title="<!-- x -->"> y\n', ["in text ('<a title=\"<!-- x -->\">')"]),
 ])
@@ -3107,7 +3123,7 @@ def test_raw_html_is_a_warning(body, shown):
     "[a](<foo bar>)\n",  # a link destination
     '[a](<b> "title") and [c]( <d> )\n',
     '{{placeholder: p, note="<b>"}} x\n',  # a directive's value
-    "a < b and c<d, <3 and <!D> and </b class=\"x\"> and <br/ > and <!doctype x>\n",  # no tag (cmark-gfm)
+    "a < b and c<d, <3 and <! D> and <!1> and </b class=\"x\"> and <br/ >\n",  # no tag (cmark-gfm)
     "The rate is <a <!-- draft: confirm --> capped >\n",  # no tag runs across a comment
     "x `<a` then > and <a <!-- c -->>\n",
     "```\n<div>\n```\n",
@@ -3260,6 +3276,27 @@ def test_a_heading_in_an_item_or_a_quote_ends_its_paragraph(body, trees):
     ],
 )
 def test_a_quote_in_an_item_takes_its_lazy_lines(body, trees):
+    assert _trees(body) == trees
+
+
+@pytest.mark.parametrize(
+    ("body", "trees"),
+    [
+        # A line short of the item's content and four columns in is lazy text of the quote's paragraph, though
+        # it starts with ``>``: indented code cannot interrupt a paragraph, so no quote starts there (#111).
+        ("1.   >q\n    >>\n", [(_O, [[("quote", ["q\n>>"])]])]),
+        ("1.   >q\n    >>\n    - a\n", [(_O, [[("quote", ["q\n>>\n- a"])]])]),  # the paragraph stays open
+        ("- 1.   >q\n      >>\n", [(_U, [[(_O, [[("quote", ["q\n>>"])]])]])]),
+        ("- a\n  1.   >q\n      >>\n", [(_U, [["a", (_O, [[("quote", ["q\n>>"])]])]])]),
+        ("* 10.   >q\n       >>\n", [(_U, [[(_O, [[("quote", ["q\n>>"])]])]])]),
+        ("> 1.\t>q\n>     >>\n", [("quote", [(_O, [[("quote", ["q\n>>"])]])])]),  # tabs, as the corpus found it
+        (">>10.  >q\n> > \t>>\n", [("quote", [("quote", [(_O, [[("quote", ["q\n>>"])]])])])]),
+        # Two columns in, it is a quote of its own, which ends the item's.
+        ("1.   >q\n  >>\n", [(_O, [[("quote", ["q"])]]), ("quote", [("quote", [])])]),
+    ],
+)
+def test_a_line_starting_with_a_marker_four_columns_in_is_text_of_the_quote_in_an_item(body, trees):
+    """The paragraph's text is read, not only the shape, which the gate compares."""
     assert _trees(body) == trees
 
 
