@@ -538,6 +538,16 @@ class TestLineStartsInContext:
         # A tab after a marker reaches the next tab stop: here the second marker is two columns in.
         ("> \t> {{placeholder: name}}\n", "# h", "> \t> \\# h\n"),
         ("- a\n\n  >\t> {{placeholder: name}}\n", "# h", "- a\n\n  >\t> \\# h\n"),
+        # The markers after the first are the template's wherever they are (the parser reads them so), also
+        # in an item in a quote: the outer item's quote marker is not escaped, the answer's is.
+        ("10. > - a\n    >   > {{placeholder: name}}\n", "# h", "10. > - a\n    >   > \\# h\n"),
+        # A line without its own ">" is lazy text in the quote; the item's indentation is kept up to its column.
+        ("- > - a\n    {{placeholder: name}}\n", "> q", "- > - a\n  \\> q\n"),
+        ("> - a\n  {{placeholder: name}}\n", "y", "> - a\ny\n"),
+        ("> - a\n  {{placeholder: name}}\n", "# h", "> - a\n\\# h\n"),
+        # Four columns in with no ">" before it, ">" is text (pandoc: nothing begins there), so no backslash
+        # (98daff2 wrote "\\> q"); "2. b" inside the nested quote does begin a list (98daff2 left it).
+        ("> - a\n    > {{placeholder: name}}\n", "> q", "> - a\n    > > q\n"),
     ])
     def test_a_quote_marker_is_judged_by_its_column_past_what_holds_it(self, body, answer, written):
         assert self._assembled(body, {"name": answer}) == written

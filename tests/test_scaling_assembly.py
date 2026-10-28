@@ -171,3 +171,12 @@ def test_a_paragraph_whose_first_line_has_a_pipe_is_still_read_from_two_lines() 
     assert body.splitlines()[-1] == "\\- a applies."
     assert PARSES.lines < 8 * len(lines)
     assert seconds < 8
+
+
+def test_a_line_of_thousands_of_quote_markers_is_read_in_one_pass() -> None:
+    """``>\\t`` six thousand times and an insertion: the columns of the markers are carried along the
+    line, not counted again from its start for each (eight seconds for this one, against a few hundredths)."""
+    lines = [">\t" * 6000 + "{{placeholder: p0}}"]
+    body, _parses, seconds = _assembled(lines, "# h")
+    assert body.splitlines()[-1].endswith("\\# h")
+    assert seconds < 4

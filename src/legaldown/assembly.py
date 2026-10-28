@@ -49,7 +49,6 @@ from .markdown import (
     FENCE_OPEN_RE,
     LINE_ENDING_RE,
     ItemMarkers,
-    advance_column,
     html_block_opening,
     indent_width,
     is_blank,
@@ -57,7 +56,6 @@ from .markdown import (
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import LIST_KINDS, Block, Document, frontmatter_message
 from .parser import (
-    _QUOTE_MARKERS_RE,
     FRONTMATTER_RE,
     LIST_ITEM_RE,
     MAX_QUOTE_DEPTH,
@@ -1576,18 +1574,15 @@ def _could_begin(text: str) -> bool:
 
 def _marker_end(text: str, items: int, limit: int | None, base: int = 0) -> int:
     """Where the content of *text* begins: after its block quote markers and the
-    *items* list item markers that it starts, never past *limit*. A quote marker is up to three
-    columns in past what holds it: the content column *base* of the innermost item that holds the
-    line, if the marker is at or past it, else the end of the marker before."""
+    *items* list item markers that it starts, never past *limit*. A quote marker that begins
+    the line is up to three columns past the content column *base* of the item that holds it,
+    or past the line's start: further in, it is paragraph text (or code). The parser reads
+    the markers after it as it does the template's, wherever they are."""
     pos = 0
     while True:
         found = _TEMPLATE_QUOTE_RE.match(text, pos)
-        if found is not None:
-            column = advance_column(0, text[:found.end(1)])
-            here = advance_column(0, text[:pos])
-            held = max(base, here) if column >= base else here
-            if column - held > 3:
-                found = None  # four columns in, it is paragraph text (or code)
+        if found is not None and pos == 0 and indent_width(found.group(1)) > base + 3:
+            found = None
         if found is None and items:
             found = _ITEM_MARKER_RE.match(text, pos)
             if found:
@@ -1598,10 +1593,9 @@ def _marker_end(text: str, items: int, limit: int | None, base: int = 0) -> int:
 
 
 def _item_column(line: str, count: int) -> int:
-    """The column where the content of the *count*-th list item that *line* opens begins, past any
-    block quote markers before it."""
+    """The column where the content of the *count*-th list item that *line* opens begins."""
     column = 0
-    for found in islice(ItemMarkers(line, between=_QUOTE_MARKERS_RE), count):
+    for found in islice(ItemMarkers(line), count):
         column = found.column
     return column
 
@@ -1635,17 +1629,17 @@ def _signatures(
                 begun[line][found] += 1
 
     def walk(
-        spans: list[_BlockSpan], model: list[Block], base: int, depth: int, opened: tuple[int, ...],
-        around: tuple[int, ...] = (), pure: bool = True,
+        spans: list[_BlockSpan], model: list[Block], base: int, depth: int, opened: tuple[int, ...] | None,
+        around: tuple[int, ...] = (),
     ) -> None:
-        """*opened*: the lines the items around these blocks start on; *around*: their content
-        columns; *pure*: no quote is among what the blocks are in."""
+        """*opened*: the lines the items around these blocks start on, or None in a quote;
+        *around*: their content columns."""
         for span, block in zip(spans, model, strict=True):
             start, end = base + span.start, base + span.end
             if last is not None and not start <= last < end:
                 continue
             mark(start, end, span.kind)
-            if last is not None and span.kind == "paragraph" and pure:
+            if last is not None and span.kind == "paragraph" and opened is not None:
                 leaf[:] = [(around, start)]
             for item_span, item in zip(span.items, block.items, strict=True):
                 first, stop = base + item_span.start, base + item_span.end
@@ -1653,14 +1647,16 @@ def _signatures(
                     continue
                 if last is None or first == last:
                     begun[first]["item"] += 1
-                inside = (*opened, first)
-                column = _item_column(lines[first], inside.count(first))
-                if last is None:
-                    columns.update(dict.fromkeys(range(first, stop), column))
-                walk(item_span.blocks, item.blocks, base, depth + 1, inside, (*around, column), pure)
+                inside = None if opened is None else (*opened, first)
+                column = 0
+                if inside is not None:
+                    column = _item_column(lines[first], inside.count(first))
+                    if last is None:
+                        columns.update(dict.fromkeys(range(first, stop), column))
+                walk(item_span.blocks, item.blocks, base, depth + 1, inside, (*around, column))
             if block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
                 children, inner = quote_content(block.text, depth + 1)
-                walk(inner, children, start, depth + 1, opened, around, False)
+                walk(inner, children, start, depth + 1, None)
 
     for heading in layout.headings:
         mark(heading.start, heading.end, "heading")
@@ -1925,7 +1921,7 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
         # block are read. Once a top-level block starts, in the output and in the template at the same line,
         # after the differing line, a closed block cannot change how later lines are read.
         perturbed = differs >= 0 and not (
-            window.known > window.top > differs and lines[window.top].slot in reading.tops()
+            differs < window.top and lines[window.top].slot in reading.tops()
         )
         if not line.check:
             window.written(k)
