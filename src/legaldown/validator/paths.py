@@ -134,17 +134,19 @@ class FileReferences:
         """Judge the references recorded, in the order of the document."""
         said_outside = False
         for reference in sorted(self._met, key=lambda met: met.at):
-            said_outside = self._judge(reference, said_outside)
+            said_outside, names_a_file = self._judge(reference, said_outside)
             if (
                 self.first_image is None and reference.what.startswith("image") and not reference.noted
-                and reference.at not in self.reported and _names_a_file(reference)
+                and reference.at not in self.reported and names_a_file
             ):
                 self.first_image = reference
         self._met = []
 
-    def _judge(self, reference: FileReference, said_outside: bool) -> bool:
-        """Record what is wrong with *reference*; True once a document outside
-        the root has been said to be (*said_outside*)."""
+    def _judge(self, reference: FileReference, said_outside: bool) -> tuple[bool, bool]:
+        """Record what is wrong with *reference*. Returned: whether a document outside
+        the root has been said to be (*said_outside*), and whether *reference* names a
+        file at all: not a query or a fragment alone (``#top``, ``?q``), nor a directive
+        alone (``{{placeholder: logo}}``), which is not known until it is filled in."""
         at, written, what, line, url, literal, rest, _noted = reference
         known = written if literal is None else literal.strip()
         judged = known.split("?", 1)[0].split("#", 1)[0] if url else known
@@ -152,8 +154,8 @@ class FileReferences:
         # query or a fragment ends it before the directive: else its last name is
         # partial, as ``..`` may be ``..x`` once filled in.
         whole = literal is None or judged != known
-        if not _names_a_file(reference):
-            return said_outside  # a query or a fragment alone, or a directive alone, names no file
+        if not judged and (whole or not rest):
+            return said_outside, False  # a query or a fragment alone, or a directive alone, names no file
         decoded = unquote(judged) if url and "%" in judged else judged
         # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
         absolute = judged if is_absolute_reference(judged) else (
@@ -168,9 +170,9 @@ class FileReferences:
                 line=line,
             )
             self.reported.add(at)
-            return said_outside  # not also outside the root: one finding for one path
+            return said_outside, True  # not also outside the root: one finding for one path
         if self._root is None:
-            return said_outside
+            return said_outside, True
         depth = self._depth
         if depth is None:
             self.reported.add(at)  # every path of the document leads out of the root
@@ -181,7 +183,7 @@ class FileReferences:
                     f"lies within it (§2.3), such as '{written}' ({what}).",
                     line=self._line,
                 )
-            return True
+            return True, True
         for form in (judged, decoded):
             names = form if whole else _whole_names(form)  # what is judged, and what a finding says
             if leaves_root(names, depth):
@@ -192,17 +194,8 @@ class FileReferences:
                     line=line,
                 )
                 self.reported.add(at)
-                return said_outside
-        return said_outside
-
-
-def _names_a_file(reference: FileReference) -> bool:
-    """Whether *reference* names a file: not a query or a fragment alone (``#top``, ``?q``), nor a
-    directive alone (``{{placeholder: logo}}``), which is not known until it is filled in."""
-    known = reference.path if reference.literal is None else reference.literal.strip()
-    judged = known.split("?", 1)[0].split("#", 1)[0] if reference.url else known
-    whole = reference.literal is None or judged != known
-    return bool(judged) or not (whole or not reference.rest)
+                return said_outside, True
+        return said_outside, True
 
 
 def _reading(known: str, judged: str, form: str, shown: str | None = None) -> str:
@@ -457,8 +450,8 @@ class ReferenceImages:
     def __init__(self, document: Document) -> None:
         self._document = document
         self._definitions: dict[str, PlacedLinkDefinition] | None = None
-        self._used: dict[str, None] = {}
-        self._used_outside_notes: set[str] = set()
+        #: The labels of the definitions noted, each with whether an image outside a drafting note names it.
+        self._used: dict[str, bool] = {}
 
     def note(
         self, text: str, lexed: Lexed, inline: Container[int] = (), scanned: Scan | None = None, *,
@@ -476,9 +469,7 @@ class ReferenceImages:
             self._definitions = locate_link_definitions(self._document)
         if self._definitions:
             for key in reference_images(text, lexed, self._definitions, inline, scanned):
-                self._used[key] = None
-                if not noted:
-                    self._used_outside_notes.add(key)
+                self._used[key] = self._used.get(key, False) or not noted
 
     def check(self, references: FileReferences, where: Locator) -> None:
         """Record the path of each definition noted, in document order (the top-level
@@ -488,16 +479,13 @@ class ReferenceImages:
             return
         # Where each lies among the texts of its top-level block: after the fragment before it,
         # as an inline image's place is (fragment, offset) — a definition has no offset, so -1.
-        placed = sorted(
-            (
-                (
-                    (-1 if each.section is None else each.section, each.block, each.fragment, -1, each.ordinal),
-                    each, key in self._used_outside_notes,
-                )
-                for key, each in ((key, self._definitions[key]) for key in self._used)
-            ),
-            key=lambda item: item[0],
-        )
+        placed = []
+        for key, outside in self._used.items():
+            each = self._definitions[key]
+            placed.append(
+                ((-1 if each.section is None else each.section, each.block, each.fragment, -1, each.ordinal), each, outside)
+            )
+        placed.sort(key=lambda item: item[0])
         for at, each, kept in placed:
             block = each.definition
             # (The finding names the label as CommonMark compares it, line breaks and runs of spaces one space.)

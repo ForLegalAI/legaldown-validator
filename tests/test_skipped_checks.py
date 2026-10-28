@@ -185,6 +185,19 @@ def test_an_attachment_that_is_not_legaldown_is_only_asked_for_its_existence():
     assert "attachment-has-h1" not in warning.message
 
 
+def test_an_attachment_that_was_not_to_be_read_is_not_an_import_that_did_not_happen(tmp_path):
+    # The document itself adds nothing to itself, and a path no loader is asked for is a finding or a limitation.
+    own = _with("attachments:\n  - id: a\n    title: A\n    file: main.lgd\n", _BODY + "{{attach: a}}\n")
+    path = tmp_path / "main.lgd"
+    path.write_text(own, encoding="utf-8")
+    (warning,) = [d for d in validate(load(path)).diagnostics if d.rule == SKIPPED_RULE]
+    assert "importing" not in warning.message
+    for file in ("/abs.lgd", "../out.lgd", "a\\\\b.lgd"):
+        text = _with(f"attachments:\n  - id: a\n    title: A\n    file: '{file}'\n", _BODY + "{{attach: a}}\n")
+        (warning,) = _warnings(text, resolve=lambda _path: None)
+        assert "importing" not in warning.message, file
+
+
 def test_an_amendment_draws_one_warning_at_its_file():
     text = _with("amends:\n  title: Original\n  file: orig.lgd\n")
     (warning,) = _warnings(text)

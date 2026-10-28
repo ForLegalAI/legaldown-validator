@@ -894,10 +894,14 @@ def _read(template: str, load_file: LoadFile | None) -> _Template:
             f"assembling a translation group is not supported, so the template is not assembled.",
         ))
     sources = (main, *subs.values())
-    occurrences = [(occ, True) for occ in (front.occurrences if front else [])] + [
-        (occ, False) for src in sources for occ in src.occurrences if occ.line not in src.notes
-    ]
-    noted = [occ for src in sources for occ in src.occurrences if occ.line in src.notes]
+    occurrences = [(occ, True) for occ in (front.occurrences if front else [])]
+    noted: list[_Occurrence] = []
+    for src in sources:
+        for occ in src.occurrences:
+            if occ.line in src.notes:
+                noted.append(occ)
+            else:
+                occurrences.append((occ, False))
     blanks = _blanks(occurrences, noted, declared)
     types = {qid: qtype for qid in declared if (qtype := question_type(declared, qid))}
     for pid, blank in blanks.items():

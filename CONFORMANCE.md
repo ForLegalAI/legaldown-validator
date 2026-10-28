@@ -437,9 +437,10 @@ Assembly reads a blank the same way (`Template.questions`, the answers' types an
 they must carry): the type and the currency or unit come from the occurrences outside notes
 only. An id that only notes use stays a question that assembly knows, a `text` one (nothing
 gives it a type), so an answer to it is not `answer-unknown` and no one is asked for it, which
-is the one place `Template.questions` lists an id that `index.blanks` does not. The questions
-are in the order of the first occurrence outside a note, those only notes use after them, in the order
-the notes first use them. Before this a note
+is the one place `Template.questions` lists an id that `index.blanks` does not. `Template.questions`
+lists the declared questions first, in the order of the declarations, then the blanks that are not
+declared, in the order of their first occurrence outside a note, and last the ids only notes use, in
+the order the notes first use them. Before this a note
 written before the body's placeholder could give a text blank the type `money`, and the answer
 `five hundred` was `answer-invalid`.
 

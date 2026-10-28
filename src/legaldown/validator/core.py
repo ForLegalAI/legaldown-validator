@@ -319,6 +319,15 @@ def _check_directive_arguments(
     return True
 
 
+def _open_blank(blanks: dict[str, _BlankState], pid: str, in_frontmatter: bool, line: Line) -> _BlankState:
+    """The blank of *pid*, made if need be, for an occurrence of it at *line*."""
+    blank = blanks.setdefault(pid, _BlankState())
+    if blank.line is None:
+        blank.line = line
+    blank.in_frontmatter |= in_frontmatter
+    return blank
+
+
 def _check_placeholder(
     directive: Directive,
     result: _Recorder,
@@ -357,11 +366,7 @@ def _check_placeholder(
         )
         return
     # A note's occurrence is validated, and takes no part in the blank: no bookkeeping.
-    blank = None if in_note else blanks.setdefault(pid, _BlankState())
-    if blank is not None:
-        if blank.line is None:
-            blank.line = line
-        blank.in_frontmatter |= in_frontmatter
+    blank = None if in_note else _open_blank(blanks, pid, in_frontmatter, line)
     type_valid = written_type is None or written_type in VALID_PLACEHOLDER_TYPES
     if not type_valid:
         result.error(
@@ -1161,6 +1166,14 @@ def _definitions_in(document: Document, files: Files | None, path: str) -> dict[
     return definition_lookup(collect_definitions(other.document))
 
 
+def _was_to_be_read(files: Files | None, path: str) -> bool:
+    """Whether the file at *path* was one to read, and was not: not a path a loader is never
+    asked for (not relative, or leading out of the document's directory, §2.3: a finding of its
+    own, or a limitation), nor the document itself, which adds nothing to itself."""
+    relative = relative_path(path)
+    return relative is not None and not (files is not None and files.is_own(relative))
+
+
 def _validate(
     document: Document,
     final: bool,
@@ -1830,7 +1843,7 @@ def _validate(
             att_defs = import_attachment_definitions(att.file)
         else:
             att_defs = _definitions_in(document, files, att.file)
-        if att_defs is None:
+        if att_defs is None and _was_to_be_read(files, att.file):
             attachments_unread += 1
         if not att_defs:
             continue
@@ -1917,13 +1930,14 @@ def _validate(
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             owner_of = None  # for definition-circular, once a {{term:}} asks
+            noted = in_drafting_note(notes, fragment_index)
             if "![" in fragment:
                 check_fragment_images(
                     fragment, lexed, file_references, where, section_index, block_index, fragment_index,
-                    reference_images, noted=in_drafting_note(notes, fragment_index),
+                    reference_images, noted=noted,
                 )
             presence = units.presence(section_index, block_index, fragment_index)
-            in_note = bool(lexed.directives) and in_drafting_note(notes, fragment_index)  # only a directive asks
+            in_note = bool(lexed.directives) and noted  # only a directive asks
             for offset in lexed.stray_braces:
                 result.warning(
                     "brace-stray", BRACE_STRAY,
