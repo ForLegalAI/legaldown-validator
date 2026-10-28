@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from .directives import is_escaped
-from .markdown import LINE_ENDING_RE, paragraph_text
+from .markdown import LINE_ENDING_RE, find_all, paragraph_text
 
 if TYPE_CHECKING:
     from .models import Block, Document
@@ -50,7 +50,7 @@ def line_breaks(text: str) -> list[int]:
     """The index of each line feed in *text*: the only line end of this format
     (YAML also ends a line at CR, NEL, LS and PS, so ``yaml.Mark.line`` is not
     the file's)."""
-    return [index for index, char in enumerate(text) if char == "\n"]
+    return find_all(text, "\n")
 
 
 def line_at(breaks: list[int], index: int, first_line: int) -> int:

@@ -259,3 +259,11 @@ def test_each_reference_is_reported_at_its_own_line(seed):
         (int(d.message.split("'")[1].split("-")[1]), d.line) for d in result.diagnostics if d.rule == "ref-broken"
     )
     assert got == sorted(real)
+
+
+def test_line_breaks_are_the_line_feeds_only():
+    from legaldown.positions import line_breaks
+
+    # YAML ends a line at CR, NEL, LS and PS too; the format's only line end is the line feed.
+    assert line_breaks("") == [] and line_breaks("abc") == []
+    assert line_breaks("a\n\nb\r\nc\x85d e\n") == [1, 2, 5, 11]
