@@ -565,13 +565,14 @@ Decisions the specification leaves open:
   **under every combination of answers** ([#108](https://github.com/ForLegalAI/legaldown-validator/issues/108);
   §15.3, §15.4, §16.11). The questions are those that the presence of a read, spliceable include paragraph
   names (its own condition and those of the sections around it, `Units.presence`), as §15.3 says ("the
-  questions named in the presence conditions of `{{include:}}` paragraphs"), in the order they are first used in
-  the document (within one presence, as the frontmatter declares them). A question that only a section, a
+  questions named in the presence conditions of `{{include:}}` paragraphs"), in the order they are first used
+  in the document (within one presence, as the frontmatter declares them). A question that only a section, a
   paragraph or an item names is not varied, and its conditions hold, as do those on a question that has no
   answer to try: a conditional section takes its subsections with it, so taking it out cannot break §4.1 by
-  itself (§15.3, "Heading hierarchy"). Every unit a combination makes absent is removed all the same. For each combination (true before false, a choice's values as declared, the last question changing
-  fastest) every unit it makes absent is removed (an include, and a section with its subsections, since a
-  presence is cumulative), the fragments of the includes that are left are spliced in, and §4.1 is judged.
+  itself (§15.3, "Heading hierarchy"). For each combination (true before false, a choice's values as
+  declared, the last question changing fastest) every unit it makes absent is removed (an include, and a
+  section with its subsections, since a presence is cumulative), the fragments of the includes that are left
+  are spliced in, and §4.1 is judged.
   Each fragment's headings are placed after
   the heading of the section holding its include paragraph (before the first heading, for the
   preamble), those of the fragments it includes after the heading of its own section that includes them, and

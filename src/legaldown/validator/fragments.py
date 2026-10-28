@@ -135,11 +135,12 @@ class Files:
             return None, "not-relative"
         if not written or "\\" in written or "\0" in written:
             return None, "invalid"
-        path = posixpath.join(base, written)
-        if self._reach.containment(path) is not None:
-            return None, "outside-root"
-        relative, problem = self.relative_check(path)
-        return (relative, None) if relative is not None else (None, "leads-out" if problem == "leads-out" else "invalid")
+        relative, problem = self.relative_check(posixpath.join(base, written))
+        if relative is not None:
+            return relative, None
+        if problem == "leads-out":  # leaving a root is path-outside-root; with none, it is valid and not read
+            return None, "outside-root" if self.root is not None else "leads-out"
+        return None, "invalid"
 
     def is_own(self, relative: str) -> bool:
         """True if *relative* names the document being validated: it adds nothing to
@@ -686,6 +687,24 @@ class IncludeOutcome:
     caps: list[str] = field(default_factory=list)
 
 
+def not_legaldown(include: IncludeDirective) -> str | None:
+    """The message of ``include-not-legaldown`` (§12.2) for *include*, whose path does not end in a LegalDown
+    extension, or None when it does or names no file. It needs no file."""
+    if not include.path or include.path.endswith(LEGALDOWN_EXTENSIONS):
+        return None
+    return (
+        f"'{include.written}' is not a LegalDown file: an include target is a "
+        f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read."
+    )
+
+
+class _Chain(NamedTuple):
+    """The files being included, outermost first (*paths*, as they are named), and the same as ``Files.key``
+    (*keys*, a set, to tell in one step that a file is among them)."""
+    paths: tuple[str, ...] = ()
+    keys: frozenset[str] = frozenset()
+
+
 class _Walk:
     """The include fragments reached from a document, those nested in them too (§12.2): each is read and
     judged once, and expanded into the headings it brings into the combined document, in order. A
@@ -722,10 +741,10 @@ class _Walk:
                 self._result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
 
     def attempt(
-        self, include: IncludeDirective, owner: FragmentFile | None, stack: tuple[str, ...], first: bool = True
+        self, include: IncludeDirective, owner: FragmentFile | None, chain: _Chain, first: bool = True
     ) -> FragmentFile | None:
         """The fragment that *include* takes in, an include paragraph of the document (*owner* None) or of
-        a fragment, *stack* being the files being included (outermost first, *owner* last), or None when
+        a fragment, *chain* being the files being included (outermost first, *owner* last), or None when
         there is none to splice: there is nothing to follow, or the file is not a fragment. What is
         wrong is reported (``include-not-legaldown``, ``path-not-relative``, ``path-outside-root``,
         ``include-file-missing``, ``include-cycle``, the shape of the file), in the file that holds the
@@ -746,13 +765,8 @@ class _Walk:
                 "unreadable",
             )
             return None
-        if not include.path.endswith(LEGALDOWN_EXTENSIONS):
-            refuse(
-                "include-not-legaldown",
-                f"'{include.written}' is not a LegalDown file: an include target is a "
-                f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read.",
-                None,
-            )
+        if (message := not_legaldown(include)) is not None:
+            refuse("include-not-legaldown", message, None)
             return None
         relative, problem = self._files.locate("" if owner is None else posixpath.dirname(owner.path), include.written)
         if relative is None:
@@ -782,18 +796,18 @@ class _Walk:
                     "unreadable",
                 )
             return None
-        if self._files.key(relative) in {self._files.key(each) for each in stack} or self._files.is_own(relative):
-            chain = " -> ".join(
-                ["the document", *stack, "the document" if self._files.is_own(relative) else relative]
+        if self._files.key(relative) in chain.keys or self._files.is_own(relative):
+            said = " -> ".join(
+                ["the document", *chain.paths, "the document" if self._files.is_own(relative) else relative]
             )
             refuse(
                 "include-cycle",
-                f"'{include.source}' closes a circular include chain ({chain}); a file cannot include "
+                f"'{include.source}' closes a circular include chain ({said}); a file cannot include "
                 f"itself, directly or through others (§12.2).",
                 None,
             )
             return None
-        if len(stack) >= MAX_INCLUDE_DEPTH:
+        if len(chain.paths) >= MAX_INCLUDE_DEPTH:
             cap = f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels (not checked past that point)"
             if cap not in self._outcome.caps:
                 self._outcome.caps.append(cap)
@@ -810,9 +824,13 @@ class _Walk:
         self.shape(target)
         return target if target.spliceable else None  # a file that is not a fragment is reported, not spliced
 
-    def expand(self, fragment: FragmentFile, stack: tuple[str, ...]) -> list[Heading]:
+    def extend(self, chain: _Chain, fragment: FragmentFile) -> _Chain:
+        """*chain* with *fragment* last."""
+        return _Chain((*chain.paths, fragment.path), chain.keys | {self._files.key(fragment.path)})
+
+    def expand(self, fragment: FragmentFile, chain: _Chain) -> list[Heading]:
         """The headings *fragment* brings into the combined document: its own, each followed by those of the
-        fragments its section includes (those of the preamble first). *stack* are the files being
+        fragments its section includes (those of the preamble first). *chain* are the files being
         included, outermost first, *fragment* last."""
         if fragment.path not in self._includes:
             by_section: dict[int | None, list[tuple[int, IncludeDirective]]] = {}
@@ -825,7 +843,7 @@ class _Walk:
 
         def follow(section: int | None) -> None:
             for number, include in by_section.get(section, ()):
-                headings.extend(self._follow(fragment, number, include, stack))
+                headings.extend(self._follow(fragment, number, include, chain))
 
         follow(None)
         for index in range(len(fragment.document.sections)):
@@ -847,7 +865,7 @@ class _Walk:
         return True
 
     def _follow(
-        self, fragment: FragmentFile, number: int, include: IncludeDirective, stack: tuple[str, ...]
+        self, fragment: FragmentFile, number: int, include: IncludeDirective, chain: _Chain
     ) -> list[Heading]:
         """The headings of the fragment that *include*, the *number*th include paragraph of *fragment*,
         takes in. In a template there are none to follow: an include in a fragment is
@@ -864,11 +882,11 @@ class _Walk:
         if self._full():
             return []
         self._expanded += 1
-        target = self.attempt(include, fragment, stack, first)
+        target = self.attempt(include, fragment, chain, first)
         if target is None:
             self.incomplete = True
             return []
-        return self.expand(target, (*stack, target.path))
+        return self.expand(target, self.extend(chain, target))
 
 
 def check_includes(
@@ -940,24 +958,19 @@ def check_includes(
             continue
         if walk is None:
             # No file can be read: only the extension is judged (Core), and the rest is unread.
-            if include.path and not include.path.endswith(LEGALDOWN_EXTENSIONS):
-                result.error(
-                    "include-not-legaldown",
-                    f"'{include.written}' is not a LegalDown file: an include target is a "
-                    f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read.",
-                    line=include.line,
-                )
+            if (message := not_legaldown(include)) is not None:
+                result.error("include-not-legaldown", message, line=include.line)
             else:
                 outcome.unread.append(UnreadInclude(include, "no-resolver"))
             continue
-        fragment = walk.attempt(include, None, ())
+        fragment = walk.attempt(include, None, _Chain())
         if fragment is None:
             unread.add(include.section)
             continue
         walk.incomplete = False
         presence = units.presence(include.section, include.block, include.fragment)
         splices.setdefault(include.section, []).append(
-            Splice(include, presence, walk.expand(fragment, (fragment.path,)))
+            Splice(include, presence, walk.expand(fragment, walk.extend(_Chain(), fragment)))
         )
         if walk.incomplete:
             unread.add(include.section)  # something it includes is not known: it fills nothing
@@ -968,12 +981,13 @@ def check_includes(
         attached: set[str] = set()
         for attachment in document.metadata.attachments:
             relative = files.relative(attachment.file) if attachment.file.endswith(LEGALDOWN_EXTENSIONS) else None
-            # (A file that was also an include was checked above, and is a finding of its own.)
-            if relative is None or relative in attached or relative in findings:
+            fragment = None if relative is None else files.read(relative)
+            # (A file that was also an include was checked above, and is a finding of its own; however either
+            # is spelled, it is one file, named by the path it was first met by.)
+            if relative is None or fragment is None or fragment.path in attached or fragment.path in findings:
                 continue
-            attached.add(relative)
-            fragment = files.read(relative)
-            if fragment is None or files.is_own(relative):
+            attached.add(fragment.path)
+            if files.is_own(relative):
                 continue
             for finding in fragment_findings(
                 fragment, kind="attachment", template=True, shape=False, lex_fragment=lex_fragment

@@ -518,10 +518,9 @@ def load_template(path: str | os.PathLike[str], *, document_root: str | os.PathL
     within the root: ``{{include: ../shared/part.lgd}}``. The template must be
     within the root, else it reads nothing."""
     file = Path(path).absolute()
-    root = None if document_root is None else Path(document_root).absolute()  # a later chdir changes nothing
     return Template(
         file.read_bytes().decode("utf-8"),
-        resolve=file_loader(file.parent, root=root),
-        document_root=root,
+        resolve=file_loader(file.parent, root=document_root),
+        document_root=document_root,
         path=file,
     )

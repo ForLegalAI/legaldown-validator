@@ -387,3 +387,29 @@ def test_a_nested_include_in_a_templates_fragment_leaves_the_rest_of_the_fragmen
     assert _found(result) == [("template-fragment-invalid", "p.lgd", 3)]
     message = _warning(result).message
     assert "1 include not read (1 is in a template's fragment, where it is template-fragment-invalid and not followed)" in message
+
+
+def test_a_file_attached_twice_by_two_spellings_is_checked_once(tmp_path):
+    root = tmp_path / "root"
+    (root / "dir").mkdir(parents=True)
+    (root / "dir" / "a.lgd").write_text("Text.\n\n{{include: x.lgd}}\n", encoding="utf-8")
+    attachments = (
+        "attachments:\n  - id: one\n    title: One\n    file: a.lgd\n"
+        "  - id: two\n    title: Two\n    file: ../dir/a.lgd\n"
+    )
+    front = _TEMPLATE_FRONT.replace("questions:", attachments + "questions:")
+    path = root / "dir" / "t.lgd"
+    path.write_text(front + _SCOPE + "{{attach: one}} {{attach: two}}\n", encoding="utf-8")
+    result = validate(load(path), document_root=root)
+    assert [(d.file, d.line) for d in result.diagnostics if d.rule == "template-fragment-invalid"
+            and "holds '{{include: x.lgd}}'" in d.message] == [("a.lgd", 3)]
+    # The same file as an include and as an attachment, by two spellings: judged once. (It is named by the path it
+    # was first met by, which is the attachment's, whose definitions are read before the includes are looked at.)
+    path.write_text(
+        front.replace("file: a.lgd", "file: ../dir/a.lgd") + _SCOPE + "{{include: a.lgd}}\n\n{{attach: one}} {{attach: two}}\n",
+        encoding="utf-8",
+    )
+    result = validate(load(path), document_root=root)
+    found = [(d.file, d.line) for d in result.diagnostics if d.rule == "template-fragment-invalid"
+             and "holds '{{include: x.lgd}}'" in d.message]
+    assert len(found) == 1 and found[0][1] == 3

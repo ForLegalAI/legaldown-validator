@@ -93,7 +93,7 @@ def _check_relative(path: str, depth: int | None = None) -> tuple[str, Literal["
     if normalized == ".":
         return normalized, "invalid"
     if normalized == ".." or normalized.startswith("../"):
-        if depth is None or leaves_root(normalized, depth):
+        if depth is None or containment(normalized, rooted=True, depth=depth) is not None:
             return normalized, "leads-out"
         # Within the root, but ``..`` alone is a directory, as ``.`` is.
         return normalized, "invalid" if normalized == ".." else None
@@ -155,13 +155,9 @@ class Reach:
             return cls()
         return cls(Path(os.path.abspath(root)), names_below(root if directory is None else directory, root))
 
-    def containment(self, path: str) -> Literal["document-outside", "leaves"] | None:
-        """``containment`` of *path* for this reach."""
-        return containment(path, rooted=self.root is not None, depth=self.depth)
-
     def check(self, path: str) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
         """``relative_path_check`` of *path* for this reach."""
-        if self.containment(path) == "document-outside":
+        if self.root is not None and self.depth is None:
             return None, "leads-out"  # the document is outside the root: so is everything it names
         return relative_path_check(path, depth=self.depth)
 

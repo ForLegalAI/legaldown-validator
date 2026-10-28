@@ -224,20 +224,30 @@ def test_a_question_only_a_section_names_is_not_varied():
     assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
 
 
-def test_the_work_does_not_grow_with_the_combinations_times_the_headings():
-    # 12 questions (4,096 combinations), each with a fragment of 800 headings (the walk follows at most 10,000):
-    # a run of headings that are there together is judged once, not once for each combination.
-    import time
+@pytest.mark.scaling
+def test_the_work_is_the_combinations_times_the_changes_of_presence_not_the_headings(monkeypatch):
+    # 12 questions (4,096 combinations), each with a fragment of 800 headings (the walk follows at most 10,000).
+    # Headings that are there together are judged once for their order inside, and once for each combination
+    # only for the first of the run: the levels compared are about combinations x runs, where walking every
+    # heading in every combination compares 4,096 x 6 x 800 = 20 million.
+    import legaldown.validator.fragments as fragments
 
+    calls = 0
+    real = fragments.skips
+
+    def counted(previous, level):
+        nonlocal calls
+        calls += 1
+        return real(previous, level)
+
+    monkeypatch.setattr(fragments, "skips", counted)
     count = MAX_COMBINATION_QUESTIONS
     files = {f"p{i}.lgd": "".join(f"## H{i}x{k} {{#h{i}x{k}}}\n\n" for k in range(800)) for i in range(count)}
-    document = parse(_many(count), filename="main.lgd")
-    started = time.perf_counter()
-    result = validate(document, resolve=_Loader(files))
-    elapsed = time.perf_counter() - started
+    result = validate(parse(_many(count), filename="main.lgd"), resolve=_Loader(files))
     assert _found(result) == []
     assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
-    assert elapsed < 6, f"{elapsed:.1f}s"  # about 0.3 s; 13 s when each combination walked every heading
+    runs = count + 1  # the section, and each include
+    assert calls <= MAX_COMBINATIONS * runs + count * 800 + 1000, calls
 
 
 # ── The limits ───────────────────────────────────────────────────────────────
