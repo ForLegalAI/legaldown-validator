@@ -1648,12 +1648,13 @@ def _signatures(
                 if last is None or first == last:
                     begun[first]["item"] += 1
                 inside = None if opened is None else (*opened, first)
-                column = 0
+                inner_around = around
                 if inside is not None:
                     column = _item_column(lines[first], inside.count(first))
+                    inner_around = (*around, column)
                     if last is None:
                         columns.update(dict.fromkeys(range(first, stop), column))
-                walk(item_span.blocks, item.blocks, base, depth + 1, inside, (*around, column))
+                walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around)
             if block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
                 children, inner = quote_content(block.text, depth + 1)
                 walk(inner, children, start, depth + 1, None)

@@ -546,7 +546,8 @@ class TestLineStartsInContext:
         ("> - a\n  {{placeholder: name}}\n", "y", "> - a\ny\n"),
         ("> - a\n  {{placeholder: name}}\n", "# h", "> - a\n\\# h\n"),
         # Four columns in with no ">" before it, ">" is text (pandoc: nothing begins there), so no backslash
-        # (98daff2 wrote "\\> q"); "2. b" inside the nested quote does begin a list (98daff2 left it).
+        # (98daff2 wrote "\\> q"). (The "2. b" case above is the one where a list does begin, in the nested
+        # quote that has its ">": pandoc finds an item there, which 98daff2 left unescaped.)
         ("> - a\n    > {{placeholder: name}}\n", "> q", "> - a\n    > > q\n"),
     ])
     def test_a_quote_marker_is_judged_by_its_column_past_what_holds_it(self, body, answer, written):
