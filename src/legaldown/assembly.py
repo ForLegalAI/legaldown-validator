@@ -1301,11 +1301,16 @@ def _emit(source: _Source, removed: set[int], answers: _Answers) -> list[_Line]:
                 continue
             line.check |= line.first is not None
         lines.append(line)
+    # Whether paragraph text is open is read line after line, but only as far as
+    # the last line to check: most documents have none.
+    checked = [k for k, line in enumerate(lines) if line.check]
     previous_open = False  # paragraph text is open after the output line before
-    for line in lines:
+    for k in range(checked[-1] + 1 if checked else 0):
+        line = lines[k]
         if line.check:
             line.text = _line_start(line, previous_open, source)
-        previous_open = _paragraph_open(line.text, previous_open)
+        if k < checked[-1]:
+            previous_open = _paragraph_open(line.text, previous_open)
     return lines
 
 
