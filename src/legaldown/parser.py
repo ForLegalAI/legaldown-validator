@@ -13,7 +13,7 @@ import os
 import re
 import warnings
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -31,6 +31,7 @@ from .markdown import (
     TAB_STOP,
     ItemMarker,
     ItemMarkers,
+    LinkDefinitionSource,
     NestedContent,
     closes_fence,
     dedent,
@@ -43,12 +44,13 @@ from .markdown import (
     item_content_column,
     item_marker_at,
     nested_content,
+    no_blank_lines,
     paragraph_text,
     split_link_definitions,
     strip_text,
 )
 from .markers import Marker, split_heading
-from .models import Block, Document, ListItem, document_from_dict
+from .models import Block, Document, ListItem, Section, _block_text, _str, metadata_from_dict
 from .positions import SourceMap, document_shape, frontmatter_keys
 
 # ── YAML loader ───────────────────────────────────────────────────
@@ -1337,7 +1339,7 @@ MAX_QUOTE_DEPTH = 16
 
 
 def _parse_list(
-    lines: list[str], index: int, *, list_type: str, walks: _Walks, offset: int = 0, depth: int = 0,
+    lines: list[str], index: int, *, list_type: str, walks: _Walks, offset: int = 0, depth: int = 0, tidy: bool = True,
 ) -> tuple[Block, int, bool, list[_ItemSpan]]:
     """Parse the list starting at ``lines[index]``: ``(block, end, lazy,
     items)`` — *end* and *lazy* as ``_scan_list`` gives them, *items* where
@@ -1345,7 +1347,8 @@ def _parse_list(
     (``_parse_body``), nested lists included: no heading, and no lifting of
     a directive into block fields. *offset*: the source line ``lines[0]``
     is (for the item spans); *depth*: how many items the list is in, past
-    ``MAX_LIST_DEPTH`` of which an item's content is one paragraph."""
+    ``MAX_LIST_DEPTH`` of which an item's content is one paragraph. *tidy*: as
+    in ``_parse_body``."""
     mark = walks.mark()
     own, end, lazy, text = _scan_list(lines, index, list_type=list_type, walks=walks)
     items: list[ListItem] = []
@@ -1365,7 +1368,7 @@ def _parse_list(
                 layout.preamble.append(_BlockSpan("paragraph", offset + first, offset + stop))
         else:
             blocks, _sections = _parse_body(
-                content, layout, headings=False, offset=offset + first, depth=depth + 1, walks=walks
+                content, layout, headings=False, offset=offset + first, depth=depth + 1, walks=walks, tidy=tidy
             )
         items.append(ListItem(blocks=blocks))
         spans.append(_ItemSpan(offset + first, offset + stop, layout.preamble))
@@ -1450,6 +1453,19 @@ def _continues_table(line: str) -> bool:
     )
 
 
+def _link_definition(definition: LinkDefinitionSource, *, tidy: bool) -> Block:
+    """The block for a link reference definition: its parts as read, or with
+    *tidy* as ``block_from_dict`` writes them."""
+    if not tidy:
+        return Block(kind="link_definition", label=definition.label, target=definition.target, title=definition.title)
+    return Block(
+        kind="link_definition",
+        label=no_blank_lines(_str(definition.label)),
+        target=LINE_ENDING_RE.sub("", _str(definition.target)),
+        title=no_blank_lines(definition.title),
+    )
+
+
 def _parse_table(lines: list[str], index: int) -> tuple[Block, int] | None:
     """Parse the table starting at ``lines[index]``; return it with the index
     just past it, or None when the lines there are not a table.
@@ -1499,8 +1515,8 @@ def _parse_paragraph(paragraph: str) -> Block:
         anchor = anchors[0]
         return Block(
             kind="definition",
-            definition_id=anchor.directive.positional or "",
-            term=anchor.term,
+            definition_id=_str(anchor.directive.positional),
+            term=_str(anchor.term),
             text=strip_text(stripped[anchor.directive.end:]),
         )
     # A directive inside a defined term's quoted span cannot be split out
@@ -1516,7 +1532,7 @@ def _parse_paragraph(paragraph: str) -> Block:
         return Block(
             kind="ref",
             prefix=stripped[:ref_directive.start],
-            target=ref_directive.positional,
+            target=_str(ref_directive.positional),
             suffix=stripped[ref_directive.end:],
         )
     term_directive = _first_liftable(directives, "term")
@@ -1524,8 +1540,8 @@ def _parse_paragraph(paragraph: str) -> Block:
         return Block(
             kind="term",
             prefix=stripped[:term_directive.start],
-            target=term_directive.positional,
-            label=term_directive.params.get("label", ""),
+            target=_str(term_directive.positional),
+            label=_str(term_directive.params.get("label")),
             suffix=stripped[term_directive.end:],
         )
     return Block(kind="paragraph", text=stripped)
@@ -1743,7 +1759,7 @@ def _layout(lines: list[str]) -> _Layout:
 
 def _parse_body(
     lines: list[str], layout: _Layout | None = None, *, headings: bool = True, offset: int = 0, depth: int = 0,
-    walks: _Walks | None = None,
+    walks: _Walks | None = None, tidy: bool = True,
 ) -> tuple[list[Block], list[tuple[_Heading, list[Block]]]]:
     """Parse body lines into the preamble's blocks (§4.4) and the sections'.
 
@@ -1758,6 +1774,12 @@ def _parse_body(
     content (``_parse_list``, ``quote_content``): a heading there, ATX or
     setext, is a ``heading`` block, not a section, and a paragraph's
     directives stay in its text.
+
+    With *tidy*, the blocks come out as a document holds them: the text of a
+    quote, an HTML block and the fields of a link reference definition as
+    ``block_from_dict`` writes them, so that no document is built twice
+    (#110). The blocks of a quote's text, and of an item given as text, keep
+    what the source says (``quote_content``, ``parse_item_content``).
     """
     spans = layout.preamble if layout is not None else None
     walks = walks or _Walks()  # the lists in the lines share what they find of a line's markers
@@ -1820,20 +1842,22 @@ def _parse_body(
             lazy = False
         elif line.lstrip(" \t").startswith(">"):
             end, quoted, open_paragraph = _read_quote(lines, index)
-            blocks.append(Block(kind="quote", text="\n".join(quoted)))
+            raw = "\n".join(quoted)
+            blocks.append(Block(kind="quote", text=_block_text("quote", raw) if tidy else raw))
             index = end
             # The quote took every line it could continue; a paragraph after
             # it is lazy only if the quote's is still open.
             lazy = open_paragraph
         elif marker:
             block, index, lazy, item_spans = _parse_list(
-                lines, index, list_type=_list_type(marker), walks=walks, offset=offset, depth=depth
+                lines, index, list_type=_list_type(marker), walks=walks, offset=offset, depth=depth, tidy=tidy
             )
             blocks.append(block)
         elif (end := html_block_end(lines, index)) is not None:
             # Raw HTML, a comment included, is not rendered (§8.6, §8.7):
             # no heading or other block starts inside it.
-            blocks.append(Block(kind="html", text="\n".join(lines[index:end])))
+            raw = "\n".join(lines[index:end])
+            blocks.append(Block(kind="html", text=_block_text("html", raw) if tidy else raw))
             index = end
             lazy = False
         elif table := _parse_table(lines, index):
@@ -1849,9 +1873,7 @@ def _parse_body(
             # paragraph, or the heading's text.
             definitions, taken = split_link_definitions(lines[index:text_end])
             for definition in definitions:
-                blocks.append(Block(
-                    kind="link_definition", label=definition.label, target=definition.target, title=definition.title,
-                ))
+                blocks.append(_link_definition(definition, tidy=tidy))
                 peeled.append((index, index + definition.lines))
                 index += definition.lines
             start = index  # what is left of the paragraph, or the heading's text, starts here
@@ -1909,7 +1931,7 @@ def _read_quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], t
     """``quote_content`` uncached: blocks of its own each time, which no
     other caller holds."""
     layout = _Layout()
-    blocks, _sections = _parse_body(text.split("\n"), layout, headings=False, depth=depth)
+    blocks, _sections = _parse_body(text.split("\n"), layout, headings=False, depth=depth, tidy=False)
     return tuple(blocks), tuple(layout.preamble)
 
 
@@ -1936,7 +1958,7 @@ def parse_item_content(text: str) -> list[Block]:
     """The blocks a list item holds whose content is *text*, as written in
     the item without its marker and indentation (``_parse_list``)."""
     lines = LINE_ENDING_RE.sub("\n", text).split("\n")
-    blocks, _sections = _parse_body(lines, headings=False)
+    blocks, _sections = _parse_body(lines, headings=False, tidy=False)
     return blocks
 
 
@@ -2003,24 +2025,25 @@ def parse(
         lines.pop()  # the last line's ending, not a line
     layout = _Layout()
     preamble, sections = _parse_body(lines, layout)
-    payload: dict[str, Any] = {
-        "metadata": metadata,
-        "sections": [
-            {
-                "title": title,
-                "level": level,
+    # The blocks are built as they stand (``_block_text``, ``_str``): the same
+    # normalisation as ``document_from_dict``, without building them twice (#110).
+    document = Document(
+        metadata=metadata_from_dict(metadata or {}),
+        sections=[
+            Section(
+                title=_str(title, "New Section"),
+                level=level,
                 # An omitted identifier stays empty: the validator generates
                 # it (§5.3, §5.5), knowing which headings can appear together.
-                "identifier": marker.identifier,
-                "condition": marker.condition,
-                "blocks": [asdict(block) for block in blocks],
-            }
+                identifier=_str(marker.identifier),
+                blocks=blocks,
+                condition=_str(marker.condition),
+            )
             for (title, marker, level), blocks in sections
         ],
-        "filename": filename,
-        "preamble": [asdict(block) for block in preamble],
-    }
-    document = document_from_dict(payload)
+        filename=_str(filename),
+        preamble=preamble,
+    )
     document.metadata.not_line_editable = not_line_editable
     document.metadata.frontmatter_absent = absent
     document.frontmatter_error = frontmatter_error

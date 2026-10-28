@@ -566,3 +566,22 @@ def test_references_on_another_question_through_the_validator_test_no_pair(monke
     validate(document)
     assert time.perf_counter() - start < 10.0  # 1 s now
     assert tests.calls == 0
+
+
+# ── A flat list: each block is built once ─────────────────────────
+
+
+def test_each_block_of_a_flat_list_is_built_once(monkeypatch):
+    from legaldown.models import Block
+
+    n = 5000
+    builds = _Counter(monkeypatch, Block, "__init__")
+    document = parse("- item\n" * n, filename="t.lgd")
+    (block,) = document.preamble
+    assert len(block.items) == n
+    assert builds.calls <= n + 10  # a paragraph for each item, and the list; 2 n + 2 when the parser built them twice
+
+
+def test_a_flat_list_in_a_time_budget():
+    source = "- item number one\n" * 100_000
+    assert _seconds(parse, source) < 15.0  # 4 s now; 7.4 s before #110
