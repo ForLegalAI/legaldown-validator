@@ -107,18 +107,27 @@ def _includes(
     )
 
 
-#: Why the definitions of a file were not imported, as a message says it (``_Imported.missing`` in core.py).
-_NOT_IMPORTED = {
-    "no-resolver": "no loader to read it",
-    "leads-out": "its path leads out of the document's directory, which is not read",
-    "unreadable": "it could not be read",
+#: Why the definitions of a LegalDown attachment file were not imported, each as a message says it of
+#: one file and of several: every reason but the document's own (``own``), whose definitions are the
+#: document's already. This is the one place the reasons are listed (``_Imported.not_imported``).
+NOT_IMPORTED = {
+    "no-resolver": ("has no loader to read it", "have no loader to read them"),
+    "leads-out": ("leads out of the document's directory, which is not read", "lead out of the document's directory, which is not read"),
+    "unreadable": ("could not be read", "could not be read"),
+    "rejected": ("has a path refused by path-not-relative or path-outside-root", "have paths refused by path-not-relative or path-outside-root"),
 }
 
 
 def _not_imported(reasons: Sequence[str]) -> str:
-    """How many files had no definitions imported, and why: ``2 files (no loader to read it)``."""
-    why = [phrase for reason, phrase in _NOT_IMPORTED.items() if reason in reasons]
-    return f"{_count(len(reasons), 'LegalDown attachment file')} (not read: {'; '.join(why)})"
+    """The attachment files with no definitions imported, with a count for each reason:
+    ``3 LegalDown attachment files (1 leads out of the document's directory, which is not read;
+    2 could not be read)``."""
+    why = [
+        f"{number} {NOT_IMPORTED[reason][number != 1]}"
+        for reason in NOT_IMPORTED
+        if (number := reasons.count(reason))
+    ]
+    return f"{_count(len(reasons), 'LegalDown attachment file')} ({'; '.join(why)})"
 
 
 def _attachments(document: Document, where: Locator, unread: Sequence[str]) -> SkippedCategory | None:

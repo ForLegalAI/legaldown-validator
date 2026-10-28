@@ -135,11 +135,31 @@ class FileReferences:
     def is_wrong(self, path: str) -> bool:
         """Whether *path*, a path of the frontmatter, is a finding of ``finish``: not relative
         (``path-not-relative``) or out of the root (``path-outside-root``). The same
-        judgement, asked before the references are judged."""
+        judgement (``_finding``), asked before the references are judged."""
         path = path.strip()
-        if is_absolute_reference(path) or _DRIVE_RE.match(path):
-            return True
-        return self._root is not None and (self._depth is None or leaves_root(path, self._depth))
+        return self._finding(path, path, True) is not None
+
+    def _finding(self, judged: str, decoded: str, whole: bool) -> tuple[str, str, str] | None:
+        """What is wrong with a path, as written (*judged*) and percent-decoded (*decoded*, the
+        same when it is not an image's), or None: ``("not-relative", form, form)`` when it is
+        absolute, in the *form* that makes it so; ``("document-outside", judged, judged)`` when the
+        document itself is outside the root, so that every path leaves it; ``("leaves", form, names)``
+        when it leads out of the root, with *names*, the part of the *form* judged (*whole*: all of it)."""
+        # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
+        absolute = judged if is_absolute_reference(judged) else (
+            decoded if decoded[:1] in ("/", "\\") or _DRIVE_RE.match(decoded) else None
+        )
+        if absolute is not None:
+            return "not-relative", absolute, absolute
+        if self._root is None:
+            return None
+        if self._depth is None:
+            return "document-outside", judged, judged
+        for form in (judged, decoded):
+            names = form if whole else _whole_names(form)  # what is judged, and what a finding says
+            if leaves_root(names, self._depth):
+                return "leaves", form, names
+        return None
 
     def finish(self) -> None:
         """Judge the references recorded, in the order of the document."""
@@ -165,25 +185,21 @@ class FileReferences:
         if not judged and (whole or not rest):
             return False  # a query or a fragment alone, or a directive alone, names no file
         decoded = unquote(judged) if url and "%" in judged else judged
-        # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
-        absolute = judged if is_absolute_reference(judged) else (
-            decoded if decoded[:1] in ("/", "\\") or _DRIVE_RE.match(decoded) else None
-        )
-        if absolute is not None:
+        found = self._finding(judged, decoded, whole)
+        if found is None:
+            return True
+        kind, form, names = found
+        self.reported.add(at)
+        if kind == "not-relative":
             self._result.error(
                 "path-not-relative",
-                f"File reference '{written}' ({what}{_reading(known, judged, absolute)}) is not relative: an "
+                f"File reference '{written}' ({what}{_reading(known, judged, form)}) is not relative: an "
                 f"absolute path, or one beginning with a URI scheme (https://, file://, a drive letter), is an "
                 f"Error. Write a path relative to the document (§2.3).",
                 line=line,
             )
-            self.reported.add(at)
-            return True  # not also outside the root: one finding for one path
-        if self._root is None:
-            return True
-        depth = self._depth
-        if depth is None:
-            self.reported.add(at)  # every path of the document leads out of the root
+        elif kind == "document-outside":
+            # Every path of the document leads out of the root, and one finding says so, not one for each.
             if not self._said_outside:
                 self._result.error(
                     "path-outside-root",
@@ -192,18 +208,13 @@ class FileReferences:
                     line=self._line,
                 )
             self._said_outside = True
-            return True
-        for form in (judged, decoded):
-            names = form if whole else _whole_names(form)  # what is judged, and what a finding says
-            if leaves_root(names, depth):
-                self._result.error(
-                    "path-outside-root",
-                    f"File reference '{written}' ({what}{_reading(known, judged, form, names)}) leads out of the "
-                    f"document root '{self._root}' (§2.3).",
-                    line=line,
-                )
-                self.reported.add(at)
-                return True
+        else:
+            self._result.error(
+                "path-outside-root",
+                f"File reference '{written}' ({what}{_reading(known, judged, form, names)}) leads out of the "
+                f"document root '{self._root}' (§2.3).",
+                line=line,
+            )
         return True
 
 

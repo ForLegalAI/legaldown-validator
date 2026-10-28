@@ -89,6 +89,13 @@ def relative_path_problem(path: str) -> Literal["leads-out", "invalid"] | None:
     return _check_relative(path)[1]
 
 
+def relative_path_check(path: str) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
+    """``relative_path`` and ``relative_path_problem`` of *path* at once: the normalized path to read
+    (None when it is none) and why not (None when it is a path to read)."""
+    normalized, problem = _check_relative(path)
+    return (None if problem else normalized), problem
+
+
 def relative_path(path: str) -> str | None:
     """*path*, as a document names a file it refers to, normalized — ``/``-separated,
     within the directory of the document (§2.3) — or None when it is not such a path:

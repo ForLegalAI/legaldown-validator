@@ -29,7 +29,7 @@ from ..directives import (
     lex,
     mask_directives,
 )
-from ..files import LoadFile, file_loader, relative_path, relative_path_problem
+from ..files import LoadFile, file_loader, relative_path_check
 from ..markdown import INLINE_HTML_RE, is_comment_only, strip_comments
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
@@ -74,7 +74,7 @@ from .patterns import (
     VALID_PLACEHOLDER_TYPES,
 )
 from .result import Blank, Depends, Diagnostic, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
-from .skipped import skipped_categories
+from .skipped import NOT_IMPORTED, skipped_categories
 from .templates import (
     BRACE_STRAY,
     DECISION_QUESTION_TYPES,
@@ -1150,10 +1150,10 @@ class _Imported(NamedTuple):
     unread: UnreadReason | None = None
 
     @property
-    def missing(self) -> bool:
-        """Whether the definitions are missing for a reason the Warning of §17.5 names: not for the
-        document's own, which it has, nor for a path that is a finding of its own."""
-        return self.unread in ("no-resolver", "leads-out", "unreadable")
+    def not_imported(self) -> UnreadReason | None:
+        """The reason the Warning of §17.5 names an import that did not happen for (``NOT_IMPORTED``):
+        every one but the document's own, whose definitions are the document's already."""
+        return self.unread if self.unread in NOT_IMPORTED else None
 
 
 def _imported(definitions: dict[str, str] | None) -> _Imported:
@@ -1174,14 +1174,15 @@ def _definitions_in(
 
     # Asked for as assembly asks (§15.7): normalized, and only a path within
     # the document's directory (§2.3).
+    path = path.strip()  # as the references are judged
     if references.is_wrong(path):
         return _Imported(None, "rejected")
     if files is None:
         return _Imported(None, "no-resolver")
-    relative = relative_path(path)
+    relative, problem = relative_path_check(path)
     if relative is None:
         # Valid as a path, and not one a loader is asked for; or none (a backslash, a null byte).
-        return _Imported(None, "leads-out" if relative_path_problem(path) == "leads-out" else "unreadable")
+        return _Imported(None, "leads-out" if problem == "leads-out" else "unreadable")
     # A document that names itself has nothing to add to itself.
     if files.is_own(relative):
         return _Imported(None, "own")
@@ -1817,26 +1818,20 @@ def _validate(
                     )
 
     # ── Amendment definition import (§7.5) ──
-    _amends_is_legaldown = False
-    # Distinct from "imported something": an original that legitimately
-    # declares no definitions still counts as consulted, so a missing term is
-    # an Error (§16.8) rather than being downgraded to Info.
-    _amends_import_succeeded = False
-    # For the Warning of §17.5: the original is named and its definitions were not imported.
-    _amends_unread = bool(document.metadata.amends and document.metadata.amends.file)
+    # Whether the original's definitions were imported: distinct from "imported something", for an
+    # original that legitimately declares none still counts as consulted, so a missing term is an
+    # Error (§16.8) rather than being downgraded to Info. Not so for a file that is not LegalDown.
+    original_imported = False
     _imported_definitions: dict[str, str] = {}
     if document.metadata.amends and document.metadata.amends.file:
         amends_file = document.metadata.amends.file
         if amends_file.endswith(LEGALDOWN_EXTENSIONS):
-            _amends_is_legaldown = True
             if import_definitions is not None:
                 imported = _imported(import_definitions(amends_file, document.filename))
             else:
                 imported = _definitions_in(document, files, amends_file, file_references)
-            # For any reason: the Error check of a term is not made, and a term drops to the Info.
-            _amends_unread = imported.definitions is None
             if imported.definitions is not None:
-                _amends_import_succeeded = True
+                original_imported = True
                 _imported_definitions = imported.definitions
                 for def_id in result.index.definition_lookup:
                     if def_id in _imported_definitions:
@@ -1864,8 +1859,8 @@ def _validate(
             imported = _imported(import_attachment_definitions(att.file))
         else:
             imported = _definitions_in(document, files, att.file, file_references)
-        if imported.missing and imported.unread is not None:
-            attachments_unread.append(imported.unread)
+        if imported.not_imported is not None:
+            attachments_unread.append(imported.not_imported)
         att_defs = imported.definitions
         if not att_defs:
             continue
@@ -1952,8 +1947,7 @@ def _validate(
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             owner_of = None  # for definition-circular, once a {{term:}} asks
-            # Only an image or a directive asks.
-            noted = bool(notes) and ("![" in fragment or bool(lexed.directives)) and in_drafting_note(notes, fragment_index)
+            noted = bool(notes) and in_drafting_note(notes, fragment_index)
             if "![" in fragment:
                 check_fragment_images(
                     fragment, lexed, file_references, where, section_index, block_index, fragment_index,
@@ -2137,7 +2131,7 @@ def _validate(
             result.used_terms.add(target)
             if target not in result.index.definition_lookup:
                 if document.metadata.amends:
-                    if _amends_is_legaldown and _amends_import_succeeded:
+                    if original_imported:
                         result.error(
                             "amend-term-undefined",
                             f"Undefined term reference: '{target}' (not found in "
@@ -2223,7 +2217,7 @@ def _validate(
     # document it is in. References in drafting notes are exempt: assembly
     # removes every note. An amendment's terms are not checked when its
     # original was not read: the original may define them (§16.8).
-    original_unread = bool(meta.amends) and not (_amends_is_legaldown and _amends_import_succeeded)
+    original_unread = bool(meta.amends) and not original_imported
     term_presences = {
         def_id: [presence for _term, _auto, presence in declarations]
         for def_id, declarations in declared_terms.items()
@@ -2354,7 +2348,7 @@ def _validate(
         template=template,
         fragment=mode.fragment,
         attachments_unread=attachments_unread,
-        amends_unread=_amends_unread,
+        amends_unread=not original_imported,
     ):
         result.warning(SKIPPED_RULE, category.message, line=category.line)
 

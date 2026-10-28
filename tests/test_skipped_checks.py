@@ -169,13 +169,13 @@ def test_attachment_files_draw_one_warning_at_the_first():
     assert warning.line == _at(text, "file: a.lgd")
     assert warning.message.startswith("2 attachment files declared (1 LegalDown). Not performed: ")
     for rule in ("attachment-file-missing", "attachment-has-frontmatter", "attachment-has-h1",
-                 "attachment-anchor-duplicate", "importing the definitions of 1 LegalDown attachment file (not read"):
+                 "attachment-anchor-duplicate", "importing the definitions of 1 LegalDown attachment file (1 has no loader to read it)"):
         assert rule in warning.message
     (read,) = _warnings(text, resolve=_loader({"a.lgd": "Text.\n"}))
     assert "importing" not in read.message and "attachment-anchor-duplicate" in read.message
     # A loader that has not the file did not import its definitions either.
     (missing,) = _warnings(text, resolve=lambda _path: None)
-    assert "importing the definitions of 1 LegalDown attachment file (not read" in missing.message
+    assert "importing the definitions of 1 LegalDown attachment file (1 could not be read)" in missing.message
 
 
 def test_an_attachment_that_is_not_legaldown_is_only_asked_for_its_existence():
@@ -202,9 +202,32 @@ def test_a_path_that_leads_out_of_the_directory_is_an_import_that_did_not_happen
         return None
 
     (warning,) = _warnings(_attached("../shared/defs.lgd"), resolve=loader)
-    assert "importing the definitions of 1 LegalDown attachment file (not read: its path leads out" in warning.message
+    assert (
+        "importing the definitions of 1 LegalDown attachment file "
+        "(1 leads out of the document's directory, which is not read)"
+    ) in warning.message
     (amends,) = _warnings(_amended("../shared/orig.lgd"), resolve=loader)
     assert "amend-term-undefined" in amends.message and asked == []
+    # The path is judged as it is written once stripped, as the references are: a leading space is no name.
+    (spaced,) = _warnings(_attached(" ../shared/defs.lgd"), resolve=loader)
+    assert "(1 leads out of the document's directory, which is not read)" in spaced.message and asked == []
+
+
+def test_each_reason_is_counted_and_worded_by_its_number():
+    front = (
+        "attachments:\n"
+        + "".join(f"  - id: a{i}\n    title: A\n    file: '{file}'\n" for i, file in enumerate(
+            ["../one.lgd", "gone.lgd", "gone2.lgd", "x\\\\y.lgd"]
+        ))
+    )
+    (warning,) = _warnings(_with(front), resolve=lambda _path: None)
+    assert (
+        "importing the definitions of 4 LegalDown attachment files "
+        "(1 leads out of the document's directory, which is not read; 3 could not be read)"
+    ) in warning.message
+    (none,) = _warnings(_with(front), resolve=None)
+    # With no loader at all, that is the reason for every one that is asked about (a path that leads out too).
+    assert "importing the definitions of 4 LegalDown attachment files (4 have no loader to read them)" in none.message
 
 
 def test_a_backslash_or_null_byte_path_is_unreadable_and_said_so():
@@ -216,22 +239,22 @@ def test_a_backslash_or_null_byte_path_is_unreadable_and_said_so():
         document = parse(_attached("x.lgd"))
         document.metadata.attachments[0].file = file  # (a NUL cannot be written in YAML)
         (warning,) = [d for d in validate(document, resolve=refuse).diagnostics if d.rule == SKIPPED_RULE]
-        assert "importing the definitions of 1 LegalDown attachment file (not read: it could not be read)" in warning.message
+        assert "importing the definitions of 1 LegalDown attachment file (1 could not be read)" in warning.message
         document = parse(_amended("x.lgd"))
         document.metadata.amends.file = file
         (amends,) = [d for d in validate(document, resolve=refuse).diagnostics if d.rule == SKIPPED_RULE]
         assert "amend-term-undefined" in amends.message
 
 
-def test_a_path_that_is_a_finding_is_not_an_import_that_did_not_happen_for_an_attachment(tmp_path):
-    # A failed import of an attachment file is `term-undefined` for what it would have defined:
-    # nothing is silent, and a path that is a finding is not said again.
+def test_a_path_that_is_a_finding_is_an_import_that_did_not_happen_for_an_attachment(tmp_path):
+    # Its definitions are not imported either (a def-duplicate-id against them is not made): every
+    # reason but its own path is said.
     absolute = validate(parse(_attached("/abs.lgd")), resolve=lambda _path: pytest.fail("asked"))
     outside = validate(parse(_attached("../out.lgd")), resolve=lambda _path: pytest.fail("asked"), document_root=tmp_path)
     for result, found in ((absolute, "path-not-relative"), (outside, "path-outside-root")):
         assert found in result.rules()
         (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
-        assert "importing" not in warning.message, found
+        assert "(1 has a path refused by path-not-relative or path-outside-root)" in warning.message, found
 
 
 def test_a_path_that_is_a_finding_is_still_an_original_not_imported(tmp_path):
@@ -263,7 +286,7 @@ def test_a_deprecated_importer_that_gave_nothing_is_an_import_that_did_not_happe
         with pytest.warns(LegaldownDeprecationWarning):
             result = validate(parse(_attached(file)), import_attachment_definitions=lambda _path: None)
         (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
-        assert "importing the definitions of 1 LegalDown attachment file (not read: it could not be read)" in warning.message
+        assert "importing the definitions of 1 LegalDown attachment file (1 could not be read)" in warning.message
         with pytest.warns(LegaldownDeprecationWarning):
             result = validate(parse(_attached(file)), import_attachment_definitions=lambda _path: {})
         (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
