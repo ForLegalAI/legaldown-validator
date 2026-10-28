@@ -1162,7 +1162,7 @@ def _scan_list(
                 # the list is lazy only while the quote's paragraph is open.
                 # Whether the line is lazy is read in the innermost item it
                 # is in, where its indentation may keep it from starting a block.
-                within = dedent(line, chain[depth - 1], expand=True) if depth else line
+                within = dedent(line, chain[depth - 1] + shift, expand=True) if depth else line
                 if lazy_line or quote.continues(within):
                     if not lazy_line and not depth and (
                         width >= 4 or _delimiter_row(line) is not None
@@ -1186,10 +1186,15 @@ def _scan_list(
             if marker and offset and quote is None:
                 quote_column = para_column = content_indent + offset
                 para_quote = True  # a line short of the item that holds the quote only lazily continues it
-            elif not marker and quote is None and not shift:
-                # A quote that starts short of the items nested on the first line ends them.
-                nest = nests[-1] = _reached(nest, width - content_indent)
-                offset = nest[-1] if nest else 0
+            elif not marker and quote is None:
+                if shift:
+                    # In the items nested on the first line: they hold the quote.
+                    quote_column = para_column = content_indent + shift
+                    para_quote = True
+                else:
+                    # A quote that starts short of the items nested on the first line ends them.
+                    nest = nests[-1] = _reached(nest, width - content_indent)
+                    offset = nest[-1] if nest else 0
             quote = quote or _Quote()
             if quote_lazy:
                 quote.lazy(body[2:])

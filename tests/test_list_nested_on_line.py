@@ -88,6 +88,9 @@ def _read(source: str) -> list:
         ),
         pytest.param("* -\n    |\n\t1.\n=\n", [("un", [[("un", [[P]])]])], id="a-paragraph-in-the-bare-item-is-continued-by-a-tab"),
         pytest.param(
+            "  + -    |\n        -\n\t1.\n**", [("un", [[("un", [[P]]), ("or", [[]])]]), P], id="the-same-after-spacing"
+        ),
+        pytest.param(
             "+ 1.\n  --\n\n      a\n**", [("un", [[("or", [[]]), P, C]]), P], id="the-bare-item-ends-at-a-blank-line-and-code-follows"
         ),
         pytest.param(
@@ -99,12 +102,14 @@ def _read(source: str) -> list:
             id="three-levels-end-at-a-blank-line-and-code-follows",
         ),
         pytest.param(
-            "  + -    |\n        -\n\t1.\n**", [("un", [[("un", [[P]]), ("or", [[]])]]), P], id="the-same-after-spacing"
-        ),
-        pytest.param(
             "-    -    a\n         2.\n     0.\n.\n",
             [("un", [[("un", [[P]]), ("or", [[]])]]), P],
             id="a-lazy-line-of-a-nested-item-is-not-the-outer-items-paragraph",
+        ),
+        pytest.param(
+            "2. -\n       >```\n\t>**\n=\n",
+            [("or", [[("un", [[("q", [C])]]), ("q", [P])]])],
+            id="a-quote-in-the-item-after-a-bare-one-holds-its-fence",
         ),
         pytest.param(
             ">* a\n    ***\n>   2) 1)     e\nc\n",
