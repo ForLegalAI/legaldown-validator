@@ -73,7 +73,8 @@ def _write(path, text: str):
         ("sub/../../a.lgd", 0, None), ("sub/../../a.lgd", 1, "../a.lgd"), ("sub/../../a.lgd", 2, "../a.lgd"),
         ("../sub/./a.lgd", 1, "../sub/a.lgd"),
         # The rules that stay: a directory, an absolute path, a backslash, a null byte.
-        ("..", 2, None), (".", 2, None), ("../", 2, None), ("/a.lgd", 2, None), ("../..\\a.lgd", 2, None),
+        ("..", 2, None), (".", 2, None), ("../", 2, None), ("../..", 2, None), ("../../", 2, None),
+        ("../../.", 2, None), ("a/../../..", 2, None), ("../../..", 3, None), ("/a.lgd", 2, None), ("../..\\a.lgd", 2, None),
         ("..\\a.lgd", 2, None), ("../a\0.lgd", 2, None), ("C:/a.lgd", 2, None), ("https://x/a.lgd", 2, None),
         ("a.lgd", 0, "a.lgd"), ("a/../b.lgd", 0, "b.lgd"),
     ],
@@ -89,6 +90,13 @@ def test_why_a_path_is_refused_depends_on_the_depth():
     assert relative_path_problem("../a.lgd", depth=1) is None
     assert relative_path_problem("..", depth=1) == "invalid"  # a directory
     assert relative_path_problem("..", depth=0) == "leads-out"
+    # A path of ``..`` alone that lands exactly on the root is a directory, however many it takes.
+    assert relative_path_problem("../..", depth=2) == "invalid"
+    assert relative_path_problem("../../", depth=2) == "invalid"
+    assert relative_path_problem("../..", depth=1) == "leads-out"
+    assert relative_path_problem("../..") == "leads-out"
+    assert relative_path_problem("../../a.lgd", depth=2) is None
+    assert Reach(Path("/root"), 2).check("../..") == (None, "invalid")
 
 
 def test_a_document_outside_the_root_reaches_nothing(tmp_path):

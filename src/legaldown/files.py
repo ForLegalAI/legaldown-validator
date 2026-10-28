@@ -102,8 +102,9 @@ def _check_relative(path: str, depth: int | None = None) -> tuple[str, Literal["
     if normalized == ".." or normalized.startswith("../"):
         if depth is None or leaves_root(normalized, depth):
             return normalized, "leads-out"
-        # Within the root, but ``..`` alone is a directory, as ``.`` is.
-        return normalized, "invalid" if normalized == ".." else None
+        # Within the root, but a path of ``..`` alone (``..``, ``../..``) is a directory, as ``.`` is: the
+        # one a document lands on at the root, say, is not a file.
+        return normalized, "invalid" if set(normalized.split("/")) == {".."} else None
     return normalized, None
 
 
