@@ -566,6 +566,39 @@ def test_references_on_another_question_through_the_validator_test_no_pair(monke
     assert tests.calls == 0
 
 
+# ── Included fragments: include-anchor-duplicate ──────────────────
+
+
+def _expanded_alternatives(alternatives: int, expansions: int):
+    """A template with *alternatives* headings of one id, each under a value of the choice question ``c``, and a
+    fragment declaring that id, included *expansions* times under the last value: it clashes with the last
+    alternative only, after the others it is told apart from."""
+    values = "".join(f"      v{k}: V{k}\n" for k in range(alternatives))
+    headings = "".join(f"## Part {{#part when=c:v{k}}}\n\nText.\n\n" for k in range(alternatives))
+    includes = "".join(f"{{{{include: part.lgd}}}} {{when=c:v{alternatives - 1}}}\n\n" for _ in range(expansions))
+    document = parse(
+        f"---\ntitle: T\nquestions:\n  c:\n    type: choice\n    choices:\n{values}---\n\n"
+        f"# Terms {{#terms}}\n\n{headings}## Rest {{#rest}}\n\n{includes}",
+        filename="t.lgd",
+    )
+    return document, {"part.lgd": "Text.\n\n### Part {#part}\n\nText.\n"}
+
+
+def test_a_fragment_expanded_many_times_is_looked_for_a_clash_once(monkeypatch):
+    alternatives, expansions = 100, 2000
+    document, files = _expanded_alternatives(alternatives, expansions)
+    satisfiable = _Counter(monkeypatch, conditions_module, "satisfiable")
+    tests = _Counter(monkeypatch, conditions_module.Exclusivity, "excluded")
+    start = time.perf_counter()
+    result = validate(document, resolve=files.get)
+    assert time.perf_counter() - start < 10.0  # 0.2 s now; 1.5 s before
+    duplicates = [d for d in result.diagnostics if d.rule == "include-anchor-duplicate"]
+    assert [(d.file, d.line) for d in duplicates] == [("part.lgd", 3)]
+    assert tests.calls <= 2 * alternatives  # the first expansion's heading against the alternatives; none after it
+    # The alternatives of the document are told apart by pairs (n² / 2); the expansions add none (n x m before).
+    assert satisfiable.calls <= alternatives**2
+
+
 # ── A flat list: each block is built once ─────────────────────────
 
 

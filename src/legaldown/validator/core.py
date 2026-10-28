@@ -2327,6 +2327,7 @@ def _validate(
         first_level=first_level,
         units=units,
         questions=questions,
+        exclusivity=exclusivity,
         lex_fragment=lex_fragment,
     )
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The

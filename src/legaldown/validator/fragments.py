@@ -27,7 +27,7 @@ from ..directives import Lexed, lex
 from ..files import LoadFile, Reach, is_absolute_reference, within
 from ..models import Document, Metadata
 from ..positions import Locator
-from .conditions import Presence, answer_combinations, exclusive, holds_under
+from .conditions import Exclusivity, Presence, answer_combinations, holds_under
 from .patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
 from .templates import BodyScan, IncludeDirective, check_template_body
@@ -585,7 +585,7 @@ def include_anchor_duplicates(
     where: Locator,
     splices: dict[int | None, list[Splice]],
     units: Units,
-    questions: Any,
+    exclusivity: Exclusivity,
 ) -> list[HeadingSkip]:
     """The section identifiers that are declared twice in the combined document (§12.2,
     ``include-anchor-duplicate``, §16.11), each at the later declaration in the order the
@@ -594,7 +594,7 @@ def include_anchor_duplicates(
     once). Explicit identifiers only: an auto-generated one is a Warning of its own
     (``anchor-autogen-collision``), which is not judged across the fragments. Two declarations in the
     document itself are ``anchor-duplicate``'s, and two that can never be there together (an
-    alternative: their presences are exclusive, §15.4) are no duplicate."""
+    alternative: their presences are exclusive, §15.4, as *exclusivity* tells) are no duplicate."""
     found: list[HeadingSkip] = []
     reported: set[tuple[str, int]] = set()
     declared: dict[str, list[tuple[Presence, str]]] = {}  # of each identifier: presence and file ("" the document)
@@ -604,20 +604,23 @@ def include_anchor_duplicates(
         if not identifier or not IDENTIFIER_RE.fullmatch(identifier):
             return
         earlier = declared.setdefault(identifier, [])
-        clash = next(
-            (
-                (other, other_file) for other, other_file in earlier
-                if not (file == other_file == "") and not exclusive(presence, other, questions)
-            ),
-            None,
-        )
-        if clash is not None and (file, index) not in reported:
-            reported.add((file, index))
-            found.append(HeadingSkip(file, _line(line), (
-                f"Duplicate section identifier '{identifier}' on '{title}': once the fragments are "
-                f"included, the combined document declares it earlier, in "
-                f"{'the document' if clash[1] == '' else repr(clash[1])} (§12.2, §16.11)."
-            )))
+        # (A heading already reported is not looked for a clash again: a fragment included many times
+        # is reported once, and its later expansions cost nothing.)
+        if (file, index) not in reported:
+            clash = next(
+                (
+                    (other, other_file) for other, other_file in earlier
+                    if not (file == other_file == "") and not exclusivity.excluded(presence, other)
+                ),
+                None,
+            )
+            if clash is not None:
+                reported.add((file, index))
+                found.append(HeadingSkip(file, _line(line), (
+                    f"Duplicate section identifier '{identifier}' on '{title}': once the fragments are "
+                    f"included, the combined document declares it earlier, in "
+                    f"{'the document' if clash[1] == '' else repr(clash[1])} (§12.2, §16.11)."
+                )))
         earlier.append((presence, file))
 
     def splice(after: list[Splice]) -> None:
@@ -899,6 +902,7 @@ def check_includes(
     first_level: int | None,
     units: Units,
     questions: Any,
+    exclusivity: Exclusivity,
     lex_fragment: Callable[[str], Lexed] = lex,
 ) -> IncludeOutcome:
     """What the include paragraphs of *document* require (§12.2, §16.11), and what the
@@ -1007,6 +1011,6 @@ def check_includes(
             f"(more than {MAX_COMBINATION_QUESTIONS} questions, or {MAX_COMBINATIONS:,} combinations), "
             f"which is judged with every include present instead"
         )
-    for duplicate in include_anchor_duplicates(document, where, splices, units, questions):
+    for duplicate in include_anchor_duplicates(document, where, splices, units, exclusivity):
         result.error("include-anchor-duplicate", duplicate.message, line=duplicate.line, file=duplicate.file)
     return outcome
