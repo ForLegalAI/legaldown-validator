@@ -732,6 +732,27 @@ class TestCurrentBlockStructure:
         result = assemble(_template(body, _BOOL + _TEXT), {"x": False, "name": "Tee"})
         assert _body(result) == "\n# A\n\n2. Tee second\n"
 
+    @pytest.mark.parametrize(
+        ("body", "answer", "written"),
+        [
+            pytest.param("  2. b\n1.\n{{placeholder: name}}\n", "2. two", "2\\. two", id="after-an-empty-item"),
+            pytest.param("1.\n1. x\n*\n{{placeholder: name}}\n", "2. two", "2\\. two", id="after-an-empty-bullet"),
+            pytest.param("- a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-an-item-with-a-paragraph"),
+            pytest.param("> a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-a-quote-with-a-paragraph"),
+            pytest.param("-    a\n    code\n{{placeholder: name}}\n", "3) x", "3\\) x", id="short-of-an-items-lazy-text"),
+            pytest.param("- a\n{{placeholder: name}}\n", "=", "\\=", id="an-underline-short-of-an-item"),
+            pytest.param("text\n> {{placeholder: name}}\n", "1.", "> 1\\.", id="in-a-quote-after-text"),
+            pytest.param("text\n{{placeholder: name}}\n", "2. two", "2. two", id="after-text-it-cannot-interrupt"),
+            pytest.param("text\n{{placeholder: name}}\n", "=", "\\=", id="after-text-an-underline"),
+        ],
+    )
+    def test_text_that_starts_a_block_where_the_container_is_not_known_is_escaped(self, body, answer, written):
+        """A marker that cannot interrupt a paragraph is text only in the container
+        that holds the paragraph: short of a list item or a quote, at the top, it
+        starts an item. Where the container is not known, it is escaped."""
+        result = assemble(_template(body, _TEXT), {"name": answer})
+        assert _body(result).splitlines()[-1] == written
+
     def test_spacing_after_an_empty_choice_goes_in_an_item_numbered_2(self):
         body = '# A\n\n1. first\n2. {{choose: x, true="", false=""}}  rest\n'
         result = assemble(_template(body, _BOOL), {"x": True})
