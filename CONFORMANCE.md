@@ -370,19 +370,20 @@ Where this differs from CommonMark, or is read more simply:
     or the `)` that ends it (`raw-html` no longer reads `[a](\n<b>)` as a tag), a title may hold `\"` or `\)`,
     and a title directly after `<…>` makes the `<b>` a tag, as it is the text of no link.
   - **The path checks read permissively and take the union of the readings** (`scan_inline_link(permissive=True)`,
-    `split_link_definitions(permissive=True)`, for `path-not-relative` and `path-outside-root`): a rule that keeps a
-    document from naming a file outside its root must cover everything *any* supported renderer reads as an image,
-    as the insertion boundary over-approximates (§15.7.3). So an image is also `![b](/etc/passwd\x7f)` (a DEL or
-    other control character in a bare destination, which ends it only at a space, a tab or a line ending) and
-    `![a](</etc/passwd>"t")` (a title glued to `<…>`), which pandoc renders (below) and the specification and
-    markdown-it do not. An offset the permissive reading takes as an inline image but the specification does not
-    is also a reference-style image to the specification (`![r](x\x7f)` is `![r]` and text), so the definition it
-    names is judged too. And a definition pandoc reads, with a control character or DEL in its bare destination
-    (`[r]: /etc/passwd\x7f`), is judged when an image names its label, though the model reads it as paragraph text
-    (the model's parser, `raw-html` and the serializer keep the strict reading); in a table cell it is none. A
-    permissive bare destination ends at a space, a tab, an LF or a CR.
-    One gap remains: markdown-it reads a backslash before *any* character as an escape pair, so
-    `![a](/etc/passwd\ "t)` (a space after the backslash) is an image to it alone, and is not judged.
+    for `path-not-relative` and `path-outside-root`): a rule that keeps a document from naming a file outside its
+    root must cover everything *any* supported renderer reads as an image, as the insertion boundary
+    over-approximates (§15.7.3). So an image is also `![b](/etc/passwd\x7f)` (a DEL or other control character in a
+    bare destination, which then ends only at a space, a tab or an LF) and `![a](</etc/passwd>"t")` (a title glued to
+    `<…>`), which pandoc renders (below) and the specification and markdown-it do not. The link says whether the
+    specification reads it too (`InlineLink.strict`, from the same pass): if it does not, the offset is also a
+    reference-style image to the specification (`![r](x\x7f)` is `![r]` and text), and the definition `![r]` names
+    is judged too.
+    Two gaps remain, each a missed `path-not-relative` or `path-outside-root`, both
+    [#121](https://github.com/ForLegalAI/legaldown-validator/issues/121): a definition only pandoc reads
+    (`[r]: /etc/passwd\x7f`, a control character or DEL in its bare destination, which is paragraph text to the model,
+    the specification and markdown-it) is not judged when `![a][r]` names it; and markdown-it reads a backslash before
+    *any* character as an escape pair, so `![a](/etc/passwd\ "t)` (a space after the backslash) is an image to it
+    alone, and is not judged either.
   - **pandoc (`commonmark`) deviates in two places, accepted**: it reads `[a](<b>"t")` as a link (a title glued
     to the `>`), and it keeps a control character or DEL in a bare destination (`[a](b\x7fc)`, `[a](b\x01c)`), where
     the specification (§6.3 "does not include ASCII control characters") and markdown-it read no link. This package
