@@ -1774,18 +1774,21 @@ def _line_start(line: _Line, before: list[str], reading: _Reading) -> str:
     candidate = text[:prefix] + content
     if not content.strip(" \t"):
         return candidate
-    if _kept(candidate, before, begun, plain[prefix:]):
+    if _kept(candidate, before, begun, plain, prefix):
         return candidate
     # A line the template placed in an item stays in it when its indentation goes.
     column = reading.column(line.slot) if not begins and not prefix and not begun["item"] else 0
-    return _fix(candidate, prefix, before, begun, plain[prefix:], column)
+    return _fix(candidate, prefix, before, begun, plain, column)
 
 
-def _kept(line: str, before: list[str], template: Counter[str], plain: str) -> bool:
+def _kept(line: str, before: list[str], template: Counter[str], plain: str, prefix: int) -> bool:
     """True if *line*, after the output lines *before*, begins no construct that *template*
-    (what the parser reads the template line as beginning) does not."""
+    (what the parser reads the template line, *plain*, as beginning) does not. *prefix*: where
+    the template's content begins, after its container markers."""
     read = _tail([*before, line])
-    return not read - template and not _free(line[_marker_end(line, read["item"], None):], plain)
+    # The content is read after the markers that the output has: where a template marker is
+    # text in the output (a ``3.`` that no item holds), what follows it may begin a block.
+    return not read - template and not _free(line[_marker_end(line, read["item"], prefix):], plain[prefix:])
 
 
 _FREE = ("heading", "quote", "fence")
@@ -1817,7 +1820,7 @@ def _fix(candidate: str, prefix: int, before: list[str], template: Counter[str],
     forms = [stripped, escaped(body), escaped(stripped)] if stripped != body else [escaped(body)]
     forms = [form for form in forms if form is not None]
     for form in forms:
-        if _kept(head + form, before, template, plain):
+        if _kept(head + form, before, template, plain, prefix):
             return head + form
     return head + (forms[-1] if forms else body)  # unfixable: the template's own markers begin the construct
 
