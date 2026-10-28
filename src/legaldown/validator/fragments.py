@@ -130,7 +130,8 @@ class Files:
         ``not-relative`` (an absolute path or a URI scheme, ``path-not-relative``), ``outside-root``
         (it leaves the document root, ``path-outside-root``), ``leads-out`` (it is valid and leads out
         of the document's directory, which is not read without a root) or ``invalid`` (a backslash, a
-        null byte, or no file). The judgement is ``FileReferences``' (``files.containment``)."""
+        null byte, or no file). A leave is judged by ``relative_path_check`` (``files.leaves_root``), as ``FileReferences`` judges
+        the document's paths."""
         if is_absolute_reference(written):
             return None, "not-relative"
         if not written or "\\" in written or "\0" in written:
@@ -979,15 +980,19 @@ def check_includes(
         # of them here: their frontmatter and heading are assembly's to refuse, and are not
         # reported by this validation (CONFORMANCE.md).
         attached: set[str] = set()
+        include_keys = {files.key(path) for path in findings}  # the files already checked as includes
         for attachment in document.metadata.attachments:
             relative = files.relative(attachment.file) if attachment.file.endswith(LEGALDOWN_EXTENSIONS) else None
-            fragment = None if relative is None else files.read(relative)
+            if relative is None:
+                continue
             # (A file that was also an include was checked above, and is a finding of its own; however either
             # is spelled, it is one file, named by the path it was first met by.)
-            if relative is None or fragment is None or fragment.path in attached or fragment.path in findings:
+            key = files.key(relative)
+            if key in attached or key in include_keys or files.is_own(relative):
                 continue
-            attached.add(fragment.path)
-            if files.is_own(relative):
+            attached.add(key)
+            fragment = files.read(relative)
+            if fragment is None:
                 continue
             for finding in fragment_findings(
                 fragment, kind="attachment", template=True, shape=False, lex_fragment=lex_fragment

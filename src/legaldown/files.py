@@ -68,17 +68,24 @@ def leaves_root(path: str, depth: int) -> bool:
     return False
 
 
+def document_outside(*, rooted: bool, depth: int | None) -> bool:
+    """Whether a document is outside the document root (§2.3): a root is configured (*rooted*) and the
+    document is not within it (*depth*, from ``names_below``, is None), so every path it names leads out. The one
+    test, for ``containment`` and for ``Reach``."""
+    return rooted and depth is None
+
+
 def containment(path: str, *, rooted: bool, depth: int | None) -> Literal["document-outside", "leaves"] | None:
-    """Whether the relative *path*, by its text alone, is outside the document root (§2.3): the one
-    judgement that ``FileReferences`` (the paths of a document) and ``Reach`` (the files it reads) share.
-    *rooted*: a root is configured, else the containment check does not run (None); *depth*: how
-    many names the document is below it (``names_below``), None when it is not within it
-    (``"document-outside"``: every path of it leads out); else ``"leaves"`` when the path leads out of the
-    root and None when it stays within."""
+    """Whether the relative *path*, by its text alone, is outside the document root (§2.3), as
+    ``FileReferences`` judges the paths of a document. *rooted*: a root is configured, else the containment
+    check does not run (None); ``"document-outside"`` when the document is (``document_outside``);
+    otherwise ``"leaves"`` when the path leads out of the root, given the document is *depth* names below it
+    (``names_below``), and None when it stays within."""
     if not rooted:
         return None
-    if depth is None:
+    if document_outside(rooted=rooted, depth=depth):
         return "document-outside"
+    assert depth is not None
     return "leaves" if leaves_root(path, depth) else None
 
 
@@ -93,7 +100,7 @@ def _check_relative(path: str, depth: int | None = None) -> tuple[str, Literal["
     if normalized == ".":
         return normalized, "invalid"
     if normalized == ".." or normalized.startswith("../"):
-        if depth is None or containment(normalized, rooted=True, depth=depth) is not None:
+        if depth is None or leaves_root(normalized, depth):
             return normalized, "leads-out"
         # Within the root, but ``..`` alone is a directory, as ``.`` is.
         return normalized, "invalid" if normalized == ".." else None
@@ -157,7 +164,7 @@ class Reach:
 
     def check(self, path: str) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
         """``relative_path_check`` of *path* for this reach."""
-        if self.root is not None and self.depth is None:
+        if document_outside(rooted=self.root is not None, depth=self.depth):
             return None, "leads-out"  # the document is outside the root: so is everything it names
         return relative_path_check(path, depth=self.depth)
 

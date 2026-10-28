@@ -230,6 +230,8 @@ def test_the_work_is_the_combinations_times_the_changes_of_presence_not_the_head
     # Headings that are there together are judged once for their order inside, and once for each combination
     # only for the first of the run: the levels compared are about combinations x runs, where walking every
     # heading in every combination compares 4,096 x 6 x 800 = 20 million.
+    import time
+
     import legaldown.validator.fragments as fragments
 
     calls = 0
@@ -243,7 +245,10 @@ def test_the_work_is_the_combinations_times_the_changes_of_presence_not_the_head
     monkeypatch.setattr(fragments, "skips", counted)
     count = MAX_COMBINATION_QUESTIONS
     files = {f"p{i}.lgd": "".join(f"## H{i}x{k} {{#h{i}x{k}}}\n\n" for k in range(800)) for i in range(count)}
+    started = time.perf_counter()
     result = validate(parse(_many(count), filename="main.lgd"), resolve=_Loader(files))
+    elapsed = time.perf_counter() - started
+    assert elapsed < 30, f"{elapsed:.1f}s"  # a generous budget (about 0.3 s here); the count is the proof
     assert _found(result) == []
     assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
     runs = count + 1  # the section, and each include

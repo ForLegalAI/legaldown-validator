@@ -545,7 +545,9 @@ Decisions the specification leaves open:
   that closes it, and is followed no further; a file included from two places (a diamond) is no cycle. A
   document that includes itself is a cycle too, in a template as well. Files are the same file when their
   paths joined to the document's directory and normalized are (`./a.lgd`, `sub/../a.lgd` and, from a document
-  in `dir`, `../dir/a.lgd`): read once, judged once, and named in a finding by the path it was first met by.
+  in `dir`, `../dir/a.lgd`): read once, judged once, and named in a finding by the path it was first met by (whichever spelling
+  comes first in the order the validator reads them, so an attachment's `../dir/a.lgd` may name a file that an
+  include spells `a.lgd`).
   Symbolic links are **not** followed for this (a link is another file, and so is another case of a name on
   a file system that ignores case), and a chain through one ends at the depth cap; the one place a link
   is followed is whether a file is the document itself. In a template an include in a fragment is not followed,
