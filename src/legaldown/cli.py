@@ -102,10 +102,10 @@ def _validate_path(
     ], None
 
 
-def _file_name(path: Path, file: str) -> str:
-    """The file a finding is in: *path*, or the fragment *file* beside it, which may lead out of its
-    directory (``../part.lgd``, with a document root, #109) and is shown without the detour."""
-    return os.path.normpath(path.parent / file) if file else str(path)
+def _file_name(path: str | Path, file: str) -> str:
+    """The file a finding is in: *path* as it was given, or the fragment *file* beside it, which may lead out
+    of its directory (``../part.lgd``, with a document root, #109) and is shown without the detour."""
+    return os.path.normpath(Path(path).parent / file) if file else str(path)
 
 
 def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
@@ -526,7 +526,7 @@ def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict
 def _location(d: dict, template: str) -> str:
     """Where a problem or diagnostic of *template* is, as ``assemble`` shows it:
     the template, or the fragment or attachment file beside it, and the line."""
-    name = _file_name(Path(template), d["file"]) if d["file"] else template
+    name = _file_name(template, d["file"])
     return f"{name}:{d['line']}: " if d["line"] else f"{name}: "
 
 
