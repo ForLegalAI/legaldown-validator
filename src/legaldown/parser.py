@@ -1237,10 +1237,11 @@ def _scan_list(
         )
         prose = lazy and quote is None and not code and not table and not underline
         # Not the item's own when the line continues the paragraph of an item
-        # nested on its first line (``- 1. a`` and ``     b``): a sibling of
-        # that nested item then starts a list, as after no text at all.
+        # nested on its first line (``- 1. a`` and ``     b``), or lazily (``     b``
+        # short of that item's content): a sibling of that nested item then starts a
+        # list, as after no text at all.
         paragraph = prose and (joined or _is_paragraph_text(content)) and (
-            (joined and not nested_para) or marker is not None or was_paragraph or not (was_open or shift)
+            marker is not None or was_paragraph or not (was_open or shift)
         )
         # Open in the item or in an item nested on its line: a lazy line
         # continues either.

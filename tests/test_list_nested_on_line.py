@@ -99,6 +99,14 @@ def _read(source: str) -> list:
             id="three-levels-end-at-a-blank-line-and-code-follows",
         ),
         pytest.param(
+            "  + -    |\n        -\n\t1.\n**", [("un", [[("un", [[P]]), ("or", [[]])]]), P], id="the-same-after-spacing"
+        ),
+        pytest.param(
+            "-    -    a\n         2.\n     0.\n.\n",
+            [("un", [[("un", [[P]]), ("or", [[]])]]), P],
+            id="a-lazy-line-of-a-nested-item-is-not-the-outer-items-paragraph",
+        ),
+        pytest.param(
             ">* a\n    ***\n>   2) 1)     e\nc\n",
             [("q", [("un", [[P]])])],
             id="a-lazy-rule-is-text-so-a-marker-after-it-cannot-interrupt",
