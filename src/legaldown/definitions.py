@@ -474,7 +474,7 @@ class PlacedLinkDefinition(NamedTuple):
     #: How many of the top-level block's ``block_fragments`` come before it, so that
     #: it has its place among the texts: the definition lies after the fragment
     #: numbered one less, and before the one with this number.
-    fragment: int = 0
+    fragment: int
 
 
 def locate_link_definitions(document: Document) -> dict[str, PlacedLinkDefinition]:

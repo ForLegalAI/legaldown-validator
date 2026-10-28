@@ -453,7 +453,7 @@ class ReferenceImages:
 
     def check(self, references: FileReferences, where: Locator) -> None:
         """Record the path of each definition noted, in document order (the top-level
-        block it is in, then its place among that block's definitions), at the line
+        block it is in, then its place among that block's texts, then among its definitions), at the line
         of the definition's own block."""
         if not self._used or self._definitions is None:
             return
