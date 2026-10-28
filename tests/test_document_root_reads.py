@@ -328,3 +328,32 @@ def test_a_finding_in_a_parent_fragment_is_located_without_the_detour(tree, caps
     out = capsys.readouterr().out
     assert f"{tree / 'root' / 'shared' / 'part.lgd'}:3: error: [include-heading-skip]" in out
     assert ".." not in out.split("[include-heading-skip]")[0].splitlines()[-1]
+
+
+# ── A template that is given no loader reads nothing ────────────────────────
+
+def test_a_template_with_a_path_and_no_loader_reads_nothing_in_validation_either(tree):
+    # The fragment is on disk, beside the template, and has frontmatter: it would be reported if it were read.
+    _write(tree / "root" / "doc" / "part.lgd", "---\ntitle: No\n---\n\nText.\n")
+    text = "---\ntitle: T\n---\n\n# Scope {#scope}\n\n{{include: part.lgd}}\n\n{{include: ../shared/x.lgd}}\n"
+    path = tree / "root" / "doc" / "t.lgd"
+    for options in ({}, {"document_root": tree / "root"}):
+        template = parse_template(text, path=path, **options)
+        rules = {d.rule for d in template.validation.diagnostics}
+        assert not rules & {"include-has-frontmatter", "include-file-missing"}, rules
+        assert "ldv-check-skipped" in rules
+        # Assembly reads nothing either, and says so: the two agree on what was read.
+        assert {d.rule for d in template.problems} == {"include-file-missing"}
+    # The root and the path are still what judges its paths.
+    rooted = parse_template(text, path=path, document_root=tree / "root" / "doc")
+    assert "path-outside-root" in {d.rule for d in rooted.validation.diagnostics}
+
+
+def test_a_relative_root_is_made_absolute_when_it_is_given(tree, monkeypatch):
+    _write(tree / "root" / "shared" / "x.lgd", "shared")
+    monkeypatch.chdir(tree)
+    loader = file_loader("root/doc", root="root")
+    reach = Reach.of("root", "root/doc")
+    monkeypatch.chdir(tree / "outside")
+    assert loader("../shared/x.lgd") == "shared"
+    assert reach.root == tree / "root" and reach.depth == 1

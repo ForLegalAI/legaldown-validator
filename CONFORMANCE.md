@@ -544,8 +544,13 @@ Decisions the specification leaves open:
   comes back to a file in it, or to the document itself, is `include-cycle` (§12.2, §16.11) at the include
   that closes it, and is followed no further; a file included from two places (a diamond) is no cycle. A
   document that includes itself is a cycle too, in a template as well. Files are the same file when their
-  paths from the document's directory are (`./a.lgd` and `sub/../a.lgd`); another spelling of one file (a
-  link, a case on a file system that ignores case) is another file, and a chain through it ends at the depth cap.
+  paths joined to the document's directory and normalized are (`./a.lgd`, `sub/../a.lgd` and, from a document
+  in `dir`, `../dir/a.lgd`): read once, judged once, and named in a finding by the path it was first met by.
+  Symbolic links are **not** followed for this (a link is another file, and so is another case of a name on
+  a file system that ignores case), and a chain through one ends at the depth cap; the one place a link
+  is followed is whether a file is the document itself. In a template an include in a fragment is not followed,
+  and the Warning of §17.5 says so; it does not leave the rest of the fragment unknown (what the fragment
+  fills it still fills).
   **Caps.** A document that is not the author's can chain includes into a tree of any size, so the walk stops at a
   **depth of 32 fragments** and at **10,000 expanded entries** (every include followed and every heading
   of a fragment counts one, so a fragment that includes two others that each include two others is cut
@@ -558,11 +563,13 @@ Decisions the specification leaves open:
   path only (`include-not-legaldown`, `path-not-relative`); the document that includes it follows them.
 - **The identifiers and the combined document.** `include-heading-skip` is judged on the combined document
   **under every combination of answers** ([#108](https://github.com/ForLegalAI/legaldown-validator/issues/108);
-  §15.3, §15.4, §16.11). The questions are those that the presence of a read, spliceable include paragraph
-  names (its own condition and those of the sections around it, `Units.presence`), in the order they are
-  first used in the document (within one presence, as the frontmatter declares them); a question
-  that no include names is not varied, and its conditions hold, as do those on a question that has no answer
-  to try. For each combination (true before false, a choice's values as declared, the last question changing
+  §15.3, §15.4, §16.11). The questions are those that the presence of a heading that takes part
+  names: a read, spliceable include paragraph (its own condition and those of the sections around it,
+  `Units.presence`) and every section of the document (a combination takes a conditional section out with
+  its subsections, which changes what comes before the heading after it, whether or not an include is under
+  it), in the order they are first used in the document (within one presence, as the frontmatter declares
+  them); a question that no section and no include names (a paragraph's or an item's condition) is not varied,
+  and its conditions hold, as do those on a question that has no answer to try. For each combination (true before false, a choice's values as declared, the last question changing
   fastest) every unit it makes absent is removed (an include, and a section with its subsections, since a
   presence is cumulative), the fragments of the includes that are left are spliced in, and §4.1 is judged.
   Each fragment's headings are placed after
@@ -583,7 +590,9 @@ Decisions the specification leaves open:
   (`include-has-frontmatter`, `include-has-h1`: it is not spliced), or with
   something it includes not followed, the plain per-document judgement stands.
   **Cap:** at most **12 questions and 4,096 combinations**, whichever is reached first (a template's
-  questions are few; the cap is this implementation's). Past it the pass is made once, with every
+  questions are few; the cap is this implementation's). Headings that are there together (consecutive ones
+  with one presence) are judged once for their order inside, and once for each combination only for their
+  first, so the work is the combinations times the changes of presence, not times the headings. Past it the pass is made once, with every
   include present, as before #108, and an include that is conditional fills nothing; the Warning of §17.5 says
   so ("include-heading-skip under every combination of answers ... judged with every include present
   instead"), and there is no partial try. Combinations that leave the same units present are judged once.

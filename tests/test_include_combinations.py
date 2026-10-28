@@ -206,6 +206,48 @@ def test_a_heading_the_include_fills_under_a_conditional_section_is_filled_when_
     assert _found(_run(text, {"p.lgd": "## Deep {#deep}\n"})) == []
 
 
+def test_a_section_with_a_condition_is_varied_too_whether_or_not_an_include_is_under_it():
+    # r is on a section that holds no include, and is tried all the same (a combination takes the section out):
+    # the first combination names it, before x, which an include after it names.
+    text = _front("r", "x") + (
+        "# Scope {#scope}\n\n## Opt {#opt when=r}\n\nText.\n\n## Other {#other}\n\n{{include: p.lgd}} {when=x}\n"
+    )
+    result = _run(text, {"p.lgd": "#### Deep {#deep}\n"})
+    assert _found(result) == [("include-heading-skip", "p.lgd", 1)]
+    assert _messages(result)[0].endswith("It is so when r=true, x=true.")
+
+
+def test_sections_count_towards_the_limit_of_questions():
+    # 13 questions, each on a section of its own, and one include with no condition: too many to try.
+    count = MAX_COMBINATION_QUESTIONS + 1
+    text = _front(*(f"q{i}" for i in range(count))) + "# Scope {#scope}\n\n" + "".join(
+        f"## S{i} {{#s{i} when=q{i}}}\n\nText.\n\n" for i in range(count)
+    ) + "{{include: p.lgd}}\n"
+    result = _run(text, {"p.lgd": "## Fine {#fine}\n"})
+    warning = next(d for d in result.diagnostics if d.rule == SKIPPED_RULE)
+    assert "include-heading-skip under every combination of answers" in warning.message
+    # ... and 12 are not.
+    text = text.replace(f"## S{count - 1} {{#s{count - 1} when=q{count - 1}}}", f"## S{count - 1} {{#s{count - 1}}}")
+    result = _run(text, {"p.lgd": "## Fine {#fine}\n"})
+    assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
+
+
+def test_the_work_does_not_grow_with_the_combinations_times_the_headings():
+    # 12 questions (4,096 combinations), each with a fragment of 800 headings (the walk follows at most 10,000):
+    # a run of headings that are there together is judged once, not once for each combination.
+    import time
+
+    count = MAX_COMBINATION_QUESTIONS
+    files = {f"p{i}.lgd": "".join(f"## H{i}x{k} {{#h{i}x{k}}}\n\n" for k in range(800)) for i in range(count)}
+    document = parse(_many(count), filename="main.lgd")
+    started = time.perf_counter()
+    result = validate(document, resolve=_Loader(files))
+    elapsed = time.perf_counter() - started
+    assert _found(result) == []
+    assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
+    assert elapsed < 6, f"{elapsed:.1f}s"  # about 0.3 s; 13 s when each combination walked every heading
+
+
 # ── The limits ───────────────────────────────────────────────────────────────
 
 def _many(count: int, **kwargs) -> str:

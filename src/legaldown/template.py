@@ -38,7 +38,7 @@ from .assembly import (
 )
 from .directives import PLACEHOLDER_TYPE_PARAMS
 from .files import LoadFile, Reach, file_loader
-from .validator import validate
+from .validator.core import validate_template
 from .validator.patterns import VALID_DURATION_UNITS
 from .validator.result import Diagnostic, ValidationResult
 
@@ -268,7 +268,7 @@ class Template:
         document = self._t.document
         if self.path is not None:
             document = replace(document, path=self.path)
-        return validate(document, resolve=self._resolve, document_root=self._root)
+        return validate_template(document, self._resolve, self._root)
 
     @cached_property
     def problems(self) -> tuple[Diagnostic, ...]:
@@ -518,9 +518,10 @@ def load_template(path: str | os.PathLike[str], *, document_root: str | os.PathL
     within the root: ``{{include: ../shared/part.lgd}}``. The template must be
     within the root, else it reads nothing."""
     file = Path(path).absolute()
+    root = None if document_root is None else Path(document_root).absolute()  # a later chdir changes nothing
     return Template(
         file.read_bytes().decode("utf-8"),
-        resolve=file_loader(file.parent, root=document_root),
-        document_root=document_root,
+        resolve=file_loader(file.parent, root=root),
+        document_root=root,
         path=file,
     )

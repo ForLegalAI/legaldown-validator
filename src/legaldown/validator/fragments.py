@@ -79,7 +79,11 @@ class Files:
     whoever wants it: the definitions of an attachment file (§7, §12.4), and the
     checks of an include fragment or an attachment file (#35). *resolve* is the
     ``LoadFile`` of the validation; *document* is the document being validated,
-    which a path may name itself."""
+    which a path may name itself.
+
+    A file is the same file by the path it has from the document's directory, however it is
+    written (``a.lgd``, and ``../dir/a.lgd`` from a document in ``dir``): ``key``, which does not follow
+    symbolic links. It is read once, judged once, and named in a finding by the path it was first met by."""
 
     def __init__(
         self, resolve: LoadFile, document: Document, root: str | os.PathLike[str] | None = None
@@ -87,6 +91,9 @@ class Files:
         self._resolve = resolve
         self._path = document.path
         self._filename = posixpath.normpath(document.filename) if document.filename else ""
+        #: Where the document is, to tell two spellings of one path apart; a document with no path is
+        #: taken to be at the root of the file system, where nothing it names can lead out.
+        self._directory = os.path.abspath(document.path.parent) if document.path is not None else os.sep
         #: Which paths may be read (§2.3): given a document *root*, those that stay within it,
         #: ``../`` included, and none when the document is not itself within it.
         self._reach = Reach.of(root, document.path.parent if document.path is not None else None)
@@ -109,6 +116,12 @@ class Files:
         """The document root, when one is configured (§2.3)."""
         return self._reach.root
 
+    def key(self, relative: str) -> str:
+        """What makes two spellings of *relative*, a path from the document's directory, one file: that
+        path joined to the directory and normalized. Symbolic links are not followed (a link is another
+        file), nor the case of a name."""
+        return os.path.normpath(os.path.join(self._directory, relative))
+
     def locate(
         self, base: str, written: str
     ) -> tuple[str | None, Literal["not-relative", "outside-root", "leads-out", "invalid"] | None]:
@@ -117,18 +130,16 @@ class Files:
         ``not-relative`` (an absolute path or a URI scheme, ``path-not-relative``), ``outside-root``
         (it leaves the document root, ``path-outside-root``), ``leads-out`` (it is valid and leads out
         of the document's directory, which is not read without a root) or ``invalid`` (a backslash, a
-        null byte, or no file). Nested includes are judged by this, the way ``FileReferences`` judges the
-        paths of the document itself."""
+        null byte, or no file). The judgement is ``FileReferences``' (``files.containment``)."""
         if is_absolute_reference(written):
             return None, "not-relative"
         if not written or "\\" in written or "\0" in written:
             return None, "invalid"
-        relative, problem = self.relative_check(posixpath.join(base, written))
-        if relative is not None:
-            return relative, None
-        if problem == "leads-out":
-            return None, "outside-root" if self.root is not None else "leads-out"
-        return None, "invalid"
+        path = posixpath.join(base, written)
+        if self._reach.containment(path) is not None:
+            return None, "outside-root"
+        relative, problem = self.relative_check(path)
+        return (relative, None) if relative is not None else (None, "leads-out" if problem == "leads-out" else "invalid")
 
     def is_own(self, relative: str) -> bool:
         """True if *relative* names the document being validated: it adds nothing to
@@ -137,31 +148,34 @@ class Files:
         file of that name beside it."""
         if self._path is None:
             return bool(self._filename) and relative == self._filename
-        if relative not in self._own:
-            # The file system is asked only for a file the loader has: it is the loader's.
-            self._own[relative] = (
+        key = self.key(relative)
+        if key not in self._own:
+            # The file system is asked only for a file the loader has: it is the loader's. (The one place
+            # a link is followed: the document's own file is the file it is, however it is reached.)
+            self._own[key] = (
                 self.read(relative) is not None
                 and within(self._path.parent, relative, self._reach.root) == self._path.resolve()
             )
-        return self._own[relative]
+        return self._own[key]
 
     def read(self, path: str) -> FragmentFile | None:
         """The file at *path*, or None when it cannot be asked for (``relative``:
         not relative, or out of the document's directory and root, §2.3) or is not there. The
-        loader is asked once for each file."""
+        loader is asked once for each file (``key``)."""
         relative = self.relative(path)
         if relative is None:
             return None
-        if relative not in self._read:
+        key = self.key(relative)
+        if key not in self._read:
             # Imported here, as in core.py: parser -> definitions -> validator would
             # otherwise be a cycle at import time.
             from ..parser import parse
 
             text = self._resolve(relative)
-            self._read[relative] = None if text is None else FragmentFile(
+            self._read[key] = None if text is None else FragmentFile(
                 relative, parse(text, on_frontmatter_error="keep")
             )
-        return self._read[relative]
+        return self._read[key]
 
 
 def _line(line: Line) -> int | None:
@@ -420,6 +434,28 @@ class HeadingSkips:
     capped: bool = False
 
 
+class _Placed(NamedTuple):
+    """A heading in the combined document: the index of a section of the document, or a ``Heading`` of a
+    fragment, with the *position* of its item and its *number* in it, which order the findings."""
+    position: int
+    number: int
+    head: int | Heading
+
+
+@dataclass(slots=True)
+class _Run:
+    """Consecutive items of the combined document with one presence: they are there together or not at all.
+    *entry*: the first heading, judged each time (it depends on what comes before); *after*: the others, each
+    with the level before it and whether that heading is a fragment's, judged once (*judged*); *exit_level*
+    and *exit_fragment*: the last heading, what comes after the run is judged by."""
+    presence: Presence
+    entry: _Placed | None = None
+    after: list[tuple[_Placed, int | None, bool]] = field(default_factory=list)
+    exit_level: int | None = None
+    exit_fragment: bool = False
+    judged: bool = False
+
+
 def include_heading_skips(
     document: Document,
     where: Locator,
@@ -437,10 +473,13 @@ def include_heading_skips(
     §15.3 asks for the combined document to satisfy §4.1 under every combination of answers to the questions
     that the presence of an include names, with every unit a combination makes absent removed (the
     include, and the section that holds it, with its subsections, since a presence is cumulative,
-    ``Units.presence``). Each combination is tried (``answer_combinations``: the limits are
-    ``MAX_COMBINATION_QUESTIONS`` and ``MAX_COMBINATIONS``; past them, one pass with every include
-    present, *capped*, and an include that is conditional fills nothing). A question no include names
-    is not varied: its conditions hold. A heading is reported where it is, once however many combinations
+    ``Units.presence``). The questions tried are those of the presences of every heading that takes part,
+    the document's sections as well as the includes (a section that a combination takes out changes what
+    comes before the heading after it, whether or not an include is in it). Each combination is tried
+    (``answer_combinations``: the limits are ``MAX_COMBINATION_QUESTIONS`` and ``MAX_COMBINATIONS``; past
+    them, one pass with every include present, *capped*, and an include that is conditional fills nothing). A
+    question that no section and no include names is not varied: a condition on a paragraph or an item
+    is not one of a heading. A heading is reported where it is, once however many combinations
     skip at it, and under the first (in the order of ``answer_combinations``) with the answers in the
     message: a fragment's heading in its file, and a heading of the document after a fragment's at its own
     line. A heading of the document after one of its own is ``heading-skip``'s, not reported again.
@@ -453,20 +492,39 @@ def include_heading_skips(
     sections = document.sections
     levels = [_level(section.level) for section in sections]
     own = [first, *levels[:-1]] if sections else []  # the level of the document's previous heading, for each
-    # The combined document, in order: sections and the splices after them.
+    # The combined document, in order: sections and the splices after them, each with its presence.
     items: list[tuple[int | None, Splice | None]] = [(None, each) for each in splices.get(None, [])]
     for index in range(len(sections)):
         items.append((index, None))
         items += [(index, each) for each in splices.get(index, [])]
-    section_presence = [units.presence(index) for index in range(len(sections))]
+    presences = [
+        each.presence if each is not None else units.presence(section) for section, each in items  # type: ignore[arg-type]
+    ]
+    # The questions to try are those of every unit that takes part: a section with a condition is taken out
+    # (with its subsections) by a combination as an include is, whether or not an include is under it.
     tried = answer_combinations(
-        (each.presence for _section, each in items if each is not None), questions,
-        max_questions=MAX_COMBINATION_QUESTIONS, max_combinations=MAX_COMBINATIONS,
+        presences, questions, max_questions=MAX_COMBINATION_QUESTIONS, max_combinations=MAX_COMBINATIONS
     )
     result = HeadingSkips(capped=tried is None)
     combinations = [{}] if tried is None else tried[1]
     if tried is None:  # one pass with every include present: a conditional one may not be there, and fills nothing
         unread = {*unread, *(each.include.section for _section, each in items if each is not None and each.presence)}
+
+    # The items between two changes of presence are there together or not at all: each such run is judged for
+    # its first heading, which depends on what comes before, and once for the headings after it, which do not.
+    runs: list[_Run] = []
+    for position, ((section, each), presence) in enumerate(zip(items, presences, strict=True)):
+        if not runs or runs[-1].presence != presence:
+            runs.append(_Run(presence))
+        run = runs[-1]
+        for number, head in enumerate([section] if each is None else each.headings):
+            heading = _Placed(position, number, head)  # a heading of the document, or of a fragment
+            level = levels[head] if isinstance(head, int) else head.level
+            if run.entry is None:
+                run.entry = heading
+            else:
+                run.after.append((heading, run.exit_level, run.exit_fragment))
+            run.exit_level, run.exit_fragment = level, each is not None
 
     reported: set[tuple[str, int]] = set()  # fragment headings, however often included or found
     found: list[tuple[tuple[int, int], HeadingSkip]] = []
@@ -474,43 +532,47 @@ def include_heading_skips(
     seen: set[tuple[bool, ...]] = set()  # the combinations that leave the same units present
     present_any: set[int] = set()  # the headings of the document there in some combination
     skipped_any: set[int] = set()  # ... that skip, whatever is before them, in some
-    # The presence of each item of the combined document.
-    presences = [each.presence if each is not None else section_presence[section] for section, each in items]  # type: ignore[index]
 
+    def judge(placed: _Placed, last: int | None, from_fragment: bool, said: str) -> None:
+        """Whether the heading *placed* skips after one at level *last* (a fragment's if *from_fragment*)."""
+        head = placed.head
+        if isinstance(head, int):  # a heading of the document
+            present_any.add(head)
+            if skips(last, levels[head]):
+                skipped_any.add(head)
+                # (Not after the one before it in the document: heading-skip says so.)
+                if from_fragment and not skips(own[head], levels[head]) and head not in reported_own:
+                    reported_own.add(head)
+                    found.append(((placed.position, placed.number), HeadingSkip(
+                        "", where.heading(head), _message(sections[head].title, last, levels[head]) + said
+                    )))
+        else:
+            fragment, index = head
+            if skips(last, head.level) and (fragment.path, index) not in reported:
+                reported.add((fragment.path, index))
+                found.append(((placed.position, placed.number), HeadingSkip(
+                    fragment.path, _line(fragment.where.heading(index)),
+                    _message(fragment.document.sections[index].title, last, head.level) + said,
+                )))
+
+    distinct = {run.presence for run in runs}
     for combination in combinations:
-        present = [holds_under(presence, combination) for presence in presences]
+        held = {presence: holds_under(presence, combination) for presence in distinct}
+        present = [held[run.presence] for run in runs]
         if (signature := tuple(present)) in seen:
             continue  # the same document as one already judged
         seen.add(signature)
         said = _suffix(combination)
         last, from_fragment = first, False  # the level of the heading before, and whether it is a fragment's
-        for position, ((section, each), there) in enumerate(zip(items, present, strict=True)):
-            if not there:
+        for run, there in zip(runs, present, strict=True):
+            if not there or run.entry is None:
                 continue
-            if each is None:  # a heading of the document
-                index = section
-                assert index is not None
-                level = levels[index]
-                present_any.add(index)
-                if skips(last, level):
-                    skipped_any.add(index)
-                    # (Not after the one before it in the document: heading-skip says so.)
-                    if from_fragment and not skips(own[index], level) and index not in reported_own:
-                        reported_own.add(index)
-                        found.append(((position, 0), HeadingSkip(
-                            "", where.heading(index), _message(sections[index].title, last, level) + said
-                        )))
-                last, from_fragment = level, False
-                continue
-            for number, heading in enumerate(each.headings):
-                fragment, index = heading
-                if skips(last, heading.level) and (fragment.path, index) not in reported:
-                    reported.add((fragment.path, index))
-                    found.append(((position, number), HeadingSkip(
-                        fragment.path, _line(fragment.where.heading(index)),
-                        _message(fragment.document.sections[index].title, last, heading.level) + said,
-                    )))
-                last, from_fragment = heading.level, True
+            judge(run.entry, last, from_fragment, said)
+            if not run.judged:
+                run.judged = True
+                for placed, before, after_fragment in run.after:
+                    judge(placed, before, after_fragment, said)
+            last, from_fragment = run.exit_level, run.exit_fragment
     result.skips = [skip for _position, skip in sorted(found, key=lambda entry: entry[0])]
     result.filled = {
         index for index in present_any
@@ -593,7 +655,7 @@ def _message(title: str, last: int | None, level: int) -> str:
 #: ``include-file-missing`` is reported), the document itself (for an include a cycle, which is
 #: reported, ``include-cycle``, and so not counted as unread), or a path refused with a finding of its
 #: own (``path-not-relative``, ``path-outside-root``), which an include is not counted as unread for either.
-UnreadReason = Literal["no-resolver", "leads-out", "unreadable", "own", "rejected"]
+UnreadReason = Literal["no-resolver", "leads-out", "unreadable", "own", "rejected", "in-template"]
 
 #: How deep (in fragments, the document being none) and how far (in includes and headings of
 #: fragments) the includes of a document are followed (§12.2): a document that is not the author's
@@ -630,9 +692,10 @@ class _Walk:
     judged once, and expanded into the headings it brings into the combined document, in order. A
     chain of includes that comes back to a file in it is ``include-cycle`` (§16.11) at the include that
     closes it, and followed no further; a fragment included from two places (not a cycle) is expanded at
-    both. What is judged of the paths of a fragment's own includes is what ``FileReferences`` judges of the
-    document's, from the fragment's directory. *incomplete* tells that something a fragment includes was
-    not followed, so that what lies after it is not known."""
+    both. An include is judged by ``attempt``, whether it is the document's or a fragment's: a path is
+    judged as ``FileReferences`` judges the document's, from the directory of the file that holds
+    it. *incomplete* tells that something a fragment includes was not followed, so that what lies after
+    it is not known."""
 
     def __init__(
         self, files: Files, result: _Recorder, outcome: IncludeOutcome, *, template: bool,
@@ -644,7 +707,8 @@ class _Walk:
         self._template = template
         self._lex_fragment = lex_fragment
         self._findings = findings
-        self._includes: dict[str, list[IncludeDirective]] = {}  # of each fragment, once
+        #: The include paragraphs of each fragment by the section that holds them, with their number: once.
+        self._includes: dict[str, dict[int | None, list[tuple[int, IncludeDirective]]]] = {}
         self._met: set[tuple[str, int]] = set()  # the includes of fragments (file, number) already judged
         self._expanded = 0
         self.incomplete = False
@@ -658,16 +722,106 @@ class _Walk:
             for finding in self._findings[fragment.path]:
                 self._result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
 
+    def attempt(
+        self, include: IncludeDirective, owner: FragmentFile | None, stack: tuple[str, ...], first: bool = True
+    ) -> FragmentFile | None:
+        """The fragment that *include* takes in, an include paragraph of the document (*owner* None) or of
+        a fragment, *stack* being the files being included (outermost first, *owner* last), or None when
+        there is none to splice: there is nothing to follow, or the file is not a fragment. What is
+        wrong is reported (``include-not-legaldown``, ``path-not-relative``, ``path-outside-root``,
+        ``include-file-missing``, ``include-cycle``, the shape of the file), in the file that holds the
+        include and at its line, and what could not be read is recorded as unread (and said by the
+        Warning of §17.5); both only if *first*, the first time this include is judged."""
+        file = "" if owner is None else owner.path
+
+        def refuse(rule: str, message: str, reason: UnreadReason | None) -> None:
+            if first:
+                self._result.error(rule, message, line=include.line, file=file)
+                if reason is not None:
+                    self._outcome.unread.append(UnreadInclude(include, reason))
+
+        if not include.path:
+            refuse(
+                "include-file-missing",
+                f"'{include.source}' names no file: an include paragraph names the LegalDown file it takes in (§12.2).",
+                "unreadable",
+            )
+            return None
+        if not include.path.endswith(LEGALDOWN_EXTENSIONS):
+            refuse(
+                "include-not-legaldown",
+                f"'{include.written}' is not a LegalDown file: an include target is a "
+                f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read.",
+                None,
+            )
+            return None
+        relative, problem = self._files.locate("" if owner is None else posixpath.dirname(owner.path), include.written)
+        if relative is None:
+            what = "an include" if owner is None else "an include in a fragment"
+            if problem == "not-relative":
+                refuse(
+                    "path-not-relative",
+                    f"File reference '{include.written}' ({what}) is not relative: an absolute "
+                    f"path, or one beginning with a URI scheme (https://, file://, a drive letter), is an Error. "
+                    f"Write a path relative to the {'document' if owner is None else 'fragment'} (§2.3).",
+                    None,
+                )
+            elif problem == "outside-root":
+                refuse(
+                    "path-outside-root",
+                    f"File reference '{include.written}' ({what}) leads out of the document "
+                    f"root '{self._files.root}' (§2.3).",
+                    None,
+                )
+            elif problem == "leads-out":  # valid, and not read without a root that holds it (#109)
+                if first:
+                    self._outcome.unread.append(UnreadInclude(include, "leads-out"))
+            else:
+                refuse(
+                    "include-file-missing",
+                    f"The fragment '{include.written}' cannot be read: it is not a relative path that can be read (§2.3).",
+                    "unreadable",
+                )
+            return None
+        if self._files.key(relative) in {self._files.key(each) for each in stack} or self._files.is_own(relative):
+            chain = " -> ".join(
+                ["the document", *stack, "the document" if self._files.is_own(relative) else relative]
+            )
+            refuse(
+                "include-cycle",
+                f"'{include.source}' closes a circular include chain ({chain}); a file cannot include "
+                f"itself, directly or through others (§12.2).",
+                None,
+            )
+            return None
+        if len(stack) >= MAX_INCLUDE_DEPTH:
+            cap = f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels (not checked past that point)"
+            if cap not in self._outcome.caps:
+                self._outcome.caps.append(cap)
+            return None
+        target = self._files.read(relative)
+        if target is None:
+            refuse(
+                "include-file-missing",
+                f"The fragment '{include.written}' cannot be read: there is no such file, or it is not UTF-8 text "
+                f"(§12.2, §16.11).",
+                "unreadable",
+            )
+            return None
+        self.shape(target)
+        return target if target.spliceable else None  # a file that is not a fragment is reported, not spliced
+
     def expand(self, fragment: FragmentFile, stack: tuple[str, ...]) -> list[Heading]:
         """The headings *fragment* brings into the combined document: its own, each followed by those of the
         fragments its section includes (those of the preamble first). *stack* are the files being
         included, outermost first, *fragment* last."""
         if fragment.path not in self._includes:
-            self._includes[fragment.path] = fragment_includes(fragment, self._lex_fragment)
-            self._outcome.nested += len(self._includes[fragment.path])
-        by_section: dict[int | None, list[tuple[int, IncludeDirective]]] = {}
-        for number, include in enumerate(self._includes[fragment.path]):
-            by_section.setdefault(include.section, []).append((number, include))
+            by_section: dict[int | None, list[tuple[int, IncludeDirective]]] = {}
+            for number, include in enumerate(fragment_includes(fragment, self._lex_fragment)):
+                by_section.setdefault(include.section, []).append((number, include))
+            self._includes[fragment.path] = by_section
+            self._outcome.nested += sum(len(each) for each in by_section.values())
+        by_section = self._includes[fragment.path]
         headings: list[Heading] = []
 
         def follow(section: int | None) -> None:
@@ -697,101 +851,24 @@ class _Walk:
         self, fragment: FragmentFile, number: int, include: IncludeDirective, stack: tuple[str, ...]
     ) -> list[Heading]:
         """The headings of the fragment that *include*, the *number*th include paragraph of *fragment*,
-        takes in. When it cannot be followed there are none, and what lies after it is not known
-        (``incomplete``)."""
-        headings = self._attempt(fragment, number, include, stack)
-        if headings is None:
-            self.incomplete = True
-            return []
-        return headings
-
-    def _attempt(
-        self, fragment: FragmentFile, number: int, include: IncludeDirective, stack: tuple[str, ...]
-    ) -> list[Heading] | None:
-        """``_follow``, with None for an include that is not followed, which is said once for each include."""
+        takes in. In a template there are none to follow: an include in a fragment is
+        ``template-fragment-invalid`` (§15.3), and the Warning of §17.5 says it is not followed; that
+        leaves the rest of the fragment as it is. Otherwise, when it cannot be followed there are none, and
+        what lies after it is not known (``incomplete``)."""
         key = (fragment.path, number)
         first = key not in self._met
         self._met.add(key)
-        if self._template or self._full():
-            return None  # in a template an include in a fragment is template-fragment-invalid (§15.3), not followed
-        self._expanded += 1
-
-        def refuse(rule: str, message: str, reason: UnreadReason | None) -> None:
+        if self._template:
             if first:
-                self._result.error(rule, message, line=include.line, file=fragment.path)
-                if reason is not None:
-                    self._outcome.unread.append(UnreadInclude(include, reason))
-
-        if not include.path:
-            refuse(
-                "include-file-missing",
-                f"'{include.source}' names no file: an include paragraph names the LegalDown file it takes in (§12.2).",
-                "unreadable",
-            )
-            return None
-        if not include.path.endswith(LEGALDOWN_EXTENSIONS):
-            refuse(
-                "include-not-legaldown",
-                f"'{include.written}' is not a LegalDown file: an include target is a "
-                f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read.",
-                None,
-            )
-            return None
-        relative, problem = self._files.locate(posixpath.dirname(fragment.path), include.written)
-        if relative is None:
-            if problem == "not-relative":
-                refuse(
-                    "path-not-relative",
-                    f"File reference '{include.written}' (an include in a fragment) is not relative: an absolute "
-                    f"path, or one beginning with a URI scheme (https://, file://, a drive letter), is an Error. "
-                    f"Write a path relative to the fragment (§2.3).",
-                    None,
-                )
-                return None
-            if problem == "outside-root":
-                refuse(
-                    "path-outside-root",
-                    f"File reference '{include.written}' (an include in a fragment) leads out of the document "
-                    f"root '{self._files.root}' (§2.3).",
-                    None,
-                )
-                return None
-            if problem == "leads-out":  # valid, and not read without a root that holds it (#109)
-                if first:
-                    self._outcome.unread.append(UnreadInclude(include, "leads-out"))
-                return None
-            refuse(
-                "include-file-missing",
-                f"The fragment '{include.written}' cannot be read: it is not a relative path that can be read (§2.3).",
-                "unreadable",
-            )
-            return None
-        if relative in stack or self._files.is_own(relative):
-            chain = " -> ".join(["the document", *stack, "the document" if self._files.is_own(relative) else relative])
-            refuse(
-                "include-cycle",
-                f"'{include.source}' closes a circular include chain ({chain}); a fragment cannot include "
-                f"itself, directly or through others (§12.2).",
-                None,
-            )
-            return None
-        if len(stack) >= MAX_INCLUDE_DEPTH:
-            cap = f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels (not checked past that point)"
-            if cap not in self._outcome.caps:
-                self._outcome.caps.append(cap)
-            return None
-        target = self._files.read(relative)
+                self._outcome.unread.append(UnreadInclude(include, "in-template"))
+            return []
+        if self._full():
+            return []
+        self._expanded += 1
+        target = self.attempt(include, fragment, stack, first)
         if target is None:
-            refuse(
-                "include-file-missing",
-                f"The fragment '{include.written}' cannot be read: there is no such file, or it is not UTF-8 text "
-                f"(§12.2, §16.11).",
-                "unreadable",
-            )
-            return None
-        self.shape(target)
-        if not target.spliceable:  # reported, and not a fragment
-            return None
+            self.incomplete = True
+            return []
         return self.expand(target, (*stack, target.path))
 
 
@@ -862,71 +939,20 @@ def check_includes(
         if include.at in judged:
             unread.add(include.section)
             continue
-        if not include.path:
-            # ``{{include:}}``: a paragraph that names no file replaces nothing, and assembly
-            # refuses the template for it (§12.2). Said when files can be read, as for a file that is
-            # not there.
-            if files is not None:
+        if walk is None:
+            # No file can be read: only the extension is judged (Core), and the rest is unread.
+            if include.path and not include.path.endswith(LEGALDOWN_EXTENSIONS):
                 result.error(
-                    "include-file-missing",
-                    f"'{include.source}' names no file: an include paragraph names the LegalDown file "
-                    f"it takes in (§12.2).",
+                    "include-not-legaldown",
+                    f"'{include.written}' is not a LegalDown file: an include target is a "
+                    f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read.",
                     line=include.line,
                 )
-            outcome.unread.append(UnreadInclude(include, "unreadable" if files is not None else "no-resolver"))
-            unread.add(include.section)
+            else:
+                outcome.unread.append(UnreadInclude(include, "no-resolver"))
             continue
-        if not include.path.endswith(LEGALDOWN_EXTENSIONS):
-            result.error(
-                "include-not-legaldown",
-                f"'{include.written}' is not a LegalDown file: an include target is a {', '.join(LEGALDOWN_EXTENSIONS)} "
-                f"file (§12.2). It is not read.",
-                line=include.line,
-            )
-            unread.add(include.section)
-            continue
-        if files is None or walk is None:
-            outcome.unread.append(UnreadInclude(include, "no-resolver"))
-            continue
-        # A path a LoadFile is never asked for (a backslash, a null byte, or leading out of the
-        # document's directory without a document root that holds it, §2.3) is not read. One that
-        # leads out is valid and skipped below; any other is include-file-missing, as assembly
-        # refuses the template for it. It is not path-not-relative (an absolute path or a URI
-        # scheme, judged above), nor path-outside-root, which judges where it leads.
-        relative, problem = files.relative_check(include.written)
-        if relative is None and problem == "leads-out":
-            # Not judged above, so valid (§2.3) and, given a root, within it; but with no root
-            # configured this implementation reads nothing outside the document's directory (a
-            # document it does not control must not read what it names, #109), and no finding: it
-            # is *unread*, which the Warning of §17.5 says. A backslash or a null byte is not
-            # such a path, nor any other that cannot be asked for: still missing.
-            outcome.unread.append(UnreadInclude(include, "leads-out"))
-            unread.add(include.section)
-            continue
-        if relative is not None and files.is_own(relative):
-            result.error(
-                "include-cycle",
-                f"'{include.source}' includes the document itself, a circular include chain: a document "
-                f"cannot include itself, directly or through others (§12.2).",
-                line=include.line,
-            )
-            unread.add(include.section)
-            continue
-        fragment = None if relative is None else files.read(relative)
+        fragment = walk.attempt(include, None, ())
         if fragment is None:
-            result.error(
-                "include-file-missing",
-                f"The fragment '{include.written}' cannot be read: "
-                + ("it is not a relative path that can be read (§2.3)." if relative is None
-                   else "there is no such file, or it is not UTF-8 text (§12.2, §16.11)."),
-                line=include.line,
-            )
-            outcome.unread.append(UnreadInclude(include, "unreadable"))
-            unread.add(include.section)
-            continue
-        walk.shape(fragment)
-        # A file with frontmatter or a level 1 heading is not a fragment: it is reported, not spliced.
-        if not fragment.spliceable:
             unread.add(include.section)
             continue
         walk.incomplete = False

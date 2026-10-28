@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, assert_never
 from urllib.parse import unquote
 
 from ..directives import Directive, Lexed, is_escaped, mask_directives
-from ..files import is_absolute_reference, leaves_root, names_below
+from ..files import containment, is_absolute_reference, names_below
 from ..markdown import collapse_label_whitespace, label_end, normalize_label
 from ..models import Amends, Document, Metadata
 from ..positions import Locator
@@ -156,13 +156,13 @@ class FileReferences:
         )
         if absolute is not None:
             return "not-relative", absolute, absolute
-        if self._root is None:
-            return None
-        if self._depth is None:
-            return "document-outside", judged, judged
         for form in (judged, decoded):
             names = form if whole else _whole_names(form)  # what is judged, and what a finding says
-            if leaves_root(names, self._depth):
+            # (The same judgement as the files a document reads: ``files.containment``.)
+            contained = containment(names, rooted=self._root is not None, depth=self._depth)
+            if contained == "document-outside":
+                return "document-outside", judged, judged
+            if contained == "leaves":
                 return "leaves", form, names
         return None
 

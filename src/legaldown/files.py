@@ -68,6 +68,20 @@ def leaves_root(path: str, depth: int) -> bool:
     return False
 
 
+def containment(path: str, *, rooted: bool, depth: int | None) -> Literal["document-outside", "leaves"] | None:
+    """Whether the relative *path*, by its text alone, is outside the document root (§2.3): the one
+    judgement that ``FileReferences`` (the paths of a document) and ``Reach`` (the files it reads) share.
+    *rooted*: a root is configured, else the containment check does not run (None); *depth*: how
+    many names the document is below it (``names_below``), None when it is not within it
+    (``"document-outside"``: every path of it leads out); else ``"leaves"`` when the path leads out of the
+    root and None when it stays within."""
+    if not rooted:
+        return None
+    if depth is None:
+        return "document-outside"
+    return "leaves" if leaves_root(path, depth) else None
+
+
 def _check_relative(path: str, depth: int | None = None) -> tuple[str, Literal["leads-out", "invalid"] | None]:
     """The rules ``relative_path`` and ``relative_path_problem`` share, held once: *path*
     normalised (empty when it is none, and not worth normalising) and what is wrong with it.
@@ -139,11 +153,15 @@ class Reach:
         not loaded is taken to be) under *root* (None: none is configured)."""
         if root is None:
             return cls()
-        return cls(Path(root), names_below(root if directory is None else directory, root))
+        return cls(Path(os.path.abspath(root)), names_below(root if directory is None else directory, root))
+
+    def containment(self, path: str) -> Literal["document-outside", "leaves"] | None:
+        """``containment`` of *path* for this reach."""
+        return containment(path, rooted=self.root is not None, depth=self.depth)
 
     def check(self, path: str) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
         """``relative_path_check`` of *path* for this reach."""
-        if self.root is not None and self.depth is None:
+        if self.containment(path) == "document-outside":
             return None, "leads-out"  # the document is outside the root: so is everything it names
         return relative_path_check(path, depth=self.depth)
 
@@ -164,10 +182,12 @@ def file_loader(base: str | os.PathLike[str], *, root: str | os.PathLike[str] | 
     it names, once symbolic links are followed, is within the root: nothing outside
     the root is read, whatever *base* is.
     """
-    directory = Path(base)
+    # Made absolute now: a later change of the working directory changes nothing it reads.
+    directory = Path(os.path.abspath(base))
+    boundary = None if root is None else Path(os.path.abspath(root))
 
     def load_file(relative: str) -> str | None:
-        target = within(directory, relative, root)
+        target = within(directory, relative, boundary)
         try:
             return target.read_bytes().decode("utf-8") if target is not None and target.is_file() else None
         except (OSError, ValueError):  # UnicodeDecodeError is a ValueError

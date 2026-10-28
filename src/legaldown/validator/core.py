@@ -1138,6 +1138,15 @@ def validate_document(
     return _validate(document, final, resolve, import_definitions, import_attachment_definitions, _DOCUMENT)
 
 
+def validate_template(
+    document: Document, resolve: LoadFile | None, document_root: str | os.PathLike[str] | None
+) -> ValidationResult:
+    """``validate`` for the template of a ``Template``: it reads through *resolve* and no other way. A
+    document with a path (the template's, for the root and for the self-include test) is not read from beside
+    it by default, as assembly does not: with no *resolve*, nothing is read, and the Warning of §17.5 says so."""
+    return _validate(document, False, resolve, None, None, _DOCUMENT, document_root=document_root)
+
+
 def _resolver(
     document: Document,
     resolve: LoadFile | None,

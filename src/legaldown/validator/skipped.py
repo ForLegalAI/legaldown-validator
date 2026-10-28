@@ -60,14 +60,19 @@ REASONS: dict[UnreadReason, tuple[str, str]] = {
     ),
     "unreadable": ("could not be read", "could not be read"),
     "own": ("is the document itself", "are the document itself"),
+    "in-template": (
+        "is in a template's fragment, where it is template-fragment-invalid and not followed",
+        "are in a template's fragments, where they are template-fragment-invalid and not followed",
+    ),
     "rejected": (
         "has a path refused by path-not-relative or path-outside-root",
         "have paths refused by path-not-relative or path-outside-root",
     ),
 }
 #: The reasons an import of definitions did not happen for, with their wording: every one but the
-#: document's own, whose definitions are the document's already (``_Imported.not_imported`` in core.py).
-NOT_IMPORTED = {reason: phrases for reason, phrases in REASONS.items() if reason != "own"}
+#: document's own, whose definitions are the document's already (``_Imported.not_imported`` in core.py), and an
+#: include in a template's fragment, which is no import.
+NOT_IMPORTED = {reason: phrases for reason, phrases in REASONS.items() if reason not in ("own", "in-template")}
 
 
 def _wording(document: Document, phrases: dict[UnreadReason, tuple[str, str]]) -> dict[UnreadReason, tuple[str, str]]:
