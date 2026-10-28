@@ -280,6 +280,9 @@ class Image(NamedTuple):
 _ESCAPE_OR_ENTITY_RE = re.compile(
     r"\\([!-/:-@\[-`{-~])|&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});"
 )
+#: What an image holds that the specification does not read as one (``scan_inline_link(permissive=True)``): a control
+#: character but NUL, tab and line break, or DEL, in a destination, and a title that may follow a ``>`` directly.
+_PANDOC_ONLY_RE = re.compile("[\x01-\x08\x0b-\x1f\x7f]|>[\"'(]")
 #: ``[`` and ``]``, and a backslash with what it escapes: the brackets that count.
 _BRACKET_RE = re.compile(r"\\.|[\[\]]", re.DOTALL)
 
@@ -336,7 +339,8 @@ def images(text: str, lexed: Lexed, scanned: Scan | None = None) -> list[Image]:
             link = scan_inline_link(raw, close + 1, permissive=True)  # what any renderer reads as an image
             if link is not None:
                 start, stop, after = link
-                strict = scan_inline_link(raw, close + 1) is not None
+                # (the specification reads it too unless it holds what only pandoc reads: asked of the few that might)
+                strict = _PANDOC_ONLY_RE.search(raw, close + 1, after) is None or scan_inline_link(raw, close + 1) is not None
                 # Whether a directive is in it is the lexer's to say: a NUL in the text is only a character.
                 first = bisect_left(starts, start)
                 if first < len(starts) and starts[first] < stop:
