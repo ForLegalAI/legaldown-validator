@@ -464,7 +464,7 @@ class _Walks:
     is the walk's own result. The entries a list made, which no level read (the
     lists past ``MAX_LIST_DEPTH``), are dropped when it is done (``release``)."""
 
-    __slots__ = ("nested", "skipped", "skipped_past", "seen", "_made")
+    __slots__ = ("nested", "skipped", "skipped_past", "seen", "seen_nested", "_made")
 
     def __init__(self) -> None:
         self.nested: dict[str, NestedContent] = {}  # ``nested_content``
@@ -473,6 +473,7 @@ class _Walks:
         #: What a walk of a text found, for the same text asked again (not used once, as the others
         #: are): the lines of the list are read at each level of its items, with less indentation.
         self.seen: dict[tuple[bool, str], tuple[int, bool]] = {}
+        self.seen_nested: dict[str, NestedContent] = {}  # the same, of ``nested_content``
         self._made: list[tuple[dict[Any, Any], Any]] = []  # the entries, in the order they were made
 
     def mark(self) -> int:
@@ -501,12 +502,14 @@ class _Walks:
 
     def nested_content(self, content: str) -> NestedContent:
         """``nested_content(content)``."""
-        found = self.nested.pop(content, None) or nested_content(content, 0, _Rule(content))
-        if (first := self._first_marker(content, found.end)) is not None:
+        asked = self.seen_nested.get(content)
+        found = asked or self.nested.pop(content, None) or nested_content(content, 0, _Rule(content))
+        if asked is None and (first := self._first_marker(content, found.end)) is not None:
             self._remember(self.nested, content[first.end:], NestedContent(
                 found.columns - first.column, found.characters - first.cut, found.end - first.end,
                 tuple(level - first.column for level in found.levels[1:]),
             ))
+            self._remember(self.seen_nested, content, found)
         return found
 
     def skip_markers(self, content: str, *, code_ends: bool = True) -> tuple[int, bool]:
@@ -678,7 +681,7 @@ class _Quote:
             return
         column = self._item_column if self._item else 0
         if (
-            self.paragraph and not (self._item and self._item_inner is not None)
+            self.paragraph and not left and not (self._item and self._item_inner is not None)
             and column <= indent_width(content) <= column + 3
             and SETEXT_UNDERLINE_RE.match(content.lstrip(" \t"))
         ):
@@ -687,7 +690,7 @@ class _Quote:
             self.paragraph = False
             return
         if (
-            self.paragraph and last is not None and not self._item
+            self.paragraph and not left and last is not None and not self._item
             and _parse_table([last, content], 0) is not None
         ):
             # A delimiter row under the paragraph's line: a table (GFM).
@@ -835,16 +838,45 @@ def _marker(line: str) -> re.Match[str] | None:
     return None if RULE_RE.match(line) else LIST_ITEM_RE.match(line)
 
 
-def _starts_item(marker: re.Match[str] | None, chain: list[int], margin: int, width: int) -> bool:
+def _starts_item(
+    marker: re.Match[str] | None, chain: list[int], margin: int, width: int, nest: tuple[int, ...] = ()
+) -> bool:
     """True if *marker*, which a line of indentation *width* has (``_marker``),
     starts a list item, inside a list whose open items' content columns are
     *chain* (``_parse_list``) and whose own items are measured from *margin*:
     not if the line has none, or its marker lies four or more columns into the
-    content it is in (CommonMark: indented code, or text)."""
+    content it is in (CommonMark: indented code, or text). *nest*: the columns
+    further in that the content of the items nested on the first line of the
+    current item is, which a line in it reaches."""
     if marker is None:
         return False
     depth = bisect.bisect_right(chain, width)
-    return width - (chain[depth - 1] if depth else margin) < 4
+    base = chain[depth - 1] if depth else margin
+    if nest and depth == len(chain) and (reached := bisect.bisect_right(nest, width - base)):
+        base += nest[reached - 1]
+    return width - base < 4
+
+
+def _columns_in(width: int, base: int, nest: tuple[int, ...]) -> int:
+    """How many columns a line indented *width* is past the content of the item
+    whose content column is *base*, and the items nested on its first line (*nest*,
+    ``_reached``) that it reaches."""
+    reached = bisect.bisect_right(nest, width - base)
+    return width - base - (nest[reached - 1] if reached else 0)
+
+
+def _reached(nest: tuple[int, ...], offset: int, innermost: int, column: int) -> tuple[tuple[int, ...], int, int]:
+    """What the items nested on the first line of an item (``nest``: where their
+    content starts, further in than its own, ``offset`` the last, ``innermost``
+    past it too where a bare item ends the line) still hold of a line *column*
+    columns in: those whose content it reaches."""
+    held = bisect.bisect_right(nest, column)
+    if held < len(nest):
+        nest = nest[:held]
+        return nest, (offset := nest[-1] if nest else 0), offset
+    if innermost > offset and column < innermost:
+        return nest, offset, offset  # short of the bare item
+    return nest, offset, innermost
 
 
 def _scan_list(
@@ -884,6 +916,7 @@ def _scan_list(
     own: list[tuple[int, int]] = []  # the list's own items: first line, content column
     text: dict[int, int] = {}  # lazy lines that look like an item's start
     chain: list[int] = []  # the content columns of the current item and those it is nested in
+    item_start = index  # the line the current item starts on
     nested_at: dict[int, tuple[tuple[int, ...], int, int]] = {}  # of each, what its first line nests (``nest``, ``offset``, ``innermost``)
     # Where the list's own items are measured from: the margin, or for a list
     # in the content of an item before it (``_parse_body``'s tail), where it
@@ -949,12 +982,18 @@ def _scan_list(
                 # An item begins with at most one blank line: an empty item
                 # ends here, its parent's content going on.
                 chain.pop()
+            elif innermost > offset and end == item_start + 1 and chain:
+                # So does a bare item that ends the first line of the item.
+                innermost = offset
+                nested_at[len(chain) - 1] = (nest, offset, innermost)
             after = indent_width(lines[following])
             if chain and after >= chain[0]:
                 # Indented into an item still open: its content goes on, after
                 # the items nested in it too.
                 del chain[bisect.bisect_right(chain, after):]
                 content_indent = chain[-1]
+                # (and what the items nested on the first line of the item it is back in still hold)
+                nest, offset, innermost = _reached(*nested_at.get(len(chain) - 1, ((), 0, 0)), after - content_indent)
             elif (
                 not _starts_item(sibling := _marker(lines[following]), [], margin, after)
                 or _list_type(sibling) != list_type
@@ -971,29 +1010,29 @@ def _scan_list(
             # the line only lazily continues the quote's paragraph, if one is open.
             open_paragraph = lazy = quote.paragraph
             quote, quote_column = None, 0
-        if (
-            nest and not (quote.paragraph if quote is not None else open_paragraph)
-            and (held := bisect.bisect_right(nest, width - content_indent)) < len(nest)
-        ):
-            # Short of the innermost items nested on the first line, with no
-            # paragraph to continue: they end, and the line is in those it reaches.
-            nest = nest[:held]
-            offset = innermost = nest[-1] if nest else 0
+        if (nest or innermost > offset) and not (quote.paragraph if quote is not None else open_paragraph):
+            # Short of the innermost items nested on the first line (or of the bare one that
+            # ends it), with no paragraph to continue: they end, and the line is in those it reaches.
+            nest, offset, innermost = _reached(nest, offset, innermost, width - content_indent)
         was_open, was_table, was_paragraph = open_paragraph, table, paragraph  # before this line
         marker = looks = _marker(line)
         quote_lazy = False  # the line lazily continues the item's quote
         indented = width >= 2
         joined = False  # the line is paragraph text though it looks like an item
         lazy_line = False  # the line lazily continues an open paragraph
+        # The line is in the paragraph open: the item's own, or that of the items nested on
+        # its first line, which the line reaches.
+        nested_para = bool(offset) and was_open and not (paragraph or para_quote) and width >= content_indent + offset
+        in_paragraph = (paragraph and width >= content_indent) or nested_para  # (short of the item's content, its paragraph is out of reach)
         # The items the line is inside: those whose content it reaches.
         depth = bisect.bisect_right(chain, width)
-        if marker and not _starts_item(marker, chain, margin, width):
+        if marker and not _starts_item(marker, chain, margin, width, nest):
             # Four or more columns into the content it is in, a marker
             # starts no item (CommonMark).
-            if depth == len(chain):
+            if depth == len(chain) and (in_paragraph or not (quote.paragraph if quote is not None else open_paragraph)):
                 # The current item's: text of its open paragraph, or code.
                 marker = None
-                joined = paragraph and quote is None
+                joined = in_paragraph and quote is None
             elif quote.paragraph if quote is not None else open_paragraph:
                 # Short of the current item's content: it lazily continues
                 # the paragraph open there, as indented code cannot
@@ -1009,7 +1048,7 @@ def _scan_list(
                 # model holds no place for: a line of the list's item, as indented there.
                 marker = None
         if (
-            marker and paragraph and quote is None and indented
+            marker and in_paragraph and quote is None and indented
             and width >= content_indent and not _may_interrupt(line, marker)
         ):
             # A nested list would interrupt the item's own open paragraph,
@@ -1027,8 +1066,13 @@ def _scan_list(
             # indented code (CommonMark): no paragraph, no fence.
             first_code = indent_width(line[content_indent:]) >= 4
             empty = not content
+            item_start = end
             if not depth:
                 own.append((end, content_indent))
+            else:
+                # An item that starts short of the content of the items nested on the first line
+                # of the item it is in ends them (and what they would hold of its later lines).
+                nested_at[depth - 1] = _reached(*nested_at[depth - 1], width - chain[depth - 1])
             chain[depth:] = [content_indent]
             quote, quote_column, table, previous = None, 0, False, None
             # An item nested on its line: its content is further in, by *offset* columns,
@@ -1038,7 +1082,7 @@ def _scan_list(
             # So is that of a bare item ending the line (``1. -``), on the next.
             rest = content[inner:]
             bare = (
-                indent_width(rest) < 4 and not RULE_RE.match(rest)
+                not first_code and indent_width(rest) < 4 and not RULE_RE.match(rest)
                 and (end_marker := LIST_ITEM_RE.match(rest)) and is_blank(rest[end_marker.end():])
             )
             innermost = offset + (item_content_column(rest) if bare else 0)
@@ -1050,26 +1094,37 @@ def _scan_list(
             (chain and width >= chain[0])
             or ((quote.paragraph if quote is not None else open_paragraph) and (lazy_line or _is_lazy_line(line)))
         ):
-            if depth and width < content_indent and not was_open and quote is None:
+            if depth and width < content_indent and not (quote.paragraph if quote is not None else was_open):
                 # Short of the current item's content, with no paragraph of it to
                 # continue lazily, the line is in an outer item, which ends the
-                # items nested in it: it is read as indented there.
+                # items nested in it (and the quote it holds): it is read as indented there.
+                quote, quote_column = None, 0
                 content_indent = chain[depth - 1]
                 del chain[depth:]
-                nest, offset, innermost = nested_at.get(depth - 1, ((), 0, 0))  # the items nested on its first line
-                if (held := bisect.bisect_right(nest, width - content_indent)) < len(nest):
-                    nest = nest[:held]
-                    offset = innermost = nest[-1] if nest else 0
+                # (the items nested on its first line, that the line reaches)
+                nest, offset, innermost = _reached(*nested_at.get(depth - 1, ((), 0, 0)), width - content_indent)
             content = dedent(line, content_indent, expand=True) if indented else line.strip(" \t")
-            if offset and width >= content_indent + offset:
-                # In the items nested on the first line: it is read from their content.
-                shift = offset
-                content = dedent(line, content_indent + offset, expand=True)
+            # In the items nested on the first line, or the bare one that ends it: it is read from their content.
+            if innermost > offset and width >= content_indent + innermost:
+                deep = innermost
+            else:
+                deep = nest[reached - 1] if (reached := bisect.bisect_right(nest, width - content_indent)) else 0
+            if deep:
+                shift = deep
+                content = dedent(line, content_indent + deep, expand=True)
             if indent_width(content) < 4 and content.lstrip(" \t").startswith(">"):
                 content = content.lstrip(" \t")  # a block quote, indented up to three columns
             if lazy_line and quote is None:
                 # Kept four columns in, as if in the item's content: there too
                 # it continues the paragraph, and starts no item.
+                content = " " * 4 + content.strip(" \t")
+            elif (
+                quote is None and 0 < depth < len(chain) and was_open and not shift
+                and _columns_in(width, chain[depth - 1], nested_at.get(depth - 1, ((), 0, 0))[0]) >= 4
+            ):
+                # A line four or more columns into the item it is in, short of the item with
+                # the paragraph open, is lazy text of it, and starts no block there.
+                text[end] = content_indent + innermost + 4
                 content = " " * 4 + content.strip(" \t")
             elif (
                 quote is None and not (chain and width >= chain[0])
@@ -1114,6 +1169,9 @@ def _scan_list(
             if marker and offset and quote is None:
                 quote_column = para_column = content_indent + offset
                 para_quote = True  # a line short of the item that holds the quote only lazily continues it
+            elif not marker and quote is None and not shift:
+                # A quote that starts short of the items nested on the first line ends them.
+                nest, offset, innermost = _reached(nest, offset, innermost, width - content_indent)
             quote = quote or _Quote()
             if quote_lazy:
                 quote.lazy(body[2:])
@@ -1128,20 +1186,23 @@ def _scan_list(
             fence_inside = marker is not None or width >= content_indent
             # A fence in an item nested on the line (``- 1. ```) ends at a line short of
             # that item's content, as does HTML (``html_column``).
-            fence_column = content_indent + offset if offset and (marker or shift) else 0
+            reach = offset if marker else shift  # the items nested on the first line that the block is in
+            fence_column = content_indent + reach if reach else 0
             # So may raw HTML, which runs to its end or its item's (a lone
             # tag cannot interrupt the item's paragraph, CommonMark).
             opened = None if fence or (marker and first_code) else html_block_opening(
-                body, in_paragraph=paragraph and not marker
+                body, in_paragraph=in_paragraph and not marker
             )
             if opened is not None and (opened[0] is None or not opened[0].search(body)):
-                html, html_column = opened, content_indent + (offset if marker or shift else 0)
+                # (the block of a line short of the current item is its container's: the outer item that the line reaches)
+                outer = chain[depth - 1] if marker is None and 0 < depth < len(chain) else content_indent
+                html, html_column = opened, outer + reach
             # An empty item has no text, nor one opening with code.
             lazy = fence is None and opened is None and bool(content.strip(" \t")) and not (marker and first_code)
         # Content indented four more columns where no paragraph is open is
         # indented code, and a table's rows are no paragraph: a lazy line
         # continues neither (CommonMark).
-        code = indent_width(content) >= 4 + offset - shift and not (paragraph or open_paragraph)
+        code = indent_width(content) >= 4 + max(offset - shift, 0) and not (paragraph or open_paragraph)
         table = (table and _continues_table(content)) or (
             previous is not None and not code and not previous_code
             # Short of an item nested on the first line, the line is lazy: a
@@ -1161,14 +1222,14 @@ def _scan_list(
         # nested on its first line (``- 1. a`` and ``     b``): a sibling of
         # that nested item then starts a list, as after no text at all.
         paragraph = prose and (joined or _is_paragraph_text(content)) and (
-            joined or marker is not None or was_paragraph or not (was_open or shift)
+            (joined and not nested_para) or marker is not None or was_paragraph or not (was_open or shift)
         )
         # Open in the item or in an item nested on its line: a lazy line
         # continues either.
         # (A line that looks like an item but is text, or whose marker cannot
         # interrupt the paragraph that is open, starts no item for cmark, though
         # perhaps one here: what it holds is not read as code.)
-        starts_item = looks is None or (marker is not None and (not was_open or _may_interrupt(line, marker)))
+        starts_item = looks is None or (marker is not None and (not in_paragraph or _may_interrupt(line, marker)))
         open_paragraph = prose and (
             joined or _is_paragraph_text(content, nested=True, walks=walks, code_ends=starts_item)
         )
@@ -1506,7 +1567,7 @@ def _is_paragraph_text(
     break, a nested list item, a fence, or an HTML block. *nested*: a nested
     item's text counts too (`1. item` opens that item's paragraph). *code_ends*:
     a nested item with more than four columns of spacing holds code, no paragraph.
-    A thematic break indented four columns or more is none: text."""
+    A thematic break or an item indented four columns or more is none: text."""
     indented = indent_width(content) >= 4
     if nested:
         position, code = (walks.skip_markers if walks else _skip_markers)(content, code_ends=code_ends)
@@ -1514,7 +1575,7 @@ def _is_paragraph_text(
             return False
         content = content[position:]
     return bool(content.strip(" \t")) and not (
-        ATX_HEADING_RE.match(content) or (RULE_RE.match(content) and not indented) or LIST_ITEM_RE.match(content)
+        ATX_HEADING_RE.match(content) or (not indented and (RULE_RE.match(content) or LIST_ITEM_RE.match(content)))
         or FENCE_OPEN_RE.match(content) or HTML_BLOCK_START_RE.match(content)
     )
 
