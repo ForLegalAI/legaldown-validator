@@ -863,8 +863,16 @@ template with Errors in the validator's template rules (`Template.problems`); th
 
 Assembly edits the template's source and so inherits a few limits of the parser's reading of it:
 
-- An item marker inside a block quote (`> 2. x`) is judged from the line before for the
-  line-start check (§15.7.3), not from the list the quote's content holds.
+- The line-start check (§15.7.3) reads the output with the parser, line by line, against the
+  template line read the same way, so a marker is judged in the container that holds it (`> 2. x`,
+  a lazy line, a line after a deleted one). It cannot give a backslash a position where an empty
+  insertion leaves the template's own markers bare, and they begin the construct (`text` over
+  `- {{choose:}}` with an empty phrase: the bare `-` underlines `text`; `- - - {{choose:}}`: a
+  thematic break; a bare `> 2. ` that detaches the lazy lines after it, so that the next `> ` opens
+  a quote of its own). The specification gives no position for these; the output keeps the
+  template's markers as written. Inserted text in the one top-level block of a long list item or
+  quote, each answer beginning a block (`- `, `# `), is read against that block's earlier lines:
+  quadratic in the size of the block.
 - Removing a drafting note or unit can join what it separated: indented code after a removed note
   that followed a list becomes a paragraph of the list's last item, and two code blocks separated
   only by a removed note merge. §15.7.2 step 2 removes the lines; the template author keeps such

@@ -1535,8 +1535,6 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
     return None
 
 
-
-
 _QUOTE_MARKER_RE = re.compile(r"[ \t]{0,3}>[ \t]?")
 _SIMPLE_RE = re.compile(r"(?:[ \t]{0,3}>[ \t]?|[ \t]{0,3}(?:[-+*]|1[.)])[ \t]+)*")
 _PLAINISH_RE = re.compile(r"[ \t>*+\-0-9.)]*")
@@ -1690,9 +1688,9 @@ class _Reading:
         """Where the content of *line* begins in the template's reading of it (after
         its quote markers and item markers, never past its first insertion), and
         whether an insertion begins it."""
-        self.begun(line.slot)
+        begun = self.begun(line.slot)
         if line.slot not in self._starts:
-            self._starts[line.slot] = self._measure(line, self.begun(line.slot))
+            self._starts[line.slot] = self._measure(line, begun)
         return self._starts[line.slot]
 
     def _measure(self, line: _Line, begun: Counter[str]) -> tuple[int, bool]:
@@ -1720,7 +1718,13 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
     """The line-start check (§15.7.3) of every line that needs it, in order: each is read in
     the output as written so far. A line the parser need not be asked about is checked by
     its text; the others by what the parser reads them as beginning, compared with what it
-    reads the template line as beginning (``_Reading``)."""
+    reads the template line as beginning (``_Reading``).
+
+    The template is parsed once. The output is parsed from the last top-level block on
+    (``_last_block``): what is closed before it cannot change how a later line is read. A
+    long quote or list item is one such block, so inserted text that begins a block in each
+    of its lines is read against the lines before it in the block, each time: quadratic in
+    the size of that block (tests/test_scaling_assembly.py)."""
     checked = [line for line in lines if line.check]
     if not checked:
         return
@@ -1791,14 +1795,13 @@ def _kept(line: str, before: list[str], template: Counter[str], plain: str, pref
     return not read - template and not _free(line[_marker_end(line, read["item"], prefix):], plain[prefix:])
 
 
-_FREE = ("heading", "quote", "fence")
-
-
 def _free(content: str, template: str) -> bool:
-    """*content* begins a construct that opens whatever the context, which *template* does
-    not: the two the parser does not read, a bare ``#`` and a ``>`` on a lazy line, and a fence."""
-    kind = _construct(content, in_paragraph=True)
-    return kind in _FREE and _construct(template, in_paragraph=True) != kind
+    """*content* begins what the parser does not read as a beginning, and *template* does not: a
+    bare ``#`` (a heading without text) or a ``>`` on a line that continues a paragraph, which
+    the quote it continues takes in. Everything else the parser reads, in every container."""
+    if _construct(content, in_paragraph=True) == "quote":
+        return _construct(template, in_paragraph=True) != "quote"
+    return bool(_BARE_ATX_RE.match(content)) and not _BARE_ATX_RE.match(template)
 
 
 def _fix(candidate: str, prefix: int, before: list[str], template: Counter[str], plain: str, column: int) -> str:
