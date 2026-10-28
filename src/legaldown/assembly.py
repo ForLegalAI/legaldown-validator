@@ -1670,6 +1670,7 @@ class _Tail(NamedTuple):
     begun: Counter[str]  #: the constructs it begins
     start: int  #: where the last top-level block starts, after any link definitions before it
     kind: str  #: and its kind
+    top: int  #: where that block starts, of a list the list itself (``start`` is its last item)
     paragraph: tuple[tuple[int, ...], int] | None = None  #: the paragraph it ends in (``_signatures``)
 
 
@@ -1678,25 +1679,26 @@ def _tail(lines: list[str]) -> _Tail:
     starts: the lines before that are closed, and later lines cannot change their reading."""
     last = len(lines) - 1
     begun, _columns, layout, paragraph = _signatures(lines, last)
-    start, kind = _last_block(layout)
-    return _Tail(begun[last], start, kind, paragraph)
+    start, kind, top = _last_block(layout)
+    return _Tail(begun[last], start, kind, top, paragraph)
 
 
-def _last_block(layout: _Layout) -> tuple[int, str]:
+def _last_block(layout: _Layout) -> tuple[int, str, int]:
     """Where the last top-level block of a layout starts (a block after link definitions starts
-    where they do: a definition is read out of a paragraph), and the kind of that block."""
+    where they do: a definition is read out of a paragraph), the kind of that block, and where it
+    starts as a block: for a list its first item's line, where *start* is its last item's."""
     spans = sorted(
-        [(h.start, "heading") for h in layout.headings]
-        + [(sp.items[-1].start if sp.items else sp.start, sp.kind) for c in layout.containers() for sp in c]
+        [(h.start, "heading", h.start) for h in layout.headings]
+        + [(sp.items[-1].start if sp.items else sp.start, sp.kind, sp.start) for c in layout.containers() for sp in c]
     )
     if not spans:
-        return 0, ""
-    at = spans[-1][0]
+        return 0, "", 0
+    at, top = spans[-1][0], spans[-1][2]
     for index in range(len(spans) - 1, 0, -1):
         if spans[index - 1][1] != "link_definition":
             break
-        at = spans[index - 1][0]
-    return at, spans[-1][1]
+        at, top = spans[index - 1][0], spans[index - 1][2]
+    return at, spans[-1][1], top
 
 
 class _Reading:
@@ -1712,6 +1714,12 @@ class _Reading:
         self._begun: defaultdict[int, Counter[str]] | None = None
         self._columns: dict[int, int] = {}
         self._starts: dict[int, tuple[int, bool, str]] = {}
+        self._tops: frozenset[int] = frozenset()
+
+    def tops(self) -> frozenset[int]:
+        """The lines where the parser reads a top-level block of the template begin."""
+        self.begun(0)
+        return self._tops
 
     def begun(self, slot: int) -> Counter[str]:
         if self._begun is None:
@@ -1749,7 +1757,7 @@ class _Reading:
         return " " * min(self._columns.get(line.slot, 0), indent_width(line.plain[:line.first]))
 
     def _read(self) -> None:
-        self._begun, self._columns, *_ = _signatures(self.plains)
+        self._begun, self._columns, layout, _ = _signatures(self.plains)
         changed = False
         for line in self._checked:
             if line.first is None or not _PLAINISH_RE.fullmatch(line.plain[:line.first]):
@@ -1761,7 +1769,10 @@ class _Reading:
                 self.plains[line.slot] = stripped
                 changed = True
         if changed:
-            self._begun, self._columns, *_ = _signatures(self.plains)
+            self._begun, self._columns, layout, _ = _signatures(self.plains)
+        self._tops = frozenset(
+            [h.start for h in layout.headings] + [sp.start for container in layout.containers() for sp in container]
+        )
 
 
 _QUOTED_RE = re.compile(r" {0,3}>")
@@ -1793,7 +1804,8 @@ class _Window:
 
     def __init__(self, lines: list[_Line]) -> None:
         self.lines = lines
-        self.sync = 0  # where the last top-level block of lines[:known] starts
+        self.sync = 0  # where the last top-level block of lines[:known] starts (of a list, its last item)
+        self.top = 0  # and where that block starts as a block (of a list, the list)
         self.known = 0
         self.kind = ""  # the kind of that block
         self.mode = ""
@@ -1806,14 +1818,16 @@ class _Window:
             head = _headers(self.chain) or []
             if self.mode == "blank":
                 return [*head, ""]
-            return [*head, *(self.lines[i].text for i in sorted({self.first, k - 1}))]
+            # A blank line keeps the paragraph from being the header's: a line like ``--`` would underline it.
+            return [*head, *([""] if head else []), *(self.lines[i].text for i in sorted({self.first, k - 1}))]
         if self.known < k and self.kind == "quote" and all(
             _QUOTED_RE.match(line.text) for line in self.lines[self.known - 1:k]
         ):
             self.known = k  # lines of a quote each begin with ">", and none of them is where a quote ends
         if self.known < k:
             texts = [line.text for line in self.lines[self.sync:k]]
-            start, self.kind = _last_block(_layout(texts))
+            start, self.kind, top = _last_block(_layout(texts))
+            self.top = self.sync + top
             self.sync += start
             self.known = k
         return [line.text for line in self.lines[self.sync:k]]
@@ -1822,6 +1836,7 @@ class _Window:
         """Line *k*, which was read after *before* as *tail*, is written."""
         if not self.mode and tail is not None:
             window = self.sync
+            self.top = window + tail.top
             self.sync += tail.start
             self.known = k + 1
             self.kind = tail.kind
@@ -1900,8 +1915,12 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
     for k, line in enumerate(lines):
         if line.after or line.bare:
             differs = k
-        # A top-level block that is closed cannot change how the lines after it are read.
-        perturbed = differs >= window.sync
+        # A line that differs from the template's reading changes how the lines after it in its top-level
+        # block are read. Once a top-level block starts, in the output and in the template at the same line,
+        # after the differing line, a closed block cannot change how later lines are read.
+        perturbed = differs >= 0 and not (
+            differs < window.top and lines[window.top].slot in reading.tops()
+        )
         if not line.check:
             window.written(k)
             continue
