@@ -26,6 +26,7 @@ from .definitions import (
     Fragment,
     LinkDefinition,
     ListFragment,
+    PlacedLinkDefinition,
     block_fragments,
     collect_definitions,
     collect_link_definitions,
@@ -33,6 +34,7 @@ from .definitions import (
     find_definition_anchors,
     id_term,
     list_fragments,
+    locate_link_definitions,
     text_fragments,
 )
 from .directives import Directive, Lexed, format_value, is_escaped, iter_directives, lex
@@ -111,6 +113,8 @@ __all__ = [
     # by the label links and images name them with
     "collect_link_definitions",
     "LinkDefinition",
+    "locate_link_definitions",
+    "PlacedLinkDefinition",
     # A block or list item written as LegalDown source
     "render_block",
     "render_item",

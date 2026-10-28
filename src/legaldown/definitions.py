@@ -450,20 +450,38 @@ def collect_link_definitions(document: Document) -> dict[str, LinkDefinition]:
     definition holding a directive is paragraph text (#92), so it is none:
     its destination is not final until the directive is filled in. Derived
     from the blocks on each call, not a field of the document."""
-    return {key: LinkDefinition(block.target, block.title) for key, (_where, block) in _link_definitions(document).items()}
+    return {key: LinkDefinition(each.definition.target, each.definition.title) for key, each in locate_link_definitions(document).items()}
 
 
-def _link_definitions(document: Document) -> dict[str, tuple[tuple[int | None, int], Block]]:
-    """``collect_link_definitions`` with the blocks themselves, each with the
-    section (None: the preamble) and index of the top-level block it is in:
-    the first of each label, in document order."""
-    found: dict[str, tuple[tuple[int | None, int], Block]] = {}
+class PlacedLinkDefinition(NamedTuple):
+    """A link reference definition and where it is in the document
+    (``locate_link_definitions``): the ``link_definition`` *definition* block
+    itself, the *section* (None: the preamble) and the index *block* of the
+    top-level block it is in, and its *ordinal* among the ``link_definition``
+    blocks in that block, nested ones included, in document order. The
+    ordinal names the block for ``Locator.definition`` (its line) and orders
+    the definitions of one top-level block. ``collect_link_definitions`` gives
+    the ``LinkDefinition`` (url and title) of each, by label."""
+
+    section: int | None
+    block: int
+    ordinal: int
+    definition: Block
+
+
+def locate_link_definitions(document: Document) -> dict[str, PlacedLinkDefinition]:
+    """``collect_link_definitions`` with the blocks themselves and where they are
+    (``PlacedLinkDefinition``): the first definition of each label, by the same key
+    (``markdown.normalize_label``), in document order."""
+    found: dict[str, PlacedLinkDefinition] = {}
     for section, index, top in document.iter_indexed_blocks():
+        ordinal = 0
         for block in nested_blocks(top):
             if block.kind == "link_definition":
                 key = normalize_label(block.label)
                 if key:
-                    found.setdefault(key, ((section, index), block))
+                    found.setdefault(key, PlacedLinkDefinition(section, index, ordinal, block))
+                ordinal += 1
     return found
 
 

@@ -1221,7 +1221,6 @@ def _validate(
     # validator.helpers -> validator/__init__ -> core).
     from ..definitions import (
         DefinitionRef,
-        _link_definitions,
         block_fragments,
         collect_definitions,
         find_definition_anchors,
@@ -1869,7 +1868,7 @@ def _validate(
 
     # The images that name their file by a link reference definition (#92, #104):
     # the definition's path is judged once, where it is written.
-    reference_images = ReferenceImages(_link_definitions(document))
+    reference_images = ReferenceImages(document)
 
     # Every {{ref:}}, {{term:}}, and {{attach:}}: (target, presence, in a
     # drafting note, line), for reference safety (§15.4).

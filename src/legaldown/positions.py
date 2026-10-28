@@ -380,6 +380,7 @@ class Locator:
         self._map: SourceMap | None = source_map if source_map is not None and source_map.fits(document) else None
         self._document = document
         self._leaves: dict[tuple[int | None, int], list[_Leaf] | None] = {}
+        self._definition_lines: dict[tuple[int | None, int], list[int]] = {}
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
 
     def start(self) -> int | None:
@@ -453,6 +454,29 @@ class Locator:
                     )
         return self._map.find(start, end, needle, [], None, 0, nth, self._cache)
 
+    def definition(self, section: int | None, index: int, ordinal: int) -> int | None:
+        """The first line of the link reference definition (#92) with *ordinal*
+        (``definitions.PlacedLinkDefinition``) among the ``link_definition`` blocks
+        of a top-level block, in an item or a quote too: the lines of its own
+        block, not a search for its text. None without a source map, or when the
+        document no longer fits it."""
+        if self._map is None:
+            return None
+        key = (section, index)
+        if key not in self._definition_lines:
+            blocks = self._document.preamble if section is None else self._document.sections[section].blocks
+            body = self._map.body_start
+            try:
+                self._definition_lines[key] = [
+                    body + base + span.start + 1
+                    for span, block, _depth, base in _walk_spans([self._map.span(section, index)], [blocks[index]], 0, 0)
+                    if block.kind == "link_definition"
+                ]
+            except ValueError:
+                self._definition_lines[key] = []  # items or quote content that no longer match the source
+        lines = self._definition_lines[key]
+        return lines[ordinal] if ordinal < len(lines) else None
+
     def lifted(self, section: int | None, index: int, needle: str) -> int | None:
         """The line of the directive the parser lifted out of a top-level
         paragraph into its fields (a ``{{ref:}}``, a ``{{term:}}``, a
@@ -478,27 +502,17 @@ class Locator:
         # The parser, and so this module, builds on these modules.
         from .definitions import _own_fragments, block_fragments
         from .models import LIST_KINDS
-        from .parser import MAX_QUOTE_DEPTH, quote_content
+        from .parser import MAX_QUOTE_DEPTH
 
         assert self._map is not None
         blocks = self._document.preamble if section is None else self._document.sections[section].blocks
         top = blocks[index]
         body = self._map.body_start
 
-        def walk(spans: Any, blocks: Any, depth: int, base: int) -> Iterator[tuple[Any, Block, int, int]]:
-            for span, block in zip(spans, blocks, strict=True):
-                yield span, block, depth, base
-                if block.kind in LIST_KINDS:
-                    for item_span, item in zip(span.items, block.items, strict=True):
-                        yield from walk(item_span.blocks, item.blocks, depth + 1, base)
-                elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
-                    children, inner = quote_content(block.text, depth + 1)
-                    yield from walk(inner, children, depth + 1, base + span.start)
-
         leaves: list[_Leaf] = []
         count = 0
         try:
-            for span, block, depth, base in walk([self._map.span(section, index)], [top], 0, 0):
+            for span, block, depth, base in _walk_spans([self._map.span(section, index)], [top], 0, 0):
                 if block.kind in LIST_KINDS or (block.kind == "quote" and depth < MAX_QUOTE_DEPTH):
                     continue  # its blocks hold its text
                 own = [text for text, _position in _own_fragments(block)]
@@ -517,6 +531,25 @@ class Locator:
         if count != len(block_fragments(top)):
             return None
         return leaves
+
+
+def _walk_spans(spans: Any, blocks: Any, depth: int, base: int) -> Iterator[tuple[Any, Block, int, int]]:
+    """Every block of *blocks* and of their list items and block quotes, in the order
+    ``definitions.nested_blocks`` gives, each as ``(span, block, depth, base)``: its
+    span (``parser._BlockSpan``), the items and quotes it is in, and the line
+    offset *base* its span is counted from (a quote's content is counted from the
+    quote's first line)."""
+    from .models import LIST_KINDS
+    from .parser import MAX_QUOTE_DEPTH, quote_content
+
+    for span, block in zip(spans, blocks, strict=True):
+        yield span, block, depth, base
+        if block.kind in LIST_KINDS:
+            for item_span, item in zip(span.items, block.items, strict=True):
+                yield from _walk_spans(item_span.blocks, item.blocks, depth + 1, base)
+        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+            children, inner = quote_content(block.text, depth + 1)
+            yield from _walk_spans(inner, children, depth + 1, base + span.start)
 
 
 def _lifted(block: Block, own: list[str], first: int, lines: list[str], start: int, end: int) -> _Leaf | None:
