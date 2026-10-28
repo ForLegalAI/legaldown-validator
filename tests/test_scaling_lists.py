@@ -213,26 +213,28 @@ def test_items_nested_on_one_line_are_measured_on_themselves(prefix: str, monkey
     assert total[0] < 1000 * len(source)
 
 
+@pytest.mark.parametrize("trailing", ["a\n", "a\tb\n", "\ta\n"], ids=["text", "tab-in-text", "tab-after-markers"])
 @pytest.mark.parametrize("prefix", ["", "> ", "- > "])
-def test_each_level_of_nesting_reads_its_own_marker_of_a_line_of_them(prefix: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_each_level_of_nesting_reads_its_own_marker_of_a_line_of_them(
+    prefix: str, trailing: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A line of items nested on it is read at each level of list nesting, down
     to sixty-four, with its first marker gone. What a level finds is told to the
-    next, so that the markers are read two or six times each in all (as the
-    levels need them), not sixty-four: 648,000 reads for a line of 20,000 before."""
+    next, so that the markers are read two to six times each in all (as the
+    levels need them), not sixty-four: 648,000 reads for a line of 20,000 before.
+    A tab in the text after the markers, which their columns do not depend on,
+    leaves it so (5 s instead of 0.25 s, for a line of 20,000, when a tab
+    anywhere in the line kept the levels from telling each other)."""
     markers = 2000
     calls = [0]
+    real = markdown_module.item_marker_at
 
-    def counted(real: Any) -> Any:
-        def reading(*args: Any, **kwargs: Any) -> Any:
-            calls[0] += 1
-            return real(*args, **kwargs)
+    def reading(*args: Any, **kwargs: Any) -> Any:
+        calls[0] += 1
+        return real(*args, **kwargs)
 
-        return reading
-
-    for module, name in [(markdown_module, "item_marker_at"), (parser_module, "item_marker_at"),
-                         (parser_module, "item_marker_end")]:
-        monkeypatch.setattr(module, name, counted(getattr(module, name)))
-    block = parse(prefix + "- " * markers + "a\n").preamble[0]
+    monkeypatch.setattr(markdown_module, "item_marker_at", reading)
+    block = parse(prefix + "- " * markers + trailing).preamble[0]
     while block.kind != "quote" and block.items:
         block = block.items[0].blocks[0]
     if block.kind == "quote":

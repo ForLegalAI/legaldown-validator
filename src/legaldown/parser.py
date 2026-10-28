@@ -28,7 +28,9 @@ from .markdown import (
     HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
     LIST_ITEM_PATTERN,
-    advance_column,
+    ItemMarker,
+    ItemMarkers,
+    NestedContent,
     closes_fence,
     dedent,
     fence_end,
@@ -38,8 +40,6 @@ from .markdown import (
     indented_code_end,
     is_blank,
     item_content_column,
-    item_marker_at,
-    item_marker_end,
     nested_content,
     paragraph_text,
     strip_text,
@@ -426,22 +426,18 @@ def _skip_markers(content: str, *, quotes: bool = False, is_rule: _Rule | None =
     markers it opens with, one after the other, while what is left is no
     thematic break; *code*: after a marker with more than four columns of
     spacing, whose content is indented code, which nests no item and is no
-    paragraph. *quotes*: block quote markers between them count too. Each
-    marker is matched at an offset, and a rest is tested for a break from the
-    end of the line (``_Rule``): a line of markers (``- - - - a``) is not
+    paragraph. *quotes*: block quote markers between them count too. The
+    markers are walked (``ItemMarkers``) and a rest is tested for a break from
+    the end of the line (``_Rule``): a line of markers (``- - - - a``) is not
     copied, or read, once per marker."""
     is_rule = is_rule or _Rule(content)
-    position = column = 0  # *column*: where the text at *position* is in its line, which tabs count
-    while True:
-        if quotes:
-            skipped = _QUOTE_MARKERS_RE.match(content, position).end()
-            column, position = advance_column(column, content[position:skipped]), skipped
-        marker = item_marker_at(content, position, column)
-        if marker is None or is_rule(position):
-            return position, False
-        position, column = marker.end, marker.end_column
+    walk = ItemMarkers(content, between=_QUOTE_MARKERS_RE if quotes else None)
+    for marker in walk:
+        if is_rule(marker.start):
+            return marker.start, False
         if marker.gap > 4 and not marker.blank:
-            return position, True
+            return marker.end, True
+    return walk.position, False
 
 
 class _Walks:
@@ -457,38 +453,60 @@ class _Walks:
     will find; the walk of a text first asks for its own key and takes the
     entry out, so that an entry is used once. The key is the exact text, so an
     entry answers only the walk of that text, whatever level asks. The walk is
-    a function of the text alone, and a text that holds a tab is never given an
-    entry, as the columns of a tab depend on where the text starts. So a miss
-    only costs the walk that was spared, and a hit is the walk's own result."""
+    a function of the text alone, and no entry is made when the part of the
+    text that was walked holds a tab, as the columns of a tab depend on where
+    the text starts. So a miss only costs the walk that was spared, and a hit
+    is the walk's own result. The entries a list made, which no level read (the
+    lists past ``MAX_LIST_DEPTH``), are dropped when it is done (``release``)."""
 
-    __slots__ = ("nested", "skipped")
+    __slots__ = ("nested", "skipped", "_made")
 
     def __init__(self) -> None:
-        self.nested: dict[str, tuple[int, int]] = {}  # ``nested_content``
+        self.nested: dict[str, NestedContent] = {}  # ``nested_content``
         self.skipped: dict[str, tuple[int, bool]] = {}  # ``_skip_markers``
+        self._made: list[str] = []  # the keys of the entries, in the order they were made
 
-    def nested_content(self, content: str) -> tuple[int, int]:
+    def mark(self) -> int:
+        """Where the entries a list makes begin."""
+        return len(self._made)
+
+    def release(self, mark: int) -> None:
+        """Drop the entries made since *mark*, which no level will read now."""
+        for key in self._made[mark:]:
+            self.nested.pop(key, None)
+            self.skipped.pop(key, None)
+        del self._made[mark:]
+
+    def _first_marker(self, content: str, walked: int) -> ItemMarker | None:
+        """The first marker of *content* if the walk of its first *walked*
+        characters went past it, so that the next level's walk is told the rest
+        (none when a tab is in what was walked: its columns depend on where the
+        text starts)."""
+        if not walked or "\t" in content[:walked]:
+            return None
+        first = next(iter(ItemMarkers(content)), None)
+        return first if first is not None and walked > first.end else None
+
+    def nested_content(self, content: str) -> NestedContent:
         """``nested_content(content)``."""
-        found = self.nested.pop(content, None)
-        if found is None:
-            found = nested_content(content, 0, _Rule(content))
-        columns, characters = found
-        if characters and "\t" not in content:  # a tab's columns depend on where the text starts
-            first = item_marker_at(content)  # which the walk went through
-            if first is not None and characters > first.cut:
-                self.nested[content[first.end:]] = (columns - first.column, characters - first.cut)
+        found = self.nested.pop(content, None) or nested_content(content, 0, _Rule(content))
+        if (first := self._first_marker(content, found.end)) is not None:
+            rest = content[first.end:]
+            self.nested[rest] = NestedContent(
+                found.columns - first.column, found.characters - first.cut, found.end - first.end,
+                tuple(level - first.column for level in found.levels[1:]),
+            )
+            self._made.append(rest)
         return found
 
     def skip_markers(self, content: str) -> tuple[int, bool]:
         """``_skip_markers(content)``."""
-        found = self.skipped.pop(content, None)
-        if found is None:
-            found = _skip_markers(content)
+        found = self.skipped.pop(content, None) or _skip_markers(content)
         position, code = found
-        if position and "\t" not in content:
-            first = item_marker_end(content)  # which the walk went through
-            if first is not None and position > first:
-                self.skipped[content[first:]] = (position - first, code)
+        if (first := self._first_marker(content, position)) is not None:
+            rest = content[first.end:]
+            self.skipped[rest] = (position - first.end, code)
+            self._made.append(rest)
         return found
 
 
@@ -518,10 +536,12 @@ def _item_body(content: str, is_rule: _Rule | None = None) -> tuple[str, int]:
     of the line."""
     is_rule = is_rule or _Rule(content)
     position = column = passed = 0  # *passed*: columns of a tab the last cut went through
-    while (item := item_marker_at(content, position, column + passed)) is not None and passed + item.indent < 4:
-        if is_rule(position) or item.blank:
+    for item in ItemMarkers(content):
+        if item.indent >= 4 or is_rule(item.start) or item.blank:
             break
         position, column, passed = item.cut, item.column, item.remainder
+        if item.gap > 4:
+            break  # the content is code: five columns of spacing leave four, which is no marker's indent
     return " " * passed + content[position:], column
 
 
@@ -877,7 +897,8 @@ def _scan_list(
             quote, table, previous = None, False, None
             # An item nested on its line: its content is further in, by *offset* columns,
             # which is *inner* characters of the text.
-            offset, inner = walks.nested_content(content)
+            found = walks.nested_content(content)
+            offset, inner = found.columns, found.characters
             # So is that of a bare item ending the line (``1. -``), on the next.
             rest = content[inner:]
             bare = not RULE_RE.match(rest) and (end_marker := LIST_ITEM_RE.match(rest)) and is_blank(rest[end_marker.end():])
@@ -1063,6 +1084,7 @@ def _parse_list(
     a directive into block fields. *offset*: the source line ``lines[0]``
     is (for the item spans); *depth*: how many items the list is in, past
     ``MAX_LIST_DEPTH`` of which an item's content is one paragraph."""
+    mark = walks.mark()
     own, end, lazy, text = _scan_list(lines, index, list_type=list_type, walks=walks)
     items: list[ListItem] = []
     spans: list[_ItemSpan] = []
@@ -1085,6 +1107,7 @@ def _parse_list(
             )
         items.append(ListItem(blocks=blocks))
         spans.append(_ItemSpan(offset + first, offset + stop, layout.preamble))
+    walks.release(mark)
     kind = "ordered_list" if list_type in ".)" else "unordered_list"
     return Block(kind=kind, items=items), end, lazy, spans
 

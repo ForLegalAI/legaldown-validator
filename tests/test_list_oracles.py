@@ -127,7 +127,7 @@ def test_nested_content_is_what_nested_offset_was() -> None:
     rng = random.Random(_SEED)
     for _ in range(30000):
         line = _markers(rng, newlines=False) + rng.choice(["", "a", " a"])
-        columns, characters = nested_content(line)
+        columns, characters, *_ = nested_content(line)
         assert columns == _old_nested_offset(_expand_prefix(line)), repr(line)
         if "\t" not in line:
             assert characters == columns, repr(line)

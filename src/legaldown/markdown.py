@@ -283,6 +283,8 @@ class ItemMarker(NamedTuple):
     """A list item marker found in a text (``item_marker_at``) with where its
     content starts, in the text and in columns."""
 
+    start: int  #: the index where it was looked for: its blanks before it begin there
+    start_column: int  #: and its column
     lead: int  #: blanks before the marker, in characters
     indent: int  #: and in columns
     gap: int  #: columns of spacing after the marker
@@ -292,13 +294,7 @@ class ItemMarker(NamedTuple):
     column: int  #: the column of that
     blank: bool  #: nothing follows the marker and its spacing: an empty item
     remainder: int  #: columns of a tab that ``cut`` passes, which the content starts inside of
-
-
-def item_marker_end(text: str, position: int = 0) -> int | None:
-    """The index just past the list item marker, and its spacing, that *text*
-    has at *position*, or None."""
-    found = _MARKER_AT_RE.match(text, position)
-    return None if found is None else found.end()
+    number: str | None  #: the digits of an ordered item's number
 
 
 def item_marker_at(text: str, position: int = 0, column: int = 0) -> ItemMarker | None:
@@ -313,23 +309,49 @@ def item_marker_at(text: str, position: int = 0, column: int = 0) -> ItemMarker 
     if found is None:
         return None
     lead_end, marker_end, gap_start, end = found.end("lead"), found.end("marker"), found.start("gap"), found.end()
-    if text.find("\t", position, end) < 0:
-        marker_column = column + lead_end - position
-        after = marker_column + marker_end - lead_end
-        end_column = after + end - marker_end
-    else:
-        marker_column = advance_column(column, text[position:lead_end])
-        after = marker_column + marker_end - lead_end
-        end_column = advance_column(after, text[marker_end:end])
+    number = found.group("number")
+    marker_column = advance_column(column, text[position:lead_end])
+    after = marker_column + marker_end - lead_end
+    end_column = advance_column(after, text[marker_end:end])
     gap = end_column - after
     indent = marker_column - column
     lead = lead_end - position
     if end == len(text) or (end == len(text) - 1 and text[end] == "\n"):  # an empty item: only a line ending is left
-        return ItemMarker(lead, indent, gap, end, end_column, end, after + 1, True, 0)
+        return ItemMarker(position, column, lead, indent, gap, end, end_column, end, after + 1, True, 0, number)
     if gap > 4:
         tab = _TAB - after % _TAB if text[gap_start] == "\t" else 1
-        return ItemMarker(lead, indent, gap, end, end_column, gap_start + 1, after + 1, False, tab - 1)
-    return ItemMarker(lead, indent, gap, end, end_column, end, after + gap, False, 0)
+        return ItemMarker(position, column, lead, indent, gap, end, end_column, gap_start + 1, after + 1, False, tab - 1, number)
+    return ItemMarker(position, column, lead, indent, gap, end, end_column, end, after + gap, False, 0, number)
+
+
+class ItemMarkers:
+    """The list item markers that a text opens with, one after the other
+    (``- 1. a``), each with the columns it really has: the one walk of them,
+    to which each reading of a line of markers applies its own stop. It goes on
+    from the end of a marker and its spacing; *between*, an expression, is
+    what to skip before each (block quote markers). ``position`` and
+    ``column`` are where the walk is: after what it skipped, at the start of
+    the next marker or of what is not one."""
+
+    __slots__ = ("text", "position", "column", "_between")
+
+    def __init__(self, text: str, position: int = 0, column: int = 0, between: re.Pattern[str] | None = None) -> None:
+        self.text, self.position, self.column, self._between = text, position, column, between
+
+    def __iter__(self) -> ItemMarkers:
+        return self
+
+    def __next__(self) -> ItemMarker:
+        text, position = self.text, self.position
+        if self._between is not None:
+            skipped = self._between.match(text, position).end()  # type: ignore[union-attr]
+            self.column = advance_column(self.column, text[position:skipped])
+            self.position = position = skipped
+        marker = item_marker_at(text, position, self.column)
+        if marker is None:
+            raise StopIteration
+        self.position, self.column = marker.end, marker.end_column
+        return marker
 
 
 def item_content_column(line: str) -> int:
@@ -340,25 +362,37 @@ def item_content_column(line: str) -> int:
     return found.column if found is not None else indent_width(line) + 2  # never: *line* is an item
 
 
-def nested_content(first: str, column: int = 0, is_rule: Callable[[int], bool] | None = None) -> tuple[int, int]:
-    """``(columns, characters)``: how much further in than a list item's
-    content its innermost content starts, when its text *first* opens with
-    items nested on its line (``1. y`` in ``- 1. y``), in columns and in
-    characters of *first*, which differ where a tab is spacing: its later
-    content is measured from there (CommonMark). *column*: where *first*
-    starts in its line. *is_rule*: whether *first* from a position on is a
-    thematic break, which holds no item (``1. * * *``)."""
-    columns = characters = position = 0
-    while (found := item_marker_at(first, position, column)) is not None:
+class NestedContent(NamedTuple):
+    """Where the innermost content of items nested on a line starts
+    (``nested_content``)."""
+
+    columns: int  #: further in than the content of the first item, in columns
+    characters: int  #: and in characters of the text, which differ where a tab is spacing
+    end: int  #: how far the walk read: the end of the last marker it counted
+    levels: tuple[int, ...]  #: the columns the content of each item counted is further in, the last being ``columns``
+
+
+def nested_content(first: str, column: int = 0, is_rule: Callable[[int], bool] | None = None) -> NestedContent:
+    """How much further in than a list item's content its innermost content
+    starts, when its text *first* opens with items nested on its line (``1. y``
+    in ``- 1. y``): its later content is measured from there (CommonMark).
+    *column*: where *first* starts in its line. *is_rule*: whether *first* from
+    a position on is a thematic break, which holds no item (``1. * * *``). The
+    last item counted is one with more than four columns of spacing: its
+    content is indented code, which nests no item."""
+    columns = characters = end = 0
+    levels: list[int] = []
+    for found in ItemMarkers(first, 0, column):
         after = first[found.end:found.end + 1]
-        if found.lead or not found.gap or not after or after.isspace() or (is_rule and is_rule(position)):
+        if found.lead or not found.gap or not after or after.isspace() or (is_rule and is_rule(found.start)):
             break  # an item nested on the line has spacing and text, and is no thematic break
-        columns += found.column - column
-        characters += found.cut - position
+        columns += found.column - found.start_column
+        characters += found.cut - found.start
+        end = found.end
+        levels.append(columns)
         if found.gap > 4:
-            break  # the item's content is indented code: what follows nests no item
-        position, column = found.end, found.end_column
-    return columns, characters
+            break
+    return NestedContent(columns, characters, end, tuple(levels))
 
 
 def dedent(line: str, columns: int, *, expand: bool = False) -> str:

@@ -15,8 +15,8 @@ from __future__ import annotations
 import pytest
 
 from legaldown import parse
-from legaldown.markdown import item_marker_at, nested_content
-from legaldown.parser import _Rule, quote_blocks
+from legaldown.markdown import ItemMarkers, item_marker_at, nested_content
+from legaldown.parser import _Rule, _Walks, quote_blocks
 
 P, C = ("p",), ("c",)
 
@@ -68,17 +68,17 @@ def test_nested_items_hold_what_commonmark_has_them_hold(source: str, shape: lis
 
 
 def test_nested_content_stops_at_a_marker_with_more_than_four_columns_of_spacing() -> None:
-    assert nested_content("1.      - x") == (3, 3)  # the item is there; what follows is its code
-    assert nested_content("- 1.      - x") == (5, 5)
-    assert nested_content("- 1.    - x") == (10, 10)  # four columns of spacing: the next item nests
-    assert nested_content("-\t- x") == (6, 4)  # the tab is three columns, one character
+    assert nested_content("1.      - x")[:2] == (3, 3)  # the item is there; what follows is its code
+    assert nested_content("- 1.      - x")[:2] == (5, 5)
+    assert nested_content("- 1.    - x")[:2] == (10, 10)  # four columns of spacing: the next item nests
+    assert nested_content("-\t- x")[:2] == (6, 4)  # the tab is three columns, one character
 
 
 def test_nested_content_stops_at_a_thematic_break_it_is_told_of() -> None:
-    assert nested_content("* * *") == (4, 4)  # without: two items, as the rest of a line of markers
-    assert nested_content("* * *", 0, _Rule("* * *")) == (0, 0)
-    assert nested_content("* * a", 0, _Rule("* * a")) == (4, 4)
-    assert nested_content("1. * * *", 0, _Rule("1. * * *")) == (3, 3)  # the break begins after the first marker
+    assert nested_content("* * *")[:2] == (4, 4)  # without: two items, as the rest of a line of markers
+    assert nested_content("* * *", 0, _Rule("* * *"))[:2] == (0, 0)
+    assert nested_content("* * a", 0, _Rule("* * a"))[:2] == (4, 4)
+    assert nested_content("1. * * *", 0, _Rule("1. * * *"))[:2] == (3, 3)  # the break begins after the first marker
 
 
 def test_an_item_marker_before_a_line_ending_is_empty() -> None:
@@ -86,3 +86,39 @@ def test_an_item_marker_before_a_line_ending_is_empty() -> None:
         found = item_marker_at(text)
         assert found is not None and found.blank, text
     assert item_marker_at("-\nx") is None  # a marker is followed by a blank, or ends the text
+
+
+def test_nested_content_tells_the_columns_of_each_level() -> None:
+    assert nested_content("- 1. a").levels == (2, 5)
+    assert nested_content("-\t- x").levels == (4, 6)  # the second marker is at the tab stop
+    assert nested_content("1.      - x").levels == (3,)  # the code ends the walk: the marker's content is one column in
+    assert nested_content("a").levels == ()
+    found = nested_content("- 1. * a")
+    assert found.levels[-1] == found.columns
+
+
+def test_the_marker_walker_gives_the_markers_of_a_line_in_order() -> None:
+    found = list(ItemMarkers("- 12) *  x"))
+    assert [(marker.start, marker.end) for marker in found] == [(0, 2), (2, 6), (6, 9)]
+    assert [marker.start_column for marker in found] == [0, 2, 6]
+    assert list(ItemMarkers("x - y")) == []  # text before a marker ends the walk before it
+    assert [m.start_column for m in ItemMarkers("-\t-")] == [0, 4]  # a tab is read to its stop
+
+
+def test_the_walks_of_one_list_are_dropped_with_it() -> None:
+    walks = _Walks()
+    mark = walks.mark()
+    walks.nested_content("- - - - a")
+    walks.skip_markers("- - - - a")
+    assert walks.nested and walks.skipped
+    walks.release(mark)
+    assert not walks.nested and not walks.skipped and walks.mark() == mark
+
+
+def test_a_walk_takes_its_entry_out_and_is_the_walk_of_the_text() -> None:
+    walks = _Walks()
+    walks.nested_content("- - - a")
+    assert "- - a" in walks.nested
+    assert walks.nested_content("- - a") == nested_content("- - a", 0, _Rule("- - a"))
+    assert "- - a" not in walks.nested  # used once
+    assert "- a" in walks.nested  # and the next level's made

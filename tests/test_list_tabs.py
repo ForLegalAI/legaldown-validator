@@ -73,11 +73,11 @@ def test_the_items_a_quoted_line_opens_are_cut_at_their_text_not_their_column() 
 
 
 def test_nested_content_in_columns_and_characters() -> None:
-    assert nested_content("-\t```") == (4, 2)
-    assert nested_content("- - ```") == (4, 4)
-    assert nested_content("-\t-\t```") == (8, 4)
-    assert nested_content("- ```", 2) == (2, 2)
-    assert nested_content("```") == (0, 0)
+    assert nested_content("-\t```")[:2] == (4, 2)
+    assert nested_content("- - ```")[:2] == (4, 4)
+    assert nested_content("-\t-\t```")[:2] == (8, 4)
+    assert nested_content("- ```", 2)[:2] == (2, 2)
+    assert nested_content("```")[:2] == (0, 0)
 
 
 def test_the_columns_of_a_marker_are_counted_from_where_its_text_starts() -> None:
@@ -106,5 +106,5 @@ def test_walks_keep_no_entry_for_text_with_a_tab() -> None:
     walks = _Walks()
     for _ in range(2):
         assert walks.skip_markers("- \t-\t a") == _skip_markers("- \t-\t a")
-        assert walks.nested_content("- \t-\t a") == (9, 6)
+        assert walks.nested_content("- \t-\t a")[:2] == (9, 6)
     assert not walks.skipped and not walks.nested
