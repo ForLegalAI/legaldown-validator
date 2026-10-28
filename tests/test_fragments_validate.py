@@ -1027,3 +1027,23 @@ def test_a_file_identity_is_the_inode_where_there_is_one_and_the_path_where_not(
     gone = file_identity(tmp_path / "x" / ".." / "gone.lgd")
     assert gone == file_identity(tmp_path / "gone.lgd") and gone[0] == "path"
     assert file_identity("a\0b")[0] == "path"  # no path at all
+
+
+def test_a_file_system_without_inodes_tells_files_apart_by_their_path(tmp_path, monkeypatch):
+    """Where every file reports inode 0, identity falls back to the real path, so two files are
+    never taken for one (and no target is skipped)."""
+    import os as os_module
+
+    from legaldown import cli
+
+    (tmp_path / "a.lgd").write_text("a")
+    (tmp_path / "b.lgd").write_text("b")
+    real_stat = os_module.stat
+
+    def no_inodes(path, *args, **kwargs):
+        status = real_stat(path, *args, **kwargs)
+        return os_module.stat_result((status.st_mode, 0, *tuple(status)[2:]))
+
+    monkeypatch.setattr(cli.os, "stat", no_inodes)
+    assert cli.file_identity(tmp_path / "a.lgd") != cli.file_identity(tmp_path / "b.lgd")
+    assert cli.file_identity(tmp_path / "a.lgd") == cli.file_identity(tmp_path / "x" / ".." / "a.lgd")

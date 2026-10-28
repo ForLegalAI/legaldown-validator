@@ -134,6 +134,10 @@ def file_identity(path: str | os.PathLike[str]) -> tuple[Any, ...]:
         status = os.stat(path)
     except (OSError, ValueError):  # not there, or no path at all
         return ("path", os.path.normcase(os.path.abspath(path)))
+    if not status.st_ino:
+        # Some file systems (FAT, some network and FUSE mounts) give every file inode 0:
+        # there the inode tells no two files apart, and the real path has to.
+        return ("path", os.path.normcase(os.path.realpath(path)))
     return (status.st_dev, status.st_ino)
 
 
@@ -374,8 +378,15 @@ def _save_answers(path: Path, answers: dict) -> str | None:
 
 
 def _same_file(first: Path, second: Path) -> bool:
-    """Whether the two paths are one file (``file_identity``, as ``validate`` takes it)."""
-    return file_identity(first) == file_identity(second)
+    """Whether the two paths are one file: the same path once resolved, or a link, symbolic or
+    hard, to it. Stricter than ``file_identity`` on purpose: it guards a file from being
+    overwritten, so two spellings of one path count as one file even when it is not there yet."""
+    try:
+        if first.resolve() == second.resolve():
+            return True
+        return os.path.samefile(first, second)
+    except (OSError, RuntimeError):  # one of them is not there, or a symbolic link loops
+        return False
 
 
 def _run_assemble(args: argparse.Namespace) -> int:
