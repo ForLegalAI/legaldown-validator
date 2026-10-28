@@ -1265,6 +1265,7 @@ class _Line:
     plain: str = ""  # the line as the template reads it: each inserted text a word
     slot: int = 0  # where that reading lies among the template's kept lines
     after: bool = False  # directly follows a line that step 5 deleted
+    bare: bool = False  # an empty insertion left nothing but container markers: it holds no paragraph
 
 
 def _last_marker_at(text: str, marker: str) -> int:
@@ -1311,15 +1312,14 @@ def _emit(source: _Source, removed: set[int], answers: _Answers) -> list[_Line]:
                 follows_deleted = True  # emptied by steps 4–5: deleted (step 5)
                 continue
             line.check |= line.first is not None
-            # An empty insertion that leaves bare container markers (``> ``) holds no paragraph, as a
-            # deleted line holds none: the line after it is read in a context the template did not have.
-            follows_deleted = _BARE_MARKERS_RE.fullmatch(line.text) is not None and _BARE_MARKERS_RE.fullmatch(text) is None
+            line.bare = _BARE_MARKERS_RE.fullmatch(line.text) is not None and _BARE_MARKERS_RE.fullmatch(text) is None
         plains.append(line.plain)
         lines.append(line)
     _line_starts(lines, plains)
     return lines
 
 
+_BARE_MARKERS_RE = re.compile(r"(?:[ \t]*(?:>|[-*+]|[0-9]{1,9}[.)]))+[ \t]*")
 # The template line as the parser reads it has a word where each blank is, whatever fills the blank:
 # "zzz", and for an empty choice phrase too. A blank is the author's text to be, so the line holds text
 # (``- zzz``, an item with a paragraph) where the output may hold none (``- ``, an empty item). The
@@ -1327,9 +1327,8 @@ def _emit(source: _Source, removed: set[int], answers: _Answers) -> list[_Line]:
 # would read as the bare ones that the output has, and the check would find nothing to compare. That
 # difference is the source of the open questions that the specification leaves (§15.7.3 names no
 # position for a backslash when the template's own markers, left bare by an empty phrase, begin the
-# construct); the output keeps them as written, and ``TestLineStartsInContext`` pins that.
+# construct); the output keeps them as written, and ``TestLineStartsInContext`` pins that (#120).
 _WORD = "zzz"
-_BARE_MARKERS_RE = re.compile(r"(?:[ \t]*(?:>|[-*+]|[0-9]{1,9}[.)]))+[ \t]*")
 
 
 def _fill(text: str, occurrences: list[_Occurrence], answers: _Answers) -> tuple[str, int | None, str]:
@@ -1826,7 +1825,7 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
     window = _Window(lines)
     perturbed = False  # some line before is not as the template reads it: a deleted one, or bare markers
     for k, line in enumerate(lines):
-        perturbed = perturbed or line.after
+        perturbed = perturbed or line.after or line.bare
         if not line.check:
             window.written(k)
             continue

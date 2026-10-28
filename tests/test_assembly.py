@@ -507,15 +507,6 @@ class TestLineStartsInContext:
     def test_an_insertion_that_begins_the_content_keeps_the_items_indentation(self, body, answers, written):
         assert self._assembled(body, answers, _BOOL + _TEXT) == written
 
-    @pytest.mark.parametrize(("body", "written"), [
-        # An empty choice leaves bare markers, which hold no paragraph, so the line after is checked.
-        ('> text\n> {{choose: x, true="", false="T"}}\n> <x>\n', "> text\n> \n> \\<x>\n"),
-        ('> {{choose: x, true="", false="T"}}\n> 2. b\n', "> \n> 2\\. b\n"),
-        ('> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n', "> a\n>\n> \n> code\n"),
-    ])
-    def test_the_line_after_bare_container_markers_is_checked(self, body, written):
-        assert self._assembled(body, {"x": True}, _BOOL) == written
-
     def test_a_lone_tag_begins_html_once_the_paragraph_before_it_is_gone(self):
         """``<x>`` cannot interrupt paragraph text, but starts an HTML block (kind 7) after a deleted line."""
         body = 'a\n\n{{choose: x, true="", false="Then:"}}\n<x>\n'
@@ -549,15 +540,21 @@ class TestLineStartsInContext:
         assert self._assembled(body, {"x": True}, _BOOL) == written
 
     @pytest.mark.parametrize("body", [
-        # Open question for the specification (§15.7.3): the construct is begun by the template's own
-        # markers, which hold no paragraph once their insertion is empty, so no position for a
-        # backslash is given; conformers must agree here. Pinned as written, as before the line-start
-        # check read the parser; tracked with #106.
+        # Open question for the specification (#120): §15.7.3 gives a backslash no position where the
+        # construct is begun by the template's own markers, which an empty insertion leaves bare and
+        # holding no paragraph. Pinned as written: the output keeps the markers. The line after such a
+        # line gets no line-start check either: §15.7.2 step 5 deletes a line that "was not blank before
+        # ... and is blank after" the insertions, blank being empty or only spaces and tabs, and a line
+        # of bare markers (``> ``) is not blank, so conformers, who must be byte for byte the same,
+        # leave the lines after it as the template has them.
         'text\n- {{choose: x, true="", false="T"}}\n',  # the bare "-" underlines "text"
         '- - - {{choose: x, true="", false="T"}}\n',  # three bare markers are a thematic break
         '* * * {{choose: x, true="", false="T"}}\n',
         '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n',  # a lazy line detaches
         '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n',
+        '> text\n> {{choose: x, true="", false="T"}}\n> <x>\n',  # <x> now begins an HTML block
+        '> {{choose: x, true="", false="T"}}\n> 2. b\n',  # 2. now begins a list
+        '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n',  # the line is now indented code
     ])
     def test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question(self, body):
         template = _template(body, _BOOL + _TEXT)
@@ -567,9 +564,12 @@ class TestLineStartsInContext:
             '- - - {{choose: x, true="", false="T"}}\n': "- - - \n",
             '* * * {{choose: x, true="", false="T"}}\n': "* * * \n",
             '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n':
-                "> 2. \ncode\n> 2. \\- - -\n",
+                "> 2. \n\tcode\n> 2. \\- - -\n",
             '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n':
                 "  > \n  lazy\na\n  > \\- - --y\n",
+            '> text\n> {{choose: x, true="", false="T"}}\n> <x>\n': "> text\n> \n> <x>\n",
+            '> {{choose: x, true="", false="T"}}\n> 2. b\n': "> \n> 2. b\n",
+            '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n': "> a\n>\n> \n>     code\n",
         }[body]
 
 
