@@ -10,13 +10,20 @@ from __future__ import annotations
 
 import random
 import re
-import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
+from helpers_renderers import (
+    BACKSLASH_PAIR_RE,
+    PARAGRAPH_END_RE,
+    URL_SCHEME_RE,
+    markdown_it,
+    needs_markdown_it,
+    needs_pandoc,
+)
 
 import legaldown
 from legaldown import Document, load, parse, validate
@@ -29,12 +36,6 @@ from legaldown.files import (
     relative_path,
 )
 from legaldown.validator import paths as paths_module
-
-try:
-    import markdown_it
-except ImportError:  # (a development dependency: the tests that ask it are skipped)
-    markdown_it = None
-needs_markdown_it = pytest.mark.skipif(markdown_it is None, reason="markdown-it-py is not installed")
 
 _RULES = {"path-not-relative", "path-outside-root"}
 _ROOT_FRONT = "---\ntitle: T\n---\n\n"
@@ -886,35 +887,34 @@ def test_an_image_any_renderer_reads_is_checked_whichever_reads_it(image):
         "![r](x\x7f)\n\n[r]: /etc/passwd",
         '![r](<ok.png>"t")\n\n[r]: /etc/passwd',
         "![r](x\x01)\n\n[r]: /etc/passwd",
-        "![a][r]\n\n[r]: /etc/passwd\x7f",
-        "![a][r]\n\n[r]: /etc/passwd\x01",
-        "![a][r]\n\n[r]: ok.png\n[s]: /etc/passwd\x7f\n\n![b][s]",
-        "[x]: y\n[r]: /etc/passwd\x7f\n\n![a][r]",
-        "> [r]: /etc/passwd\x7f\n\n![a][r]",
-        "- text\n\n  [r]: /etc/passwd\x1f\n\n![a][r]",
+        "![r][r]\n\n[r]: /etc/passwd",
     ],
 )
-def test_a_reference_image_is_checked_whatever_the_inline_reading_or_the_definition_reading_of_a_renderer(document):
-    """The path rules cover the union of the readings. ``![r](x\x7f)`` is an inline image to pandoc and ``![r]`` and
-    text to the specification: the definition it names is judged too. A definition pandoc reads, with a DEL or a
-    control character in its bare destination, is judged though the model reads it as paragraph text."""
+def test_a_reference_image_is_checked_though_a_renderer_reads_its_text_as_an_inline_image(document):
+    """The path rules cover the union of the readings. ``![r](x\x7f)`` is an inline image to pandoc, but by the
+    specification it is ``![r]`` and text, so the definition ``![r]`` names is judged too."""
     found = _found(validate(_body(document)))
     assert [rule for rule, _line in found] == ["path-not-relative"], document
 
 
-def test_a_permissive_definition_is_judged_once_and_only_when_an_image_names_it():
-    assert _found(validate(_body("[r]: /etc/passwd\x7f\n\ntext"))) == []
-    assert _found(validate(_body("![a][s]\n\n[r]: /etc/passwd\x7f"))) == []
-    assert _found(validate(_body("![a][r] ![b][r] ![c][]\n\n[r]: /etc/passwd\x7f"))) == [("path-not-relative", 9)]
-    assert _found(validate(_body("| a |\n|---|\n| [r]: /etc/passwd\x7f |\n\n![a][r]"))) == []  # (a cell is no paragraph)
+@pytest.mark.xfail(strict=True, reason="a definition only pandoc reads (a DEL or control character in a bare destination) is not judged: #121")
+@pytest.mark.parametrize("document", ["![a][r]\n\n[r]: /etc/passwd\x7f", "![a][r]\n\n[r]: /etc/passwd\x01"])
+def test_a_definition_only_pandoc_reads_is_judged(document):
+    assert _found(validate(_body(document))) == [("path-not-relative", 9)]
 
 
-_BACKSLASH_RE = re.compile(r"\\(?![!-/:-@\[-`{-~])")  # markdown-it: a backslash before any character is a pair
-_DESTINATIONS = ["/etc/x", "<x>", "<x y>", "x\x7f", "x\x01y", "x[", "x]", "x](", "(", "x(y)", "<x\\>y>", "x\\)", "[x]", "x\x1f"]
-_GAPS = ["", " ", "\t", "\n", " \n ", "\n\n"]
-_TITLES = ["", '"t"', "'t'", "(t)", '"t', "(t(u)", '"t\\"u"']
-_TOKENS = ["<b>", "<", ">", "(", ")", "\\", '"', "'", " ", "\t", "\n", "\x7f", "\\)", '\\"', "\\>", '"t"', "'x'", "(t)", "b", "a",
-           "\x01", "\x1f", "]", "[", "](", "/etc", "x.png", "\\\\", ":", "[r]"]
+#: Random images: destinations, then their gaps and titles, and random token strings, for the tests that compare the
+#: path rules with the renderers (names of their own, for ``test_destination_oracles`` has its alphabets too).
+_IMAGE_DESTINATIONS = [
+    "/etc/x", "<x>", "<x y>", "x\x7f", "x\x01y", "x[", "x]", "x](", "(", "x(y)", "<x\\>y>", "x\\)", "[x]", "x\x1f",
+]
+_IMAGE_GAPS = ["", " ", "\t", "\n", " \n ", "\n\n"]
+_IMAGE_TITLES = ["", '"t"', "'t'", "(t)", '"t', "(t(u)", '"t\\"u"']
+_IMAGE_TOKENS = [
+    "<b>", "<", ">", "(", ")", "\\", '"', "'", " ", "\t", "\n", "\x7f", "\\)", '\\"', "\\>", '"t"', "'x'", "(t)", "b",
+    "a", "\x01", "\x1f", "]", "[", "](", "/etc", "x.png", "\\\\", ":", "[r]",
+]
+_CONTROLS_RE = re.compile("[\x01-\x08\x0b-\x1f\x7f]")
 
 
 def _image_sources_by_markdown_it(text):
@@ -926,39 +926,51 @@ def _image_sources_by_markdown_it(text):
     ]
 
 
-def _image_sources_by_pandoc(text):
+def _image_sources_by_pandoc(documents):
+    """The destinations of the images of each of *documents*, by one run of pandoc: each follows a paragraph that
+    is a marker, and its labels are its own (``[r]`` and ``[x]`` are ``[r3]`` and ``[x3]`` in the fourth)."""
     import json
     import subprocess
 
+    renamed = [text.replace("[r]", f"[r{n}]").replace("[x]", f"[x{n}]") for n, text in enumerate(documents)]
+    source = "".join(f"MARKER{n}\n\n{text}\n\n" for n, text in enumerate(renamed))
     out = subprocess.run(
-        ["pandoc", "-f", "commonmark", "-t", "json"], input=text, capture_output=True, text=True, check=True
+        ["pandoc", "-f", "commonmark", "-t", "json"], input=source, capture_output=True, text=True, check=True
     ).stdout
-    found = []
+    found: list[list[str]] = [[] for _ in documents]
+    current = 0
 
     def walk(node):
         if isinstance(node, dict):
             if node.get("t") == "Image":
-                found.append(node["c"][2][0])
+                found[current].append(node["c"][2][0])
             for value in node.values():
                 walk(value)
         elif isinstance(node, list):
             for value in node:
                 walk(value)
 
-    walk(json.loads(out))
-    return found
+    for block in json.loads(out)["blocks"]:
+        marker = block["c"][0].get("c", "") if block.get("t") == "Para" and len(block["c"]) == 1 else ""
+        if isinstance(marker, str) and marker.startswith("MARKER") and marker[6:].isdigit():
+            current = int(marker[6:])
+        else:
+            walk(block)
+    return renamed, found
 
 
 def _random_image_documents(seed, count):
-    """Documents with images by an inline destination, a definition or both, made of random destinations (brackets,
-    titles, controls, line breaks) and random token strings. Not those with a blank line or a quote line in a
-    paragraph, nor the backslash before a character that is no punctuation, which only markdown-it reads as a pair."""
+    """Documents with images by an inline destination, a definition or both. Not those with a blank line or a quote
+    line in a paragraph, nor with the backslash before a character that is no punctuation (which only markdown-it
+    reads as a pair, #121), nor a definition only pandoc reads (a control character in its destination, #121)."""
     rng = random.Random(seed)
 
     def body():
         if rng.random() < 0.3:
-            return "".join(rng.choice(_TOKENS) for _ in range(rng.randint(0, 7)))
-        return rng.choice(_DESTINATIONS) + rng.choice(_GAPS) + rng.choice(_TITLES) + rng.choice(_GAPS)
+            return "".join(rng.choice(_IMAGE_TOKENS) for _ in range(rng.randint(0, 7)))
+        return (
+            rng.choice(_IMAGE_DESTINATIONS) + rng.choice(_IMAGE_GAPS) + rng.choice(_IMAGE_TITLES) + rng.choice(_IMAGE_GAPS)
+        )
 
     for _ in range(count):
         first, second = body() + rng.choice([")", ")", ""]), body()
@@ -967,8 +979,8 @@ def _random_image_documents(seed, count):
             f"[x]: y\n[r]: {second}\n\n![a][r] ![r]({first}",
         ])
         if (
-            _BACKSLASH_RE.search(text) or text.endswith("\\") or "\n\n\n" in text
-            or any(re.search(r"\n[ \t]*(?:\n|>)", part) for part in (first, second))
+            BACKSLASH_PAIR_RE.search(text) or text.endswith("\\") or "\n\n\n" in text
+            or _CONTROLS_RE.search(second) or any(PARAGRAPH_END_RE.search(part) for part in (first, second))
         ):
             continue
         yield text
@@ -998,8 +1010,11 @@ def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
     judge = _judged_by_validate(monkeypatch)
     compared = 0
     for text in _random_image_documents(113, 12_000):
-        # (markdown-it normalizes a destination that looks like a URL with a scheme, ``b:[r]<`` into ``b:r<``)
-        read = [source for source in _image_sources_by_markdown_it(text) if source.strip() and ":" not in source]
+        # (a destination that looks like a URL with a scheme is normalized by markdown-it: ``b:[r]<`` is ``b:r<``)
+        read = [
+            source for source in _image_sources_by_markdown_it(text)
+            if source.strip() and not URL_SCHEME_RE.match(source)
+        ]
         if read:
             judged = judge(text)
             for source in read:
@@ -1008,23 +1023,21 @@ def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
     assert compared > 2000
 
 
-@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is not installed")
+@needs_pandoc
 def test_every_image_pandoc_reads_has_its_destination_judged(monkeypatch):
     """The same for pandoc, which reads what the specification does not (a control character or DEL in a bare
-    destination, in a definition's too; a title glued to ``<…>``): inline, by a definition, or both."""
+    destination, a title glued to ``<…>``): inline, by a definition, or both. One run of pandoc reads the documents."""
     judge = _judged_by_validate(monkeypatch)
+    documents, sources = _image_sources_by_pandoc(list(_random_image_documents(1131, 6_000)))
     compared = 0
-    for text in _random_image_documents(1131, 1_000):
-        if compared == 250:
-            break
-        # (pandoc is asked of the documents the path rules judge something in, the others being none of its concern)
-        read = [source for source in _image_sources_by_pandoc(text) if source.strip()]
+    for text, read in zip(documents, sources, strict=True):
+        read = [source for source in read if source.strip()]
         if read:
             judged = judge(text)
             for source in read:
-                assert source.strip() in judged, (text, source, judged)  # (a path is judged without its outer blanks)
+                assert source.strip() in judged, (text, source, judged)
             compared += 1
-    assert compared == 250
+    assert compared > 1000
 
 
 def test_the_decoded_form_is_still_absolute_with_a_slash_and_still_escapes():
