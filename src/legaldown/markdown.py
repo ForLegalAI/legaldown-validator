@@ -488,7 +488,7 @@ def format_link_definition(label: str, target: str, title: str = "") -> str:
     if not is_bare_destination(target):
         target = "<" + _escape(_complete(target), "<>") + ">"
     written = f"[{label}]: {target}"
-    title = _complete(no_blank_lines(title).strip(" \t\n"))
+    title = _complete(no_blank_lines(title))
     if not title:
         return written
     if not _unescaped(title, '"'):

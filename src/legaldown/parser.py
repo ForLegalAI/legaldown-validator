@@ -44,6 +44,7 @@ from .markdown import (
     item_marker_at,
     nested_content,
     paragraph_text,
+    split_link_definitions,
     strip_text,
 )
 from .markers import Marker, split_heading
@@ -1767,6 +1768,7 @@ def _parse_body(
             continue
         heading: _Heading | None = None
         start, count, item_spans = index, len(blocks), []
+        peeled: list[tuple[int, int]] = []  # the lines of each link reference definition peeled off a paragraph
         # A table that interrupted a paragraph may have an indented header
         # row: the paragraph ended there (_paragraph_end).
         interrupting_table = index == interrupted and _parse_table(lines, index) is not None
@@ -1834,25 +1836,45 @@ def _parse_body(
             lazy = True
         else:
             end, setext_level = _paragraph_end(lines, index, lazy, headings=headings)
-            if setext_level:
-                text = " ".join(part.strip(" \t") for part in lines[index:end - 1])
-                if headings:
-                    heading = (*split_heading(text), setext_level)
+            text_end = end - 1 if setext_level else end  # a setext heading's underline is not text
+            # The link reference definitions the paragraph opens with are
+            # blocks of their own (§4.7, #92); what is left of it is the
+            # paragraph, or the heading's text.
+            definitions, taken = split_link_definitions(lines[index:text_end])
+            for definition in definitions:
+                blocks.append(Block(
+                    kind="link_definition", label=definition.label, target=definition.target, title=definition.title,
+                ))
+                peeled.append((index, index + definition.lines))
+                index += definition.lines
+            start = index  # what is left of the paragraph, or the heading's text, starts here
+            if index < text_end:
+                if setext_level:
+                    text = " ".join(part.strip(" \t") for part in lines[index:text_end])
+                    if headings:
+                        heading = (*split_heading(text), setext_level)
+                    else:
+                        blocks.append(Block(kind="heading", text=text, level=setext_level))
                 else:
-                    blocks.append(Block(kind="heading", text=text, level=setext_level))
-            else:
-                # Its lines, line breaks kept (hard ones among them).
-                text = paragraph_text(lines[index:end])
-                blocks.append(_parse_paragraph(text) if headings else Block(kind="paragraph", text=text))
+                    # Its lines, line breaks kept (hard ones among them).
+                    text = paragraph_text(lines[index:end])
+                    blocks.append(_parse_paragraph(text) if headings else Block(kind="paragraph", text=text))
+                index = end
+            # Else the definitions were all of it. With an underline below
+            # them there is no heading (cmark): the loop reads that line as
+            # the line it is, ``---`` a thematic break and ``===`` the start
+            # of a paragraph, which it ends as one (#92).
+            if not setext_level:
                 interrupted = end
-            index = end
             lazy = False
         if layout is not None and spans is not None:
+            for first, last in peeled:
+                spans.append(_BlockSpan("link_definition", offset + first, offset + last))
             if heading is not None:
                 marker_line = start if atx else index - 2  # a setext heading's last text line
                 spans = []
                 layout.sections.append((_HeadingSpan(start, index, heading[2], marker_line), spans))
-            elif len(blocks) > count:
+            elif len(blocks) > count + len(peeled):
                 spans.append(_BlockSpan(blocks[-1].kind, offset + start, offset + index, item_spans))
         if heading is not None:
             blocks = []

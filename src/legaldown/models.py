@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .markdown import LINE_ENDING_RE, is_blank, strip_text
+from .markdown import LINE_ENDING_RE, is_blank, no_blank_lines, strip_text
 
 if TYPE_CHECKING:
     from .parser import FrontmatterError
@@ -142,6 +142,11 @@ class Block:
     suffix: str = ""
     target: str = ""
     label: str = ""
+    #: A ``link_definition`` block's title, raw: without its delimiters, and
+    #: with backslash escapes and character references as written (§4.7, #92).
+    #: Its ``label`` and ``target`` are raw too. "" for other blocks, and for
+    #: a definition without one.
+    title: str = ""
     #: A list's items (``ordered_list``, ``unordered_list``).
     items: list[ListItem] = field(default_factory=list)
     headers: list[str] = field(default_factory=list)
@@ -165,8 +170,10 @@ def list_items(block: Block) -> list[ListItem]:
 
 def item_text(item: ListItem) -> str:
     """An item's text: its first paragraph's (its lines joined with LF), or
-    ``""`` when it opens with something else or is empty."""
-    first = item.blocks[0] if item.blocks else None
+    ``""`` when it opens with something else or is empty. Link reference
+    definitions before it are no text (#92): ``- [x]: u`` then a paragraph
+    in the item is its paragraph's."""
+    first = next((block for block in item.blocks if block.kind != "link_definition"), None)
     return first.text if first is not None and first.kind == "paragraph" else ""
 
 
@@ -308,6 +315,10 @@ BLOCK_DEFAULTS: dict[str, dict[str, Any]] = {
     # A heading in a list item or a block quote: not a section (§4.1), so
     # not numbered and without an identifier. Its text is one line.
     "heading": {"kind": "heading", "text": "", "level": 1},
+    # A link reference definition (CommonMark §4.7): ``[label]: target "title"``,
+    # each raw as written. It is no text: the validator reads no directive in
+    # one (a definition holding ``{{`` stays a paragraph, #92).
+    "link_definition": {"kind": "link_definition", "label": "", "target": "", "title": ""},
     # Markdown source a caller built, such as an editor's row: written as it
     # stands (``serialize``), never produced by the parser and not
     # read by the validator. Read back, it is the blocks it holds.
@@ -426,6 +437,7 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
     kind = str(payload.get("kind") or "paragraph")
     defaults = BLOCK_DEFAULTS.get(kind, BLOCK_DEFAULTS["paragraph"])
     merged = {**defaults, **payload}
+    target, label = _str(merged.get("target")), _str(merged.get("label"))
     headers = [_cell(header) for header in list(merged.get("headers") or [])]
     if kind == "table" and "headers" not in payload:
         # The default headers widen to the widest row, so no cell is cut.
@@ -438,8 +450,12 @@ def block_from_dict(data: dict[str, Any] | None) -> Block:
         term=_str(merged.get("term")),
         prefix=str(merged.get("prefix") or ""),
         suffix=str(merged.get("suffix") or ""),
-        target=_str(merged.get("target")),
-        label=_str(merged.get("label")),
+        target=LINE_ENDING_RE.sub("", target) if kind == "link_definition" else target,
+        label=no_blank_lines(label) if kind == "link_definition" else label,
+        # Raw: its spaces are its own. A blank line would end the paragraph
+        # that holds it (``no_blank_lines``), as in the label; a line break
+        # cannot be in a destination written in ``<>``.
+        title=no_blank_lines(str(merged.get("title") or "")) if kind == "link_definition" else "",
         items=(
             [_list_item(item) for item in list(merged.get("items") or [])] or [ListItem()]
             if kind in LIST_KINDS else []
