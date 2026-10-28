@@ -397,6 +397,13 @@ class TestLineStarts:
         assert _body(assemble(template, {"x": "2. two"})) == "\nIntro\n2. two more.\n"
         assert _body(assemble(template, {"x": "1. one"})) == "\nIntro\n1\\. one more.\n"
 
+    def test_text_that_only_the_open_paragraph_makes_text_is_read_through_every_line(self):
+        """``2.      x`` is text after ``text`` (an item numbered 2 cannot interrupt it),
+        and so is the line after it, however many such lines come between."""
+        template = _template("text\n2.      x\n3.      y\n{{placeholder: x}}\n")
+        assert _body(assemble(template, {"x": "2. two"})) == "\ntext\n2.      x\n3.      y\n2. two\n"
+        assert _body(assemble(template, {"x": "1. one"})) == "\ntext\n2.      x\n3.      y\n1\\. one\n"
+
     def test_inside_a_list_item_after_its_marker(self):
         result = assemble(_template("- {{placeholder: x}}\n- second\n"), {"x": "# Portal"})
         assert _body(result) == "\n- \\# Portal\n- second\n"

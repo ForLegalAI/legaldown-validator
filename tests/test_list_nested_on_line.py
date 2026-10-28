@@ -81,6 +81,32 @@ def _read(source: str) -> list:
             [("q", [("un", [[P]])])],
             id="a-lazy-rule-is-text-so-a-marker-after-it-cannot-interrupt",
         ),
+        pytest.param("> - a\n>   <x-tag>\nb\n", [("q", [("un", [[P]])])], id="a-lone-tag-is-text-in-the-items-paragraph"),
+        pytest.param(
+            ">---1. 1)a1. \n>1. =\n>    <x-y>\nb\n",
+            [("q", [P, ("or", [[P]])])],
+            id="the-same-in-an-item-after-a-setext-like-line",
+        ),
+        pytest.param(
+            "*   2. - b\n        1. \nc\n",
+            [("un", [[("or", [[("un", [[P]]), ("or", [[]])]])]]), P],
+            id="an-empty-item-nested-in-an-item-nested-on-the-line-is-no-paragraph",
+        ),
+        pytest.param(
+            "* - > a\n    2. \n    b\n=\n",
+            [("un", [[("un", [[("q", [P]), ("or", [[]]), P]])]])],
+            id="a-line-in-the-item-nested-on-the-first-line-after-an-empty-item",
+        ),
+        pytest.param(
+            "> * > <x-y>\nb\n",
+            [("q", [("un", [[("q", [("html",)])]])]), P],
+            id="html-in-the-quote-of-an-item-leaves-no-paragraph",
+        ),
+        pytest.param(
+            "> *  2. > <x-y>\nb\n",
+            [("q", [("un", [[("or", [[("q", [("html",)])]])]])]), P],
+            id="the-same-one-item-further-in",
+        ),
         pytest.param("1. * * *\n       x\ny\n", [("or", [[("rule",), C]]), P], id="a-thematic-break-nests-no-item"),
         pytest.param(
             ">  +    *\te\n>   \t    >a\n>     *\n",

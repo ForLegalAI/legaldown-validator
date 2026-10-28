@@ -488,6 +488,9 @@ class _Source:
     #: marker there is a container marker (§15.7.3).
     item_lines: frozenset[int] = frozenset()
     malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
+    #: Whether paragraph text is open after each line as written, read one line
+    #: after the other as far as a line-start check needs (``_open_after``).
+    open_after: list[bool] = field(default_factory=list)
 
 
 def _unix(text: str) -> tuple[str, str]:
@@ -1298,9 +1301,11 @@ def _emit(source: _Source, removed: set[int], answers: _Answers) -> list[_Line]:
                 continue
             line.check |= line.first is not None
         lines.append(line)
-    for k, line in enumerate(lines):
+    previous_open = False  # paragraph text is open after the output line before
+    for line in lines:
         if line.check:
-            line.text = _line_start(line, lines[k - 1].text if k else None, source)
+            line.text = _line_start(line, previous_open, source)
+        previous_open = _paragraph_open(line.text, previous_open)
     return lines
 
 
@@ -1516,14 +1521,13 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
     return None
 
 
-def _paragraph_open(line: str | None, after_paragraph: bool = False) -> bool:
+def _paragraph_open(line: str, after_paragraph: bool = False) -> bool:
     """True if *line* leaves paragraph text open, which the next line would
     continue — the parser's own reading of a line's content. *after_paragraph*:
     one is open before it, so that a marker that cannot interrupt it starts no
     item."""
     return (
-        line is not None
-        and not is_blank(line)
+        not is_blank(line)
         and not FENCE_OPEN_RE.match(line)
         and not re.fullmatch(r" {0,3}=+[ \t]*", line)
         and _opens_paragraph(line, after_paragraph=after_paragraph)
@@ -1552,19 +1556,28 @@ def _containers(written: str, in_paragraph: bool, limit: int | None, *, item: bo
     return end, listed
 
 
-def _line_start(line: _Line, previous: str | None, source: _Source) -> str:
-    """The line-start check (§15.7.3) of *line*, which follows *previous* in
-    the output."""
-    template = source.lines
-    written = template[line.origin]
-    written_previous = template[line.origin - 1] if line.origin else None
-    was_open = _paragraph_open(written_previous, line.origin > 1 and _paragraph_open(template[line.origin - 2]))
+def _open_after(source: _Source, index: int) -> bool:
+    """Whether paragraph text is open after the template line *index* as written:
+    each line read after the one before it, so that a line that is text because
+    of the paragraph open (a marker that cannot interrupt it) is the paragraph's
+    for the lines after it."""
+    opened = source.open_after
+    while len(opened) <= index:
+        opened.append(_paragraph_open(source.lines[len(opened)], bool(opened) and opened[-1]))
+    return opened[index]
+
+
+def _line_start(line: _Line, previous_open: bool, source: _Source) -> str:
+    """The line-start check (§15.7.3) of *line*, which follows an output line
+    that leaves paragraph text open if *previous_open*."""
+    written = source.lines[line.origin]
+    was_open = line.origin > 0 and _open_after(source, line.origin - 1)
     prefix, listed = _containers(written, was_open, line.first, item=line.origin in source.item_lines)
     content = line.text[prefix:]
     if line.first is not None and not written[prefix:line.first].strip(" \t"):
         content = content.lstrip(" \t")
     was = _construct(written[prefix:], in_paragraph=was_open and not listed)
-    now_open = _paragraph_open(previous) and not listed
+    now_open = previous_open and not listed
     return line.text[:prefix] + _escape_start(content, now_open, was)
 
 

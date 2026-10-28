@@ -545,7 +545,10 @@ def _opens_paragraph(
         if indent_width(content) >= 4:
             return bool(content.strip(" \t"))  # indented code cannot interrupt a paragraph: the line is its text
         first = next(iter(ItemMarkers(content, between=_QUOTE_MARKERS_RE)), None)
-        if first is not None and ">" not in content[:first.start] and not _may_interrupt_marker(first):
+        if (
+            first is not None and ">" not in content[:first.start] and not _may_interrupt(content, first)
+            and not SETEXT_UNDERLINE_RE.match(content)  # a bare ``-`` under the paragraph's text underlines it
+        ):
             return True  # a marker that cannot interrupt the paragraph: the line is its text
     position, code = _skip_markers(content, quotes=True, is_rule=is_rule)
     # (Blanks only before it, there is no marker: its indentation says what it is.)
@@ -656,8 +659,7 @@ class _Quote:
             self._table = False
             self._inner.read(content.lstrip(" \t")[1:].removeprefix(" "))
             self.paragraph = self._inner.paragraph
-            self._columns = self._columns[:bisect.bisect_right(self._columns, indent_width(content))]  # items it ends
-            self._empty, self._item_inner = False, None
+            self._columns, self._empty, self._item_inner = (), False, None  # the quote ends the items it is short of
             return
         left = False  # the line is outside a nested quote that it ends, with its paragraph
         if self._inner is not None:
@@ -723,14 +725,13 @@ class _Quote:
         # indented four columns, which is not code that interrupts one. (A quote's
         # paragraph in the item is not matched by a line without ``>``: the item is.)
         after = was and ((inside and quote is None) or indent_width(own) >= 4)
-        if after and (
-            indent_width(own) >= 4 or ((first := next(iter(ItemMarkers(own)), None)) is not None and not _may_interrupt_marker(first))
-        ):
+        is_rule = _Rule(own)
+        items = _leading_items(own, is_rule)
+        first = items[0] if items else None
+        if after and (indent_width(own) >= 4 or (first is not None and not _may_interrupt(own, first))):
             self._last = line  # the paragraph goes on
             self._item_inner = quote
             return
-        is_rule = _Rule(own)
-        items = _leading_items(own, is_rule)
         body, column = _item_body(own, items=items)
         self._column = base + column
         marks, self._empty = tuple(base + item.column for item in items), bool(items) and items[-1].blank
@@ -738,19 +739,19 @@ class _Quote:
             self._fence = opening.group("fence")
             self.paragraph = False
             self._columns = outer + marks
-        elif (html := html_block_opening(body, in_paragraph=self.paragraph and not self._column)) is not None:
+        elif (
+            # A lone tag cannot interrupt the paragraph the line is in, when it starts no item.
+            html := html_block_opening(body, in_paragraph=was and inside and quote is None and not column)
+        ) is not None:
             (marker,) = html
             if marker is None or not marker.search(body):
                 self._html = html
             self.paragraph = False
             self._columns = outer + marks
         elif self.paragraph or indent_width(own) < 4:  # else indented code
-            self.paragraph = _opens_paragraph(own, is_rule, after_paragraph=after)
+            self.paragraph = _opens_paragraph(own, is_rule)
             self._last = line if self.paragraph else None
-            item = None if RULE_RE.match(own) else LIST_ITEM_RE.match(own)
-            starts_item = item is not None and not (  # not text of the paragraph that it cannot interrupt
-                after and (indent_width(own) >= 4 or not _may_interrupt(own, item))
-            )
+            starts_item = first is not None  # (a marker that cannot interrupt the paragraph was text above)
             if not self.paragraph or starts_item:
                 self._columns = outer + marks
                 # A quote in the item holds what follows in it: a line without its
@@ -758,6 +759,8 @@ class _Quote:
                 if starts_item and indent_width(body) < 4 and body.lstrip(" \t").startswith(">") and self._depth < _QUOTE_DEPTH:
                     self._item_inner = _Quote(self._depth + 1)
                     self._item_inner.read(body.lstrip(" \t")[1:].removeprefix(" "))
+                    self.paragraph = self._item_inner.paragraph
+                    self._last = line if self.paragraph else None
             elif was:
                 self._columns, self._empty, self._item_inner = keep, keep_empty, quote
             else:
@@ -881,6 +884,7 @@ def _scan_list(
     own: list[tuple[int, int]] = []  # the list's own items: first line, content column
     text: dict[int, int] = {}  # lazy lines that look like an item's start
     chain: list[int] = []  # the content columns of the current item and those it is nested in
+    nested_at: dict[int, tuple[tuple[int, ...], int, int]] = {}  # of each, what its first line nests (``nest``, ``offset``, ``innermost``)
     # Where the list's own items are measured from: the margin, or for a list
     # in the content of an item before it (``_parse_body``'s tail), where it
     # starts.
@@ -1038,6 +1042,7 @@ def _scan_list(
                 and (end_marker := LIST_ITEM_RE.match(rest)) and is_blank(rest[end_marker.end():])
             )
             innermost = offset + (item_content_column(rest) if bare else 0)
+            nested_at[depth] = (nest, offset, innermost)
         elif own and (
             # Into the content of an item still open: the list's (the item a
             # line is in is read from its lines, ``_parse_list``). Short of
@@ -1051,7 +1056,10 @@ def _scan_list(
                 # items nested in it: it is read as indented there.
                 content_indent = chain[depth - 1]
                 del chain[depth:]
-                nest, offset, innermost = (), 0, 0
+                nest, offset, innermost = nested_at.get(depth - 1, ((), 0, 0))  # the items nested on its first line
+                if (held := bisect.bisect_right(nest, width - content_indent)) < len(nest):
+                    nest = nest[:held]
+                    offset = innermost = nest[-1] if nest else 0
             content = dedent(line, content_indent, expand=True) if indented else line.strip(" \t")
             if offset and width >= content_indent + offset:
                 # In the items nested on the first line: it is read from their content.
@@ -1498,33 +1506,29 @@ def _is_paragraph_text(
     break, a nested list item, a fence, or an HTML block. *nested*: a nested
     item's text counts too (`1. item` opens that item's paragraph). *code_ends*:
     a nested item with more than four columns of spacing holds code, no paragraph.
-    A line indented four columns or more is no block of its own where it is asked
-    of (indented code is told apart, and cannot interrupt a paragraph): its text."""
-    if indent_width(content) >= 4:
-        return bool(content.strip(" \t"))
+    A thematic break indented four columns or more is none: text."""
+    indented = indent_width(content) >= 4
     if nested:
         position, code = (walks.skip_markers if walks else _skip_markers)(content, code_ends=code_ends)
         if code:
             return False
         content = content[position:]
     return bool(content.strip(" \t")) and not (
-        ATX_HEADING_RE.match(content) or RULE_RE.match(content) or LIST_ITEM_RE.match(content)
+        ATX_HEADING_RE.match(content) or (RULE_RE.match(content) and not indented) or LIST_ITEM_RE.match(content)
         or FENCE_OPEN_RE.match(content) or HTML_BLOCK_START_RE.match(content)
     )
 
 
-def _may_interrupt_marker(marker: ItemMarker) -> bool:
-    """``_may_interrupt`` of a marker ``item_marker_at`` found."""
-    return not marker.blank and (marker.number is None or int(marker.number) == 1)
-
-
-def _may_interrupt(line: str, marker: re.Match[str]) -> bool:
-    """True if the list item *marker* opens on *line* may interrupt a
+def _may_interrupt(line: str, marker: re.Match[str] | ItemMarker) -> bool:
+    """True if the list item *marker* opens on *line* (a match of
+    ``LIST_ITEM_RE``, or a marker ``item_marker_at`` found) may interrupt a
     paragraph (CommonMark): it is not empty and, if ordered, its number is
     1 — ``01.`` included."""
-    return bool(line[marker.end():].strip(" \t")) and (
-        marker.group("number") is None or int(marker.group("number")) == 1
-    )
+    if isinstance(marker, ItemMarker):
+        blank, number = marker.blank, marker.number
+    else:
+        blank, number = not line[marker.end():].strip(" \t"), marker.group("number")
+    return not blank and (number is None or int(number) == 1)
 
 
 def _paragraph_end(lines: list[str], index: int, lazy: bool, *, headings: bool = True) -> tuple[int, int]:
