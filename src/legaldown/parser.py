@@ -28,6 +28,7 @@ from .markdown import (
     HTML_BLOCK_START_RE,
     LINE_ENDING_RE,
     LIST_ITEM_PATTERN,
+    TAB_STOP,
     ItemMarker,
     ItemMarkers,
     NestedContent,
@@ -40,6 +41,7 @@ from .markdown import (
     indented_code_end,
     is_blank,
     item_content_column,
+    item_marker_at,
     nested_content,
     paragraph_text,
     strip_text,
@@ -429,10 +431,10 @@ def _skip_markers(
     thematic break; *code*: after a marker with more than four columns of
     spacing, whose content is indented code, which nests no item and is no
     paragraph; without *code_ends*, the markers go on past it. *quotes*: block
-    quote markers between them count too. The
-    markers are walked (``ItemMarkers``) and a rest is tested for a break from
-    the end of the line (``_Rule``): a line of markers (``- - - - a``) is not
-    copied, or read, once per marker."""
+    quote markers between them count too. The markers are walked
+    (``ItemMarkers``) and a rest is tested for a break from the end of the line
+    (``_Rule``): a line of markers (``- - - - a``) is not copied, or read, once
+    per marker."""
     is_rule = is_rule or _Rule(content)
     walk = ItemMarkers(content, between=_QUOTE_MARKERS_RE if quotes else None)
     for marker in walk:
@@ -462,12 +464,16 @@ class _Walks:
     is the walk's own result. The entries a list made, which no level read (the
     lists past ``MAX_LIST_DEPTH``), are dropped when it is done (``release``)."""
 
-    __slots__ = ("nested", "skipped", "_made")
+    __slots__ = ("nested", "skipped", "skipped_past", "seen", "_made")
 
     def __init__(self) -> None:
         self.nested: dict[str, NestedContent] = {}  # ``nested_content``
         self.skipped: dict[str, tuple[int, bool]] = {}  # ``_skip_markers``
-        self._made: list[str] = []  # the keys of the entries, in the order they were made
+        self.skipped_past: dict[str, tuple[int, bool]] = {}  # ``_skip_markers`` without ``code_ends``
+        #: What a walk of a text found, for the same text asked again (not used once, as the others
+        #: are): the lines of the list are read at each level of its items, with less indentation.
+        self.seen: dict[tuple[bool, str], tuple[int, bool]] = {}
+        self._made: list[tuple[dict[Any, Any], Any]] = []  # the entries, in the order they were made
 
     def mark(self) -> int:
         """Where the entries a list makes begin."""
@@ -475,42 +481,52 @@ class _Walks:
 
     def release(self, mark: int) -> None:
         """Drop the entries made since *mark*, which no level will read now."""
-        for key in self._made[mark:]:
-            self.nested.pop(key, None)
-            self.skipped.pop(key, None)
+        for table, key in self._made[mark:]:
+            table.pop(key, None)
         del self._made[mark:]
+
+    def _remember(self, table: dict[Any, Any], key: Any, value: Any) -> None:
+        table[key] = value
+        self._made.append((table, key))
 
     def _first_marker(self, content: str, walked: int) -> ItemMarker | None:
         """The first marker of *content* if the walk of its first *walked*
         characters went past it, so that the next level's walk is told the rest
         (none when a tab is in what was walked: its columns depend on where the
         text starts)."""
-        if not walked or "\t" in content[:walked]:
+        if not walked or content.find("\t", 0, walked) >= 0:
             return None
-        first = next(iter(ItemMarkers(content)), None)
+        first = item_marker_at(content)
         return first if first is not None and walked > first.end else None
 
     def nested_content(self, content: str) -> NestedContent:
         """``nested_content(content)``."""
         found = self.nested.pop(content, None) or nested_content(content, 0, _Rule(content))
         if (first := self._first_marker(content, found.end)) is not None:
-            rest = content[first.end:]
-            self.nested[rest] = NestedContent(
+            self._remember(self.nested, content[first.end:], NestedContent(
                 found.columns - first.column, found.characters - first.cut, found.end - first.end,
                 tuple(level - first.column for level in found.levels[1:]),
-            )
-            self._made.append(rest)
+            ))
         return found
 
-    def skip_markers(self, content: str) -> tuple[int, bool]:
-        """``_skip_markers(content)``."""
-        found = self.skipped.pop(content, None) or _skip_markers(content)
+    def skip_markers(self, content: str, *, code_ends: bool = True) -> tuple[int, bool]:
+        """``_skip_markers(content, code_ends=code_ends)``. The walk is that of
+        the text without its leading spaces (a line of the list is read at each
+        level with less of its indentation), unless a tab in what it walked is
+        counted from where the text starts."""
+        lead = len(content) - len(content.lstrip(" "))
+        text = content[lead:]
+        table = self.skipped if code_ends else self.skipped_past
+        key = (code_ends, text)
+        asked = self.seen.get(key)  # the same text, read at a level before
+        found = asked or table.pop(text, None) or _skip_markers(text, code_ends=code_ends)  # or told by the level before
         position, code = found
-        if (first := self._first_marker(content, position)) is not None:
-            rest = content[first.end:]
-            self.skipped[rest] = (position - first.end, code)
-            self._made.append(rest)
-        return found
+        if position and lead % TAB_STOP and text.find("\t", 0, position) >= 0:
+            return _skip_markers(content, code_ends=code_ends)
+        if asked is None and (first := self._first_marker(text, position)) is not None:
+            self._remember(table, text[first.end:], (position - first.end, code))
+            self._remember(self.seen, key, found)
+        return (position + lead if position else 0), code
 
 
 def _opens_paragraph(
@@ -897,14 +913,9 @@ def _scan_list(
         width = indent_width(line)  # the line's, read many times below
         shift = 0  # the columns of the items nested on the item's first line that the line's content is cut by
         if fence is not None:
-            # A line that starts an item, indented less than the current
-            # item's content, closes the item and a fence opened in its
-            # content (CommonMark): a sibling of a nested item, say.
-            starts = (
-                fence_inside and width < content_indent
-                and _starts_item(_marker(line), chain, margin, width)
-            )
-            if not starts and (is_blank(line) or width >= (fence_column or (content_indent if fence_inside else chain[0] if chain else 2))):
+            # A line indented less than the content of the item that holds the fence
+            # closes the fence (CommonMark): a sibling of a nested item, say.
+            if is_blank(line) or width >= (fence_column or (content_indent if fence_inside else chain[0] if chain else 2)):
                 code = dedent(line, fence_column or content_indent, expand=True)
                 end += 1
                 if closes_fence(code, fence):
@@ -912,8 +923,6 @@ def _scan_list(
                 lazy = False
                 continue
             fence = None
-            if fence_column:  # short of the nested item that held it: that ends, and the items nested on its line
-                fence_column = 0
         if html is not None and not is_blank(line):
             if width >= html_column:
                 # The HTML block's, whatever it looks like — an item's
@@ -1494,10 +1503,7 @@ def _is_paragraph_text(
     if indent_width(content) >= 4:
         return bool(content.strip(" \t"))
     if nested:
-        if walks and code_ends:
-            position, code = walks.skip_markers(content)
-        else:
-            position, code = _skip_markers(content, code_ends=code_ends)
+        position, code = (walks.skip_markers if walks else _skip_markers)(content, code_ends=code_ends)
         if code:
             return False
         content = content[position:]

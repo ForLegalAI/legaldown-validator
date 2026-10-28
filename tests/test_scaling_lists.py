@@ -240,3 +240,26 @@ def test_each_level_of_nesting_reads_its_own_marker_of_a_line_of_them(
     if block.kind == "quote":
         quote_blocks(block)
     assert 0 < calls[0] < 10 * markers
+
+
+@pytest.mark.parametrize("marker", ["2. ", "- "], ids=["cannot-interrupt", "items"])
+@pytest.mark.parametrize("trailing", ["a\n", "a\tb\n"], ids=["text", "tab-in-text"])
+def test_a_line_of_markers_in_deep_items_is_walked_once_not_at_every_level(
+    marker: str, trailing: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A line of the innermost item of sixty-four, with markers that cannot
+    interrupt its paragraph (``2. 2. 2.``, which take a walk that does not stop at
+    code) or that can, is read at each of the levels with less of its
+    indentation. What a level found is told to the next: some reads of each
+    marker in all, not sixty-four (63 each before)."""
+    markers = 2000
+    calls = [0]
+    real = markdown_module.item_marker_at
+
+    def reading(*args: Any, **kwargs: Any) -> Any:
+        calls[0] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(markdown_module, "item_marker_at", reading)
+    parse("- " * 64 + "a\n" + " " * 128 + marker * markers + trailing)
+    assert 0 < calls[0] < 8 * markers

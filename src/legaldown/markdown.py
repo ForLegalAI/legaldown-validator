@@ -223,7 +223,7 @@ def is_comment_only(html: str) -> bool:
 # str.splitlines() breaks at — form feed, U+2028, … — are characters.
 LINE_ENDING_RE = re.compile(r"\r\n|\r|\n")
 
-_TAB = 4  # a tab advances to the next multiple of four columns
+TAB_STOP = 4  # a tab advances to the next multiple of four columns
 
 
 def is_blank(line: str) -> bool:
@@ -275,7 +275,7 @@ def advance_column(column: int, text: str) -> int:
     if "\t" not in text:
         return column + len(text)
     for char in text:
-        column += _TAB - column % _TAB if char == "\t" else 1
+        column += TAB_STOP - column % TAB_STOP if char == "\t" else 1
     return column
 
 
@@ -319,7 +319,7 @@ def item_marker_at(text: str, position: int = 0, column: int = 0) -> ItemMarker 
     if end == len(text) or (end == len(text) - 1 and text[end] == "\n"):  # an empty item: only a line ending is left
         return ItemMarker(position, column, lead, indent, gap, end, end_column, end, after + 1, True, 0, number)
     if gap > 4:
-        tab = _TAB - after % _TAB if text[gap_start] == "\t" else 1
+        tab = TAB_STOP - after % TAB_STOP if text[gap_start] == "\t" else 1
         return ItemMarker(position, column, lead, indent, gap, end, end_column, gap_start + 1, after + 1, False, tab - 1, number)
     return ItemMarker(position, column, lead, indent, gap, end, end_column, end, after + gap, False, 0, number)
 
