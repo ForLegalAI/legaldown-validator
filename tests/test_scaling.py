@@ -20,8 +20,8 @@ from legaldown import directives as directives_module
 from legaldown import markdown
 from legaldown.directives import lex, mask_directives
 from legaldown.parser import parse
+from legaldown.validator import circular, core, paths, templates, validate
 from legaldown.validator import conditions as conditions_module
-from legaldown.validator import core, paths, templates, validate
 from legaldown.validator import units as units_module
 from legaldown.validator.conditions import ALWAYS
 from legaldown.validator.units import find_markers
@@ -492,3 +492,77 @@ def test_references_of_one_presence_are_checked_once(monkeypatch):
     assert checks.calls == 1  # 300 references to the one target with the one presence
     unsafe = [d for d in result.diagnostics if d.rule == "condition-reference-unsafe"]
     assert len(unsafe) == n  # the last value has no alternative: each reference is reported
+
+
+# ── Alternatives named by many references (circular definitions) ──
+
+
+def _named_alternatives(count: int, same_question: bool):
+    """An id of *count* alternatives, one for each value of the choice question ``c``, that name *count* definitions
+    of other ids; these name the id, each under a value of ``c`` or of another choice question ``d``."""
+    from legaldown.definitions import collect_definitions
+
+    questions = {
+        "c": {"type": "choice", "choices": {f"v{k}": str(k) for k in range(count)}},
+        "d": {"type": "choice", "choices": {f"w{k}": str(k) for k in range(count)}},
+    }
+    paragraphs = [f'"T" {{{{def: t}}}} means {{{{term: u{k}}}}}.' for k in range(count)]
+    paragraphs += [f'"U" {{{{def: u{k}}}}} means {{{{term: t}}}}.' for k in range(count)]
+    document = parse("\n\n".join(paragraphs), filename="t.lgd")
+    registered = []
+    uses = []
+    for number, ref in enumerate(collect_definitions(document)):
+        text = f"c:v{number}" if number < count else f"{'c:v' if same_question else 'd:w'}{number - count}"
+        presence = units_module.own_presence(text, questions)
+        registered.append((ref, presence))
+        uses.append(circular.TermUse(None, number, 0, f"u{number}" if number < count else "t", presence))
+    return document, registered, uses, questions
+
+
+def test_references_on_another_question_test_no_pair_of_alternatives(monkeypatch):
+    n = 1000
+    document, registered, uses, questions = _named_alternatives(n, same_question=False)
+    tests = _Counter(monkeypatch, conditions_module.Exclusivity, "excluded")
+    circles = circular.find_circular_definitions(document, registered, uses, conditions_module.Exclusivity(questions))
+    assert len(circles) == 1 and len(circles[0]) == 2 * n
+    assert tests.calls == 0  # n x n pair tests before #110: a reference excludes only what names a question it does
+
+
+def test_references_on_another_question_in_a_time_budget():
+    document, registered, uses, questions = _named_alternatives(2000, same_question=False)
+    exclusivity = conditions_module.Exclusivity(questions)
+    assert _seconds(circular.find_circular_definitions, document, registered, uses, exclusivity) < 2.0  # 0.06 s; 21 s
+
+
+def test_pair_tests_stop_at_the_cap(monkeypatch):
+    n = 1000
+    document, registered, uses, questions = _named_alternatives(n, same_question=True)
+    tests = _Counter(monkeypatch, conditions_module.Exclusivity, "excluded")
+    monkeypatch.setattr(circular, "MAX_EXCLUSION_TESTS", 100_000)
+    exclusivity = conditions_module.Exclusivity(questions)
+    start = time.perf_counter()
+    circles = circular.find_circular_definitions(document, registered, uses, exclusivity)
+    assert time.perf_counter() - start < 5.0  # 0.2 s now; the n x n = 1M pair tests took 1.4 s, 4M take 5 s
+    assert tests.calls == 100_000
+    # Every definition is on a circle, as without the cap; past it the alternatives are not told
+    # apart, so the references left reach them all and their circles are one.
+    assert sorted(member for circle in circles for member in circle) == list(range(2 * n))
+    assert len(circles) < n
+
+
+def test_references_on_another_question_through_the_validator_test_no_pair(monkeypatch):
+    n = 300
+    values = "".join(f"      v{k}: V{k}\n" for k in range(n))
+    others = "".join(f"      w{k}: W{k}\n" for k in range(n))
+    alternatives = "".join(f'"T" {{{{def: t}}}} means x. {{when=c:v{k}}}\n\n' for k in range(n))
+    references = "".join(f'"R{k}" {{{{def: r{k}}}}} means {{{{term: t}}}}. {{when=d:w{k}}}\n\n' for k in range(n))
+    document = parse(
+        f"---\ntitle: T\nquestions:\n  c:\n    type: choice\n    choices:\n{values}"
+        f"  d:\n    type: choice\n    choices:\n{others}---\n\n# Terms {{#terms}}\n\n{alternatives}{references}",
+        filename="t.lgd",
+    )
+    tests = _Counter(monkeypatch, conditions_module.Exclusivity, "excluded")
+    start = time.perf_counter()
+    validate(document)
+    assert time.perf_counter() - start < 10.0  # 1 s now
+    assert tests.calls == 0

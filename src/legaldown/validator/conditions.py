@@ -165,7 +165,11 @@ def _some_answer_holds(conditions: Iterable[Condition], answers: Collection[Any]
     """True if some answer in *answers* makes every one of *conditions*
     (all on one question) hold, without trying each: the answers are those
     equal to the one value wanted, if there is one, less the values refused."""
-    wanted, refused = condition_values(conditions)
+    return _some_answer_wanted(*condition_values(conditions), answers)
+
+
+def _some_answer_wanted(wanted: Collection[Any], refused: Collection[Any], answers: Collection[Any]) -> bool:
+    """``_some_answer_holds`` for the values that the conditions *wanted* and *refused*."""
     if len(wanted) > 1:
         return False
     if wanted:
@@ -201,6 +205,89 @@ def exclusive(first: Presence, second: Presence, questions: Any) -> bool:
     return exclusive_in(first, second, lambda question: question_answers(question, questions))
 
 
+#: A presence by question: the values its conditions on it want, and refuse
+#: (``condition_values``).
+_Profile = dict[str, tuple[frozenset[Any], frozenset[Any]]]
+
+
+def _profile(presence: Presence) -> _Profile:
+    return {
+        question: (frozenset(wanted), frozenset(refused))
+        for question, conditions in by_question(presence).items()
+        for wanted, refused in [condition_values(conditions)]
+    }
+
+
+class Exclusivity:
+    """``exclusive`` for the presences of one document (*questions* is its
+    ``metadata.questions``), for a caller that asks about many pairs (#110):
+    what each presence wants and refuses of each question is worked out once,
+    and two presences are compared on the questions they both name.
+
+    Two presences exclude each other when either can never appear, or when, on
+    some question both name, what they want and refuse between them leaves no
+    answer. A pair that names no question in common is excluded only in the
+    first way, which a caller can use to skip testing it (``appears``,
+    ``questions``). An instance may be called, as ``exclusive`` is."""
+
+    def __init__(self, questions: Any) -> None:
+        self._questions = questions
+        self._answers: dict[str, Collection[Any]] = {}
+        self._profiles: dict[Presence, tuple[bool, _Profile]] = {}
+
+    def _answers_of(self, question: str) -> Collection[Any]:
+        if question not in self._answers:
+            self._answers[question] = question_answers(question, self._questions)
+        return self._answers[question]
+
+    def _profile(self, presence: Presence) -> tuple[bool, _Profile]:
+        if presence not in self._profiles:
+            by_wanted_refused = _profile(presence)
+            appears = all(
+                _some_answer_wanted(wanted, refused, self._answers_of(question))
+                for question, (wanted, refused) in by_wanted_refused.items()
+            )
+            self._profiles[presence] = appears, by_wanted_refused
+        return self._profiles[presence]
+
+    def appears(self, presence: Presence) -> bool:
+        """``satisfiable``: some answers make *presence* hold."""
+        return self._profile(presence)[0]
+
+    def questions(self, presence: Presence) -> Collection[str]:
+        """The questions *presence* has a condition on."""
+        return self._profile(presence)[1].keys()
+
+    def excluded(self, first: Presence, second: Presence) -> bool:
+        """``exclusive(first, second, questions)``."""
+        first_appears, first_values = self._profile(first)
+        second_appears, second_values = self._profile(second)
+        if not (first_appears and second_appears):
+            return True
+        if len(second_values) < len(first_values):
+            first_values, second_values = second_values, first_values
+        for question, (wanted, refused) in first_values.items():
+            if question not in second_values:
+                continue
+            other_wanted, other_refused = second_values[question]
+            # Each can be satisfied alone (``appears``), so a value wanted by one is an answer, and
+            # is excluded only by the other's wanting another, or refusing it.
+            if wanted:
+                if other_wanted:
+                    if wanted != other_wanted:
+                        return True
+                elif not wanted.isdisjoint(other_refused):
+                    return True
+            elif other_wanted:
+                if not other_wanted.isdisjoint(refused):
+                    return True
+            elif not _some_answer_wanted(wanted, refused | other_refused, self._answers_of(question)):
+                return True
+        return False
+
+    __call__ = excluded
+
+
 def always_covered(presence: Presence, targets: Sequence[Presence], questions: Any) -> bool:
     """True if, whenever a reference with *presence* appears, a declaration
     with one of the *targets* presences appears too (§15.4).
@@ -220,19 +307,6 @@ def always_covered(presence: Presence, targets: Sequence[Presence], questions: A
     if not all(possible.values()):
         return True  # no answers make the reference present
     return _covered(possible, [_profile(target) for target in targets])
-
-
-#: A presence by question: the values its conditions on it want, and refuse
-#: (``condition_values``).
-_Profile = dict[str, tuple[frozenset[Any], frozenset[Any]]]
-
-
-def _profile(target: Presence) -> _Profile:
-    return {
-        question: (frozenset(wanted), frozenset(refused))
-        for question, conditions in by_question(target).items()
-        for wanted, refused in [condition_values(conditions)]
-    }
 
 
 def _covered(possible: dict[str, list[Any]], targets: Sequence[_Profile]) -> bool:

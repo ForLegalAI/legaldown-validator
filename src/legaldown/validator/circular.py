@@ -37,7 +37,13 @@ from typing import NamedTuple
 from ..definitions import DefinitionRef, find_definition_anchors, fragment_scopes
 from ..directives import Directive, Lexed
 from ..models import Document
-from .conditions import Presence
+from .conditions import Exclusivity, Presence
+
+#: The most pairs of presences ``find_circular_definitions`` tests, given an
+#: ``Exclusivity``. Past it alternatives are no longer told apart: a reference
+#: reaches all of an id's alternatives, as it does in a document that is no
+#: template. That can only add circles, never hide one.
+MAX_EXCLUSION_TESTS = 4_000_000
 
 
 class TermUse(NamedTuple):
@@ -161,6 +167,14 @@ def find_circular_definitions(
     found, as a Warning is better given than withheld. The work is a test of
     each distinct pair of presences, once.
 
+    Given an ``Exclusivity``, a reference is tested only against the
+    alternatives that name a question it names (the others can appear with
+    it, unless one of them can never appear: those are not reached), and at
+    most ``MAX_EXCLUSION_TESTS`` pairs are tested in all. Past that, a
+    reference reaches every alternative of the id it names, which can only
+    join circles, never split one: no circular definition goes unreported,
+    though circles may merge into fewer Warnings, at other lines.
+
     Each circle is a list of indices into *registered*, ascending. They are
     ordered by their last index: the definition where the circle closes, in
     document order, which a diagnostic is reported at."""
@@ -217,17 +231,62 @@ def find_circular_definitions(
 
     excludes: dict[tuple[Presence, Presence], bool] = {}
     reached: dict[tuple[str, Presence], list[int]] = {}
+    exclusivity = excluded if isinstance(excluded, Exclusivity) else None
+    tests = 0  # the pairs ``exclusivity`` has tested: it stops pruning at MAX_EXCLUSION_TESTS
+    #: Per id, for an ``Exclusivity``: the numbers of its alternatives that can
+    #: appear, by the questions they name, and those that never can.
+    named: dict[str, tuple[dict[str, list[int]], list[int]]] = {}
+
+    def reach_excluding(exclusivity: Exclusivity, target: str, presence: Presence) -> list[int] | None:
+        """What a reference with *presence* reaches among the alternatives of
+        *target*, tested only against those that name a question it names: an
+        alternative that can appear cannot exclude a reference that can appear
+        unless they share a question. None when the tests would pass the cap."""
+        nonlocal tests
+        numbers = declarations[target]
+        if target not in named:
+            by_question: dict[str, list[int]] = {}
+            never: list[int] = []
+            for number in numbers:
+                alternative = registered[number][1]
+                if exclusivity.appears(alternative):
+                    for question in exclusivity.questions(alternative):
+                        by_question.setdefault(question, []).append(number)
+                else:
+                    never.append(number)
+            named[target] = by_question, never
+        by_question, never = named[target]
+        if not exclusivity.appears(presence):
+            return []  # it excludes every alternative
+        excluded_numbers = set(never)
+        questions = exclusivity.questions(presence)
+        if len(questions) == 1:
+            candidates: Iterable[int] = by_question.get(next(iter(questions)), ())  # in order
+        else:
+            candidates = sorted({n for question in questions for n in by_question.get(question, ())})
+        for number in candidates:
+            if tests >= MAX_EXCLUSION_TESTS:
+                return None
+            tests += 1
+            if exclusivity.excluded(presence, registered[number][1]):
+                excluded_numbers.add(number)
+        return [number for number in numbers if number not in excluded_numbers] if excluded_numbers else numbers
 
     def reach(target: str, presence: Presence) -> list[int]:
         if (target, presence) not in reached:
             numbers = declarations[target]
-            keep = []
-            for number in numbers:
-                pair = (presence, registered[number][1])
-                if excluded is not None and pair not in excludes:
-                    excludes[pair] = excluded(*pair)
-                if excluded is None or not excludes[pair]:
-                    keep.append(number)
+            if exclusivity is not None:
+                keep = reach_excluding(exclusivity, target, presence)
+                if keep is None:
+                    keep = numbers  # past the cap: the alternatives are not told apart
+            else:
+                keep = []
+                for number in numbers:
+                    pair = (presence, registered[number][1])
+                    if excluded is not None and pair not in excludes:
+                        excludes[pair] = excluded(*pair)
+                    if excluded is None or not excludes[pair]:
+                        keep.append(number)
             reached[target, presence] = [id_node[target]] if len(keep) == len(numbers) > 1 else keep
         return reached[target, presence]
 

@@ -43,6 +43,7 @@ from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
 from .conditions import (
     ALWAYS,
+    Exclusivity,
     Presence,
     always_covered,
     by_question,
@@ -2256,7 +2257,7 @@ def _validate(
         document,
         registered,
         term_uses,
-        (lambda first, second: exclusive(first, second, questions)) if template else None,
+        Exclusivity(questions) if template else None,
     ):
         result.warning(
             "definition-circular",
