@@ -6,8 +6,9 @@ document: its own condition and those of every unit enclosing it.
 """
 from __future__ import annotations
 
+import itertools
 import re
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,6 +98,49 @@ def question_answers(question: str, questions: Any) -> Collection[Any]:
     return choices if isinstance(choices, dict) else ()  # a dict is read as its keys
 
 
+def holds_under(presence: Iterable[Condition], answers: dict[str, Any]) -> bool:
+    """True if every condition in *presence* holds when each question in *answers* has the answer it gives. A
+    condition on a question that *answers* does not name holds (``answer_combinations``)."""
+    return all(condition.holds(answers[condition.question]) for condition in presence if condition.question in answers)
+
+
+def answer_combinations(
+    presences: Iterable[Presence], questions: Any, *, max_questions: int, max_combinations: int
+) -> tuple[list[str], list[dict[str, Any]]] | None:
+    """Every combination of answers to the questions that *presences* name (§15.4), as the questions
+    in the order they are first used (*presences* in order; those of one presence in the order
+    *questions* declares them) and the combinations in the order of their answers: true before
+    false, a choice's values as declared, the last question changing fastest. A question that has
+    no answer at all (a choice without choices: ``question-invalid`` says so) is left out: its
+    conditions hold. None when there are more than *max_questions* questions or more than
+    *max_combinations* combinations, which is too many to try."""
+    position = {question: index for index, question in enumerate(questions)} if isinstance(questions, dict) else {}
+
+    def answers_of(question: str) -> Collection[Any]:
+        try:
+            return question_answers(question, questions)
+        except (KeyError, AttributeError, TypeError):  # not declared, or no mapping: no answer to give
+            return ()
+
+    asked: list[str] = []
+    for presence in presences:
+        for question in sorted({condition.question for condition in presence}, key=lambda q: position.get(q, len(position))):
+            if question not in asked and answers_of(question):
+                asked.append(question)
+    if len(asked) > max_questions:
+        return None
+    count = 1
+    for question in asked:
+        count *= len(answers_of(question))
+        if count > max_combinations:
+            return None
+    combinations = [
+        dict(zip(asked, answers, strict=True))
+        for answers in itertools.product(*(answers_of(question) for question in asked))
+    ]
+    return asked, combinations
+
+
 def by_question(presence: Iterable[Condition]) -> dict[str, list[Condition]]:
     """The conditions in *presence* on each question they name."""
     grouped: dict[str, list[Condition]] = {}
@@ -121,7 +165,11 @@ def _some_answer_holds(conditions: Iterable[Condition], answers: Collection[Any]
     """True if some answer in *answers* makes every one of *conditions*
     (all on one question) hold, without trying each: the answers are those
     equal to the one value wanted, if there is one, less the values refused."""
-    wanted, refused = condition_values(conditions)
+    return _some_answer_wanted(*condition_values(conditions), answers)
+
+
+def _some_answer_wanted(wanted: Collection[Any], refused: Collection[Any], answers: Collection[Any]) -> bool:
+    """``_some_answer_holds`` for the values that the conditions *wanted* and *refused*."""
     if len(wanted) > 1:
         return False
     if wanted:
@@ -130,31 +178,110 @@ def _some_answer_holds(conditions: Iterable[Condition], answers: Collection[Any]
     return len(answers) > sum(1 for value in refused if value in answers)
 
 
-def satisfiable_in(presence: Iterable[Condition], answers_of: Callable[[str], Collection[Any]]) -> bool:
-    """``satisfiable``, with the answers of a question given by *answers_of*:
-    for a caller that asks many times and keeps them."""
-    return all(
-        _some_answer_holds(conditions, answers_of(question))
-        for question, conditions in by_question(presence).items()
-    )
-
-
 def satisfiable(presence: Iterable[Condition], questions: Any) -> bool:
     """True if some answers make every condition in *presence* hold — decided
     per question, as §15.4 describes. Defaults play no part."""
-    return satisfiable_in(presence, lambda question: question_answers(question, questions))
-
-
-def exclusive_in(first: Presence, second: Presence, answers_of: Callable[[str], Collection[Any]]) -> bool:
-    """``exclusive``, with the answers of a question given by *answers_of*."""
-    return not satisfiable_in(first | second, answers_of)
+    return all(
+        _some_answer_holds(conditions, question_answers(question, questions))
+        for question, conditions in by_question(presence).items()
+    )
 
 
 def exclusive(first: Presence, second: Presence, questions: Any) -> bool:
     """True if two units, appearing under the conditions *first* and
     *second* (their ``Presence``), can never appear together for any answers
     to the document's *questions* (``document.metadata.questions``, §15.4)."""
-    return exclusive_in(first, second, lambda question: question_answers(question, questions))
+    return not satisfiable(first | second, questions)
+
+
+#: A presence by question: the values its conditions on it want, and refuse
+#: (``condition_values``).
+_Profile = dict[str, tuple[frozenset[Any], frozenset[Any]]]
+
+
+def _profile(presence: Presence) -> _Profile:
+    return {
+        question: (frozenset(wanted), frozenset(refused))
+        for question, conditions in by_question(presence).items()
+        for wanted, refused in [condition_values(conditions)]
+    }
+
+
+class Exclusivity:
+    """``exclusive`` for the presences of one document (*questions* is its
+    ``metadata.questions``), for a caller that asks about many pairs (#110):
+    what each presence wants and refuses of each question is worked out once,
+    and two presences are compared on the questions they both name.
+
+    Two presences exclude each other when either can never appear, or when, on
+    some question both name, what they want and refuse between them leaves no
+    answer. A pair that names no question in common is excluded only in the
+    first way, which a caller can use to skip testing it (``appears``,
+    ``questions``)."""
+
+    def __init__(self, questions: Any) -> None:
+        self._questions = questions
+        self._answers: dict[str, Collection[Any]] = {}
+        self._entries: dict[Presence, tuple[bool, _Profile]] = {}
+
+    def answers(self, question: str) -> Collection[Any]:
+        """Every answer *question* can have (``question_answers``), kept."""
+        if question not in self._answers:
+            self._answers[question] = question_answers(question, self._questions)
+        return self._answers[question]
+
+    def _entry(self, presence: Presence) -> tuple[bool, _Profile]:
+        if presence not in self._entries:
+            # What is refused that is no answer is nothing refused.
+            by_wanted_refused = {
+                question: (wanted, frozenset(value for value in refused if value in self.answers(question)))
+                for question, (wanted, refused) in _profile(presence).items()
+            }
+            appears = all(
+                _some_answer_wanted(wanted, refused, self.answers(question))
+                for question, (wanted, refused) in by_wanted_refused.items()
+            )
+            self._entries[presence] = appears, by_wanted_refused
+        return self._entries[presence]
+
+    def values(self, presence: Presence, question: str) -> tuple[frozenset[Any], frozenset[Any]]:
+        """The values *presence* wants of *question*, and those of its answers it refuses."""
+        return self._entry(presence)[1][question]
+
+    def appears(self, presence: Presence) -> bool:
+        """``satisfiable``: some answers make *presence* hold."""
+        return self._entry(presence)[0]
+
+    def questions(self, presence: Presence) -> Collection[str]:
+        """The questions *presence* has a condition on."""
+        return self._entry(presence)[1].keys()
+
+    def excluded(self, first: Presence, second: Presence) -> bool:
+        """``exclusive(first, second, questions)``."""
+        first_appears, first_values = self._entry(first)
+        second_appears, second_values = self._entry(second)
+        if not (first_appears and second_appears):
+            return True
+        if len(second_values) < len(first_values):
+            first_values, second_values = second_values, first_values
+        for question, (wanted, refused) in first_values.items():
+            if question not in second_values:
+                continue
+            other_wanted, other_refused = second_values[question]
+            # Each can be satisfied alone (``appears``), so a value wanted by one is an answer, and
+            # is excluded only by the other's wanting another, or refusing it.
+            if wanted:
+                if other_wanted:
+                    if wanted != other_wanted:
+                        return True
+                elif not wanted.isdisjoint(other_refused):
+                    return True
+            elif other_wanted:
+                if not other_wanted.isdisjoint(refused):
+                    return True
+            elif not _some_answer_wanted(wanted, refused | other_refused, self.answers(question)):
+                return True
+        return False
 
 
 def always_covered(presence: Presence, targets: Sequence[Presence], questions: Any) -> bool:
@@ -175,31 +302,123 @@ def always_covered(presence: Presence, targets: Sequence[Presence], questions: A
     }
     if not all(possible.values()):
         return True  # no answers make the reference present
-    return _covered(possible, targets)
+    return _covered(possible, [_profile(target) for target in targets])
 
 
-def _covered(possible: dict[str, list[Any]], targets: Sequence[Presence]) -> bool:
+def _covered(possible: dict[str, list[Any]], targets: Sequence[_Profile]) -> bool:
     """True if every combination of the *possible* answers makes one of the
-    *targets* hold."""
-    live: list[Presence] = []
+    *targets* hold. *possible* is narrowed as the search goes and restored
+    when it ends.
+
+    Each step takes the question some live target leaves open and tries each
+    answer to it, with the targets that can hold under that answer (``_step``).
+    The search keeps its own stack of the questions narrowed, so that its depth
+    is not the interpreter's (a target for each of many questions would be
+    deep), and so that ``possible`` is restored whichever way it ends.
+    """
+    #: The answers still possible for each question as a set too, to ask in O(1).
+    members = {question: frozenset(answers) for question, answers in possible.items()}
+    stack: list[tuple[str, list[Any], frozenset[Any], Iterator[tuple[Any, list[_Profile]]]]] = []
+    covered: bool | None = None  # None: *targets* are still to be looked at
+    try:
+        while True:
+            if covered is None:
+                step = _step(possible, members, targets)
+                if isinstance(step, bool):
+                    covered = step
+                else:
+                    stack.append(step)
+            if covered is False or (covered and not stack):
+                return covered
+            question, saved, saved_members, branches = stack[-1]
+            branch = next(branches, None)
+            if branch is None:
+                possible[question], members[question] = saved, saved_members  # every answer to it is covered
+                stack.pop()
+                covered = True
+            else:
+                possible[question], members[question] = [branch[0]], frozenset((branch[0],))
+                targets = branch[1]
+                covered = None
+    finally:
+        while stack:
+            question, saved, saved_members, _branches = stack.pop()
+            possible[question], members[question] = saved, saved_members
+
+
+def _step(
+    possible: dict[str, list[Any]], members: dict[str, frozenset[Any]], targets: Sequence[_Profile]
+) -> bool | tuple[str, list[Any], frozenset[Any], Iterator[tuple[Any, list[_Profile]]]]:
+    """Whether the *targets* are decided under the *possible* answers: True
+    if one is certain, False if none can hold. Otherwise the question to
+    narrow, its answers as they were (as a list and as a set), and the branches to
+    try, each an answer and the targets that can hold under it."""
+    live: list[tuple[_Profile, int, str]] = []  # a target, the questions it leaves open, the first
     undecided = ""  # a question some live target leaves open
-    for target in targets:
+    for profile in targets:
+        open_count = 0
         open_question = ""
-        for question in {c.question for c in target}:
-            holding = [
-                a for a in possible[question] if all(c.holds(a) for c in target if c.question == question)
-            ]
+        for question, (wanted, refused) in profile.items():
+            answers = members[question]
+            if len(wanted) > 1:
+                holding = 0
+            elif wanted:
+                (value,) = wanted
+                holding = int(value in answers and value not in refused)
+            else:
+                holding = len(answers) - len(refused & answers)
             if not holding:
                 break  # impossible under these answers
-            if len(holding) < len(possible[question]):
-                open_question = question
+            if holding < len(answers):
+                open_count += 1
+                open_question = open_question or question
         else:
             if not open_question:
                 return True  # certain under these answers
-            live.append(target)
+            live.append((profile, open_count, open_question))
             undecided = undecided or open_question
     if not live:
         return False
-    return all(
-        _covered({**possible, undecided: [answer]}, live) for answer in possible[undecided]
-    )
+    answers = possible[undecided]
+    answer_set = members[undecided]
+    # The live targets that want an answer to the question, by answer, and those that
+    # refuse some (or none): they hold under every other answer.
+    wanting: dict[Any, list[_Profile]] = {}
+    refusing: list[tuple[_Profile, frozenset[Any]]] = []
+    mentioned: set[Any] = set()
+    # The answers refused by every target that refuses and leaves open only this
+    # question. Such a target is certain once the question is narrowed to an
+    # answer it does not refuse, so the answers outside this set are covered,
+    # without building the targets that hold under each. (With many refusing
+    # alternatives, as ``!c:v1`` … ``!c:v2000``, that is what keeps a reference
+    # to them from costing a pass over all of them for each answer.)
+    sure: set[Any] | None = None
+    for profile, open_count, open_question in live:
+        wanted, refused = profile.get(undecided, (frozenset(), frozenset()))
+        if wanted:
+            (value,) = wanted
+            wanting.setdefault(value, []).append(profile)
+            mentioned.add(value)
+        else:
+            refusing.append((profile, refused))
+            mentioned.update(refused)
+            if open_count == 1 and open_question == undecided:
+                refused_here = refused & answer_set
+                sure = refused_here if sure is None else sure & refused_here
+
+    def branches() -> Iterator[tuple[Any, list[_Profile]]]:
+        unmentioned = False
+        for answer in answers:
+            if sure is not None and answer not in sure:
+                continue  # a target that refuses holds under it
+            if answer not in mentioned:
+                # Answers that no live target names are alike: try one.
+                if unmentioned:
+                    continue
+                unmentioned = True
+            yield answer, [
+                *wanting.get(answer, ()),
+                *(profile for profile, refused in refusing if answer not in refused),
+            ]
+
+    return undecided, answers, answer_set, branches()

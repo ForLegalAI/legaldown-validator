@@ -60,11 +60,9 @@ class _BlankState:
     mixed: bool = False
     #: The line of the first occurrence fixing each code (§16.9).
     code_lines: dict[str, Any] = field(default_factory=dict)  # a ``result.Line`` each
-    #: Whether an occurrence is outside every drafting note, which assembly
-    #: removes before anything is inserted (§15.7.2); one only in notes is never
-    #: filled in, so what it would be asked is no one's concern.
-    kept: bool = False
-    #: The line of the first such occurrence (§16.9), a ``result.Line``.
+    #: The line of the first occurrence (§16.9), a ``result.Line``. Occurrences in a
+    #: drafting note, which assembly removes before anything is filled (§15.7.2), are
+    #: not part of a blank (#112).
     line: Any = None
 
 
@@ -263,7 +261,7 @@ def check_questions(
             )
     if template:
         for pid, blank in blanks.items():
-            if blank.kept and pid not in declared and pid in YAML_KEYWORDS:
+            if pid not in declared and pid in YAML_KEYWORDS:
                 # It is the blank that cannot be answered, whatever `questions` holds.
                 result.error(
                     "question-invalid",
@@ -363,10 +361,12 @@ _COMBINING = "&<\\"
 # A line's container markers: block quote markers, then a list item marker.
 _CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?")
 _NON_BLANK_RE = re.compile(r"\S")
-# A link reference definition: its label, destination, and optional title.
-_LINK_REFERENCE_RE = re.compile(
-    r" {0,3}\[[^\]]+\]:[ \t]*\S*(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
-)
+# A link reference definition's destination, after its ``]:`` (``_InsertionScan._reference_end``), and
+# the blanks that set a title off from it.
+_REFERENCE_DESTINATION_RE = re.compile(r"[ \t]*\S*")
+_REFERENCE_BLANKS_RE = re.compile(r"[ \t]+")
+# What closes a title by what opens it.
+_TITLE_CLOSERS = {'"': '"', "'": "'", "(": ")"}
 
 
 def template_text(text: str, directives: list[Directive]) -> str:
@@ -395,10 +395,14 @@ class _InsertionScan:
         self._combining = _merged(template, *_COMBINING)
         self._destination_starts = find_all(template, "](")  # it cannot overlap itself
         self._closing_parentheses = find_all(template, ")")
+        # Where a link reference definition's label and title end, found when a line asks for the first time.
+        self._found: dict[str, list[int]] = {")": self._closing_parentheses}
         # Per line, which the insertions of a line share: where its content
-        # begins, and what its link reference definition covers.
+        # begins, what its link reference definition covers, and whether
+        # what follows that on the line is blank.
         self._content_starts: dict[int, int] = {}
         self._references: dict[int, int] = {}
+        self._blank_after: dict[tuple[int, int], bool] = {}
 
     def _line_content(self, line_start: int) -> int:
         """Where the content of the line at *line_start* begins: after its
@@ -407,12 +411,50 @@ class _InsertionScan:
             self._content_starts[line_start] = _CONTAINER_RE.match(self.text, line_start).end()
         return self._content_starts[line_start]
 
+    def _closers(self, closer: str) -> list[int]:
+        """The offsets of *closer* in the template, found once."""
+        if closer not in self._found:
+            self._found[closer] = find_all(self.template, closer)
+        return self._found[closer]
+
     def _reference_end(self, content_start: int) -> int:
-        """Where the link reference definition at *content_start* ends, or -1."""
+        """Where the link reference definition at *content_start* ends, or -1: the text
+        `` {0,3}\\[[^\\]]+\\]:[ \\t]*\\S*`` and an optional title, which the blanks before it set off and
+        the next ``"``, ``'`` or ``)`` closes, on a later line too. (A pinned over-approximation, not
+        CommonMark's §4.7; it was a regular expression, which an unclosed label or title ran to the end
+        of the text for at each line, #113. Each closer is found by bisect now.)"""
         if content_start not in self._references:
-            reference = _LINK_REFERENCE_RE.match(self.template, content_start)
-            self._references[content_start] = reference.end() if reference else -1
+            self._references[content_start] = self._read_reference(content_start)
         return self._references[content_start]
+
+    def _read_reference(self, at: int) -> int:
+        template = self.template
+        bracket = at
+        while bracket < at + 4 and template.startswith(" ", bracket):
+            bracket += 1
+        if bracket - at > 3 or not template.startswith("[", bracket):
+            return -1
+        # The label ends at the first ``]`` after the ``[``, and is not empty: ``[]x]:`` is none.
+        brackets = self._closers("]")
+        found = bisect_left(brackets, bracket + 1)
+        if found == len(brackets) or brackets[found] < bracket + 2 or not template.startswith(":", brackets[found] + 1):
+            return -1
+        end = _REFERENCE_DESTINATION_RE.match(template, brackets[found] + 2).end()
+        blanks = _REFERENCE_BLANKS_RE.match(template, end)
+        if blanks and (delimiter := _TITLE_CLOSERS.get(template[blanks.end():blanks.end() + 1])):
+            closers = self._closers(delimiter)
+            found = bisect_left(closers, blanks.end() + 1)
+            if found < len(closers):
+                return closers[found] + 1
+        return end
+
+    def _blank_from(self, reference_end: int, line_end: int) -> bool:
+        """Whether the template is blank from *reference_end* to *line_end*, found once for the
+        insertions of a line (a blank run after the definition is not read again for each)."""
+        key = (reference_end, line_end)
+        if key not in self._blank_after:
+            self._blank_after[key] = _NON_BLANK_RE.search(self.template, reference_end, line_end) is None
+        return self._blank_after[key]
 
     def problem(self, insertion: Directive) -> str | None:
         """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in the
@@ -460,7 +502,7 @@ class _InsertionScan:
         if (
             reference_end >= 0
             and start < reference_end
-            and _NON_BLANK_RE.search(template, reference_end, line_end) is None
+            and self._blank_from(reference_end, line_end)
         ):
             return "it is in a link reference definition"
         # The last ``](`` before it, with no ``)`` between.
@@ -698,20 +740,28 @@ def check_template_body(
                         fragment, template_text(fragment, lexed.directives), lexed.directives
                     )
                     _check_insertion(scan, directive, result, line)
-            for anchor in find_definition_anchors(
-                fragment, language=document.metadata.language, lexed=lexed
+            # The insertions inside a term are those between its anchor and its directive. The
+            # lexer emits directives in source order, so they are a slice of all, found by
+            # bisection: scanning every directive for each definition is quadratic (#110).
+            insertions = [d for d in lexed.directives if d.name in _INSERTIONS]
+            starts = [d.start for d in insertions]
+            for anchor in (
+                find_definition_anchors(fragment, language=document.metadata.language, lexed=lexed)
+                if insertions
+                else ()
             ):
                 if anchor.term is None:
                     continue
-                for directive in lexed.directives:
-                    if directive.name in _INSERTIONS and anchor.start < directive.start < anchor.directive.start:
-                        result.error(
-                            "def-term-variable",
-                            f"'{directive.source}' is inside the term that "
-                            f"'{anchor.directive.source}' defines: the term, and any id derived "
-                            f"from it, must be the same in every assembled document (§15.5).",
-                            line=find(block_section, block_index, directive.source, index, directive.start),
-                        )
+                for directive in insertions[
+                    bisect_right(starts, anchor.start) : bisect_left(starts, anchor.directive.start)
+                ]:
+                    result.error(
+                        "def-term-variable",
+                        f"'{directive.source}' is inside the term that "
+                        f"'{anchor.directive.source}' defines: the term, and any id derived "
+                        f"from it, must be the same in every assembled document (§15.5).",
+                        line=find(block_section, block_index, directive.source, index, directive.start),
+                    )
     if template:
         _check_fragments(document, [(i.path, i.line) for i in includes if i.path and not i.in_note], result, where)
     return BodyScan(all_notes, includes)

@@ -32,6 +32,7 @@ _RULES = {
     "include-not-legaldown", "template-fragment-invalid", "attachment-has-frontmatter", "attachment-has-h1",
     "path-not-relative", "path-outside-root", "heading-skip",
 }
+_SKIPPED = "ldv-check-skipped"
 
 
 class _Loader:
@@ -167,21 +168,21 @@ def test_a_path_a_loader_is_not_asked_for_is_missing_only_when_it_is_no_valid_pa
     text = _FRONT + _SCOPE + "{{include: ../shared.lgd}}\n\n{{include: a\\b.lgd}}\n"
     result, loader = _run(text)
     assert loader.asked == []
-    # ../shared.lgd is a valid path (§2.3) that is not read (#109): no finding, with a root or without one. A
+    # ../shared.lgd is a valid path (§2.3) that is not read without a root (#109): no finding. A
     # backslash is none: include-file-missing. Neither is path-not-relative nor path-outside-root (no root).
     assert _found(result) == [("include-file-missing", "main.lgd", 23)]
-    assert "relative path" in result.diagnostics[-1].message
+    assert "relative path" in next(d.message for d in result.diagnostics if d.rule == "include-file-missing")
     # Assembly still refuses the template for ../shared.lgd (a file it cannot read), which validation does not say.
     template = Template(_TEMPLATE_FRONT + _SCOPE + "{{include: ../shared.lgd}}\n", resolve=_Loader({}))
     assert [d.rule for d in template.problems] == ["include-file-missing"]
     assert [d.rule for d in template.validation.diagnostics if d.rule == "include-file-missing"] == []
     # With a root it leaves, path-outside-root says where it leads and is the only finding; within it, the
-    # path is valid (§2.3) and not read outside the document's directory: skipped, not missing.
+    # path is read (#109): there is no such file, which is include-file-missing.
     root = tmp_path / "root"
     (root / "sub").mkdir(parents=True)
     path = root / "sub" / "main.lgd"
     path.write_text(_FRONT + _SCOPE + "{{include: ../shared.lgd}}\n", encoding="utf-8")
-    assert _found(validate(load(path), document_root=root)) == []
+    assert _found(validate(load(path), document_root=root)) == [("include-file-missing", "main.lgd", 21)]
     assert _found(validate(load(path), document_root=root / "sub")) == [("path-outside-root", "main.lgd", 21)]
     # Without a resolver (parse(text)) nothing is read, and nothing is said.
     assert _found(validate(parse(text, filename="main.lgd"))) == []
@@ -203,7 +204,7 @@ def test_a_path_that_is_not_a_legaldown_file_is_reported_without_a_resolver_and_
 
 def test_a_fragment_validated_on_its_own_still_judges_the_extension_of_its_includes():
     result = validate(parse("## A\n\n{{include: n.txt}}\n"), fragment=True, resolve=lambda _path: pytest.fail("read"))
-    assert [(d.rule, d.line) for d in result.diagnostics] == [("include-not-legaldown", 3)]
+    assert [(d.rule, d.line) for d in result.diagnostics] == [("include-not-legaldown", 3), (_SKIPPED, 3)]
 
 
 # ── The fragment's shape: frontmatter and a level 1 heading ───────
@@ -243,11 +244,12 @@ def test_a_fragment_at_a_deeper_path_is_named_by_its_path_from_the_documents_dir
 
 # ── A nested include, outside a template ─────────────────────────
 
-def test_a_nested_include_outside_a_template_is_allowed_and_not_followed():
+def test_a_nested_include_outside_a_template_is_allowed_and_followed():
     part = "## P {#p}\n\n{{include: nested.lgd}}\n\n{{include: notes.txt}}\n"
     result, loader = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part})
-    # Not read, so neither missing nor judged: include-cycle is not implemented (CONFORMANCE.md).
-    assert loader.asked == ["part.lgd"] and _found(result) == []
+    # Followed (#114), and judged as the document's are, in the file it is in.
+    assert loader.asked == ["part.lgd", "nested.lgd"]
+    assert _found(result) == [("include-file-missing", "part.lgd", 3), ("include-not-legaldown", "part.lgd", 5)]
 
 
 # ── A template's fragments (§15.3, §16.12) ───────────────────────
@@ -403,7 +405,7 @@ def test_heading_skip_stands_when_an_include_before_the_heading_is_not_known():
     assert [r[0] for r in _found(result, "heading-skip", "include-heading-skip")] == ["heading-skip"]
 
 
-def test_a_conditional_include_fills_no_level():
+def test_a_conditional_include_fills_no_level_it_is_not_there_for():
     front = _TEMPLATE_FRONT
     part = {"p.lgd": "## Deep {#deep}\n"}
     for include in ("{{include: p.lgd}} {when=x}\n", "{{include: p.lgd}}\n"):
@@ -411,10 +413,11 @@ def test_a_conditional_include_fills_no_level():
         result, _ = _run(text, part)
         expected = [("heading-skip", "main.lgd", _at(text, "### Three"))] if "when" in include else []
         assert _found(result, "heading-skip") == expected, include
-    # ... nor does one under a conditional section.
+    # One under a conditional section is there whenever the heading after it is (it is in the section, with its
+    # subsections), so it fills the level (#108: every combination is tried).
     text = front + "# One {#one when=x}\n\n{{include: p.lgd}}\n\n### Three {#three}\n"
     result, _ = _run(text, part)
-    assert [rule for rule, *_ in _found(result, "heading-skip")] == ["heading-skip"]
+    assert _found(result, "heading-skip", "include-heading-skip") == []
 
 
 def test_a_file_that_is_not_a_fragment_is_not_spliced():
@@ -595,7 +598,8 @@ def test_an_include_in_a_drafting_note_of_a_template_fragment_is_reported_once()
 def test_a_fragment_on_its_own_reads_none_of_its_includes():
     loader = _Loader({"g.lgd": "# H {#h}\n"})
     result = validate(parse("## B {#b}\n\n{{include: g.lgd}}\n"), fragment=True, resolve=loader)
-    assert loader.asked == [] and result.diagnostics == []
+    assert loader.asked == [] and [d.rule for d in result.diagnostics] == [_SKIPPED]
+    assert "validated on its own, which reads no file" in result.diagnostics[0].message
 
 
 def test_fragment_kind_is_only_for_a_fragment_and_is_one_of_two():
@@ -753,7 +757,7 @@ def test_a_nested_include_is_quoted_as_written_in_a_templates_finding_too():
 
 # ── A root, a path the loader is not asked for, and what is not a fragment (#35 review) ─────
 
-def test_a_path_that_leads_out_of_the_directory_is_skipped_unless_it_leaves_the_root(tmp_path):
+def test_a_path_that_leads_out_of_the_directory_is_read_within_a_root_and_skipped_without_one(tmp_path):
     root = tmp_path / "root"
     (root / "sub").mkdir(parents=True)
     path = root / "sub" / "main.lgd"
@@ -765,10 +769,10 @@ def test_a_path_that_leads_out_of_the_directory_is_skipped_unless_it_leaves_the_
     # A backslash is no separator (§2.3): not a path to read, with a root or without one.
     assert found("parts\\x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
     assert found("parts\\x.lgd", None) == [("include-file-missing", "main.lgd", 21)]
-    # ../ that stays within the root is a valid path this implementation does not read: nothing to say.
-    assert found("../x.lgd", root) == []
-    assert found("sub/../../x.lgd", root) == []
-    # Without a root it is no less valid (§2.3): nothing to say either (#109); out of the root it is #104's.
+    # ../ that stays within the root is read (#109): there is no such file here.
+    assert found("../x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
+    assert found("sub/../../x.lgd", root) == [("include-file-missing", "main.lgd", 21)]
+    # Without a root it is no less valid (§2.3), and not read: nothing to say (#109); out of the root it is #104's.
     assert found("../x.lgd", None) == []
     assert found("sub/../../x.lgd", None) == []
     assert found("../../x.lgd", root) == [("path-outside-root", "main.lgd", 21)]
@@ -908,7 +912,7 @@ def test_an_include_paragraph_that_names_no_file_is_missing_in_validate_and_in_a
         result, loader = _run(text)
         assert loader.asked == []  # no file to ask for
         assert _found(result) == [("include-file-missing", "main.lgd", line)]
-        assert "names no file" in result.diagnostics[-1].message
+        assert "names no file" in next(d.message for d in result.diagnostics if d.rule == "include-file-missing")
         # ... and says nothing of it when nothing is read (parse without a path / resolver).
         assert _found(validate(parse(text, filename="main.lgd"))) == []
     # Assembly refuses the template for it, at the same line, saying the same.
@@ -920,11 +924,12 @@ def test_an_include_paragraph_that_names_no_file_is_missing_in_validate_and_in_a
     assert "'{{include:  }}' names no file" in written[0].message
 
 
-def test_an_include_paragraph_that_names_no_file_in_a_plain_fragment_is_refused_by_assembly_alone():
+def test_an_include_paragraph_that_names_no_file_in_a_plain_fragment_is_refused_by_assembly_and_validate():
     part = "## P {#p}\n\nText.\n\n{{include:}}\n"
-    # Nested includes are allowed outside a template and not followed (§12.2): validate says nothing.
+    # Nested includes are allowed outside a template (§12.2) and followed by validate (#114), which says the
+    # same as assembly of one that names no file.
     result, _ = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part})
-    assert _found(result) == []
+    assert _found(result) == [("include-file-missing", "part.lgd", 5)]
     template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": part}.get)
     assert [(d.rule, d.file, d.line) for d in template.problems] == [("include-file-missing", "part.lgd", 5)]
 
@@ -934,7 +939,7 @@ def test_an_include_that_names_no_file_in_a_templates_fragment_is_a_nested_inclu
     main = _TEMPLATE_FRONT + "# A {#a}\n\n{{include: part.lgd}}\n"
     result, _ = _run(main, {"part.lgd": part})
     expected = [(_TFR, "part.lgd", 5), (_TFR, "part.lgd", 7)]
-    assert [(d.rule, d.file, d.line) for d in result.diagnostics if d.file] == expected
+    assert [(d.rule, d.file, d.line) for d in result.diagnostics if d.file and d.rule != _SKIPPED] == expected
     template = Template(main, resolve={"part.lgd": part}.get)
     assert [(d.rule, d.file, d.line) for d in template.problems] == expected
     assert all("holds '{{include:}}'" in d.message for d in template.problems)
@@ -995,7 +1000,7 @@ def test_an_include_in_a_drafting_note_is_a_drafting_note_whether_or_not_it_name
         part = {**files, "part.lgd": "## P {#p}\n\n" + note}
         text = front + "# A {#a}\n\n{{include: part.lgd}}\n"
         result, _ = _run(text, part)
-        found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.file]
+        found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.file and d.rule != _SKIPPED]
         assert found == [(d.rule, d.file, d.line) for d in Template(text, resolve=part.get).problems]
         assert bool(found) == in_template
 

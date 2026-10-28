@@ -89,7 +89,7 @@ def _validate_path(
         {
             # The file the finding is in: the document, or a fragment it includes, which
             # is named by its path from the document's directory (#35).
-            "file": str(path.parent / d.file) if d.file else str(path),
+            "file": _file_name(path, d.file),
             "rule": d.rule,
             "level": d.level,
             "line": d.line,
@@ -100,6 +100,12 @@ def _validate_path(
         }
         for d in result.diagnostics
     ], None
+
+
+def _file_name(path: str | Path, file: str) -> str:
+    """The file a finding is in: *path* as it was given, or the fragment *file* beside it, which may lead out
+    of its directory (``../part.lgd``, with a document root, #109) and is shown without the detour."""
+    return os.path.normpath(Path(path).parent / file) if file else str(path)
 
 
 def _print_text(diagnostics: list[dict], *, quiet: bool) -> None:
@@ -420,7 +426,7 @@ def _assemble(args: argparse.Namespace, state: dict[str, Any]) -> int:
     result = None
     if failure is None:
         try:
-            template = load_template(template_path)
+            template = load_template(template_path, document_root=args.document_root)
         except FrontmatterError as exc:
             result = AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
         except (OSError, UnicodeDecodeError) as exc:
@@ -506,7 +512,7 @@ def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict
         return None, None, [], failure
     path = Path(args.template)
     try:
-        return load_template(path), answers, [], None
+        return load_template(path, document_root=args.document_root), answers, [], None
     except FrontmatterError as exc:
         diagnostic = frontmatter_diagnostic(exc)
         # No host_dependent: assembly output is never a fragment-mode result (#39).
@@ -520,7 +526,7 @@ def _load_for_questions(args: argparse.Namespace) -> tuple[Template | None, dict
 def _location(d: dict, template: str) -> str:
     """Where a problem or diagnostic of *template* is, as ``assemble`` shows it:
     the template, or the fragment or attachment file beside it, and the line."""
-    name = str(Path(template).parent / d["file"]) if d["file"] else template
+    name = _file_name(template, d["file"])
     return f"{name}:{d['line']}: " if d["line"] else f"{name}: "
 
 
@@ -582,6 +588,14 @@ def _run_questions(args: argparse.Namespace) -> int:
     if problems_found or (args.check and not ready):
         return EXIT_DIAGNOSTICS
     return EXIT_OK
+
+
+_DOCUMENT_ROOT_HELP = (
+    "The directory every file a document refers to must lie within (§2.3). {what} A path such as "
+    "../shared/part.lgd that stays within DIR is read like any other; without --document-root it is "
+    "valid but not read (the validator says so in ldv-check-skipped), and nothing outside DIR is ever "
+    "read. A path that is absolute or begins with a URI scheme is path-not-relative with or without it."
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -680,12 +694,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument(
         "--document-root",
         metavar="DIR",
-        help=(
-            "The directory every file a document refers to must lie within (§2.3): a path that "
-            "escapes it, as ../ does, is path-outside-root. Each document is read from its own "
-            "directory, which must be within DIR; paths are only read as text, no file is looked "
-            "at. Without it, ../shared/definitions.lgd is valid. A path that is absolute or begins "
-            "with a URI scheme is path-not-relative with or without it."
+        help=_DOCUMENT_ROOT_HELP.format(
+            what="Each document is read from its own directory, which must be within DIR; a path that "
+            "escapes DIR is path-outside-root.",
         ),
     )
     validate.add_argument(
@@ -717,6 +728,15 @@ def build_parser() -> argparse.ArgumentParser:
     assemble_cmd.add_argument("template", help="The template file.")
     assemble_cmd.add_argument(
         "--answers", metavar="FILE", help="YAML mapping of question ids to answers (§15.7.1)."
+    )
+    assemble_cmd.add_argument(
+        "--document-root",
+        metavar="DIR",
+        help=_DOCUMENT_ROOT_HELP.format(
+            what="The template must be within DIR, else it reads nothing; a kept file read from outside "
+            "the template's directory has its ../ in its path, which -o does not write (it refuses "
+            "an output that leads out of the output directory)."
+        ),
     )
     assemble_cmd.add_argument(
         "-o",
@@ -761,6 +781,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     questions_cmd.add_argument(
         "--format", choices=("text", "json"), default="text", help="Output format (default: text)."
+    )
+    questions_cmd.add_argument(
+        "--document-root",
+        metavar="DIR",
+        help=_DOCUMENT_ROOT_HELP.format(what="The template must be within DIR, else it reads nothing."),
     )
     questions_cmd.add_argument(
         "--check", action="store_true", help="Exit non-zero when assembly cannot run with these answers."

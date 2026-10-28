@@ -14,6 +14,7 @@ import re
 import stat
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -67,51 +68,130 @@ def leaves_root(path: str, depth: int) -> bool:
     return False
 
 
-def _check_relative(path: str) -> tuple[str, Literal["leads-out", "invalid"] | None]:
+def document_outside(*, rooted: bool, depth: int | None) -> bool:
+    """Whether a document is outside the document root (§2.3): a root is configured (*rooted*) and the
+    document is not within it (*depth*, from ``names_below``, is None), so every path it names leads out. The one
+    test, for ``containment`` and for ``Reach``."""
+    return rooted and depth is None
+
+
+def containment(path: str, *, rooted: bool, depth: int | None) -> Literal["document-outside", "leaves"] | None:
+    """Whether the relative *path*, by its text alone, is outside the document root (§2.3), as
+    ``FileReferences`` judges the paths of a document. *rooted*: a root is configured, else the containment
+    check does not run (None); ``"document-outside"`` when the document is (``document_outside``);
+    otherwise ``"leaves"`` when the path leads out of the root, given the document is *depth* names below it
+    (``names_below``), and None when it stays within."""
+    if not rooted:
+        return None
+    if document_outside(rooted=rooted, depth=depth):
+        return "document-outside"
+    assert depth is not None
+    return "leaves" if leaves_root(path, depth) else None
+
+
+def _check_relative(path: str, depth: int | None = None) -> tuple[str, Literal["leads-out", "invalid"] | None]:
     """The rules ``relative_path`` and ``relative_path_problem`` share, held once: *path*
-    normalised (empty when it is none, and not worth normalising) and what is wrong with it."""
+    normalised (empty when it is none, and not worth normalising) and what is wrong with it.
+    *depth* is how many names the document is below its document root (``names_below``), when
+    one is configured: a leading ``../`` run that stays within the root is then a path to read."""
     if not path or "\\" in path or "\0" in path or is_absolute_reference(path):
         return "", "invalid"
     normalized = posixpath.normpath(path)
     if normalized == ".":
         return normalized, "invalid"
     if normalized == ".." or normalized.startswith("../"):
-        return normalized, "leads-out"
+        if depth is None or leaves_root(normalized, depth):
+            return normalized, "leads-out"
+        # Within the root, but a path of ``..`` alone (``..``, ``../..``) is a directory, as ``.`` is: the
+        # one a document lands on at the root, say, is not a file.
+        return normalized, "invalid" if set(normalized.split("/")) == {".."} else None
     return normalized, None
 
 
-def relative_path_problem(path: str) -> Literal["leads-out", "invalid"] | None:
+def relative_path_problem(path: str, *, depth: int | None = None) -> Literal["leads-out", "invalid"] | None:
     """Why ``relative_path`` refuses *path*: ``"leads-out"`` when it is a relative path that
     leads out of the document's directory (``../x``, §2.3), which is valid as a path though
-    not one a ``LoadFile`` is asked for; ``"invalid"`` when it is none (empty, absolute,
+    not one a ``LoadFile`` is asked for (unless *depth* says it stays within the document
+    root); ``"invalid"`` when it is none (empty, absolute,
     with a URI scheme or a drive letter, a backslash or a null byte, or the directory
     itself); None when it is a path to read."""
-    return _check_relative(path)[1]
+    return relative_path_check(path, depth=depth)[1]
 
 
-def relative_path(path: str) -> str | None:
+def relative_path_check(
+    path: str, *, depth: int | None = None
+) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
+    """``relative_path`` and ``relative_path_problem`` of *path* at once: the normalized path to read
+    (None when it is none) and why not (None when it is a path to read)."""
+    normalized, problem = _check_relative(path, depth)
+    return (None if problem else normalized), problem
+
+
+def relative_path(path: str, *, depth: int | None = None) -> str | None:
     """*path*, as a document names a file it refers to, normalized — ``/``-separated,
     within the directory of the document (§2.3) — or None when it is not such a path:
     empty, absolute, with a URI scheme (``https://x``, ``file:///x``, a drive letter),
     a backslash or a null byte, or leading out of the directory
     (``relative_path_problem`` says which). A ``LoadFile`` is asked for these paths
-    and no others."""
-    normalized, problem = _check_relative(path)
-    return None if problem else normalized
+    and no others.
+
+    With *depth*, how many names the document is below its document root
+    (``names_below``), a path that leads out of the document's directory but stays
+    within the root (``../shared/x.lgd``, from a document one name below it) is one to
+    read too, normalized with its leading ``../``: ``../x.lgd``. Without it (no root is
+    configured, which has no containment check, §2.3) such a path is valid and not
+    read."""
+    return relative_path_check(path, depth=depth)[0]
 
 
-def file_loader(base: str | os.PathLike[str]) -> LoadFile:
+@dataclass(frozen=True, slots=True)
+class Reach:
+    """Which of the paths a document names may be read (§2.3): with a *root* configured,
+    the document's *depth* below it (``names_below``; None when the document is not
+    within it, so that nothing it names is); without one, nothing that leads out of the
+    document's directory (``../x`` is valid, and not read)."""
+    root: Path | None = None
+    depth: int | None = None
+
+    @classmethod
+    def of(
+        cls, root: str | os.PathLike[str] | None, directory: str | os.PathLike[str] | None
+    ) -> Reach:
+        """The reach of a document in *directory* (None: at the root, as a document that is
+        not loaded is taken to be) under *root* (None: none is configured)."""
+        if root is None:
+            return cls()
+        return cls(Path(os.path.abspath(root)), names_below(root if directory is None else directory, root))
+
+    def check(self, path: str) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
+        """``relative_path_check`` of *path* for this reach."""
+        if document_outside(rooted=self.root is not None, depth=self.depth):
+            return None, "leads-out"  # the document is outside the root: so is everything it names
+        return relative_path_check(path, depth=self.depth)
+
+    def relative(self, path: str) -> str | None:
+        """``relative_path`` of *path* for this reach."""
+        return self.check(path)[0]
+
+
+def file_loader(base: str | os.PathLike[str], *, root: str | os.PathLike[str] | None = None) -> LoadFile:
     """A ``LoadFile`` reading from directory *base* on disk.
 
     A path that is absolute, leads out of *base* (§2.3), is no path at all (a
     null byte, a symbolic-link loop), or names no UTF-8 file reads as ``None``.
     The text is returned as written, with no line-break translation, since
     assembly edits it byte for byte (§15.7.2).
+
+    With a document *root* (§2.3), a path may lead out of *base* as long as the file
+    it names, once symbolic links are followed, is within the root: nothing outside
+    the root is read, whatever *base* is.
     """
-    root = Path(base)
+    # Made absolute now: a later change of the working directory changes nothing it reads.
+    directory = Path(os.path.abspath(base))
+    boundary = None if root is None else Path(os.path.abspath(root))
 
     def load_file(relative: str) -> str | None:
-        target = within(root, relative)
+        target = within(directory, relative, boundary)
         try:
             return target.read_bytes().decode("utf-8") if target is not None and target.is_file() else None
         except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
@@ -120,17 +200,21 @@ def file_loader(base: str | os.PathLike[str]) -> LoadFile:
     return load_file
 
 
-def within(base: Path, relative: str) -> Path | None:
+def within(base: Path, relative: str, root: str | os.PathLike[str] | Path | None = None) -> Path | None:
     """*relative* under directory *base*, or None when it is absolute, leads
-    out of it, or is no path at all."""
+    out of it, or is no path at all. With a document *root*, it is the root it
+    must be under (both resolved, so a symbolic link cannot lead out of it) and
+    *base* is only where *relative* is joined: a file beside a document that is
+    itself outside the root is outside it too."""
     if not relative or posixpath.isabs(relative) or Path(relative).is_absolute():
         return None
     try:
-        root = base.resolve()
-        target = (root / relative).resolve()
+        directory = base.resolve()
+        target = (directory / relative).resolve()
+        boundary = directory if root is None else Path(root).resolve()
     except (OSError, ValueError, RuntimeError):
         return None
-    return target if target.is_relative_to(root) else None
+    return target if target.is_relative_to(boundary) else None
 
 
 def write_atomically(path: Path, text: str) -> None:

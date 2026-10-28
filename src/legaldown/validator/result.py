@@ -136,7 +136,9 @@ class Blank:
     different types, or fix two currencies or two units (both are
     placeholder-type-inconsistent); ``type`` is then the first one's.
     ``in_frontmatter`` is True when one of its occurrences is in the
-    frontmatter (§3.10)."""
+    frontmatter (§3.10). An occurrence in a drafting note is none of these, and an
+    id only notes use is no blank: assembly removes a note before anything is
+    filled (§15.7.2, #112)."""
     id: str
     type: str | None
     fixed: str = ""
@@ -192,7 +194,7 @@ class DocumentIndex:
     #: order.
     placed_markers: list[PlacedMarker] = field(default_factory=list)
     #: The document's blanks (``Blank``), by placeholder id, in the order of
-    #: their first occurrence — frontmatter first. A document that is not a
+    #: their first occurrence outside a drafting note — frontmatter first. A document that is not a
     #: template has them too. A placeholder whose arguments or id are
     #: malformed is not among them (the diagnostics report it); one with no
     #: usable type is, with type None, and so is one that is not consistent

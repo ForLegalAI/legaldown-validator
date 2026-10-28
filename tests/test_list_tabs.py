@@ -14,7 +14,6 @@ from dataclasses import asdict
 import pytest
 
 from legaldown import document_to_dict, parse
-from legaldown.assembly import _paragraph_open
 from legaldown.markdown import item_marker_at, nested_content
 from legaldown.parser import _item_body, _opens_paragraph, _Quote, _skip_markers, _Walks, quote_blocks
 
@@ -90,16 +89,14 @@ def test_the_columns_of_a_marker_are_counted_from_where_its_text_starts() -> Non
 
 
 def test_columns_are_counted_from_the_start_of_a_line_that_is_read_whole() -> None:
-    """A template line (assembly's §15.7.3 line-start check) has its tabs where
-    the author put them: the markers' spacing is measured from column 0, not
-    from where each marker is in the text. cmark and markdown-it read the first
-    as a paragraph under two items and the second as code."""
+    """A line read whole has its tabs where the author put them: the markers'
+    spacing is measured from column 0, not from where each marker is in the
+    text. cmark and markdown-it read the first as a paragraph under two items
+    and the second as code."""
     assert _opens_paragraph("- \t-\t a") is True
     assert _opens_paragraph("-\t-\t  a") is False  # five columns of spacing: indented code
     assert _opens_paragraph("> -\t-\t a") is True
     assert _opens_paragraph(">\t-\t  a") is False
-    assert _paragraph_open("- \t-\t a") is True
-    assert _paragraph_open("-\t-\t  a") is False
     # After a paragraph, spacing of more than four columns after a marker that cannot interrupt it is no code.
     assert _opens_paragraph("2) 1)     e") is False
     assert _opens_paragraph("2) 1)     e", after_paragraph=True) is True

@@ -198,19 +198,40 @@ def strip_comments(text: str, *, blank: bool = False) -> str:
     return "".join(kept)
 
 
-# Inline raw HTML other than a comment (CommonMark 0.31 §6.6, as cmark-gfm
-# reads it): an open tag, whose ``/`` is directly before its ``>``; a closing
-# tag, which takes no attributes; a processing instruction; a declaration,
-# its name of capital letters followed by whitespace; a CDATA section.
+# Inline raw HTML other than a comment (CommonMark 0.31.2 §6.6): an open tag,
+# whose ``/`` is directly before its ``>``; a closing tag, which takes no
+# attributes; a processing instruction; a declaration, ``<!`` and an ASCII
+# letter, then anything up to the next ``>`` (before 0.30 it was capital
+# letters and whitespace); a CDATA section.
 _INLINE_ATTRIBUTE = r"""(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
 INLINE_HTML_RE = re.compile(
     r"<[A-Za-z][A-Za-z0-9-]*" + _INLINE_ATTRIBUTE + r"*\s*/?>"
     r"|</[A-Za-z][A-Za-z0-9-]*\s*>"
     r"|<\?.*?\?>"
-    r"|<![A-Z]+\s[^>]*>"
+    r"|<![A-Za-z][^>]*>"
     r"|<!\[CDATA\[.*?\]\]>",
     re.DOTALL,
 )
+
+# What INLINE_HTML_RE reads on to a closer: for each opener, the closer, and the offset from the opener at which
+# the closer may start (a declaration needs its letter first). With no closer the pattern reads to the end of the
+# text, so it must not be tried at every opener. The CDATA section is before the declaration, as it also starts ``<!``.
+_INLINE_HTML_CLOSERS = (("<?", "?>", 2), ("<![CDATA[", "]]>", 9), ("<!", ">", 3))
+
+
+def inline_html_unclosed(view: str) -> Callable[[int], bool]:
+    """A function of an offset in *view* that is True when a processing instruction, CDATA section or declaration
+    starting there has no closer after it, so INLINE_HTML_RE cannot match there and need not be tried. The last
+    closer of each kind is found once, so asking costs nothing that grows with the text."""
+    lasts = [(opener, view.rfind(closer), first) for opener, closer, first in _INLINE_HTML_CLOSERS]
+
+    def unclosed(at: int) -> bool:
+        for opener, last, first in lasts:
+            if view.startswith(opener, at):
+                return last < at + first
+        return False
+
+    return unclosed
 
 
 def is_comment_only(html: str) -> bool:
@@ -298,7 +319,7 @@ def no_blank_lines(text: str) -> str:
     return _BLANK_LINES_RE.sub(" ", LINE_ENDING_RE.sub("\n", text))
 
 
-def _escapes(text: str, at: int) -> bool:
+def escapes(text: str, at: int) -> bool:
     """True if the backslash at ``text[at]`` escapes the character after it:
     ASCII punctuation (§2.4)."""
     return text[at] == "\\" and at + 1 < len(text) and text[at + 1] in _PUNCTUATION
@@ -308,7 +329,7 @@ def _unescaped(text: str, characters: str) -> bool:
     """True if *text* holds one of *characters* that no backslash escapes."""
     at = 0
     while at < len(text):
-        if _escapes(text, at):
+        if escapes(text, at):
             at += 2
             continue
         if text[at] in characters:
@@ -322,7 +343,7 @@ def _complete(text: str) -> str:
     before the delimiter that follows it, it would escape that."""
     at = 0
     while at < len(text):
-        if _escapes(text, at):
+        if escapes(text, at):
             at += 2
             continue
         if at == len(text) - 1 and text[at] == "\\":
@@ -335,7 +356,7 @@ def _escape(text: str, characters: str) -> str:
     """*text* with a backslash before each of *characters* that none escapes."""
     pieces, at = [], 0
     while at < len(text):
-        if _escapes(text, at):
+        if escapes(text, at):
             pieces.append(text[at:at + 2])
             at += 2
         else:
@@ -344,36 +365,14 @@ def _escape(text: str, characters: str) -> str:
     return "".join(pieces)
 
 
-def _bare_end(text: str, at: int) -> int | None:
-    """Where the bare link destination (§6.3) at ``text[at:]`` ends: it stops
-    at a space or a control character, or at a ``)`` that closes no ``(`` of
-    it. None for one that is empty, whose parentheses are not balanced, or
-    that opens with ``<``."""
-    depth, end = 0, at
-    while end < len(text):
-        char = text[end]
-        if _escapes(text, end):
-            end += 2
-            continue
-        if char <= " " or char == "\x7f":
-            break
-        if char == "(":
-            depth += 1
-            if depth > MAX_DESTINATION_PARENTHESES:
-                return None
-        elif char == ")":
-            if depth == 0:
-                break
-            depth -= 1
-        end += 1
-    return end if end > at and not depth and text[at] != "<" else None
-
-
 def is_bare_destination(target: str) -> bool:
-    """True if *target* can be written as a link destination without ``<>``
-    (§6.3): not empty, with no space, control character or ``<`` first, and
-    balanced parentheses."""
-    return bool(target) and _bare_end(target, 0) == len(target)
+    """True if *target* is a bare link destination (§6.3): not empty, with no space,
+    control character (a NUL is text, and counts as bare) or ``<`` first, and balanced parentheses.
+    ``format_link_definition`` still writes a target that holds a NUL in ``<>``."""
+    if not target or target[0] == "<":
+        return False
+    found = scan_destination(target, 0, nonempty=True)
+    return found is not None and found[2] == len(target)
 
 
 def label_end(text: str, at: int) -> int | None:
@@ -386,14 +385,86 @@ def label_end(text: str, at: int) -> int | None:
     return end if end < stop and text[end] == "]" else None
 
 
-def _title_end(text: str, at: int) -> int | None:
+def skip_blanks(text: str, at: int) -> int:
+    """*at* past spaces and tabs."""
+    while at < len(text) and text[at] in " \t":
+        at += 1
+    return at
+
+
+def skip_line_space(text: str, at: int) -> int:
+    """*at* past spaces and tabs and at most one line break (§6.3: what may separate the parts of a
+    link, "optional spaces, tabs, and up to one line ending")."""
+    at = skip_blanks(text, at)
+    if text[at:at + 1] == "\n":
+        at = skip_blanks(text, at + 1)
+    return at
+
+
+def back_line_space(text: str, at: int) -> int:
+    """The offset where the spaces and tabs and at most one line break that end at ``text[at]`` begin: the
+    gap ``skip_line_space`` crosses, read backwards."""
+    while at > 0 and text[at - 1] in " \t":
+        at -= 1
+    if text[at - 1:at] == "\n":
+        at -= 1
+        while at > 0 and text[at - 1] in " \t":
+            at -= 1
+    return at
+
+
+def scan_destination(text: str, at: int, *, nonempty: bool = False) -> tuple[int, int, int] | None:
+    """The link destination (§6.3) at ``text[at:]``: ``(start, stop, after)``, the destination being
+    ``text[start:stop]`` and *after* the offset after it (past the ``>`` of a ``<…>`` one); None when there is
+    none. ``<…>`` holds no ``<``, ``>`` or line break but escaped. A bare one stops at a space, a control
+    character (DEL included, §2.1) or a ``)`` that closes no ``(`` of it; its parentheses must balance, to
+    ``MAX_DESTINATION_PARENTHESES`` deep, which also keeps a run of them linear. A NUL is text
+    like any other (§2.3 makes it U+FFFD), which lets a text with its directives masked as NULs be scanned.
+    With *nonempty* a bare destination is not empty (a definition's is not; an inline link's may be)."""
+    found = _scan_destination(text, at, nonempty, False)
+    return None if found is None else found[:3]
+
+
+def _scan_destination(text: str, at: int, nonempty: bool, permissive: bool) -> tuple[int, int, int, bool] | None:
+    """``scan_destination``, with whether it is *lax*: read by *permissive*, a bare destination ends only at a space,
+    a tab or an LF, as pandoc reads it, and holds a control character or DEL that the specification (and markdown-it)
+    end it at. (A CR stays in it too, the wider reading, as parsed text holds no lone CR.)"""
+    if text.startswith("<", at):
+        stop = at + 1
+        while stop < len(text) and text[stop] not in "<>\n":
+            stop += 2 if escapes(text, stop) else 1
+        return (at + 1, stop, stop + 1, False) if text.startswith(">", stop) else None
+    depth, end, lax = 0, at, False
+    while end < len(text):
+        char = text[end]
+        if escapes(text, end):
+            end += 2
+            continue
+        if (char <= " " and char != "\0") or char == "\x7f":
+            if not permissive or char in " \t\n":
+                break
+            lax = True
+        if char == "(":
+            depth += 1
+            if depth > MAX_DESTINATION_PARENTHESES:
+                return None
+        elif char == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        end += 1
+    return (at, end, end, lax) if not depth and (end > at or not nonempty) else None
+
+
+def scan_title(text: str, at: int) -> int | None:
     """The offset after the link title opening at ``text[at]``: in ``"``,
     ``'`` or ``()``, backslash escapes honoured; None when it is not closed
-    (a ``(`` title holds no ``(``)."""
+    (a ``(`` title holds no unescaped ``(``). It reads no further than the next
+    closer of its kind, so the scans of a text that has none are linear."""
     closer = ")" if text[at] == "(" else text[at]
     end = at + 1
     while end < len(text):
-        if _escapes(text, end):
+        if escapes(text, end):
             end += 2
             continue
         if text[end] == closer:
@@ -404,18 +475,38 @@ def _title_end(text: str, at: int) -> int | None:
     return None
 
 
-def _skip_blanks(text: str, at: int) -> int:
-    while at < len(text) and text[at] in " \t":
-        at += 1
-    return at
+class InlineLink(NamedTuple):
+    """An inline link (``scan_inline_link``): its destination is ``text[start:stop]``, *after* is the offset after
+    its ``)``, and *strict* is whether the specification reads it too (always, unless it was read permissively)."""
+
+    start: int
+    stop: int
+    after: int
+    strict: bool = True
 
 
-def _skip_to_next_line(text: str, at: int) -> int:
-    """*at* past spaces and tabs and at most one line break."""
-    at = _skip_blanks(text, at)
-    if text[at:at + 1] == "\n":
-        at = _skip_blanks(text, at + 1)
-    return at
+def scan_inline_link(text: str, opening: int, *, permissive: bool = False) -> InlineLink | None:
+    """The inline link whose ``(`` is ``text[opening]`` (§6.3), or None when what follows is no inline link: its
+    destination (``scan_destination``, which may be empty), an optional title, told apart from the destination by the
+    space before it, and the ``)``, the parts separated by spaces, tabs and up to one line break
+    (``skip_line_space``), so ``<b>"t"`` is no link, and neither is an empty destination with a blank line after
+    it. With *permissive* a bare destination holds a control character or DEL, and a title may follow the ``>`` of a
+    ``<…>`` directly, as pandoc reads both: for a rule that must cover what any renderer reads
+    (``path-not-relative``), not for the model. The link is then ``strict`` only if it holds neither, so that
+    the specification's reading of it is told in the same pass."""
+    at = skip_line_space(text, opening + 1)
+    found = _scan_destination(text, at, False, permissive)
+    if found is None:
+        return None
+    start, stop, after, lax = found
+    gap = after if after == stop == start else skip_line_space(text, after)  # (an empty one has had its gap)
+    if (gap > after or permissive) and text[gap:gap + 1] in ('"', "'", "("):
+        closing = scan_title(text, gap)
+        if closing is None:
+            return None
+        lax = lax or gap == after
+        gap = skip_line_space(text, closing)
+    return InlineLink(start, stop, gap + 1, not lax) if text.startswith(")", gap) else None
 
 
 def _read_definition(text: str, at: int) -> tuple[str, str, str, int] | None:
@@ -428,30 +519,22 @@ def _read_definition(text: str, at: int) -> tuple[str, str, str, int] | None:
     label = text[at + 1:close].strip(" \t\n")
     if not label:
         return None
-    start = _skip_to_next_line(text, close + 2)
-    if text.startswith("<", start):
-        stop = start + 1
-        while stop < len(text) and text[stop] not in ">\n<":
-            stop += 2 if _escapes(text, stop) else 1
-        if text[stop:stop + 1] != ">":
-            return None
-        target, after = text[start + 1:stop], stop + 1
-    else:
-        stop = _bare_end(text, start)
-        if stop is None:
-            return None
-        target, after = text[start:stop], stop
+    found = scan_destination(text, skip_line_space(text, close + 2), nonempty=True)
+    if found is None:
+        return None
+    start, stop, after = found
+    target = text[start:stop]
     # The title is told apart from the destination by the space before it, and
     # from the paragraph after it by ending its line: else it is dropped, and
     # the definition ends with the destination's line, if that ends there.
-    opening = _skip_to_next_line(text, after)
+    opening = skip_line_space(text, after)
     if opening > after and text[opening:opening + 1] in ('"', "'", "("):
-        closing = _title_end(text, opening)
+        closing = scan_title(text, opening)
         if closing is not None:
-            line_end = _skip_blanks(text, closing)
+            line_end = skip_blanks(text, closing)
             if line_end == len(text) or text[line_end] == "\n":
                 return label, target, text[opening + 1:closing - 1], min(line_end + 1, len(text))
-    line_end = _skip_blanks(text, after)
+    line_end = skip_blanks(text, after)
     if line_end == len(text) or text[line_end] == "\n":
         return label, target, "", min(line_end + 1, len(text))
     return None
@@ -484,7 +567,7 @@ def split_link_definitions(lines: list[str]) -> tuple[list[LinkDefinitionSource]
 def format_link_definition(label: str, target: str, title: str = "") -> str:
     """A link reference definition as source (§4.7): ``[label]: target
     "title"``. The target is wrapped in ``<>`` unless it is a bare
-    destination (``is_bare_destination``); the title takes the first of
+    destination (``is_bare_destination``) that holds no NUL; the title takes the first of
     ``"``, ``'`` and ``()`` that it holds no unescaped one of, else its
     ``"`` are escaped. A backslash that would escape the closing bracket or
     delimiter is doubled, an unescaped bracket in the label is escaped, and a
@@ -494,7 +577,7 @@ def format_link_definition(label: str, target: str, title: str = "") -> str:
     the lines of a paragraph."""
     label = _escape(_complete(no_blank_lines(label).strip(" \t\n")), "[]")
     target = LINE_ENDING_RE.sub("", target).strip(" \t")
-    if not is_bare_destination(target):
+    if "\0" in target or not is_bare_destination(target):  # (a NUL is written in ``<>`` as it always was)
         target = "<" + _escape(_complete(target), "<>") + ">"
     written = f"[{label}]: {target}"
     title = _complete(no_blank_lines(title))

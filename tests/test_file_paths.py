@@ -8,11 +8,22 @@ never a file; the second runs only when a document root is configured
 """
 from __future__ import annotations
 
+import random
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
+from helpers_renderers import (
+    BACKSLASH_PAIR_RE,
+    PARAGRAPH_END_RE,
+    URL_SCHEME_RE,
+    markdown_it,
+    needs_markdown_it,
+    needs_pandoc,
+)
 
 import legaldown
 from legaldown import Document, load, parse, validate
@@ -744,10 +755,10 @@ def test_cli_document_root_reports_a_path_that_escapes_it(tree, capsys):
     out = capsys.readouterr().out
     assert out.count("[path-outside-root]") == 1 and f"{doc}:9:" in out
     # No root: no containment check, and ../shared.lgd is a valid path (§2.3) that this implementation
-    # does not read: no finding, not even include-file-missing (CONFORMANCE.md, #109).
+    # does not read without one: no finding, not even include-file-missing (CONFORMANCE.md, #109).
     assert main(["validate", str(doc)]) == EXIT_OK
     out = capsys.readouterr().out
-    assert "path-outside-root" not in out and "include-file-missing" not in out
+    assert "[path-outside-root]" not in out and "[include-file-missing]" not in out
 
 
 def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree, capsys, monkeypatch):
@@ -756,8 +767,10 @@ def test_cli_document_root_accepts_a_relative_root_and_a_relative_document(tree,
     assert capsys.readouterr().out.count("[path-outside-root]") == 1
     assert main(["validate", "sub/doc.lgd", "--document-root", "sub"]) == EXIT_DIAGNOSTICS
     assert capsys.readouterr().out.count("[path-outside-root]") == 2
-    # ../shared.lgd is within this root, so valid (§2.3); this implementation reads nothing outside
-    # the document's directory, and says nothing of it (CONFORMANCE.md, a known limitation).
+    # ../shared.lgd is within this root, so valid (§2.3), and read (#109): missing, then there.
+    assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_DIAGNOSTICS
+    assert "[include-file-missing]" in capsys.readouterr().out
+    (tree / "root" / "shared.lgd").write_text("Shared.\n", encoding="utf-8")
     assert main(["validate", "sub/doc.lgd", "--document-root", ".."]) == EXIT_OK
 
 
@@ -801,7 +814,7 @@ class _Counted:
 def test_the_brackets_of_a_text_are_paired_once_and_each_image_is_parsed_once(monkeypatch):
     from legaldown.directives import lex
 
-    pairs, parses = _Counted(monkeypatch, "_closing_brackets"), _Counted(monkeypatch, "_destination")
+    pairs, parses = _Counted(monkeypatch, "_closing_brackets"), _Counted(monkeypatch, "scan_inline_link")
     text = "![a](/x) " * 5000
     assert len(paths_module.images(text, lex(text))) == 5000
     assert pairs.calls == 1 and parses.calls == 5000
@@ -855,6 +868,197 @@ def test_a_percent_encoded_colon_is_a_character_of_the_name_not_a_scheme(destina
     is a drive once decoded, ``test_a_percent_encoded_drive_is_absolute``.)"""
     assert _found(validate(_body(f"![a]({destination})"))) == [], destination
     assert _found(validate(_body(f"![a]({destination})"), document_root=_root(tmp_path))) == [], destination
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["![b](/etc/passwd\x7f)", "![b](/etc/passwd\x01)", "![b](/etc/passwd\x1f)", '![a](</etc/passwd>"t")', "![a](</etc/passwd>'t')",
+     "![a](</etc/passwd>(t))", '![a](</etc/passwd> "t")', "![a](\n</etc/passwd>\n)"],
+)
+def test_an_image_any_renderer_reads_is_checked_whichever_reads_it(image):
+    """pandoc keeps a DEL or a control character in a bare destination and reads a title glued to ``<…>``; the
+    specification and markdown-it read no image there. The path rules over-approximate: they cover them all."""
+    assert _found(validate(_body(image))) == [("path-not-relative", 7)], image
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "![r](x\x7f)\n\n[r]: /etc/passwd",
+        '![r](<ok.png>"t")\n\n[r]: /etc/passwd',
+        "![r](x\x01)\n\n[r]: /etc/passwd",
+        "![r][r]\n\n[r]: /etc/passwd",
+    ],
+)
+def test_a_reference_image_is_checked_though_a_renderer_reads_its_text_as_an_inline_image(document):
+    """The path rules cover the union of the readings. ``![r](x\x7f)`` is an inline image to pandoc, but by the
+    specification it is ``![r]`` and text, so the definition ``![r]`` names is judged too."""
+    found = _found(validate(_body(document)))
+    assert [rule for rule, _line in found] == ["path-not-relative"], document
+
+
+@pytest.mark.xfail(strict=True, reason="a definition only pandoc reads (a DEL or control character in a bare destination) is not judged: #121")
+@pytest.mark.parametrize("document", ["![a][r]\n\n[r]: /etc/passwd\x7f", "![a][r]\n\n[r]: /etc/passwd\x01"])
+def test_a_definition_only_pandoc_reads_is_judged(document):
+    assert _found(validate(_body(document))) == [("path-not-relative", 9)]
+
+
+#: Random images: destinations, then their gaps and titles, and random token strings, for the tests that compare the
+#: path rules with the renderers (names of their own, for ``test_destination_oracles`` has its alphabets too).
+_IMAGE_DESTINATIONS = [
+    "/etc/x", "<x>", "<x y>", "x\x7f", "x\x01y", "x[", "x]", "x](", "(", "x(y)", "<x\\>y>", "x\\)", "[x]", "x\x1f",
+]
+_IMAGE_GAPS = ["", " ", "\t", "\n", " \n ", "\n\n"]
+_IMAGE_TITLES = ["", '"t"', "'t'", "(t)", '"t', "(t(u)", '"t\\"u"']
+_IMAGE_TOKENS = [
+    "<b>", "<", ">", "(", ")", "\\", '"', "'", " ", "\t", "\n", "\x7f", "\\)", '\\"', "\\>", '"t"', "'x'", "(t)", "b",
+    "a", "\x01", "\x1f", "]", "[", "](", "/etc", "x.png", "\\\\", ":", "[r]",
+]
+_CONTROLS_RE = re.compile("[\x01-\x08\x0b-\x1f\x7f]")
+
+
+def _image_sources_by_markdown_it(text):
+    return [
+        unquote(child.attrGet("src"))
+        for token in markdown_it.MarkdownIt("commonmark").parse(text)
+        for child in token.children or []
+        if child.type == "image"
+    ]
+
+
+def _image_sources_by_pandoc(documents):
+    """The destinations of the images of each of *documents*, by one run of pandoc: each follows a paragraph that
+    is a marker, and its labels are its own (``[r]`` and ``[x]`` are ``[r3]`` and ``[x3]`` in the fourth). A
+    document that leaves a construct open can swallow the next marker, which then is no paragraph of its own and
+    puts the images after it in the wrong document: that document and the one before it are *dropped* (their
+    sources are None). Gives the documents as written to pandoc, the sources and how many were dropped."""
+    import json
+    import subprocess
+
+    renamed = [text.replace("[r]", f"[r{n}]").replace("[x]", f"[x{n}]") for n, text in enumerate(documents)]
+    source = "".join(f"MARKER{n}\n\n{text}\n\n" for n, text in enumerate(renamed))
+    out = subprocess.run(
+        ["pandoc", "-f", "commonmark", "-t", "json"], input=source, capture_output=True, text=True, check=True
+    ).stdout
+    found: list[list[str] | None] = [[] for _ in documents]
+    current = 0
+    markers = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("t") == "Image":
+                found[current].append(node["c"][2][0])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    for block in json.loads(out)["blocks"]:
+        marker = block["c"][0].get("c", "") if block.get("t") == "Para" and len(block["c"]) == 1 else ""
+        if isinstance(marker, str) and marker.startswith("MARKER") and marker[6:].isdigit():
+            current = int(marker[6:])
+            markers.add(current)
+        else:
+            walk(block)
+    missing = [n for n in range(len(documents)) if n not in markers]
+    dropped = {n for each in missing for n in (each - 1, each) if n >= 0}
+    for n in dropped:
+        found[n] = None
+    return renamed, found, len(dropped)
+
+
+def _random_image_documents(seed, count):
+    """Documents with images by an inline destination, a definition or both. Not those with a blank line or a quote
+    line in a paragraph, nor with the backslash before a character that is no punctuation (which only markdown-it
+    reads as a pair, #121), nor a definition only pandoc reads (a control character or DEL in its bare
+    destination, #121): one in its title or in a ``<…>`` destination is read by all."""
+    rng = random.Random(seed)
+
+    def body():
+        if rng.random() < 0.3:
+            return "".join(rng.choice(_IMAGE_TOKENS) for _ in range(rng.randint(0, 7)))
+        return (
+            rng.choice(_IMAGE_DESTINATIONS) + rng.choice(_IMAGE_GAPS) + rng.choice(_IMAGE_TITLES) + rng.choice(_IMAGE_GAPS)
+        )
+
+    for _ in range(count):
+        first, second = body() + rng.choice([")", ")", ""]), body()
+        templates = [
+            f"![a]({first}", f"![r]({first}\n\n[r]: {second}", f"![a][r]\n\n[r]: {second}", f"![r]\n\n[r]: {second}",
+            f"[x]: y\n[r]: {second}\n\n![a][r] ![r]({first}",
+        ]
+        kind = rng.randrange(len(templates))
+        text = templates[kind]
+        if (
+            BACKSLASH_PAIR_RE.search(text) or text.endswith("\\") or "\n\n\n" in text
+            or any(PARAGRAPH_END_RE.search(part) for part in (first, second))
+            or (kind > 0 and _CONTROLS_RE.search(_bare_destination(second)))
+        ):
+            continue
+        yield text
+
+
+def _bare_destination(definition):
+    """What a definition ``[r]: definition`` has for a bare destination (up to the first blank), or nothing if its
+    destination is in ``<…>``."""
+    rest = definition.lstrip(" \t\n")
+    return "" if rest.startswith("<") else re.split("[ \t\n]", rest, maxsplit=1)[0]
+
+
+def _judged_by_validate(monkeypatch):
+    """A function giving the paths the path rules judge in a document."""
+    judged = []
+    real = paths_module.FileReferences.check
+    monkeypatch.setattr(
+        paths_module.FileReferences, "check",
+        lambda self, path, *args, **kwargs: judged.append(path.strip()) or real(self, path, *args, **kwargs),
+    )
+
+    def judge(text):
+        judged.clear()
+        validate(_body(text))
+        return list(judged)
+
+    return judge
+
+
+@needs_markdown_it
+def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
+    """The safety direction: wherever markdown-it reads an image, inline or by a definition, the destination it reads
+    is one the path rules judge."""
+    judge = _judged_by_validate(monkeypatch)
+    compared = 0
+    for text in _random_image_documents(113, 12_000):
+        # (a destination that looks like a URL with a scheme is normalized by markdown-it: ``b:[r]<`` is ``b:r<``)
+        read = [
+            source for source in _image_sources_by_markdown_it(text)
+            if source.strip() and not URL_SCHEME_RE.match(source)
+        ]
+        if read:
+            judged = judge(text)
+            for source in read:
+                assert source.strip() in judged, (text, source, judged)  # (a path is judged without its outer blanks)
+            compared += 1
+    assert compared > 2000
+
+
+@needs_pandoc
+def test_every_image_pandoc_reads_has_its_destination_judged(monkeypatch):
+    """The same for pandoc, which reads what the specification does not (a control character or DEL in a bare
+    destination, a title glued to ``<…>``): inline, by a definition, or both. One run of pandoc reads the documents."""
+    judge = _judged_by_validate(monkeypatch)
+    documents, sources, dropped = _image_sources_by_pandoc(list(_random_image_documents(1131, 6_000)))
+    compared = 0
+    for text, read in zip(documents, sources, strict=True):
+        read = [source for source in read or () if source.strip()]
+        if read:
+            judged = judge(text)
+            for source in read:
+                assert source.strip() in judged, (text, source, judged)
+            compared += 1
+    assert dropped < len(documents) // 20, dropped  # (a few documents leave a construct open)
+    assert compared > 1000
 
 
 def test_the_decoded_form_is_still_absolute_with_a_slash_and_still_escapes():

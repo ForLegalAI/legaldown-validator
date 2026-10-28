@@ -15,16 +15,15 @@ import html
 import itertools
 import os
 import re
-import string
 from bisect import bisect_left
 from collections.abc import Callable, Container
 from functools import cache, partial
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple, assert_never
 from urllib.parse import unquote
 
 from ..directives import Directive, Lexed, is_escaped, mask_directives
-from ..files import is_absolute_reference, leaves_root, names_below
-from ..markdown import collapse_label_whitespace, label_end, normalize_label
+from ..files import containment, is_absolute_reference, names_below
+from ..markdown import collapse_label_whitespace, label_end, normalize_label, scan_inline_link
 from ..models import Amends, Document, Metadata
 from ..positions import Locator
 from .result import Line, _Recorder
@@ -33,7 +32,12 @@ if TYPE_CHECKING:
     from ..definitions import PlacedLinkDefinition
 
 
-class _Reference(NamedTuple):
+#: What is wrong with a path (``FileReferences._finding``): it is absolute, the document is outside the
+#: root (so every path leaves it), or the path leads out of the root.
+FindingKind = Literal["not-relative", "document-outside", "leaves"]
+
+
+class FileReference(NamedTuple):
     """A file reference met, to be judged in document order (``FileReferences.finish``)."""
 
     at: tuple[int, ...]
@@ -43,6 +47,8 @@ class _Reference(NamedTuple):
     url: bool
     literal: str | None
     rest: bool
+    #: Whether it is in a drafting note, which is still judged (§15.6).
+    noted: bool = False
 
 
 #: A drive once decoded: one letter, of either case, and a colon (``C%3A/x``, ``C%3Ax``). On Windows a
@@ -87,11 +93,17 @@ class FileReferences:
         self._depth: int | None = None
         if self._root is not None:
             self._depth = names_below(self._root if base is None else base, self._root)
-        self._met: list[_Reference] = []
+        self._met: list[FileReference] = []
+        #: Whether a document outside the root has been said to be (once, however many paths).
+        self._said_outside = False
         #: The places (*at*) of the references found wrong, once ``finish`` has judged
         #: them: a path that is reported is not also reported for the file it names
         #: (``include-file-missing``, #35).
         self.reported: set[tuple[int, ...]] = set()
+        #: The first image path in the document that names a file, outside drafting notes and
+        #: no finding, once ``finish`` has judged them: the position of the existence checks
+        #: of image paths that are not made (``ldv-check-skipped``, §17.4).
+        self.first_image: FileReference | None = None
 
     def check(
         self,
@@ -103,6 +115,7 @@ class FileReferences:
         url: bool = False,
         literal: str | None = None,
         rest: bool = True,
+        noted: bool = False,
     ) -> None:
         """Record *path*, which *what* names (``attachments[0].file``, ``image``),
         found at *line* and at place *at* in the document: the frontmatter's
@@ -118,21 +131,55 @@ class FileReferences:
         it: it is judged for being absolute, and for the names of it that are
         whole leaving the root; *rest* is whether more than directives (and a
         query or fragment) follows it, which a path of directives alone has not.
+        *noted*: it is in a drafting note, which is judged all the same.
         A path that is empty is not this rule's concern (``attachment-file-missing``)."""
         if path.strip():
-            self._met.append(_Reference(at, path.strip(), what, line, url, literal, rest))
+            self._met.append(FileReference(at, path.strip(), what, line, url, literal, rest, noted))
+
+    def is_wrong(self, path: str) -> bool:
+        """Whether *path*, a path of the frontmatter, is a finding of ``finish``: not relative
+        (``path-not-relative``) or out of the root (``path-outside-root``). The same
+        judgement (``_finding``), asked before the references are judged."""
+        path = path.strip()
+        return self._finding(path, path, True) is not None
+
+    def _finding(self, judged: str, decoded: str, whole: bool) -> tuple[FindingKind, str, str] | None:
+        """What is wrong with a path, as written (*judged*) and percent-decoded (*decoded*, the
+        same when it is not an image's), or None: ``("not-relative", form, form)`` when it is
+        absolute, in the *form* that makes it so; ``("document-outside", judged, judged)`` when the
+        document itself is outside the root, so that every path leaves it; ``("leaves", form, names)``
+        when it leads out of the root, with *names*, the part of the *form* judged (*whole*: all of it)."""
+        # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
+        absolute = judged if is_absolute_reference(judged) else (
+            decoded if decoded[:1] in ("/", "\\") or _DRIVE_RE.match(decoded) else None
+        )
+        if absolute is not None:
+            return "not-relative", absolute, absolute
+        for form in (judged, decoded):
+            names = form if whole else _whole_names(form)  # what is judged, and what a finding says
+            # (The same judgement as the files a document reads: ``files.containment``.)
+            contained = containment(names, rooted=self._root is not None, depth=self._depth)
+            if contained == "document-outside":
+                return "document-outside", judged, judged
+            if contained == "leaves":
+                return "leaves", form, names
+        return None
 
     def finish(self) -> None:
         """Judge the references recorded, in the order of the document."""
-        said_outside = False
         for reference in sorted(self._met, key=lambda met: met.at):
-            said_outside = self._judge(reference, said_outside)
+            if (
+                self._judge(reference) and self.first_image is None and reference.what.startswith("image")
+                and not reference.noted and reference.at not in self.reported
+            ):
+                self.first_image = reference
         self._met = []
 
-    def _judge(self, reference: _Reference, said_outside: bool) -> bool:
-        """Record what is wrong with *reference*; True once a document outside
-        the root has been said to be (*said_outside*)."""
-        at, written, what, line, url, literal, rest = reference
+    def _judge(self, reference: FileReference) -> bool:
+        """Record what is wrong with *reference*, and say whether it names a file at all: not a
+        query or a fragment alone (``#top``, ``?q``), nor a directive alone
+        (``{{placeholder: logo}}``), which is not known until it is filled in."""
+        at, written, what, line, url, literal, rest, _noted = reference
         known = written if literal is None else literal.strip()
         judged = known.split("?", 1)[0].split("#", 1)[0] if url else known
         # What is known is the whole path when there is no directive, or when a
@@ -140,47 +187,41 @@ class FileReferences:
         # partial, as ``..`` may be ``..x`` once filled in.
         whole = literal is None or judged != known
         if not judged and (whole or not rest):
-            return said_outside  # a query or a fragment alone, or a directive alone, names no file
+            return False  # a query or a fragment alone, or a directive alone, names no file
         decoded = unquote(judged) if url and "%" in judged else judged
-        # What makes it absolute: as written, or once decoded (``%2Fetc``, ``C%3A/x``).
-        absolute = judged if is_absolute_reference(judged) else (
-            decoded if decoded[:1] in ("/", "\\") or _DRIVE_RE.match(decoded) else None
-        )
-        if absolute is not None:
+        found = self._finding(judged, decoded, whole)
+        if found is None:
+            return True
+        kind, form, names = found
+        self.reported.add(at)
+        if kind == "not-relative":
             self._result.error(
                 "path-not-relative",
-                f"File reference '{written}' ({what}{_reading(known, judged, absolute)}) is not relative: an "
+                f"File reference '{written}' ({what}{_reading(known, judged, form)}) is not relative: an "
                 f"absolute path, or one beginning with a URI scheme (https://, file://, a drive letter), is an "
                 f"Error. Write a path relative to the document (§2.3).",
                 line=line,
             )
-            self.reported.add(at)
-            return said_outside  # not also outside the root: one finding for one path
-        if self._root is None:
-            return said_outside
-        depth = self._depth
-        if depth is None:
-            self.reported.add(at)  # every path of the document leads out of the root
-            if not said_outside:
+        elif kind == "document-outside":
+            # Every path of the document leads out of the root, and one finding says so, not one for each.
+            if not self._said_outside:
                 self._result.error(
                     "path-outside-root",
                     f"The document is outside the document root '{self._root}', so none of the files it names "
                     f"lies within it (§2.3), such as '{written}' ({what}).",
                     line=self._line,
                 )
-            return True
-        for form in (judged, decoded):
-            names = form if whole else _whole_names(form)  # what is judged, and what a finding says
-            if leaves_root(names, depth):
-                self._result.error(
-                    "path-outside-root",
-                    f"File reference '{written}' ({what}{_reading(known, judged, form, names)}) leads out of the "
-                    f"document root '{self._root}' (§2.3).",
-                    line=line,
-                )
-                self.reported.add(at)
-                return said_outside
-        return said_outside
+            self._said_outside = True
+        elif kind == "leaves":
+            self._result.error(
+                "path-outside-root",
+                f"File reference '{written}' ({what}{_reading(known, judged, form, names)}) leads out of the "
+                f"document root '{self._root}' (§2.3).",
+                line=line,
+            )
+        else:
+            assert_never(kind)
+        return True
 
 
 def _reading(known: str, judged: str, form: str, shown: str | None = None) -> str:
@@ -229,6 +270,10 @@ class Image(NamedTuple):
     end: int
     literal: str | None = None
     rest: bool = True
+    #: Whether the specification (and markdown-it) read it as an inline image too: else only pandoc does
+    #: (a DEL in the destination, a title glued to ``<…>``), and by the specification it may be a
+    #: reference-style image, ``![r](x\x7f)`` being ``![r]`` and text (``reference_images``).
+    strict: bool = True
 
 
 #: A backslash escape of an ASCII punctuation character, or a character reference.
@@ -237,10 +282,6 @@ _ESCAPE_OR_ENTITY_RE = re.compile(
 )
 #: ``[`` and ``]``, and a backslash with what it escapes: the brackets that count.
 _BRACKET_RE = re.compile(r"\\.|[\[\]]", re.DOTALL)
-#: A raw destination may hold balanced parentheses (CommonMark); more than this
-#: many deep is taken as not a destination, which keeps ``![a](![a](…`` linear:
-#: no scan runs past the 33rd ``(``.
-_MAX_PARENTHESES = 32
 
 
 def _decoded(destination: str) -> str:
@@ -257,72 +298,6 @@ def _closing_brackets(view: str) -> dict[int, int]:
         elif bracket.group() == "]" and opened:
             closing[opened.pop()] = bracket.start()
     return closing
-
-
-def _escapes(raw: str, at: int) -> bool:
-    """True if a backslash at ``raw[at]`` escapes the character after it: ASCII punctuation."""
-    return raw[at] == "\\" and raw[at + 1:at + 2] != "" and raw[at + 1] in string.punctuation
-
-
-def _skip_space(raw: str, at: int) -> int:
-    while at < len(raw) and raw[at] in " \t\n":
-        at += 1
-    return at
-
-
-def _destination(raw: str, opening: int) -> tuple[int, int, int] | None:
-    """The inline link destination that follows the ``(`` at ``raw[opening]``
-    (CommonMark): ``<…>``, or a raw one with balanced parentheses, then an
-    optional title and the ``)``. ``(start, stop, after)``: the destination is
-    ``raw[start:stop]`` and ``after`` is the offset after the ``)``; None when
-    what follows is no inline link. A directive in the destination
-    (``mask_directives`` fills it with NUL) is part of it."""
-    size = len(raw)
-    at = _skip_space(raw, opening + 1)
-    if raw.startswith("<", at):
-        end = at + 1
-        while end < size and raw[end] not in "<>\n":
-            end += 2 if _escapes(raw, end) else 1
-        if raw[end:end + 1] != ">":
-            return None
-        start, stop, at = at + 1, end, end + 1
-    else:
-        depth = 0
-        end = at
-        while end < size:
-            char = raw[end]
-            if _escapes(raw, end):
-                end += 2
-                continue
-            if char == " " or (ord(char) < 32 and char != "\0"):
-                break
-            if char == "(":
-                depth += 1
-                if depth > _MAX_PARENTHESES:
-                    return None
-            elif char == ")":
-                if depth == 0:
-                    break
-                depth -= 1
-            end += 1
-        if depth:
-            return None
-        start, stop, at = at, end, end
-    at = _skip_space(raw, at)
-    if raw[at:at + 1] in ('"', "'", "("):
-        closer = ")" if raw[at] == "(" else raw[at]
-        end = at + 1
-        while end < size and raw[end] != closer:
-            if _escapes(raw, end):
-                end += 2
-                continue
-            if closer == ")" and raw[end] == "(":
-                return None  # a title in parentheses holds none: this scan ends at the next ``(``, not at the end
-            end += 1
-        if end >= size:
-            return None
-        at = _skip_space(raw, end + 1)
-    return (start, stop, at + 1) if raw[at:at + 1] == ")" else None
 
 
 class Scan(NamedTuple):
@@ -358,18 +333,18 @@ def images(text: str, lexed: Lexed, scanned: Scan | None = None) -> list[Image]:
     while at >= 0:
         close = closing.get(at + 1)
         if close is not None and view.startswith("(", close + 1) and not is_escaped(view, at):
-            link = _destination(raw, close + 1)
+            link = scan_inline_link(raw, close + 1, permissive=True)  # what any renderer reads as an image
             if link is not None:
-                start, stop, after = link
+                start, stop, after, strict = link
                 # Whether a directive is in it is the lexer's to say: a NUL in the text is only a character.
                 first = bisect_left(starts, start)
                 if first < len(starts) and starts[first] < stop:
                     found.append(Image(
                         text[start:stop], at, after, _decoded(text[start:starts[first]]),
-                        _more_than_directives(text, lexed.directives, first, stop),
+                        _more_than_directives(text, lexed.directives, first, stop), strict,
                     ))
                 else:
-                    found.append(Image(_decoded(text[start:stop]), at, after))
+                    found.append(Image(_decoded(text[start:stop]), at, after, strict=strict))
         at = view.find("![", at + 2)
     return found
 
@@ -430,16 +405,24 @@ class ReferenceImages:
     where it is written, when an image names it. A definition no image names is no
     file reference, nor is a link's (§2.3). The document's definitions
     (``definitions.locate_link_definitions``) are found when the first text with an
-    image in it asks, so a document with none pays nothing."""
+    image in it asks, so a document with none pays nothing.
+
+    A definition is the specification's. One that only pandoc reads (a control character or DEL in its bare
+    destination) is paragraph text to the model, and is not judged (CONFORMANCE.md, #121)."""
 
     def __init__(self, document: Document) -> None:
         self._document = document
         self._definitions: dict[str, PlacedLinkDefinition] | None = None
-        self._used: dict[str, None] = {}
+        #: The labels of the definitions noted, each with whether an image outside a drafting note names it.
+        self._used: dict[str, bool] = {}
 
-    def note(self, text: str, lexed: Lexed, inline: Container[int] = (), scanned: Scan | None = None) -> None:
+    def note(
+        self, text: str, lexed: Lexed, inline: Container[int] = (), scanned: Scan | None = None, *,
+        noted: bool = False,
+    ) -> None:
         """Take note of the definitions the images of *text* name. *inline*: the
-        offsets of its inline images; *scanned*: ``scan(text, lexed)``."""
+        offsets of its inline images, as the specification reads them (``Image.strict``); *scanned*: ``scan(text, lexed)``; *noted*:
+        *text* is in a drafting note."""
         if "![" not in text:
             return
         if self._definitions is None:
@@ -449,7 +432,7 @@ class ReferenceImages:
             self._definitions = locate_link_definitions(self._document)
         if self._definitions:
             for key in reference_images(text, lexed, self._definitions, inline, scanned):
-                self._used[key] = None
+                self._used[key] = self._used.get(key, False) or not noted
 
     def check(self, references: FileReferences, where: Locator) -> None:
         """Record the path of each definition noted, in document order (the top-level
@@ -459,23 +442,21 @@ class ReferenceImages:
             return
         # Where each lies among the texts of its top-level block: after the fragment before it,
         # as an inline image's place is (fragment, offset) — a definition has no offset, so -1.
-        placed = sorted(
-            (
-                (
-                    (-1 if each.section is None else each.section, each.block, each.fragment, -1, each.ordinal),
-                    each,
-                )
-                for each in (self._definitions[key] for key in self._used)
-            ),
-            key=lambda item: item[0],
-        )
-        for at, each in placed:
+        placed: list[tuple[tuple[int, ...], PlacedLinkDefinition, bool]] = []
+        for key, outside in self._used.items():
+            each = self._definitions[key]
+            placed.append(
+                ((-1 if each.section is None else each.section, each.block, each.fragment, -1, each.ordinal), each, outside)
+            )
+        placed.sort(key=lambda item: item[0])
+        for at, each, kept in placed:
             block = each.definition
             # (The finding names the label as CommonMark compares it, line breaks and runs of spaces one space.)
             label = collapse_label_whitespace(block.label)
             references.check(
                 _decoded(block.target), f"image, by the definition of [{label}]",
                 partial(where.definition, each.section, each.block, each.ordinal), at=at, url=True,
+                noted=not kept,
             )
 
 
@@ -495,7 +476,7 @@ def check_heading_images(
             scanned = scan(title, lexed)
             found = images(title, lexed, scanned)
             if named is not None:
-                named.note(title, lexed, {image.start for image in found}, scanned)
+                named.note(title, lexed, {image.start for image in found if image.strict}, scanned)
             for image in found:
                 references.check(
                     image.path, "image", where.heading(index), at=(index, -1, 0, image.start), url=True,
@@ -512,17 +493,20 @@ def check_fragment_images(
     block: int,
     fragment: int,
     named: ReferenceImages | None = None,
+    *,
+    noted: bool = False,
 ) -> None:
     """Check the path of each inline image (§8.7) in *text*, fragment *fragment*
     of ``block_fragments`` of block *block* of *section* (None: the preamble): the
     free text of a paragraph, list item, quote or table cell, but not code or raw
     HTML, which ``block_fragments`` leaves out. A reference-style image
     (``![a][r]``, ``[r]: path``) names the definition (#92) that *named* takes
-    note of, to judge its path where it is written."""
+    note of, to judge its path where it is written. *noted*: *text* is in a drafting
+    note, whose images are judged all the same (§15.6)."""
     scanned = scan(text, lexed)
     found = images(text, lexed, scanned)
     if named is not None:
-        named.note(text, lexed, {image.start for image in found}, scanned)
+        named.note(text, lexed, {image.start for image in found if image.strict}, scanned, noted=noted)
     if not found:
         return
     # The first image is looked for in the source; each of the others is as many
@@ -539,7 +523,7 @@ def check_fragment_images(
         references.check(
             image.path, "image", partial(_below, first_line, breaks),
             at=(-1 if section is None else section, block, fragment, image.start), url=True, literal=image.literal,
-            rest=image.rest,
+            rest=image.rest, noted=noted,
         )
 
 

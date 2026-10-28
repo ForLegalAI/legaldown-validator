@@ -153,6 +153,15 @@ def test_assembling_a_template_with_frontmatter_that_cannot_be_read(write, capsy
     assert "[frontmatter-invalid-yaml]" in capsys.readouterr().err
 
 
+def test_a_problem_in_the_template_is_located_by_the_path_as_it_was_given(write, capsys, monkeypatch):
+    path = write("t.lgd", "---\ntitle: [unclosed\n---\n\n# A\n")
+    monkeypatch.chdir(path.parent)
+    assert main(["assemble", "./t.lgd"]) == EXIT_DIAGNOSTICS
+    assert capsys.readouterr().err.startswith("t.lgd:2: error: [frontmatter-invalid-yaml]")  # as assemble shows it
+    assert main(["questions", "./t.lgd"]) == EXIT_DIAGNOSTICS
+    assert capsys.readouterr().err.startswith("./t.lgd:2: error: [frontmatter-invalid-yaml]")  # as it was given
+
+
 def test_a_document_without_frontmatter_is_a_warning(write, capsys):
     path = write("bare.lgd", "# Scope {#scope}\n\nBody.\n")
     assert main(["validate", "--format", "json", str(path)]) == EXIT_OK

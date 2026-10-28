@@ -397,7 +397,6 @@ class TestLineStarts:
         assert _body(assemble(template, {"x": "2. two"})) == "\nIntro\n2. two more.\n"
         assert _body(assemble(template, {"x": "1. one"})) == "\nIntro\n1\\. one more.\n"
 
-    @pytest.mark.xfail(strict=True, reason="assembly reads only the line before; escaping in containers is a follow-up (#94 review)")
     def test_text_that_only_the_open_paragraph_makes_text_is_read_through_every_line(self):
         """``2.      x`` is text after ``text`` (an item numbered 2 cannot interrupt it),
         and so is the line after it, however many such lines come between."""
@@ -428,6 +427,204 @@ class TestLineStarts:
         assert _body(assemble(_template(body, _BOOL), {"x": False})) == (
             "\nIntro.\n\nindented continuation\n"
         )
+
+
+class TestLineStartsInContext:
+    """A line is escaped when the parser reads it, in the output as written so far, as beginning a
+    block that it reads the template line (each insertion a word) as not beginning: the container
+    of an open paragraph, a lazy line, a deleted line before it all count (§15.7.3)."""
+
+    @staticmethod
+    def _assembled(body: str, answers: dict, questions: str = _TEXT) -> str:
+        return _body(assemble(_template(body, questions), answers)).removeprefix("\n")
+
+    @pytest.mark.parametrize(("body", "answer", "written"), [
+        # What the template line begins, the output may begin too: the template's own marker stays.
+        ("a\n> 2. {{placeholder: name}}\n", "y", "a\n> 2. y\n"),
+        ("a\n> 2. {{placeholder: name}}\n", "# h", "a\n> 2. \\# h\n"),
+        # The open paragraph is the item's, the quote's, or the list's, and the line is short of it.
+        ("1. a\n{{placeholder: name}}\n", "2. b", "1. a\n2\\. b\n"),
+        ("3. a\n{{placeholder: name}}\n", "4. b", "3. a\n4\\. b\n"),
+        ("3. a\n{{placeholder: name}}\n", "4) b", "3. a\n4\\) b\n"),
+        ("10) a\n    {{placeholder: name}}\n", "1) b", "10) a\n    1\\) b\n"),
+        ("- a\n  - b\n{{placeholder: name}}\n", "2. c", "- a\n  - b\n2\\. c\n"),
+        ("> - a\n{{placeholder: name}}\n", "2. c", "> - a\n2\\. c\n"),
+        ("> - a\n> {{placeholder: name}}\n", "2. c", "> - a\n> 2\\. c\n"),
+        ("> > a\n{{placeholder: name}}\n", "> b", "> > a\n\\> b\n"),
+        ("> > a\n> {{placeholder: name}}\n", "> b", "> > a\n> \\> b\n"),
+        # A bare marker on the line before holds no paragraph; a bare one after text underlines it.
+        ("text\n2.\n{{placeholder: name}}\n", "=", "text\n2.\n\\=\n"),
+        ("Intro\n--\n{{placeholder: name}}\n", "2. two", "Intro\n--\n2\\. two\n"),
+        ("- - {{placeholder: name}}\n", "-", "- - \\-\n"),
+        ("a\n{{placeholder: name}}\n", "- - -", "a\n\\- - -\n"),
+        # Tabs in the spacing of the template's markers.
+        ("-\t{{placeholder: name}}\n", "# h", "-\t\\# h\n"),
+        ("1.\t{{placeholder: name}}\n", "2. b", "1.\t2\\. b\n"),
+        (">\t{{placeholder: name}}\n", "- b", ">\t\\- b\n"),
+        # An item numbered 1 inside an item: the later items of the list are read from the parser too.
+        ("1. Terms\n   1. {{placeholder: name}} applies.\n   2. {{placeholder: x}} too.\n", "- a",
+         "1. Terms\n   1. \\- a applies.\n   2. \\- a too.\n"),
+    ])
+    def test_a_line_that_would_begin_a_block_in_its_context_is_escaped(self, body, answer, written):
+        answers = {"name": answer, "x": answer}
+        assert self._assembled(body, answers, _TEXT + "  x:\n    type: text\n") == written
+
+    @pytest.mark.parametrize(("body", "answer"), [
+        # "=" is no underline under "[x]: y" (a definition leaves no paragraph) nor under "- a" (lazy).
+        ("[x]: y\n{{placeholder: name}}\n", "==="),
+        ("[x]: y\n{{placeholder: name}}\n", "2. b"),
+        # "2." cannot interrupt the paragraph "text", so it is text, as the markers of the template are.
+        ("text\n{{placeholder: name}}\n", "2. two"),
+        ("10) a\n    {{placeholder: name}}\n", "11) b"),
+        ("text\n2. {{placeholder: name}}\n", "# h"),
+        ("1. a\n2. {{placeholder: name}} second\n", "Ann"),
+    ])
+    def test_nothing_is_escaped_that_begins_no_block(self, body, answer):
+        assert self._assembled(body, {"name": answer}) == body.replace("{{placeholder: name}}", answer)
+
+    def test_the_underline_of_a_heading_of_several_lines_is_its_last_line(self):
+        """In ``> a\\n> {{x}}\\n> ===`` the template's ``===`` underlines both lines, and only it is the
+        underline: the line with ``{{x}}`` is text, and an answer ``===`` there would underline ``a``."""
+        written = self._assembled("> a\n> {{placeholder: name}}\n> ===\n", {"name": "==="})
+        assert written == "> a\n> \\===\n> ===\n"
+
+    @pytest.mark.parametrize(("body", "answers", "written"), [
+        # The template line's own indentation stays: the line is in the item that it was written in.
+        ("- a\n\n  {{placeholder: name}} more\n", {"name": "b"}, "- a\n\n  b more\n"),
+        ("- a\n\n  {{placeholder: name}}\n", {"name": "# h"}, "- a\n\n  \\# h\n"),
+        ("1. a\n\n   {{placeholder: name}} more\n", {"name": "2. b"}, "1. a\n\n   2\\. b more\n"),
+        ("- a\n  - b\n\n    {{placeholder: name}} more\n", {"name": "c"}, "- a\n  - b\n\n    c more\n"),
+        # More indentation than the item's content column goes: the insertion begins the content.
+        ("- a\n\n     {{placeholder: name}}\n", {"name": "c"}, "- a\n\n  c\n"),
+        # The same after a deleted line.
+        ('- a\n\n  {{choose: x, true="", false="T"}}\n  {{placeholder: name}} more\n', {"x": True, "name": "b"},
+         "- a\n\n  b more\n"),
+        ('1. a\n\n   {{choose: x, true="", false="T"}}\n   {{placeholder: name}} more\n', {"x": True, "name": "2. b"},
+         "1. a\n\n   2\\. b more\n"),
+        # Outside any item nothing is kept.
+        ("a\n\n  {{placeholder: name}}\n", {"name": "b"}, "a\n\nb\n"),
+    ])
+    def test_an_insertion_that_begins_the_content_keeps_the_items_indentation(self, body, answers, written):
+        assert self._assembled(body, answers, _BOOL + _TEXT) == written
+
+    @pytest.mark.parametrize(("answer", "written"), [
+        # "\\*" is a literal star: the backslash that escapes it is not escaped again, whatever is fixed.
+        ("*", "> \n\\> \\* x\n"),
+        ("<x>", "> \n\\> \\<x> x\n"),
+        ("[a]", "> \n\\> \\[a\\] x\n"),
+    ])
+    def test_an_escaped_character_is_not_escaped_again_when_a_line_is_fixed(self, answer, written):
+        """The line after bare ``> `` is indented four columns, so it is code; fixing it strips the
+        indentation and escapes the ``>``, and the inserted ``*`` keeps the one backslash it had."""
+        body = '> {{choose: x, true="", false="T"}}\n    > {{placeholder: name}} x\n'
+        assert self._assembled(body, {"x": True, "name": answer}, _BOOL + _TEXT) == written
+
+    def test_a_marker_four_columns_in_is_text_not_a_marker(self):
+        """``>`` is a quote marker up to three columns past the container: four in, it is code, or after
+        paragraph text its text."""
+        deleted = '  {{choose: x, true="", false="T"}}\n    > b c\n'
+        assert self._assembled(deleted, {"x": True}, _BOOL) == "\\> b c\n"
+        body = "text\n     >   {{placeholder: name}}\n"
+        assert self._assembled(body, {"name": "n"}) == "text\n     >   n\n"
+        assert self._assembled(body, {"name": "# h"}) == "text\n     >   # h\n"
+
+    @pytest.mark.parametrize(("body", "answer", "written"), [
+        # A quote marker is up to three columns past the content column of the item that holds it, whether
+        # the item is in a quote or not, and past the marker before it.
+        ("> 10. Terms\n>     > {{placeholder: name}}\n", "# h", "> 10. Terms\n>     > \\# h\n"),
+        ("> - a\n>     > {{placeholder: name}}\n", "2. b", "> - a\n>     > 2\\. b\n"),
+        ("> - a\n>     > {{placeholder: name}}\n", "-", "> - a\n>     > \\-\n"),
+        ("> - a\n>     > {{placeholder: name}}\n", "> q", "> - a\n>     > \\> q\n"),
+        # A tab after a marker reaches the next tab stop: here the second marker is two columns in.
+        ("> \t> {{placeholder: name}}\n", "# h", "> \t> \\# h\n"),
+        ("- a\n\n  >\t> {{placeholder: name}}\n", "# h", "- a\n\n  >\t> \\# h\n"),
+        # The markers after the first are the template's wherever they are (the parser reads them so), also
+        # in an item in a quote: the outer item's quote marker is not escaped, the answer's is.
+        ("10. > - a\n    >   > {{placeholder: name}}\n", "# h", "10. > - a\n    >   > \\# h\n"),
+        # A line without its own ">" is lazy text in the quote; the item's indentation is kept up to its column.
+        ("- > - a\n    {{placeholder: name}}\n", "> q", "- > - a\n  \\> q\n"),
+        ("> - a\n  {{placeholder: name}}\n", "y", "> - a\ny\n"),
+        ("> - a\n  {{placeholder: name}}\n", "# h", "> - a\n\\# h\n"),
+        # Four columns in with no ">" before it, ">" is text (pandoc: nothing begins there), so no backslash
+        # (98daff2 wrote "\\> q"). (The "2. b" case above is the one where a list does begin, in the nested
+        # quote that has its ">": pandoc finds an item there, which 98daff2 left unescaped.)
+        ("> - a\n    > {{placeholder: name}}\n", "> q", "> - a\n    > > q\n"),
+    ])
+    def test_a_quote_marker_is_judged_by_its_column_past_what_holds_it(self, body, answer, written):
+        assert self._assembled(body, {"name": answer}) == written
+
+    def test_a_marker_in_an_item_is_one_as_far_in_as_the_item_is(self):
+        body = "- 1. Terms\n     > {{placeholder: name}} x\n"
+        assert self._assembled(body, {"name": "> q"}) == "- 1. Terms\n     > \\> q x\n"
+
+    def test_a_lone_tag_begins_html_once_the_paragraph_before_it_is_gone(self):
+        """``<x>`` cannot interrupt paragraph text, but starts an HTML block (kind 7) after a deleted line."""
+        body = 'a\n\n{{choose: x, true="", false="Then:"}}\n<x>\n'
+        template = _template(body, _BOOL)
+        assert _body(assemble(template, {"x": True})) == "\na\n\n\\<x>\n"
+        assert _body(assemble(template, {"x": False})) == "\na\n\nThen:\n<x>\n"
+
+    def test_a_marker_the_template_has_as_text_is_an_item_after_a_deleted_line(self):
+        """``2.`` is text after "Then:" but starts an item once the paragraph is gone."""
+        body = 'text\n\n{{choose: x, true="", false="Then:"}}\n2. {{placeholder: name}}\n'
+        template = _template(body, _BOOL + _TEXT)
+        assert _body(assemble(template, {"x": True, "name": "Ann"})) == "\ntext\n\n2\\. Ann\n"
+        assert _body(assemble(template, {"x": False, "name": "Ann"})) == "\ntext\n\nThen:\n2. Ann\n"
+
+    def test_a_number_the_output_reads_as_text_leaves_what_follows_it_alone(self):
+        """In the output "3." is text after "lazy" (an item numbered 3 cannot interrupt it), so the
+        ">" after it begins nothing; the template line, where "3." is an item, did not either."""
+        body = '- 2. {{choose: x, true="", false="T"}}\nlong nolist\nlazy\n3. {{placeholder: name}}. more\n'
+        result = assemble(_template(body, _BOOL + _TEXT), {"x": True, "name": "> -"})
+        assert _body(result) == "\n- 2. \nlong nolist\nlazy\n3. > -. more\n"
+
+    @pytest.mark.parametrize(("body", "written"), [
+        # Indented code is prevented by removing the indentation the line has past the item it is in.
+        ("- a\n\n  {{choose: x, true=\"\", false=\"T\"}}\n      code\n", "- a\n\n  code\n"),
+        ("1. a\n\n   {{choose: x, true=\"\", false=\"T\"}}\n       code\n", "1. a\n\n   code\n"),
+        ("- a\n  - b\n\n    {{choose: x, true=\"\", false=\"T\"}}\n        code\n", "- a\n  - b\n\n    code\n"),
+        ("- a\n\n  {{choose: x, true=\"\", false=\"T\"}}\n      # h\n", "- a\n\n  \\# h\n"),
+        ("a\n\n{{choose: x, true=\"\", false=\"T\"}}\n      code\n", "a\n\ncode\n"),
+    ])
+    def test_indented_code_after_a_deleted_line_stays_in_its_item(self, body, written):
+        assert self._assembled(body, {"x": True}, _BOOL) == written
+
+    @pytest.mark.parametrize("body", [
+        # Open question for the specification (#120): §15.7.3 gives a backslash no position where the
+        # construct is begun by the template's own markers, which an empty insertion leaves bare and
+        # holding no paragraph. Pinned as written: the output keeps the markers. The line after such a
+        # line gets no line-start check either: §15.7.2 step 5 deletes a line that "was not blank before
+        # ... and is blank after" the insertions, blank being empty or only spaces and tabs, and a line
+        # of bare markers (``> ``) is not blank, so conformers, who must be byte for byte the same,
+        # leave the lines after it as the template has them.
+        'text\n- {{choose: x, true="", false="T"}}\n',  # the bare "-" underlines "text"
+        '- - - {{choose: x, true="", false="T"}}\n',  # three bare markers are a thematic break
+        '* * * {{choose: x, true="", false="T"}}\n',
+        '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n',  # a lazy line detaches
+        '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n',
+        '> text\n> {{choose: x, true="", false="T"}}\n> <x>\n',  # <x> now begins an HTML block
+        '> {{choose: x, true="", false="T"}}\n> 2. b\n',  # 2. now begins a list
+        '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n',  # the line is now indented code
+        # Likewise a bare item that its next line was indented to: the item holds no paragraph and the
+        # line, short of its content column, is indented code (#120). The indentation is the template's.
+        '   2. {{choose: x, true="", false="T"}}\n    {{placeholder: name}} x\n',
+    ])
+    def test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question(self, body):
+        template = _template(body, _BOOL + _TEXT)
+        written = _body(assemble(template, {"x": True, "name": "- - -"}))
+        assert written.removeprefix("\n") == {
+            'text\n- {{choose: x, true="", false="T"}}\n': "text\n- \n",
+            '- - - {{choose: x, true="", false="T"}}\n': "- - - \n",
+            '* * * {{choose: x, true="", false="T"}}\n': "* * * \n",
+            '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n':
+                "> 2. \n\tcode\n> 2. \\- - -\n",
+            '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n':
+                "  > \n  lazy\na\n  > \\- - --y\n",
+            '> text\n> {{choose: x, true="", false="T"}}\n> <x>\n': "> text\n> \n> <x>\n",
+            '> {{choose: x, true="", false="T"}}\n> 2. b\n': "> \n> 2. b\n",
+            '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n': "> a\n>\n> \n>     code\n",
+            '   2. {{choose: x, true="", false="T"}}\n    {{placeholder: name}} x\n': "   2. \n    \\- - - x\n",
+        }[body]
 
 
 # ── Drafts: blanks left unanswered ───────────────────────────────
@@ -658,13 +855,6 @@ class TestQuestions:
 # ── The parser's current block structure (legaldown-validator) ────
 
 
-# Where the container of an open paragraph is not known, the line-start check (§15.7.3)
-# reads the output as if the paragraph were the line's own; escaping there is a follow-up.
-_CONTAINER_UNKNOWN = pytest.mark.xfail(
-    strict=True, reason="line-start check does not know the container of an open paragraph (follow-up, #94 review)"
-)
-
-
 class TestCurrentBlockStructure:
     """Assembly reads block positions from the parser's own walk, so every
     block kind it knows is handled, and handled as the validator reads it."""
@@ -745,11 +935,15 @@ class TestCurrentBlockStructure:
         [
             pytest.param("  2. b\n1.\n{{placeholder: name}}\n", "2. two", "2\\. two", id="after-an-empty-item"),
             pytest.param("1.\n1. x\n*\n{{placeholder: name}}\n", "2. two", "2\\. two", id="after-an-empty-bullet"),
-            pytest.param("- a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-an-item-with-a-paragraph", marks=_CONTAINER_UNKNOWN),
-            pytest.param("> a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-a-quote-with-a-paragraph", marks=_CONTAINER_UNKNOWN),
-            pytest.param("-    a\n    code\n{{placeholder: name}}\n", "3) x", "3\\) x", id="short-of-an-items-lazy-text", marks=_CONTAINER_UNKNOWN),
-            pytest.param("- a\n{{placeholder: name}}\n", "=", "\\=", id="an-underline-short-of-an-item"),
-            pytest.param("text\n> {{placeholder: name}}\n", "1.", "> 1\\.", id="in-a-quote-after-text", marks=_CONTAINER_UNKNOWN),
+            pytest.param("- a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-an-item-with-a-paragraph"),
+            pytest.param("> a\n{{placeholder: name}}\n", "2. two", "2\\. two", id="short-of-a-quote-with-a-paragraph"),
+            pytest.param("-    a\n    code\n{{placeholder: name}}\n", "3) x", "3\\) x", id="short-of-an-items-lazy-text"),
+            # No backslash (was "\\=" before the line-start check read the parser): a line short of the
+            # item's indentation cannot underline the item's paragraph (CommonMark: a setext underline
+            # is not a lazy continuation line), so "=" is the paragraph's text and begins nothing that
+            # §15.7.3 names. Conformers must agree byte for byte, hence no escape.
+            pytest.param("- a\n{{placeholder: name}}\n", "=", "=", id="an-underline-short-of-an-item"),
+            pytest.param("text\n> {{placeholder: name}}\n", "1.", "> 1\\.", id="in-a-quote-after-text"),
             pytest.param("text\n{{placeholder: name}}\n", "2. two", "2. two", id="after-text-it-cannot-interrupt"),
             pytest.param("text\n{{placeholder: name}}\n", "=", "\\=", id="after-text-an-underline"),
         ],

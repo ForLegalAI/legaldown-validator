@@ -25,7 +25,7 @@ from legaldown.validator.circular import (
     find_circular_definitions,
     strongly_connected_components,
 )
-from legaldown.validator.conditions import ALWAYS, Condition, exclusive
+from legaldown.validator.conditions import ALWAYS, Condition, Exclusivity, exclusive
 
 _SIDES = """sides:
   - name: providers
@@ -312,7 +312,7 @@ def test_a_term_that_references_itself_in_a_circle_is_one_warning():
 
 
 def test_the_alternatives_of_one_id_that_can_appear_together_are_one_id_not_a_circle():
-    # Without the pruning (excluded=None), as the validator calls it for a
+    # Without the pruning (no exclusivity), as the validator calls it for a
     # document that is no template: an id declared twice is still one id.
     body = [
         '"T" {{def: t}} means x. See {{term: t}}.',
@@ -554,15 +554,29 @@ def _alternatives(count: int, referenced_when: str | None):
     return document, registered, uses, questions
 
 
-class _Exclusive:
-    """``exclusive`` for a choice question, counting its calls."""
+class _Exclusive(Exclusivity):
+    """An ``Exclusivity`` for a choice question, counting its pair tests."""
 
     def __init__(self, questions):
+        super().__init__(questions)
         self.calls = 0
-        self._questions = questions
 
-    def __call__(self, first, second):
+    def excluded(self, first, second):
         self.calls += 1
+        return super().excluded(first, second)
+
+
+class _EveryPair(Exclusivity):
+    """What was asked before #110: every pair of a reference and an alternative is tested by ``exclusive``,
+    whether or not either can appear or they share a question."""
+
+    def appears(self, presence):
+        return True
+
+    def questions(self, presence):
+        return frozenset(self._questions)
+
+    def excluded(self, first, second):
         return exclusive(first, second, self._questions)
 
 
@@ -612,3 +626,243 @@ def test_a_deep_ring_in_the_validator_takes_no_recursion():
 
 def test_an_empty_document_has_no_circle():
     assert find_circular_definitions(empty_document(), [], []) == []
+
+
+# ── Exclusivity and the cap on pair tests (#110) ──────────────────
+
+_RANDOM_QUESTIONS = {
+    "a": {"type": "boolean"},
+    "b": {"type": "boolean"},
+    "c": {"type": "choice", "choices": {"x": "X", "y": "Y", "z": "Z"}},
+    "d": {"type": "choice", "choices": {"only": "The only value"}},
+}
+_RANDOM_CONDITIONS = ["a", "!a", "b", "!b", "c:x", "c:y", "!c:x", "!c:y", "!c:z", "d:only", "!d:only"]
+
+
+def _random_presence(rng):
+    """ALWAYS, one to three conditions, and contradictions, which never appear."""
+    from legaldown.validator.units import own_presence
+
+    presence = ALWAYS
+    for _ in range(rng.choice([0, 0, 1, 1, 2, 3])):
+        presence = presence | own_presence(rng.choice(_RANDOM_CONDITIONS), _RANDOM_QUESTIONS)
+    return presence
+
+
+def test_exclusivity_is_exclusive_and_satisfiable():
+    import random
+
+    from legaldown.validator.conditions import satisfiable
+
+    rng = random.Random(110)
+    exclusivity = Exclusivity(_RANDOM_QUESTIONS)
+    seen = set()
+    for _ in range(20000):
+        first, second = _random_presence(rng), _random_presence(rng)
+        expected = exclusive(first, second, _RANDOM_QUESTIONS)
+        assert exclusivity.excluded(first, second) == expected, (first, second)
+        assert exclusivity.appears(first) == satisfiable(first, _RANDOM_QUESTIONS)
+        assert set(exclusivity.questions(first)) == {c.question for c in first}
+        seen.add((expected, exclusivity.appears(first) and exclusivity.appears(second)))
+    # Every kind of pair: excluded by a shared question, by one that cannot appear, and not.
+    assert seen == {(False, True), (True, True), (True, False)}
+
+
+def _random_graph(rng):
+    """Paragraphs of one definition and one reference each, of ids with several
+    alternatives, under presences of their own, many of which never appear."""
+    n = rng.randint(3, 14)
+    ids = [f"i{k}" for k in range(rng.randint(2, 5))]
+    paragraphs = [
+        f'"D{k}" {{{{def: {rng.choice(ids)}}}}} means {{{{term: {rng.choice(ids)}}}}}.' for k in range(n)
+    ]
+    document = _paragraph_document(paragraphs)
+    registered, uses = _graph(document)
+    registered = [(ref, _random_presence(rng)) for ref, _presence in registered]
+    uses = [use._replace(presence=_random_presence(rng)) for use in uses]
+    return document, registered, uses
+
+
+def _members(circles):
+    return {member for circle in circles for member in circle}
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_circles_through_exclusivity_equal_circles_through_the_call(seed):
+    import random
+
+    document, registered, uses = _random_graph(random.Random(110_000 + seed))
+    expected = find_circular_definitions(document, registered, uses, _EveryPair(_RANDOM_QUESTIONS))
+    assert find_circular_definitions(document, registered, uses, Exclusivity(_RANDOM_QUESTIONS)) == expected
+
+
+_NEVER_APPEARS = """---
+title: T
+questions:
+  q:
+    type: boolean
+  r:
+    type: boolean
+---
+
+# Terms {#terms when=q}
+
+- "A" {{def: a}} means {{term: b}}. {when=!q}
+
+# More {#more}
+
+"B" {{def: b}} means {{term: a}}. {when=r}
+"""
+
+
+def test_a_definition_that_never_appears_is_no_part_of_a_circle():
+    """``a`` is declared when ``q`` and not ``q``: never. Nothing reaches it, whichever question the
+    reference to it names (a prefilter by shared questions found a circle here)."""
+    result = validate(parse(_NEVER_APPEARS, filename="t.lgd"))
+    assert [(d.rule, d.line) for d in result.diagnostics] == [
+        ("sides-absent", 2),
+        ("condition-never-true", 12),
+        ("condition-reference-unsafe", 16),
+    ]
+
+
+def _two_questions(count: int, same: bool):
+    """An id declared by *count* alternatives, one for each value of the choice
+    question ``c``, and *count* definitions of other ids that name it, each
+    under a value of ``c`` (*same*) or of another choice question ``d``; the
+    alternatives name those, so every one is on a circle."""
+    questions = {
+        "c": {"type": "choice", "choices": {f"v{k}": str(k) for k in range(count)}},
+        "d": {"type": "choice", "choices": {f"w{k}": str(k) for k in range(count)}},
+    }
+    paragraphs = [f'"T" {{{{def: t}}}} means {{{{term: u{k}}}}}.' for k in range(count)]
+    paragraphs += [f'"U" {{{{def: u{k}}}}} means {{{{term: t}}}}.' for k in range(count)]
+    document = _paragraph_document(paragraphs)
+    registered, uses = _graph(document)
+    from legaldown.validator.units import own_presence
+
+    registered = [
+        (ref, own_presence(f"c:v{k}" if k < count else ("c:v" if same else "d:w") + f"{k - count}", questions))
+        for k, (ref, _presence) in enumerate(registered)
+    ]
+    uses = [
+        use._replace(presence=own_presence(f"c:v{k}" if k < count else ("c:v" if same else "d:w") + f"{k - count}", questions))
+        for k, use in enumerate(uses)
+    ]
+    return document, registered, uses, questions
+
+
+class _Tests:
+    """Counts the pairs ``Exclusivity.excluded`` is asked about."""
+
+    def __init__(self, monkeypatch):
+        self.calls = 0
+        wrapped = Exclusivity.excluded
+
+        def counted(exclusivity, first, second):
+            self.calls += 1
+            return wrapped(exclusivity, first, second)
+
+        monkeypatch.setattr(Exclusivity, "excluded", counted)
+
+
+def test_references_on_another_question_test_no_pair(monkeypatch):
+    count = 300
+    document, registered, uses, questions = _two_questions(count, same=False)
+    tests = _Tests(monkeypatch)
+    search = _Search(monkeypatch)
+    found = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+    assert len(found) == 1 and len(found[0]) == 2 * count
+    assert tests.calls == 0  # an alternative of `c` is not excluded by a reference that names `d`
+    assert search.edges <= 3 * len(registered)  # each reference reaches the id, not each alternative
+
+
+def test_references_on_the_same_question_test_each_pair_once(monkeypatch):
+    count = 150
+    document, registered, uses, questions = _two_questions(count, same=True)
+    tests = _Tests(monkeypatch)
+    found = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+    assert len(found) == count
+    assert tests.calls <= count * count + count
+
+
+def test_pair_tests_stop_at_the_cap_and_only_add_circles(monkeypatch):
+    count = 150
+    document, registered, uses, questions = _two_questions(count, same=True)
+    exact = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+    exact_members = _members(exact)
+    previous = exact_members
+    for cap in (count * count, 10_000, 1000, 100, 1, 0):
+        monkeypatch.setattr(circular_module, "MAX_EXCLUSION_TESTS", cap)
+        tests = _Tests(monkeypatch)
+        found = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+        assert tests.calls <= cap
+        assert _members(found) >= previous  # a lower cap flags every definition a higher one did
+        previous = _members(found)
+        again = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+        assert again == found  # whichever pairs were tested, the same each time
+    assert len(found) == 1 and len(found[0]) == 2 * count  # nothing told apart: one circle through the id
+    assert len(exact) == count  # which the exact answer splits
+
+
+@pytest.mark.parametrize("seed", range(100))
+def test_a_cap_never_hides_a_circular_definition(seed, monkeypatch):
+    import random
+
+    rng = random.Random(110_500 + seed)
+    document, registered, uses = _random_graph(rng)
+    exact = _members(find_circular_definitions(document, registered, uses, Exclusivity(_RANDOM_QUESTIONS)))
+    monkeypatch.setattr(circular_module, "MAX_EXCLUSION_TESTS", rng.randint(0, 12))
+    capped = _members(find_circular_definitions(document, registered, uses, Exclusivity(_RANDOM_QUESTIONS)))
+    assert capped >= exact
+
+
+def _with_a_dead_alternative(count: int):
+    """``_two_questions`` with the first alternative of the id under ``c:v0`` and not ``c:v0``: never."""
+    from legaldown.validator.units import own_presence
+
+    document, registered, uses, questions = _two_questions(count, same=False)
+    dead = own_presence("c:v0", questions) | own_presence("!c:v0", questions)
+    registered[0] = (registered[0][0], dead)
+    uses[0] = uses[0]._replace(presence=dead)
+    return document, registered, uses, questions
+
+
+def test_a_dead_alternative_is_left_out_of_the_alternatives_a_reference_reaches():
+    """The same circles as testing every pair, and the references on another question still reach the id as one
+    node (a dead alternative among them once made each of them an edge to every alternative)."""
+    count = 40
+    document, registered, uses, questions = _with_a_dead_alternative(count)
+    found = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+    assert found == find_circular_definitions(document, registered, uses, _EveryPair(questions))
+    assert 0 not in _members(found) and len(found) == 1  # nothing reaches the dead one
+
+
+def test_a_dead_alternative_does_not_make_each_reference_an_edge_to_each_alternative(monkeypatch):
+    count = 1000
+    document, registered, uses, questions = _with_a_dead_alternative(count)
+    search = _Search(monkeypatch)
+    tests = _Tests(monkeypatch)
+    found = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+    assert len(found) == 1 and len(found[0]) == 2 * count - 2
+    assert tests.calls == 0
+    assert search.edges <= 3 * len(registered)  # 4 million before
+
+
+def test_a_validation_builds_one_exclusivity_for_the_identifiers_and_the_circles(monkeypatch):
+    built = []
+    init = Exclusivity.__init__
+
+    def counted(self, questions):
+        built.append(questions)
+        init(self, questions)
+
+    monkeypatch.setattr(Exclusivity, "__init__", counted)
+    body = (
+        '"Services" {{def: services}} means work under the {{term: agreement}}. {when=q}\n\n'
+        '"Agreement" {{def: agreement}} means the {{term: services}}.\n'
+    )
+    document = parse(_source(body, _Q), filename="t.lgd")
+    result = validate(document)
+    assert [d.rule for d in result.diagnostics if d.rule == "definition-circular"] == ["definition-circular"]
+    assert len(built) == 1

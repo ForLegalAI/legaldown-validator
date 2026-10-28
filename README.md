@@ -112,10 +112,11 @@ legaldown validate contract.lgd                      # one document
 legaldown validate contracts/                        # a whole directory, recursively
 legaldown validate --format json contract.lgd        # machine-readable output
 legaldown validate --ignore def-unreferenced doc.lgd # mute one rule
+legaldown validate --ignore ldv-check-skipped doc.lgd # mute the Warning for a check not performed (§17.5)
 legaldown validate --warnings-as-errors doc.lgd      # tighten a CI gate
 legaldown validate --final signed-contract.lgd       # nothing left to fill in
 legaldown validate --fragment clauses/               # include fragments and attachment files, on their own
-legaldown validate --document-root . docs/           # no file reference may lead out of the project
+legaldown validate --document-root . docs/           # no file reference may lead out of the project, and ../ within it is read
 ```
 
 | Option | Effect |
@@ -126,7 +127,7 @@ legaldown validate --document-root . docs/           # no file reference may lea
 | `--fragment` | Validate each file as an include fragment or attachment file on its own (§12.2, §12.4), as [`validate(fragment=True)`](#validating-a-fragment) does: what only the including document can settle is reported with `"host_dependent": true` in the JSON output and `(host-dependent)` at the end of the line in text, and does not affect the exit status |
 | `--template` / `--no-template` | With `--fragment`: say whether the document that includes the fragments is a template (`validate(fragment=True, template=True / False)`). Without either, a fragment is a template only when it holds a condition or a `{{choose:}}` |
 | `--fragment-kind {include,attachment}` | With `--fragment`: what the files are to the document that uses them (`validate(fragment_kind=)`): an `{{include:}}` fragment (the default, §12.2), or a LegalDown attachment file (§12.4), whose frontmatter or level-1 heading is `attachment-has-frontmatter` or `attachment-has-h1` (§16.10). With `--template`, an include fragment is held to what a template's fragment may hold, and an attachment file to holding no `{{include:}}` ([below](#validating-a-fragment)) |
-| `--document-root DIR` | The directory every file a document refers to must lie within (§2.3, [`validate(document_root=)`](#file-references-and-the-document-root)): a path that escapes it, as `../` does, is `path-outside-root`. Each document is read from its own directory, which must be within `DIR`. Without it, `../shared/definitions.lgd` is valid. A path that is absolute or begins with a URI scheme is `path-not-relative` with or without a root |
+| `--document-root DIR` | The directory every file a document refers to must lie within (§2.3, [`validate(document_root=)`](#file-references-and-the-document-root)): a path that escapes it, as `../` does, is `path-outside-root`. Each document is read from its own directory, which must be within `DIR`. A path that leads out of the document's directory but stays within `DIR` (`../shared/part.lgd`) is read like any other; without `--document-root` it is valid but not read (`ldv-check-skipped` says so), and nothing outside `DIR` is ever read. A path that is absolute or begins with a URI scheme is `path-not-relative` with or without a root |
 | `--warnings-as-errors` | Report warnings at error severity |
 | `--strict` | Exit non-zero on any diagnostic, not just errors |
 | `--quiet` | Drop the trailing summary line |
@@ -149,7 +150,11 @@ amended original defines was an Info (`amend-term-unresolvable`) and is now foun
 can start to fail for that reason: it is the specification's result, and the files must be beside the
 document. A file that is not there, or cannot be read, is as if it had not been asked for.
 
-**Changed in 0.5.0 (unreleased):** a document that includes fragments (`{{include:}}` paragraphs, §12.2)
+**Changed in 0.5.0 (unreleased):** a document that holds a construct beyond Core (an include paragraph,
+an attachment file, `amends.file`, `translations`, `supersedes.file`, an image path) now draws the
+Warning `ldv-check-skipped` that §17.5 asks for, for each category of checks not performed ([Scope](#scope));
+a CI gate on `--strict` or `--warnings-as-errors` can start to fail for it: `--ignore ldv-check-skipped`.
+A document that includes fragments (`{{include:}}` paragraphs, §12.2)
 now has them read from beside it, like the files above, and they are checked ([Include
 fragments](#include-fragments)): `include-file-missing` at the include of a fragment that is not there,
 `include-has-frontmatter`, `include-has-h1` and `include-heading-skip` in the fragment, at its own
@@ -174,6 +179,7 @@ legaldown assemble template.lgd -i -o out/                         # asked in th
 legaldown assemble template.lgd -i --answers a.yaml --save-answers a.yaml -o out/   # ... and remembered
 legaldown questions template.lgd --answers answers.yaml           # what is asked, given the answers so far
 legaldown questions template.lgd --answers answers.yaml --format json
+legaldown questions --document-root . docs/nda.lgd              # a fragment at ../shared/part.lgd is read, within the root
 ```
 
 `assemble -i` asks, in the terminal, for the answers `--answers` does not give, as the questions are
@@ -198,8 +204,12 @@ form that cannot be assembled exit 1.
 
 The answers set is a YAML mapping of question ids to answers (§15.7.1); the shapes plain YAML gets
 wrong are put right for the template's questions (`5000 EUR`, `yes`, a number as an amount). Include fragments and
-LegalDown attachment files are read relative to the template, never from outside its directory;
-the ones assembly keeps are written under `-o` at their relative paths. Answer problems are
+LegalDown attachment files are read relative to the template, never from outside its directory
+unless `--document-root DIR` (on `assemble` and `questions`) holds them: a path such as `../shared/part.lgd`
+that stays within `DIR` is then read, and nothing outside `DIR` is, nor anything a template outside it names.
+The ones assembly keeps are written under `-o` at their relative paths; `-o` refuses an output
+that leads out of its directory, so a file read from `../` is assembled but cannot be written
+by the command line (use the library, or keep the fragments below the template). Answer problems are
 reported as `answer-invalid`, `answer-missing` and `answer-unknown` (§16.12) on stderr, and
 nothing is written when there is an Error. A template with Errors in the validator's template rules
 (questions, conditions, `{{choose:}}`, placeholders, insertions) is refused, with the rule ids, as
@@ -314,7 +324,7 @@ so there is nothing to read; give `validate` a `resolve=` function, from a relat
 file's text (or `None`), to read them from elsewhere — a database, an upload — or to validate a
 loaded document without its files, validate it without its path (`dataclasses.replace(document, path=None)`):
 `resolve=lambda path: None` answers that no file is there. Such a function is a
-`LoadFile`; `file_loader(directory)` makes one for files on disk, and `parse_template` takes one as
+`LoadFile`; `file_loader(directory, root=None)` makes one for files on disk, and `parse_template` takes one as
 `resolve=` too. Each file is asked for once and parsed once, whichever check wants it. Where those
 files may lie is [`document_root`](#file-references-and-the-document-root).
 
@@ -373,7 +383,7 @@ itself is what was found, kept nowhere but in `diagnostics`:
 | `sections`, `section_lookup` | Numbered section index, as `SectionIndexEntry(title, identifier, path, level, number, alternative)`, in document order and by identifier (a paragraph's or item's anchor too, to its section); resolves `{{ref:}}` targets. Numbers count from the shallowest heading level, and a level a heading skips counts as 1 (`#`, `###`, `##` → 1, 1.1.1, 1.2), so no two sections share a number except alternatives and what they contain (§15.8); an entry's `alternative` is true for a section that is an alternative to its preceding sibling — the section just before it at its level under the same parent, with the same identifier, never present together with it (§15.4) — and so shares its number (§15.8) |
 | `definition_lookup`, `party_lookup`, `side_lookup`, `attachment_lookup` | Resolved display text |
 | `values` | The field-spec values the checks met, as written, as `InlineValues`: `dates`, `money`, `durations`, `fields`, `placeholders` (those of the frontmatter too; one with malformed arguments is not among them) |
-| `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence: `Blank(id, type, fixed, in_frontmatter, consistent)` — `type` the type the validator settled on: the effective type of the first occurrence with a valid one (§10.7, §15.2; `text` when none is written), or `None` when no occurrence has a usable type (each is written with an invalid one, or the id is a decision question's); `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none, or the blank is not `consistent`); `consistent` false when its occurrences have different types or fix two currencies or units (placeholder-type-inconsistent); `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
+| `blanks` | The document's blanks, a template's or not, by placeholder id in order of first occurrence outside a drafting note (an occurrence in a note is no part of a blank, and an id only notes use has none, [#112](https://github.com/ForLegalAI/legaldown-validator/issues/112); `Template.questions` still asks it as a `text` question, and `index.values.placeholders` lists the occurrence as written): `Blank(id, type, fixed, in_frontmatter, consistent)` — `type` the type the validator settled on: the effective type of the first occurrence with a valid one (§10.7, §15.2; `text` when none is written), or `None` when no occurrence has a usable type (each is written with an invalid one, or the id is a decision question's); `fixed` the currency of a money blank or the unit of a duration blank that every occurrence fixes (`""` when one fixes none, or the blank is not `consistent`); `consistent` false when its occurrences have different types or fix two currencies or units (placeholder-type-inconsistent); `in_frontmatter` whether one occurrence is in the frontmatter (§3.10) |
 | `is_template` | Whether the document is a template (§15.1): it declares `questions`, carries a condition, or holds a `{{choose:}}` — or, for a fragment, what `validate(fragment=True, template=)` was told ([below](#validating-a-fragment)); `placed_markers` follows the same decision |
 | `placed_markers` | The markers in body text that apply (§5.7, §15.3), in document order: `PlacedMarker(section, block, fragment, offset, source, identifier, condition, field, item, include_only, line)` — in fragment `fragment` of `block_fragments(block)` (`legaldown.syntax`), at `offset`, which is the block's `field` (`text`, or `suffix` after a lifted `{{ref:}}`/`{{term:}}`); `item` is the list item it marks, counted in pre-order over all the list's items, nested and empty ones included, as `list_fragments` counts them; `identifier` is `""` where it does not apply (an include-only paragraph, §12.2). Identifiers and conditions are as written: check `is_valid` before relying on them |
 
@@ -442,14 +452,15 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   `None`, the default, leaves it to the fragment. `index.is_template` and `placed_markers` follow
   that one decision. `template=` without `fragment=True` raises `ValueError`. A blank only in a
   drafting note is never checked for such an id in any document: assembly removes the note first
-  (§15.7.2).
+  (§15.7.2). Nor does an occurrence in a note take part in the blank's type, currency or unit
+  ([Blanks in drafting notes](CONFORMANCE.md#blanks-in-drafting-notes-156-1572)).
 - With `template=True` (and only then: a conditional fragment is just inferred to be a template), an
   include fragment is held to what §15.3 asks of a template's fragments, as assembly holds it: no
   condition (it goes on the fragment's `{{include:}}` paragraph), no drafting note, no `{{include:}}`,
   and an explicit identifier on every heading, each offender one `template-fragment-invalid` at its
   line. An attachment file (`fragment_kind="attachment"`) may hold conditions and notes of its own,
   and is asked only for no `{{include:}}` (§16.12). Fragment mode reads no file: the includes of the
-  fragment are judged by their path (`include-not-legaldown`, `path-not-relative`), not followed.
+  fragment are judged by their path (`include-not-legaldown`, `path-not-relative`), not followed (the document that includes the fragment follows them).
 - `legaldown validate --fragment` shows a flagged finding with `(host-dependent)` at the end of its
   line, and its exit status ignores them (also under `--strict`): a fragment that only uses what its
   host declares or defines exits `0`, and one with a finding of its own exits `1`. The summary line
@@ -467,14 +478,19 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
 A paragraph that holds only an `{{include:}}` (and at most its marker) is replaced by the fragment
 it names (§12.2). When `validate` can read files (a loaded document reads from beside it; or give
 `resolve=`), it reads each such fragment once and reports, in the fragment's own file and at the
-line in it (`Diagnostic.file` is the path from the document's directory, `parts/a.lgd`):
+line in it (`Diagnostic.file` is the path from the document's directory, `parts/a.lgd`, or `../shared/a.lgd`):
 
 - `include-file-missing` at the include of a fragment that is not there, or that cannot be read
   because its path holds a backslash or a null byte, which a loader is never asked for and assembly
   refuses the template for (an absolute path or one with a URI scheme is `path-not-relative` alone, and
   a path that leaves a `document_root` is `path-outside-root` alone; a path that only leads out of the
-  document's directory (`../x.lgd`) is valid, with a `document_root` or without one, and is skipped, not
-  read: a known limitation, [#109](https://github.com/ForLegalAI/legaldown-validator/issues/109));
+  document's directory (`../x.lgd`) is valid: with a `document_root` that holds it, it is read like any
+  other; without one it is skipped, not read, and the Warning of §17.5 says so);
+- `include-cycle` (§16.11) at the include that closes a circular chain, in the file that holds it
+  (`parts/b.lgd:3` for a document that includes `a`, which includes `b`, which includes `a`); a document that
+  includes itself is one. The includes of a fragment are followed (outside a template, where §12.2 allows
+  them) and judged as the document's are, from the fragment's directory and at their line in it; the walk stops
+  at a depth of 32 fragments and 10,000 includes and headings, and `ldv-check-skipped` says so;
 - `include-has-frontmatter` and `include-has-h1` (§16.11), `include-has-frontmatter` also for a block
   whose YAML cannot be read;
 - `include-heading-skip`: the headings of every fragment are placed where its include paragraph is,
@@ -482,10 +498,18 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   that follows one of a fragment's is reported at its own line; a `heading-skip` of the document
   that a fragment read between the headings fills (`# One`, an include of `## Deep`, `### Three`) is
   not reported, as §4.1 judges the combined document, unless an include before that heading is not
-  known for certain (missing, not LegalDown, unreadable, conditional, or itself reported as not a
-  fragment). This is one pass with every include
-  present: a template's conditional includes are not tried in every combination (§16.11), which
-  [CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612) lists with the other limits;
+  known for certain (missing, not LegalDown, unreadable, conditional, itself reported as not a
+  fragment, or with something it includes not followed). In a template this is judged under every
+  combination of answers to the questions the presence of an include names (§15.3, §16.11), with every unit
+  a combination makes absent removed: a skip is reported once, under the first combination that makes it
+  (`It is so when forum=arbitration, nda=false.`), and a `heading-skip` of the document is dropped only
+  if the fragments fill the level in every combination the heading is there for. At most 12 questions and
+  4,096 combinations are tried; past that it is one pass with every include present, and
+  `ldv-check-skipped` says so ([CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612));
+- `include-anchor-duplicate` at the later declaration of an explicit section identifier that the combined
+  document declares twice (a fragment's heading in its file, a heading of the document at its own line), unless
+  the two can never be there together (alternatives, §15.4); a fragment included twice is reported once, at its
+  heading. Auto-generated identifiers are not compared across files;
 - in a template, `template-fragment-invalid` for what §15.3 forbids in a fragment (a condition, a
   drafting note, an `{{include:}}`, a heading without an explicit identifier), one finding for each
   offender, and for an `{{include:}}` in a LegalDown attachment file.
@@ -493,8 +517,10 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
 `include-not-legaldown` needs no file: an include paragraph whose path does not end in `.lgd`,
 `.legaldown` or `.legal.md` is reported at its line (Core), and the path is never read. A path
 already reported as `path-not-relative` or `path-outside-root` is that finding alone. A fragment's own
-includes are not followed (`include-cycle` is not implemented). Assembly makes the same checks of the
-same files with the same code, so `Template.problems` and `validate` never judge a file two ways.
+includes are followed by `validate` (not by `validate(fragment=True)`, which reads no file; the
+document that includes it does). Assembly makes the same checks of the
+same files with the same code, and still refuses an include in a fragment of a document that is not a
+template (it does not assemble it), so `Template.problems` and `validate` never judge a file two ways.
 
 ### File references and the document root
 
@@ -513,10 +539,15 @@ validate(document, document_root="/srv/contracts")
   valid. A loaded document is read from the directory of its `path`, which must be within the root
   (otherwise the document is reported once as outside it); a parsed one is taken to be at the root.
   The comparison is of names alone: no file is looked at, and a symbolic link is not followed.
-- Whether the file exists is Full (§17.4) and is not checked. Reading still refuses `../`: `../shared/x.lgd`
-  validates clean, with a root that permits it or without one, and an `{{include:}}` of it is not an
-  `include-file-missing`, but assembly and the definitions read for `amends` and attachments (`resolve=`)
-  never ask for it ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)).
+- Whether the file exists is Full (§17.4) and is not checked by this. Reading is a separate matter
+  ([#109](https://github.com/ForLegalAI/legaldown-validator/issues/109)): given a `document_root`,
+  `../shared/x.lgd` from a document below it is read like any other file, for `{{include:}}`,
+  `attachments[].file` and `amends.file` (a `resolve=` is asked for it as `../shared/x.lgd`), by `validate`
+  and by assembly (`load_template(path, document_root=)`, `parse_template(text, document_root=, path=)`),
+  and nothing outside the root is, whatever the path says, nor anything a document outside the root
+  names. Without a root `../shared/x.lgd` is valid and **not read**: no loader is asked for it, an
+  `{{include:}}` of it is not an `include-file-missing`, and `ldv-check-skipped` says it was not read.
+  `file_loader(directory, root=)` is the loader on disk that keeps to the root.
 
 A reference-style image (`![alt][r]`, `![alt][]` or `![alt]`, with `[r]: path`) is judged by the destination
 of the definition it names, once, at the line where the definition is written. [CONFORMANCE.md](CONFORMANCE.md)
@@ -705,6 +736,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
 | `LIST_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
+| `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), and the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5) |
 | `slugify_identifier(value, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term text, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
 | `is_valid_iso_date`, `is_valid_numeric`, `is_valid_money_amount`, `is_positive_numeric` | Value checks (§3.10, §10) |
 | `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units can never appear together |
@@ -810,8 +842,10 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
 | **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2 |
+| **Beyond Core** | `ldv-check-skipped` (Warning, this implementation's own id, §16.1): for each category of checks that a construct in the document calls for and the validation did not perform, as §17.5 requires, once and listing exactly what was not done ([below](#scope)) |
 
-Each check reports at the severity the specification assigns it — Error, Warning, or Info.
+Each check reports at the severity the specification assigns it — Error, Warning, or Info. The one
+exception is the Warning of this implementation's own, `ldv-check-skipped` ([Scope](#scope)).
 
 ## Assembly
 
@@ -846,7 +880,7 @@ template the parser reads, so report it if you meet it.
 
 A template is read once; a form is a snapshot of the interview over it, so a front end asks for a
 new form after every answer — a decision opens or closes the questions under it. `parse_template(text)`
-(or `Template(text)`, which takes the same `resolve=`) is the same for source text; `template.path` is
+(or `Template(text)`, which takes the same `resolve=`) is the same for source text, and both take `document_root=` (the directory every file the template names must lie within: a `../` path that stays within it is read, and its key in `result.files` keeps the `../`) and `path=` (where the template lies, so that its depth below the root is known; without it, at the root, where every `../` leaves); `load_template(path, document_root=)` reads the files from beside `path` and under the root; `template.path` is
 the file `load_template` read, and `None` for a template from its text. `load_template` raises `FrontmatterError` for frontmatter that cannot
 be read, as `parse` does.
 
@@ -953,7 +987,7 @@ checks and what it does not.
 > **Deprecated:** `assemble(text, answers, load_file=)`, `template_questions` and `needed_questions`
 > are replaced by `Template` and `Form`. They still work, unchanged (but for `Question`, below, and
 > that a `load_file=` loader is never asked for a path that is absolute or leads out of the template's
-> directory, §2.3), and raise a `LegaldownDeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
+> directory, §2.3, and takes no `document_root`), and raise a `LegaldownDeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
 > differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
 > (the functions ask them after the body), and it refuses a template that has Errors in the
 > validator's template rules (the functions assemble it). `legaldown assemble` follows the new API,
@@ -978,6 +1012,19 @@ and are covered by unit tests instead (the include cases it implements run with 
 the file and the line). The specification (§17.5) requires an implementation to be explicit about the
 checks it does not perform, so those are listed in
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md) rather than left to be discovered.
+
+**Checks that were not performed are said in the output.** A document that holds a construct whose
+checks lie beyond Core — an `{{include:}}` paragraph, an attachment file, `amends.file`, `translations`,
+`supersedes.file` (the object form), an image path — draws a Warning, `ldv-check-skipped`, for each
+such category: one, at the first construct, naming what this validation did not do (§17.5). Which
+checks are named depends on the validation: a fragment that was read (a document with a path, or
+`validate(resolve=)`) is not listed as unread, and neither are the `include-cycle` and
+`include-anchor-duplicate` checks made over what it includes; but the combined-document checks of
+§16.11 (a reference or a term into a fragment, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117))
+are never performed, so a document with an include always draws it. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
+(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`). It is a Warning: the exit status is
+unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
+`--ignore ldv-check-skipped` once it has read what it says.
 
 ## Development
 

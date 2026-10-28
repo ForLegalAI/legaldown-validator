@@ -10,6 +10,7 @@ import random
 
 import pytest
 import yaml
+from helpers_tree import OL, UL, tree
 
 from legaldown import (
     Block,
@@ -2020,12 +2021,22 @@ def test_an_html_block_runs_to_a_blank_line():
     [
         "<!-- a -->", "<!-->", "<!--->", "<?php echo 1; ?>", "<!DOCTYPE html>", "<![CDATA[ x ]]>",
         "<script>\nlet a;\n\n# not a heading\n</script>", "<?\n# x\n?>", "<!X\n# x\n>", "<![CDATA[\n# x\n]]>",
+        "<!x\n# x\n>",  # lowercase: see the next test
     ],
 )
 def test_html_block_kinds_one_to_five_end_at_their_marker(html):
     titles, blocks = _html(f"{html}\nAfter.\n")
     assert titles == ["Terms"]
     assert blocks == [("html", html), ("paragraph", "After.")]
+
+
+@pytest.mark.parametrize("html", ["<!c>", "<!C>", "<!doctype html>", "<!c x>"])
+def test_a_declaration_with_a_lowercase_letter_is_an_html_block(html):
+    """CommonMark 0.31.2 §4.6 kind 4 is ``<!`` and an ASCII letter (0.30 dropped the capitals-only restriction,
+    commonmark-spec #620). pandoc and markdown-it still read ``<!c`` as a paragraph (CONFORMANCE.md)."""
+    assert _html(f"{html}\nAfter.\n")[1] == [("html", html), ("paragraph", "After.")]
+    assert _html(f"a\n{html}\nAfter.\n")[1] == [("paragraph", "a"), ("html", html), ("paragraph", "After.")]  # it interrupts
+    assert _html(f"{html[:-1]}\nAfter.\n")[1] == [("html", f"{html[:-1]}\nAfter.")]  # unclosed: a block of kind 4 runs to a line holding ``>``, here the end of the input
 
 
 @pytest.mark.parametrize("opener", ["<!--", "<?", "<!DOCTYPE", "<![CDATA[", "<pre>"])
@@ -2297,7 +2308,7 @@ def _list(body: str) -> Block:
     return block
 
 
-_U, _O = "unordered_list", "ordered_list"
+_U, _O = UL, OL
 
 
 @pytest.mark.parametrize(
@@ -3047,6 +3058,12 @@ def test_an_item_opening_with_code_has_no_paragraph():
         _round_trips(body)
 
 
+@pytest.mark.xfail(strict=True, reason="a quote's last line that looks like a table's delimiter row ends it early (#111, CONFORMANCE.md)")
+def test_a_nested_quote_goes_on_past_a_delimiter_row_like_line_after_a_lazy_line():
+    """CommonMark: no table, so ``-|-`` is paragraph text and the unmarked line after it is a lazy line."""
+    assert [block.kind for block in parse(_FRONTMATTER + ">>a||\n>     x\n>>-|-\n    y\n").sections[0].blocks] == ["quote"]
+
+
 def test_a_lazy_line_four_columns_in_is_the_items_text():
     [block] = parse(_FRONTMATTER + "-    ===\n\t````\n x\n").sections[0].blocks
     assert _shape(block) == (_U, [["===\n````\nx"]])
@@ -3087,6 +3104,13 @@ def test_a_table_under_a_quotes_paragraph_not_an_items(body, kinds):
     ("| a | b |\n|---|---|\n| <b>x</b> | c |\n", ["in text ('<b>')"]),
     ("A <br /> and <b\nclass=x>.\n", ["in text ('<br />')"]),
     ("A <?php x ?>, <!DOCTYPE html>, <![CDATA[x]]>.\n", ["in text ('<?php x ?>')"]),
+    # A declaration (0.31.2 §6.6): ``<!``, an ASCII letter, anything but ``>``, ``>``. Before 0.30 it took
+    # capital letters and whitespace. markdown-it reads all of these as inline HTML; pandoc only those with
+    # whitespace after the letters (``<!doctype x>``, ``<!c x\ny>``), and reads ``<!D>`` and ``<!Cx>`` as text (#111).
+    ("A <!D> b.\n", ["in text ('<!D>')"]),
+    ("A <!doctype x> b.\n", ["in text ('<!doctype x>')"]),
+    ("A <!Cx> b.\n", ["in text ('<!Cx>')"]),
+    ("A <!c x\ny> b.\n", ["in text ('<!c x')"]),  # it may span lines
     ("x ](<ab> and b)](<a>\n", ["in text ('<ab>')"]),  # no link, so no destination
     ('<a title="<!-- x -->"> y\n', ["in text ('<a title=\"<!-- x -->\">')"]),
 ])
@@ -3107,7 +3131,7 @@ def test_raw_html_is_a_warning(body, shown):
     "[a](<foo bar>)\n",  # a link destination
     '[a](<b> "title") and [c]( <d> )\n',
     '{{placeholder: p, note="<b>"}} x\n',  # a directive's value
-    "a < b and c<d, <3 and <!D> and </b class=\"x\"> and <br/ > and <!doctype x>\n",  # no tag (cmark-gfm)
+    "a < b and c<d, <3 and <! D> and <!1> and </b class=\"x\"> and <br/ >\n",  # no tag (cmark-gfm)
     "The rate is <a <!-- draft: confirm --> capped >\n",  # no tag runs across a comment
     "x `<a` then > and <a <!-- c -->>\n",
     "```\n<div>\n```\n",
@@ -3115,6 +3139,13 @@ def test_raw_html_is_a_warning(body, shown):
 ])
 def test_no_raw_html(body):
     assert "raw-html" not in _validate(body).rules()
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="a declaration ending in a code span or a comment is not found (CONFORMANCE.md, #111)")
+@pytest.mark.parametrize("body", ["A <!a `>` b.\n", "A <!a <!-- x --> b.\n"])
+def test_a_declaration_ending_in_a_code_span_or_a_comment_is_raw_html(body):
+    """CommonMark, pandoc and markdown-it: the HTML that starts first wins, and ends at the first ``>``."""
+    assert "raw-html" in _validate(body).rules()
 
 
 def test_raw_html_in_a_heading():
@@ -3137,24 +3168,10 @@ def test_raw_html_is_found_in_linear_time():
 # ── #78: a heading in a list item or a block quote is a heading block ──
 
 
-def _tree(block: Block):
-    """A block as plain data, a quote's content included: a paragraph as its
-    text, a heading as ``("heading", level, text)``."""
-    from legaldown.parser import quote_content
-
-    if block.kind.endswith("list"):
-        return (block.kind, [[_tree(child) for child in item.blocks] for item in list_items(block)])
-    if block.kind == "quote":
-        return ("quote", [_tree(child) for child in quote_content(block.text)[0]])
-    if block.kind == "heading":
-        return ("heading", block.level, block.text)
-    return block.text if block.kind == "paragraph" else (block.kind,)
-
-
 def _trees(body: str) -> list:
     document = parse(_FRONTMATTER + body)
     assert parse(serialize(document)) == document
-    return [_tree(block) for block in document.sections[0].blocks]
+    return [tree(block) for block in document.sections[0].blocks]
 
 
 @pytest.mark.parametrize(
@@ -3260,6 +3277,27 @@ def test_a_heading_in_an_item_or_a_quote_ends_its_paragraph(body, trees):
     ],
 )
 def test_a_quote_in_an_item_takes_its_lazy_lines(body, trees):
+    assert _trees(body) == trees
+
+
+@pytest.mark.parametrize(
+    ("body", "trees"),
+    [
+        # A line short of the item's content and four columns in is lazy text of the quote's paragraph, though
+        # it starts with ``>``: indented code cannot interrupt a paragraph, so no quote starts there (#111).
+        ("1.   >q\n    >>\n", [(_O, [[("quote", ["q\n>>"])]])]),
+        ("1.   >q\n    >>\n    - a\n", [(_O, [[("quote", ["q\n>>\n- a"])]])]),  # the paragraph stays open
+        ("- 1.   >q\n      >>\n", [(_U, [[(_O, [[("quote", ["q\n>>"])]])]])]),
+        ("- a\n  1.   >q\n      >>\n", [(_U, [["a", (_O, [[("quote", ["q\n>>"])]])]])]),
+        ("* 10.   >q\n       >>\n", [(_U, [[(_O, [[("quote", ["q\n>>"])]])]])]),
+        ("> 1.\t>q\n>     >>\n", [("quote", [(_O, [[("quote", ["q\n>>"])]])])]),  # tabs, as the corpus found it
+        (">>10.  >q\n> > \t>>\n", [("quote", [("quote", [(_O, [[("quote", ["q\n>>"])]])])])]),
+        # Two columns in, it is a quote of its own, which ends the item's.
+        ("1.   >q\n  >>\n", [(_O, [[("quote", ["q"])]]), ("quote", [("quote", [])])]),
+    ],
+)
+def test_a_line_starting_with_a_marker_four_columns_in_is_text_of_the_quote_in_an_item(body, trees):
+    """The paragraph's text is read, not only the shape, which the gate compares."""
     assert _trees(body) == trees
 
 
