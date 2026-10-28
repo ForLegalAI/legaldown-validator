@@ -602,7 +602,9 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
   (the loader has none, frontmatter that cannot be read, or a backslash or a null byte in the path, which no
   finding reports). The message counts each reason (`3 LegalDown attachment files (1 leads out of the
   document's directory, which is not read; 2 could not be read)`). With the deprecated `import_attachment_definitions`, any path the
-  importer was asked about and gave nothing for is one that could not be read, whatever the path is.
+  importer was asked about and gave nothing for is one that could not be read, whatever the path is. A path is
+  judged as it is written once stripped, as `parse` reads it (it strips `attachments[].file` and
+  `amends.file`) and the references are judged.
 - **When `amend-term-undefined` is named, for the original.** Whenever the definitions of the original an
   `amends.file` names were not imported, for any reason, so for every one above and also for its own path
   and for a file that is not LegalDown. A term then drops quietly to the Info `amend-term-unresolvable`,

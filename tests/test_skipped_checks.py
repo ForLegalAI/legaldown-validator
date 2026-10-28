@@ -15,7 +15,7 @@ from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.grammar import IMPLEMENTATION_RULE_PREFIX, SKIPPED_RULE
 from legaldown.positions import Locator
 from legaldown.validator.fragments import IncludeOutcome, UnreadInclude
-from legaldown.validator.skipped import skipped_categories
+from legaldown.validator.skipped import _counted, skipped_categories
 from legaldown.validator.templates import IncludeDirective
 
 _FRONT = (
@@ -83,7 +83,7 @@ def test_an_include_read_by_no_loader_draws_one_warning_at_its_line():
     (warning,) = _warnings(text)
     assert (warning.level, warning.line, warning.host_dependent) == ("warning", _at(text, "p.lgd"), False)
     message = warning.message
-    assert message.startswith("2 `{{include:}}` paragraphs; 2 includes not read (2 have no loader to read them)")
+    assert message.startswith("2 `{{include:}}` paragraphs; 2 includes not read (2 have no loader to read them: no `resolve`, and the document has no path)")
     for rule in ("include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
                  "include-cycle", "include-anchor-duplicate", "combined-document checks (§16.11)"):
         assert rule in message
@@ -169,7 +169,7 @@ def test_attachment_files_draw_one_warning_at_the_first():
     assert warning.line == _at(text, "file: a.lgd")
     assert warning.message.startswith("2 attachment files declared (1 LegalDown). Not performed: ")
     for rule in ("attachment-file-missing", "attachment-has-frontmatter", "attachment-has-h1",
-                 "attachment-anchor-duplicate", "importing the definitions of 1 LegalDown attachment file (1 has no loader to read it)"):
+                 "attachment-anchor-duplicate", "importing the definitions of 1 LegalDown attachment file (1 has no loader to read it: no `resolve`, and the document has no path)"):
         assert rule in warning.message
     (read,) = _warnings(text, resolve=_loader({"a.lgd": "Text.\n"}))
     assert "importing" not in read.message and "attachment-anchor-duplicate" in read.message
@@ -224,7 +224,7 @@ def test_each_reason_is_counted_and_worded_by_its_number():
     ) in warning.message
     (none,) = _warnings(_with(front), resolve=None)
     # With no loader at all, that is the reason for every one that is asked about (a path that leads out too).
-    assert "importing the definitions of 4 LegalDown attachment files (4 have no loader to read them)" in none.message
+    assert "importing the definitions of 4 LegalDown attachment files (4 have no loader to read them: no `resolve`, and the document has no path)" in none.message
 
 
 def test_a_backslash_or_null_byte_path_is_unreadable_and_said_so():
@@ -392,6 +392,31 @@ def test_the_rule_is_an_implementation_rule_of_level_warning():
     fixtures = os.environ.get("LEGALDOWN_FIXTURES_DIR")
     if fixtures and (Path(fixtures) / "coverage.json").exists():
         assert SKIPPED_RULE not in (Path(fixtures) / "coverage.json").read_text(encoding="utf-8")
+
+
+def test_the_fragment_wording_has_a_plural():
+    text = "## Part {#part}\n\n{{include: q.lgd}}\n\n{{include: r.lgd}}\n"
+    (warning,) = [d for d in validate(parse(text), fragment=True).diagnostics if d.rule == SKIPPED_RULE]
+    assert "2 includes not read (2 are in a fragment, where includes are not followed)" in warning.message
+
+
+def test_a_parsed_document_with_no_loader_is_told_what_to_do_about_it():
+    # A document with no path has nothing to read beside; a loaded one has a loader, so never this reason.
+    (parsed,) = _warnings(_FRONT + _BODY + "{{include: p.lgd}}\n")
+    assert "1 has no loader to read it: no `resolve`, and the document has no path" in parsed.message
+
+
+def test_parse_strips_the_paths_the_references_are_judged_by():
+    # `_definitions_in` relies on it: it does not strip a path again.
+    document = parse(
+        _with("attachments:\n  - id: a\n    title: A\n    file: ' a.lgd '\namends:\n  title: O\n  file: ' o.lgd '\n")
+    )
+    assert document.metadata.attachments[0].file == "a.lgd" and document.metadata.amends.file == "o.lgd"
+
+
+def test_a_count_with_no_wording_is_refused():
+    with pytest.raises(ValueError, match="would not add up"):
+        _counted("include", ["no-resolver", "own"], {"no-resolver": ("a", "b")})
 
 
 def test_the_command_exits_zero_unless_strict_and_can_ignore_the_rule(tmp_path, capsys):

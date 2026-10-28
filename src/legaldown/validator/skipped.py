@@ -20,7 +20,7 @@ from functools import partial
 
 from ..models import Amends, Document
 from ..positions import Locator
-from .fragments import IncludeOutcome, UnreadInclude
+from .fragments import IncludeOutcome, UnreadInclude, UnreadReason
 from .paths import FileReference
 from .patterns import LEGALDOWN_EXTENSIONS
 from .result import Line
@@ -52,7 +52,7 @@ def _count(number: int, noun: str) -> str:
 
 #: Why a file a document names was not read, as a message says it of one file and of several, for each
 #: ``UnreadReason``: the one wording an include and an attachment file share.
-REASONS: dict[str, tuple[str, str]] = {
+REASONS: dict[UnreadReason, tuple[str, str]] = {
     "no-resolver": ("has no loader to read it", "have no loader to read them"),
     "leads-out": (
         "leads out of the document's directory, which is not read",
@@ -65,15 +65,28 @@ REASONS: dict[str, tuple[str, str]] = {
         "have paths refused by path-not-relative or path-outside-root",
     ),
 }
-#: The reasons an import of definitions did not happen for: every one but the document's own, whose
-#: definitions are the document's already (``_Imported.not_imported`` in core.py).
-_IMPORT_REASONS = {reason: phrases for reason, phrases in REASONS.items() if reason != "own"}
-NOT_IMPORTED = frozenset(_IMPORT_REASONS)
+#: The reasons an import of definitions did not happen for, with their wording: every one but the
+#: document's own, whose definitions are the document's already (``_Imported.not_imported`` in core.py).
+NOT_IMPORTED = {reason: phrases for reason, phrases in REASONS.items() if reason != "own"}
 
 
-def _counted(noun: str, reasons: Sequence[str], phrases: dict[str, tuple[str, str]], after: str = "") -> str:
+def _wording(document: Document, phrases: dict[UnreadReason, tuple[str, str]]) -> dict[UnreadReason, tuple[str, str]]:
+    """*phrases*, with the hint for what is the usual cause of no loader: a document parsed from text has no
+    path to read beside, so it needs a `resolve`."""
+    if document.path is not None:
+        return phrases
+    hint = ": no `resolve`, and the document has no path"
+    one, several = phrases["no-resolver"]
+    return {**phrases, "no-resolver": (one + hint, several + hint)} if "no-resolver" in phrases else phrases
+
+
+def _counted(
+    noun: str, reasons: Sequence[UnreadReason], phrases: dict[UnreadReason, tuple[str, str]], after: str = ""
+) -> str:
     """How many files there are and why, a count for each reason: ``3 LegalDown attachment files (1 leads
     out of the document's directory, which is not read; 2 could not be read)``. *after* follows the noun."""
+    if missing := set(reasons) - set(phrases):
+        raise ValueError(f"no wording for the reasons {sorted(missing)}: the counts would not add up")
     why = [
         f"{number} {phrases[reason][number != 1]}"
         for reason in phrases
@@ -82,16 +95,20 @@ def _counted(noun: str, reasons: Sequence[str], phrases: dict[str, tuple[str, st
     return f"{_count(len(reasons), noun)}{after} ({'; '.join(why)})"
 
 
-def _unread(unread: list[UnreadInclude], fragment: bool) -> list[str]:
+def _unread(document: Document, unread: list[UnreadInclude], fragment: bool) -> list[str]:
     """How many includes were not read, and why, for the message."""
     phrases = {**REASONS, "unreadable": ("could not be read (include-file-missing)",) * 2}
     if fragment:
-        phrases["no-resolver"] = ("is in a fragment, where includes are not followed",) * 2
+        phrases["no-resolver"] = (
+            "is in a fragment, where includes are not followed", "are in a fragment, where includes are not followed"
+        )
+    else:
+        phrases = _wording(document, phrases)
     return [_counted("include", [each.reason for each in unread], phrases, " not read")] if unread else []
 
 
 def _includes(
-    paragraphs: list[IncludeDirective], outcome: IncludeOutcome, template: bool, fragment: bool
+    document: Document, paragraphs: list[IncludeDirective], outcome: IncludeOutcome, template: bool, fragment: bool
 ) -> SkippedCategory | None:
     if not paragraphs:
         return None
@@ -103,7 +120,7 @@ def _includes(
         rules += ["include-has-frontmatter", "include-has-h1", "include-heading-skip"]
         if template:
             rules.append("the parts of template-fragment-invalid that read a fragment")
-    met = [_count(len(paragraphs), "`{{include:}}` paragraph"), *_unread(unread, fragment)]
+    met = [_count(len(paragraphs), "`{{include:}}` paragraph"), *_unread(document, unread, fragment)]
     parts = []
     if rules:
         parts.append(f"{_join(rules)} for the fragments not read")
@@ -128,7 +145,7 @@ def _includes(
     )
 
 
-def _attachments(document: Document, where: Locator, unread: Sequence[str]) -> SkippedCategory | None:
+def _attachments(document: Document, where: Locator, unread: Sequence[UnreadReason]) -> SkippedCategory | None:
     files = [(index, att.file.strip()) for index, att in enumerate(document.metadata.attachments) if att.file.strip()]
     if not files:
         return None
@@ -140,7 +157,7 @@ def _attachments(document: Document, where: Locator, unread: Sequence[str]) -> S
     if unread:
         parts.append(
             "importing the definitions of "
-            + _counted("LegalDown attachment file", unread, _IMPORT_REASONS)
+            + _counted("LegalDown attachment file", unread, _wording(document, NOT_IMPORTED))
         )
     return SkippedCategory(
         "attachments",
@@ -211,7 +228,7 @@ def skipped_categories(
     image: FileReference | None,
     template: bool,
     fragment: bool,
-    attachments_unread: Sequence[str],
+    attachments_unread: Sequence[UnreadReason],
     amends_unread: bool,
 ) -> list[SkippedCategory]:
     """The check categories this validation did not perform for the constructs *document*
@@ -224,7 +241,7 @@ def skipped_categories(
     imported (``NOT_IMPORTED``: every reason but the document's own);
     *amends_unread*: the same of the original it amends."""
     found = [
-        _includes([each for each in includes if each.paragraph], outcome, template, fragment),
+        _includes(document, [each for each in includes if each.paragraph], outcome, template, fragment),
         _attachments(document, where, attachments_unread),
         _amendment(document, where, amends_unread),
         _bilingual(document, where),

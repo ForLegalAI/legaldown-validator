@@ -1946,9 +1946,10 @@ def _validate(
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             owner_of = None  # for definition-circular, once a {{term:}} asks
+            has_image = "![" in fragment
             # Only an image or a directive asks, and only a block with a drafting note has one.
-            noted = bool(notes) and ("![" in fragment or bool(lexed.directives)) and in_drafting_note(notes, fragment_index)
-            if "![" in fragment:
+            noted = bool(notes) and (has_image or bool(lexed.directives)) and in_drafting_note(notes, fragment_index)
+            if has_image:
                 check_fragment_images(
                     fragment, lexed, file_references, where, section_index, block_index, fragment_index,
                     reference_images, noted=noted,
