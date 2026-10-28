@@ -38,11 +38,12 @@ _SIDES = """sides:
 """
 
 
-def _assembled(lines: list[str], answer: str) -> tuple[str, int, float]:
-    """The assembled body, how many times the parser was asked, and how long it took."""
-    questions = "".join(f"  p{n}:\n    type: text\n" for n in range(len(lines)))
+def _assembled(lines: list[str], answer: str, *, others: dict[str, str] | None = None) -> tuple[str, int, float]:
+    """The assembled body, how many times the parser was asked, and how long it took. Every
+    ``p<n>`` is *answer*, but those in *others*; ``c`` is true, for ``{{choose: c, true="", false="T"}}``."""
+    questions = "".join(f"  p{n}:\n    type: text\n" for n in range(len(lines))) + "  c:\n    type: boolean\n"
     template = f"---\ntitle: Fixture\ndocument_type: contract\nquestions:\n{questions}{_SIDES}---\n\n" + "\n".join(lines) + "\n"
-    answers = {f"p{n}": answer for n in range(len(lines))}
+    answers = {f"p{n}": answer for n in range(len(lines))} | (others or {}) | {"c": True}
     start = time.perf_counter()
     result = assemble(template, answers)
     seconds = time.perf_counter() - start
@@ -128,4 +129,45 @@ def test_paragraphs_in_one_item_are_read_from_the_item_and_the_lines_before(shap
     body, _parses, seconds = _assembled(lines, "- a")
     assert body.splitlines()[-1] == "  \\- a applies."
     assert PARSES.lines < 8 * len(lines)  # a few lines for each, and the template once
+    assert seconds < 8
+
+
+_EMPTIED = '{{choose: c, true="", false="T"}}'
+
+
+@pytest.mark.parametrize("shape", ["sub-items", "quote", "table"])
+def test_one_emptied_line_does_not_make_the_parser_read_every_line_after_it(shape: str) -> None:
+    """A choice that empties its whole line, before 800 lines that the parser need not be asked about
+    once the block it is in is closed (sub-items numbered 2, a quote, a table, each with an innocuous
+    answer): the lines after it are read as the template reads them, not each by the parser (some
+    twenty seconds for the sub-items, seven for the quote, three for the table)."""
+    if shape == "sub-items":
+        lines = [_EMPTIED, "", "1. Terms"] + [f"   {n + 1}. {{{{placeholder: p{n + 3}}}}} applies." for n in range(800)]
+    elif shape == "quote":
+        lines = [_EMPTIED, ""] + [f"> {{{{placeholder: p{n + 2}}}}} applies." for n in range(800)]
+    else:
+        lines = [_EMPTIED, "", "| A | B |", "|---|---|"] + [f"| {{{{placeholder: p{n + 4}}}}} | x |" for n in range(800)]
+    body, _parses, seconds = _assembled(lines, "Ann")
+    assert "Ann" in body.splitlines()[-1]
+    assert PARSES.lines < 8 * len(lines)  # the template once, and the block of the emptied line
+    assert seconds < 8
+
+
+def test_a_whole_line_filled_by_an_answer_that_looks_like_markers_is_no_deleted_line() -> None:
+    """The answer ``2024.`` (or ``-``, ``>``) fills its line and is only escaped: it holds the paragraph that
+    the template has, so the lines after it are read as the template reads them."""
+    lines = ["{{placeholder: p0}}", "", "1. Terms"] + [f"   {n + 1}. {{{{placeholder: p{n + 3}}}}} applies." for n in range(800)]
+    body, _parses, seconds = _assembled(lines, "Ann", others={"p0": "2024."})
+    assert body.startswith("\n2024\\.\n")
+    assert PARSES.lines < 8 * len(lines)
+    assert seconds < 8
+
+
+def test_a_paragraph_whose_first_line_has_a_pipe_is_still_read_from_two_lines() -> None:
+    """``Rates a | b apply:`` and 800 lines: a pipe in the first line of a paragraph does not make
+    each line after it be read with all the lines before."""
+    lines = ["Rates a | b apply:"] + [f"{{{{placeholder: p{n + 1}}}}} applies." for n in range(800)]
+    body, _parses, seconds = _assembled(lines, "- a")
+    assert body.splitlines()[-1] == "\\- a applies."
+    assert PARSES.lines < 8 * len(lines)
     assert seconds < 8

@@ -507,6 +507,31 @@ class TestLineStartsInContext:
     def test_an_insertion_that_begins_the_content_keeps_the_items_indentation(self, body, answers, written):
         assert self._assembled(body, answers, _BOOL + _TEXT) == written
 
+    @pytest.mark.parametrize(("answer", "written"), [
+        # "\\*" is a literal star: the backslash that escapes it is not escaped again, whatever is fixed.
+        ("*", "> \n\\> \\* x\n"),
+        ("<x>", "> \n\\> \\<x> x\n"),
+        ("[a]", "> \n\\> \\[a\\] x\n"),
+    ])
+    def test_an_escaped_character_is_not_escaped_again_when_a_line_is_fixed(self, answer, written):
+        """The line after bare ``> `` is indented four columns, so it is code; fixing it strips the
+        indentation and escapes the ``>``, and the inserted ``*`` keeps the one backslash it had."""
+        body = '> {{choose: x, true="", false="T"}}\n    > {{placeholder: name}} x\n'
+        assert self._assembled(body, {"x": True, "name": answer}, _BOOL + _TEXT) == written
+
+    def test_a_marker_four_columns_in_is_text_not_a_marker(self):
+        """``>`` is a quote marker up to three columns past the container: four in, it is code, or after
+        paragraph text its text."""
+        deleted = '  {{choose: x, true="", false="T"}}\n    > b c\n'
+        assert self._assembled(deleted, {"x": True}, _BOOL) == "\\> b c\n"
+        body = "text\n     >   {{placeholder: name}}\n"
+        assert self._assembled(body, {"name": "n"}) == "text\n     >   n\n"
+        assert self._assembled(body, {"name": "# h"}) == "text\n     >   # h\n"
+
+    def test_a_marker_in_an_item_is_one_as_far_in_as_the_item_is(self):
+        body = "- 1. Terms\n     > {{placeholder: name}} x\n"
+        assert self._assembled(body, {"name": "> q"}) == "- 1. Terms\n     > \\> q x\n"
+
     def test_a_lone_tag_begins_html_once_the_paragraph_before_it_is_gone(self):
         """``<x>`` cannot interrupt paragraph text, but starts an HTML block (kind 7) after a deleted line."""
         body = 'a\n\n{{choose: x, true="", false="Then:"}}\n<x>\n'
