@@ -532,7 +532,9 @@ class _AnswerTally:
         self.positive_total = 0
         self.negative = 0
         self.refusing: Counter[Any] = Counter()  # negative declarations refusing a value, by value
-        self.refusals: Counter[frozenset[Any]] = Counter()  # negative declarations, by the answers they refuse
+        #: The negative declarations refusing a value, by value, as a bitmap with
+        #: a bit for each declaration in the order they were added (#110).
+        self.refusers: dict[Any, int] = {}
         self.widest = 0  # the most answers one negative declaration refuses
 
     @property
@@ -547,26 +549,34 @@ class _AnswerTally:
             self.positive[value] += 1
             self.positive_total += 1
         else:
+            bit = 1 << self.negative
             self.negative += 1
             self.refusing.update(refusal)
-            self.refusals[refusal] += 1
+            for value in refusal:
+                self.refusers[value] = self.refusers.get(value, 0) | bit
             self.widest = max(self.widest, len(refusal))
 
-    def excluded(self, wanted: frozenset[Any], refusal: frozenset[Any], size: int) -> int:
+    def excluded(self, wanted: frozenset[Any], refusal: frozenset[Any], answers: Collection[Any]) -> int:
         """How many of the declarations that name the question a presence
-        excludes, when it wants *wanted* and refuses *refusal* of its *size*
-        answers (it can appear): those with no answer in common with it."""
+        excludes, when it wants *wanted* and refuses *refusal* of its *answers*
+        (it can appear): those with no answer in common with it."""
         if wanted:
             (value,) = wanted
             # A positive declaration wants another value; a negative one refuses this.
             return self.positive_total - self.positive[value] + self.refusing[value]
         count = sum(self.positive[value] for value in refusal)  # wanting a value it refuses
         # A negative declaration is excluded if between them they refuse every
-        # answer, which they cannot when the widest refuses too few.
-        if self.negative and len(refusal) + self.widest >= size:
-            count += sum(
-                tally for refused_by, tally in self.refusals.items() if len(refused_by | refusal) == size
-            )
+        # answer, which they cannot when the widest refuses too few: if it
+        # refuses every answer the presence does not, which are the declarations
+        # in the bitmap of each.
+        if self.negative and len(refusal) + self.widest >= len(answers):
+            both = (1 << self.negative) - 1
+            for value in answers:
+                if value not in refusal:
+                    both &= self.refusers.get(value, 0)
+                    if not both:
+                        break
+            count += both.bit_count()
         return count
 
 
@@ -688,7 +698,7 @@ class _FreeIdentifiers:
             declared = self._across.get((base, question))
             if declared is None:
                 continue
-            if declared.excluded(*self._values(question, conditions), len(self._answers_of(question))):
+            if declared.excluded(*self._values(question, conditions), self._answers_of(question)):
                 return True
         return False
 
@@ -707,7 +717,7 @@ class _FreeIdentifiers:
                     return True  # a declaration that says nothing of the one question
                 if declared is None:
                     continue
-            count = declared.excluded(*self._values(question, conditions), len(self._answers_of(question)))
+            count = declared.excluded(*self._values(question, conditions), self._answers_of(question))
             if count == occupants:
                 return False  # this question alone excludes every declaration
             excluded += count
@@ -2264,12 +2274,15 @@ def _validate(
         for def_id, declarations in declared_terms.items()
     }
     targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
+    covered: dict[tuple[str, str, Presence], bool] = {}  # references of one target and presence are alike
     for kind, uses in references.items():
         for target, presence, in_note, line in uses:
             declared = targets_of[kind].get(target)
             if in_note or not declared or (kind == "term" and original_unread):
                 continue
-            if always_covered(presence, declared, questions):
+            if (kind, target, presence) not in covered:
+                covered[kind, target, presence] = always_covered(presence, declared, questions)
+            if covered[kind, target, presence]:
                 continue
             result.error(
                 "condition-reference-unsafe",

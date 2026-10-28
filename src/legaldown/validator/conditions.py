@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import itertools
 import re
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -219,31 +219,133 @@ def always_covered(presence: Presence, targets: Sequence[Presence], questions: A
     }
     if not all(possible.values()):
         return True  # no answers make the reference present
-    return _covered(possible, targets)
+    return _covered(possible, [_profile(target) for target in targets])
 
 
-def _covered(possible: dict[str, list[Any]], targets: Sequence[Presence]) -> bool:
+#: A presence by question: the values its conditions on it want, and refuse
+#: (``condition_values``).
+_Profile = dict[str, tuple[frozenset[Any], frozenset[Any]]]
+
+
+def _profile(target: Presence) -> _Profile:
+    return {
+        question: (frozenset(wanted), frozenset(refused))
+        for question, conditions in by_question(target).items()
+        for wanted, refused in [condition_values(conditions)]
+    }
+
+
+def _covered(possible: dict[str, list[Any]], targets: Sequence[_Profile]) -> bool:
     """True if every combination of the *possible* answers makes one of the
-    *targets* hold."""
-    live: list[Presence] = []
+    *targets* hold. *possible* is narrowed as the search goes and restored
+    when it ends.
+
+    Each step takes the question some live target leaves open and tries each
+    answer to it, with the targets that can hold under that answer (``_step``).
+    The search keeps its own stack of the questions narrowed, so that its depth
+    is not the interpreter's (a target for each of many questions would be
+    deep), and so that ``possible`` is restored whichever way it ends.
+    """
+    stack: list[tuple[str, list[Any], Iterator[tuple[Any, list[_Profile]]]]] = []
+    covered: bool | None = None  # None: *targets* are still to be looked at
+    try:
+        while True:
+            if covered is None:
+                step = _step(possible, targets)
+                if isinstance(step, bool):
+                    covered = step
+                else:
+                    stack.append(step)
+            if covered is False or (covered and not stack):
+                return covered
+            question, saved, branches = stack[-1]
+            branch = next(branches, None)
+            if branch is None:
+                possible[question] = saved  # every answer to it is covered
+                stack.pop()
+                covered = True
+            else:
+                possible[question] = [branch[0]]
+                targets = branch[1]
+                covered = None
+    finally:
+        while stack:
+            question, saved, _branches = stack.pop()
+            possible[question] = saved
+
+
+def _step(
+    possible: dict[str, list[Any]], targets: Sequence[_Profile]
+) -> bool | tuple[str, list[Any], Iterator[tuple[Any, list[_Profile]]]]:
+    """Whether the *targets* are decided under the *possible* answers: True
+    if one is certain, False if none can hold. Otherwise the question to
+    narrow, its answers as they were, and the branches to try, each an answer
+    and the targets that can hold under it."""
+    live: list[tuple[_Profile, int, str]] = []  # a target, the questions it leaves open, the first
     undecided = ""  # a question some live target leaves open
-    for target in targets:
+    for profile in targets:
+        open_count = 0
         open_question = ""
-        for question in {c.question for c in target}:
-            holding = [
-                a for a in possible[question] if all(c.holds(a) for c in target if c.question == question)
-            ]
+        for question, (wanted, refused) in profile.items():
+            answers = possible[question]
+            if len(wanted) > 1:
+                holding = 0
+            elif wanted:
+                (value,) = wanted
+                holding = int(value in answers and value not in refused)
+            else:
+                holding = len(answers) - sum(1 for value in refused if value in answers)
             if not holding:
                 break  # impossible under these answers
-            if len(holding) < len(possible[question]):
-                open_question = question
+            if holding < len(answers):
+                open_count += 1
+                open_question = open_question or question
         else:
             if not open_question:
                 return True  # certain under these answers
-            live.append(target)
+            live.append((profile, open_count, open_question))
             undecided = undecided or open_question
     if not live:
         return False
-    return all(
-        _covered({**possible, undecided: [answer]}, live) for answer in possible[undecided]
-    )
+    answers = possible[undecided]
+    # The live targets that want an answer to the question, by answer, and those that
+    # refuse some (or none): they hold under every other answer.
+    wanting: dict[Any, list[_Profile]] = {}
+    refusing: list[tuple[_Profile, frozenset[Any]]] = []
+    mentioned: set[Any] = set()
+    # The answers refused by every target that refuses and leaves open only this
+    # question. Such a target is certain once the question is narrowed to an
+    # answer it does not refuse, so the answers outside this set are covered,
+    # without building the targets that hold under each. (With many refusing
+    # alternatives, as ``!c:v1`` … ``!c:v2000``, that is what keeps a reference
+    # to them from costing a pass over all of them for each answer.)
+    sure: set[Any] | None = None
+    for profile, open_count, open_question in live:
+        wanted, refused = profile.get(undecided, (frozenset(), frozenset()))
+        if wanted:
+            (value,) = wanted
+            wanting.setdefault(value, []).append(profile)
+            mentioned.add(value)
+        else:
+            refusing.append((profile, refused))
+            mentioned.update(refused)
+            if open_count == 1 and open_question == undecided:
+                refused_here = {value for value in refused if value in answers}
+                sure = refused_here if sure is None else sure & refused_here
+
+    def branches() -> Iterator[tuple[Any, list[_Profile]]]:
+        unmentioned = False
+        for answer in answers:
+            if sure is not None and answer not in sure:
+                continue  # a target that refuses holds under it
+            if answer not in mentioned:
+                # Answers that no live target names are alike: try one.
+                if unmentioned:
+                    continue
+                unmentioned = True
+            yield answer, [
+                *wanting.get(answer, ()),
+                *(profile for profile, refused in refusing if answer not in refused),
+            ]
+
+    return undecided, answers, branches()

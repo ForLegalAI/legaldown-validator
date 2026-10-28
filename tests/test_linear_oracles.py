@@ -5,21 +5,24 @@ drift unnoticed. Small alphabets hit the edge cases: ``<!-->``, ``<!--->``,
 ``<!---->``, unclosed comments, markers beside code spans and comments."""
 from __future__ import annotations
 
+import itertools
 import random
 import re
+import sys
+from collections import Counter
 from dataclasses import replace
 
 import pytest
 
 from legaldown import directives as directives_module
 from legaldown import markdown
-from legaldown.definitions import block_fragments
+from legaldown.definitions import block_fragments, find_definition_anchors, text_fragments
 from legaldown.directives import Directive, lex, mask_directives
 from legaldown.markdown import HTML_COMMENT_RE, is_comment_only
 from legaldown.markers import MARKER_RE, is_look_alike, parse_marker
 from legaldown.parser import parse
 from legaldown.validator import conditions as conditions_module
-from legaldown.validator import core, templates
+from legaldown.validator import core, templates, validate
 from legaldown.validator import units as units_module
 from legaldown.validator.conditions import ALWAYS
 from legaldown.validator.units import FoundMarker, find_markers, own_presence
@@ -769,3 +772,235 @@ def test_declarations_read_like_a_list_that_only_the_pool_adds_to():
     assert declared == [first, second] and declared == (first, second) and declared != [first]
     assert declared != "ab" and declared != 3 and repr(declared) == repr([first, second])
     assert len(declared) == 2 and declared[-1] == second
+
+
+# ── #110: the answer tally, the insertions in a term, the coverage search ──
+
+
+class OldAnswerTally:
+    """``_AnswerTally`` as it was before #110: the negative declarations counted
+    by the set of answers they refuse, and summed over those sets."""
+
+    def __init__(self):
+        self.positive = Counter()
+        self.positive_total = 0
+        self.negative = 0
+        self.refusing = Counter()
+        self.refusals = Counter()
+        self.widest = 0
+
+    def add(self, wanted, refusal):
+        if wanted:
+            (value,) = wanted
+            self.positive[value] += 1
+            self.positive_total += 1
+        else:
+            self.negative += 1
+            self.refusing.update(refusal)
+            self.refusals[refusal] += 1
+            self.widest = max(self.widest, len(refusal))
+
+    def excluded(self, wanted, refusal, size):
+        if wanted:
+            (value,) = wanted
+            return self.positive_total - self.positive[value] + self.refusing[value]
+        count = sum(self.positive[value] for value in refusal)
+        if self.negative and len(refusal) + self.widest >= size:
+            count += sum(
+                tally for refused_by, tally in self.refusals.items() if len(refused_by | refusal) == size
+            )
+        return count
+
+
+def _wants_or_refuses(rng, answers):
+    if rng.random() < 0.4:
+        return frozenset([rng.choice(answers)]), frozenset()
+    return frozenset(), frozenset(rng.sample(answers, rng.randint(0, len(answers))))
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_the_bitmap_tally_excludes_what_the_counted_one_did(seed):
+    """Positive and negative declarations, repeated ones, empty refusals, and
+    questions of two to twelve answers, booleans and choices read as their keys."""
+    rng = random.Random(110_000 + seed)
+    asked = 0
+    for _ in range(500):
+        count = rng.randint(1, 12)
+        answers = (True, False) if count == 2 and rng.random() < 0.3 else [f"v{i}" for i in range(count)]
+        listed = list(answers)
+        if rng.random() < 0.2:
+            answers = dict.fromkeys(answers, "label")  # as ``question_answers`` gives a choice's
+        old, new = OldAnswerTally(), core._AnswerTally()
+        for _ in range(rng.randint(0, 40)):
+            wanted, refusal = _wants_or_refuses(rng, listed)
+            for _ in range(rng.choice([1, 1, 1, 3])):
+                old.add(wanted, refusal)
+                new.add(wanted, refusal)
+        for _ in range(10):
+            wanted, refusal = _wants_or_refuses(rng, listed)
+            asked += 1
+            assert new.excluded(wanted, refusal, answers) == old.excluded(wanted, refusal, len(answers))
+    assert asked == 5000
+
+
+def old_def_term_variable(document):
+    """The findings of def-term-variable as ``check_template_body`` made them
+    before #110: every insertion between a definition's term and its directive,
+    found by trying every directive of the fragment for each definition."""
+    found = []
+    for _section, _index, block in document.iter_indexed_blocks():
+        for fragment in text_fragments(block):
+            lexed = lex(fragment)
+            for anchor in find_definition_anchors(fragment, language=document.metadata.language, lexed=lexed):
+                if anchor.term is None:
+                    continue
+                for directive in lexed.directives:
+                    if directive.name in templates._INSERTIONS and anchor.start < directive.start < anchor.directive.start:
+                        found.append((directive.source, anchor.directive.source))
+    return found
+
+
+_TERM_TOKENS = [
+    '"', '"', "“", "”", "„", "'", " ", "x", "y ", "\n", "\n\n", "{{def: a}}", "{{def: b}}", "{{def:}}",
+    "{{def: a", "{{placeholder: p}}", "{{placeholder: p", "{{choose: q}}", "{{choose: q}", "{{term: a}}",
+    "{{ref: s}}", "`", "<!--", "-->", "\\", "{{", "}}", "{{placeholder:p}}", "{{choose:q, yes=a, no=b}}",
+    "{{placeholder: p, type=text}}",
+]
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_insertions_in_a_term_are_found_as_the_nested_scan_did(seed):
+    rng = random.Random(110_100 + seed)
+    questions = "questions:\n  q:\n    type: boolean\n  p:\n    type: text\n"
+    reported = 0
+    for _ in range(150):
+        body = "".join(rng.choice(_TERM_TOKENS) for _ in range(rng.randint(1, 30)))
+        language = rng.choice(["", "language: cs\n", "language: de\n"])
+        document = parse(f"---\ntitle: T\n{language}{questions}---\n\n# T {{#t}}\n\n{body}\n", filename="t.lgd")
+        found = [
+            (m.group(1), m.group(2))
+            for d in validate(document).diagnostics
+            if d.rule == "def-term-variable"
+            and (m := re.fullmatch(r"'(.*)' is inside the term that '(.*)' defines: .*", d.message, re.DOTALL))
+        ]
+        expected = old_def_term_variable(document)
+        assert sorted(found) == sorted(expected), body
+        reported += len(expected)
+    assert reported > 0  # the alphabet reaches the finding
+
+
+def old_covered(possible, targets):
+    """``_covered`` as it was before #110."""
+    live = []
+    undecided = ""
+    for target in targets:
+        open_question = ""
+        for question in {c.question for c in target}:
+            holding = [a for a in possible[question] if all(c.holds(a) for c in target if c.question == question)]
+            if not holding:
+                break
+            if len(holding) < len(possible[question]):
+                open_question = question
+        else:
+            if not open_question:
+                return True
+            live.append(target)
+            undecided = undecided or open_question
+    if not live:
+        return False
+    return all(old_covered({**possible, undecided: [answer]}, live) for answer in possible[undecided])
+
+
+def old_always_covered(presence, targets, questions):
+    """``always_covered`` as it was before #110."""
+    if any(target <= presence for target in targets):
+        return True
+    involved = {c.question for c in presence.union(*targets)}
+    possible = {
+        q: [a for a in conditions_module.question_answers(q, questions) if all(c.holds(a) for c in presence if c.question == q)]
+        for q in involved
+    }
+    if not all(possible.values()):
+        return True
+    return old_covered(possible, targets)
+
+
+_COVER_QUESTIONS = {
+    "a": {"type": "boolean"},
+    "b": {"type": "boolean"},
+    "c": {"type": "choice", "choices": {f"v{i}": i for i in range(5)}},
+    "d": {"type": "choice", "choices": {"x": 1, "y": 2}},
+    "e": {"type": "choice", "choices": {"only": 1}},
+    "f": {"type": "choice", "choices": {"m": 1, "n": 2, "o": 3}},
+}
+Condition = conditions_module.Condition
+_COVER_CONDITIONS = [
+    Condition("a"), Condition("a", None, True), Condition("b"), Condition("b", None, True),
+    # Shaped for another type, or for a value that is not declared: they hold for no answer, or each.
+    Condition("a", "zz"), Condition("c", "nope"), Condition("c", "nope", True),
+    *(Condition("c", f"v{i}", negated) for i in range(5) for negated in (False, True)),
+    *(Condition("d", value, negated) for value in "xy" for negated in (False, True)),
+    *(Condition("e", "only", negated) for negated in (False, True)),
+    *(Condition("f", value, negated) for value in "mno" for negated in (False, True)),
+]
+
+
+def brute_covered(presence, targets):
+    """Every combination of answers tried."""
+    questions = sorted({c.question for c in presence.union(*targets)})
+    for combination in itertools.product(*(conditions_module.question_answers(q, _COVER_QUESTIONS) for q in questions)):
+        answers = dict(zip(questions, combination, strict=True))
+        if all(c.holds(answers[c.question]) for c in presence) and not any(
+            all(c.holds(answers[c.question]) for c in target) for target in targets
+        ):
+            return False
+    return True
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_coverage_equals_the_old_search_and_every_combination(seed):
+    rng = random.Random(110_200 + seed)
+    verdicts = Counter()
+    for _ in range(400):
+        def some(most):
+            return frozenset(rng.choice(_COVER_CONDITIONS) for _ in range(rng.randint(0, most)))
+
+        presence = some(4)
+        targets = [some(rng.choice([1, 2, 3, 6])) for _ in range(rng.randint(1, 20))]
+        expected = brute_covered(presence, targets)
+        verdicts[expected] += 1
+        assert old_always_covered(presence, targets, _COVER_QUESTIONS) == expected
+        assert conditions_module.always_covered(presence, targets, _COVER_QUESTIONS) == expected, (presence, targets)
+    assert verdicts[True] > 50 and verdicts[False] > 5
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_the_search_restores_the_answers_it_narrowed(seed):
+    rng = random.Random(110_300 + seed)
+    for _ in range(300):
+        targets = [
+            frozenset(rng.choice(_COVER_CONDITIONS) for _ in range(rng.randint(1, 3))) for _ in range(rng.randint(1, 8))
+        ]
+        involved = {c.question for target in targets for c in target}
+        possible = {q: list(conditions_module.question_answers(q, _COVER_QUESTIONS)) for q in involved}
+        before = {q: list(answers) for q, answers in possible.items()}
+        conditions_module._covered(possible, [conditions_module._profile(target) for target in targets])
+        assert possible == before
+
+
+def test_a_target_for_each_of_many_questions_is_searched_without_recursion():
+    """The search is as deep as the questions it narrows: one target for each of
+    400 booleans, under a recursion limit of 200 (the old search overflowed it)."""
+    n = 400
+    questions = {f"q{i}": {"type": "boolean"} for i in range(n)}
+    targets = [frozenset({Condition(f"q{i}")}) for i in range(n)]
+    covering = [*targets, frozenset({Condition("q0", None, True)})]
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(200)
+    try:
+        with pytest.raises(RecursionError):
+            old_always_covered(frozenset(), targets, questions)
+        assert not conditions_module.always_covered(frozenset(), targets, questions)
+        assert conditions_module.always_covered(frozenset(), covering, questions)
+    finally:
+        sys.setrecursionlimit(limit)

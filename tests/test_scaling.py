@@ -11,6 +11,7 @@ never on a slow machine.
 """
 from __future__ import annotations
 
+import random
 import time
 
 import pytest
@@ -396,3 +397,98 @@ def test_the_lexer_in_a_time_budget(shape):
     unit, n, budget = _LEXER_SHAPES[shape]
     text = unit * n
     assert _seconds(lex, text) < budget  # about 0.5-1.5 s now; the old lexer took a minute or more
+
+
+# ── Remaining shapes (#110) ───────────────────────────────────────
+
+
+def test_headings_with_many_distinct_refusals_of_a_choice_question_decide_in_a_time_budget():
+    """Each heading refuses 20 of 40 values, in a set no other refuses: the old
+    pool summed over every set already declared for each one."""
+    values = {f"v{k}": str(k) for k in range(40)}
+    questions = {"c": {"type": "choice", "choices": values}}
+    rng = random.Random(1)
+    sets: set[tuple[int, ...]] = set()
+    while len(sets) < 4000:
+        sets.add(tuple(sorted(rng.sample(range(40), 20))))
+    presences = [
+        frozenset().union(*(units_module.own_presence(f"!c:v{k}", questions) for k in refused)) for refused in sets
+    ]
+
+    def declare_all():
+        pool = core._FreeIdentifiers(set(), questions)
+        for presence in presences:
+            pool.declare(pool("same", presence), presence)
+
+    assert _seconds(declare_all) < 3.0  # 0.3 s now; 15 s before #110
+
+
+def test_definitions_in_one_paragraph_look_at_each_insertion_once(monkeypatch):
+    class Counting(tuple):
+        calls = 0
+
+        def __contains__(self, name):
+            Counting.calls += 1
+            return super().__contains__(name)
+
+    n = 3000
+    monkeypatch.setattr(templates, "_INSERTIONS", Counting(templates._INSERTIONS))
+    result = validate(_document(" ".join(f'"Term{k}" {{{{def: t{k}}}}}' for k in range(n))))
+    assert not [d for d in result.diagnostics if d.rule == "def-term-variable"]
+    assert Counting.calls <= 4 * 2 * n  # the lexer's directives, a few times; about n² before (the definitions' pairs)
+
+
+def test_definitions_in_one_paragraph_in_a_time_budget():
+    document = _document(" ".join(f'"Term{k}" {{{{def: t{k}}}}}' for k in range(15000)))
+    assert _seconds(validate, document) < 5.0  # 1.2 s now; 10 s before #110
+
+
+def test_insertions_inside_many_terms_are_each_reported():
+    n = 1000
+    questions = "questions:\n  a:\n    type: text\n"
+    body = " ".join(f'"T{k} {{{{placeholder: a}}}}" {{{{def: t{k}}}}}' for k in range(n))
+    findings = [d for d in validate(_document(body, questions)).diagnostics if d.rule == "def-term-variable"]
+    assert len(findings) == n
+
+
+_ALTERNATIVES = 2000
+
+
+def _alternatives(kind, n=_ALTERNATIVES):
+    """The presences of n alternatives of one choice question: each wants a value, or refuses one."""
+    questions = {"c": {"type": "choice", "choices": {f"v{k}": str(k) for k in range(n)}}}
+    texts = [f"c:v{k}" if kind == "values" else f"!c:v{k}" for k in range(n)]
+    return questions, [units_module.own_presence(text, questions) for text in texts]
+
+
+@pytest.mark.parametrize("kind", ["values", "refusals"])
+def test_a_reference_to_many_alternatives_tests_few_conditions(kind, monkeypatch):
+    questions, targets = _alternatives(kind, 1500)
+    holds = _Counter(monkeypatch, conditions_module.Condition, "holds")
+    assert conditions_module.always_covered(ALWAYS, targets, questions)
+    assert holds.calls <= 20 * 1500  # about 3.4 million before #110
+
+
+@pytest.mark.parametrize("kind", ["values", "refusals"])
+def test_a_reference_to_many_alternatives_in_a_time_budget(kind):
+    questions, targets = _alternatives(kind)
+    assert _seconds(conditions_module.always_covered, ALWAYS, targets, questions) < 1.0  # 0.03 s now; 3 s before
+
+
+def test_references_of_one_presence_are_checked_once(monkeypatch):
+    n = 300
+    values = "".join(f"      v{k}: V{k}\n" for k in range(n))
+    alternatives = "".join(f'"T" {{{{def: t}}}} means x. {{when=c:v{k}}}\n\n' for k in range(n - 1))
+    references = "".join(f'"R{k}" {{{{def: r{k}}}}} means {{{{term: t}}}}.\n\n' for k in range(n))
+    document = parse(
+        f"---\ntitle: T\nquestions:\n  c:\n    type: choice\n    choices:\n{values}---\n\n# Terms {{#terms}}\n\n"
+        f"{alternatives}{references}",
+        filename="t.lgd",
+    )
+    checks = _Counter(monkeypatch, core, "always_covered")
+    start = time.perf_counter()
+    result = validate(document)
+    assert time.perf_counter() - start < 5.0  # 0.1 s now; about 20 s before #110
+    assert checks.calls == 1  # 300 references to the one target with the one presence
+    unsafe = [d for d in result.diagnostics if d.rule == "condition-reference-unsafe"]
+    assert len(unsafe) == n  # the last value has no alternative: each reference is reported

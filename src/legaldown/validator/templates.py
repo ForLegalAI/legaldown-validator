@@ -740,20 +740,28 @@ def check_template_body(
                         fragment, template_text(fragment, lexed.directives), lexed.directives
                     )
                     _check_insertion(scan, directive, result, line)
-            for anchor in find_definition_anchors(
-                fragment, language=document.metadata.language, lexed=lexed
+            # The insertions inside a term are those between its anchor and its directive. The
+            # lexer emits directives in source order, so they are a slice of all, found by
+            # bisection: scanning every directive for each definition is quadratic (#110).
+            insertions = [d for d in lexed.directives if d.name in _INSERTIONS]
+            starts = [d.start for d in insertions]
+            for anchor in (
+                find_definition_anchors(fragment, language=document.metadata.language, lexed=lexed)
+                if insertions
+                else ()
             ):
                 if anchor.term is None:
                     continue
-                for directive in lexed.directives:
-                    if directive.name in _INSERTIONS and anchor.start < directive.start < anchor.directive.start:
-                        result.error(
-                            "def-term-variable",
-                            f"'{directive.source}' is inside the term that "
-                            f"'{anchor.directive.source}' defines: the term, and any id derived "
-                            f"from it, must be the same in every assembled document (§15.5).",
-                            line=find(block_section, block_index, directive.source, index, directive.start),
-                        )
+                for directive in insertions[
+                    bisect_right(starts, anchor.start) : bisect_left(starts, anchor.directive.start)
+                ]:
+                    result.error(
+                        "def-term-variable",
+                        f"'{directive.source}' is inside the term that "
+                        f"'{anchor.directive.source}' defines: the term, and any id derived "
+                        f"from it, must be the same in every assembled document (§15.5).",
+                        line=find(block_section, block_index, directive.source, index, directive.start),
+                    )
     if template:
         _check_fragments(document, [(i.path, i.line) for i in includes if i.path and not i.in_note], result, where)
     return BodyScan(all_notes, includes)
