@@ -30,7 +30,7 @@ from ..directives import (
     mask_directives,
 )
 from ..files import LoadFile, file_loader
-from ..markdown import INLINE_HTML_RE, inline_html_unclosed, is_comment_only, strip_comments
+from ..markdown import INLINE_HTML_RE, inline_html_unclosed, is_comment_only, scan_inline_link, strip_comments
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
@@ -746,9 +746,21 @@ class _FreeIdentifiers:
         return self._excludes[key]
 
 
-# A link's pointy-bracket destination, ``](<…>)``, then an optional title and
-# the closing parenthesis: no raw HTML (CommonMark).
-_LINK_DESTINATION_RE = re.compile(r"""<[^<>\n]*>[ \t]*(?:(?:"[^"]*"|'[^']*'|\([^()]*\))[ \t]*)?\)""")
+def _link_destination_end(view: str, at: int) -> int | None:
+    """Where the inline link whose ``<…>`` destination opens at ``view[at]`` ends (after its ``)``), or
+    None when it is none: the ``<`` follows ``](``, with spaces, tabs and up to one line break between
+    (``scan_inline_link``), and no raw HTML is in a link's destination (CommonMark)."""
+    before = at
+    while before > 0 and view[before - 1] in " \t":
+        before -= 1
+    if view[before - 1:before] == "\n":
+        before -= 1
+        while before > 0 and view[before - 1] in " \t":
+            before -= 1
+    if view[before - 2:before] != "](":
+        return None
+    link = scan_inline_link(view, before - 1)
+    return None if link is None else link[2]
 
 
 def _inline_html(text: str, lexed: Lexed) -> str | None:
@@ -782,14 +794,8 @@ def _inline_html(text: str, lexed: Lexed) -> str | None:
             elif view[k] == "]" and view[k + 1:k + 2] != "(":
                 opened = -1
         scanned = at
-        before = at
-        while before > 0 and view[before - 1] in " \t":
-            before -= 1
-        if (
-            opened >= 0 and view[before - 2:before] == "]("
-            and (destination := _LINK_DESTINATION_RE.match(view, at))
-        ):
-            pos = scanned = destination.end()
+        if opened >= 0 and (destination := _link_destination_end(view, at)) is not None:
+            pos = scanned = destination
             opened = -1
             continue
         if not unclosed(at) and (tag := INLINE_HTML_RE.match(view, at)):

@@ -15,7 +15,6 @@ import html
 import itertools
 import os
 import re
-import string
 from bisect import bisect_left
 from collections.abc import Callable, Container
 from functools import cache, partial
@@ -24,7 +23,7 @@ from urllib.parse import unquote
 
 from ..directives import Directive, Lexed, is_escaped, mask_directives
 from ..files import containment, is_absolute_reference, names_below
-from ..markdown import collapse_label_whitespace, label_end, normalize_label
+from ..markdown import collapse_label_whitespace, label_end, normalize_label, scan_inline_link
 from ..models import Amends, Document, Metadata
 from ..positions import Locator
 from .result import Line, _Recorder
@@ -279,10 +278,6 @@ _ESCAPE_OR_ENTITY_RE = re.compile(
 )
 #: ``[`` and ``]``, and a backslash with what it escapes: the brackets that count.
 _BRACKET_RE = re.compile(r"\\.|[\[\]]", re.DOTALL)
-#: A raw destination may hold balanced parentheses (CommonMark); more than this
-#: many deep is taken as not a destination, which keeps ``![a](![a](…`` linear:
-#: no scan runs past the 33rd ``(``.
-_MAX_PARENTHESES = 32
 
 
 def _decoded(destination: str) -> str:
@@ -299,72 +294,6 @@ def _closing_brackets(view: str) -> dict[int, int]:
         elif bracket.group() == "]" and opened:
             closing[opened.pop()] = bracket.start()
     return closing
-
-
-def _escapes(raw: str, at: int) -> bool:
-    """True if a backslash at ``raw[at]`` escapes the character after it: ASCII punctuation."""
-    return raw[at] == "\\" and raw[at + 1:at + 2] != "" and raw[at + 1] in string.punctuation
-
-
-def _skip_space(raw: str, at: int) -> int:
-    while at < len(raw) and raw[at] in " \t\n":
-        at += 1
-    return at
-
-
-def _destination(raw: str, opening: int) -> tuple[int, int, int] | None:
-    """The inline link destination that follows the ``(`` at ``raw[opening]``
-    (CommonMark): ``<…>``, or a raw one with balanced parentheses, then an
-    optional title and the ``)``. ``(start, stop, after)``: the destination is
-    ``raw[start:stop]`` and ``after`` is the offset after the ``)``; None when
-    what follows is no inline link. A directive in the destination
-    (``mask_directives`` fills it with NUL) is part of it."""
-    size = len(raw)
-    at = _skip_space(raw, opening + 1)
-    if raw.startswith("<", at):
-        end = at + 1
-        while end < size and raw[end] not in "<>\n":
-            end += 2 if _escapes(raw, end) else 1
-        if raw[end:end + 1] != ">":
-            return None
-        start, stop, at = at + 1, end, end + 1
-    else:
-        depth = 0
-        end = at
-        while end < size:
-            char = raw[end]
-            if _escapes(raw, end):
-                end += 2
-                continue
-            if char == " " or (ord(char) < 32 and char != "\0"):
-                break
-            if char == "(":
-                depth += 1
-                if depth > _MAX_PARENTHESES:
-                    return None
-            elif char == ")":
-                if depth == 0:
-                    break
-                depth -= 1
-            end += 1
-        if depth:
-            return None
-        start, stop, at = at, end, end
-    at = _skip_space(raw, at)
-    if raw[at:at + 1] in ('"', "'", "("):
-        closer = ")" if raw[at] == "(" else raw[at]
-        end = at + 1
-        while end < size and raw[end] != closer:
-            if _escapes(raw, end):
-                end += 2
-                continue
-            if closer == ")" and raw[end] == "(":
-                return None  # a title in parentheses holds none: this scan ends at the next ``(``, not at the end
-            end += 1
-        if end >= size:
-            return None
-        at = _skip_space(raw, end + 1)
-    return (start, stop, at + 1) if raw[at:at + 1] == ")" else None
 
 
 class Scan(NamedTuple):
@@ -400,7 +329,7 @@ def images(text: str, lexed: Lexed, scanned: Scan | None = None) -> list[Image]:
     while at >= 0:
         close = closing.get(at + 1)
         if close is not None and view.startswith("(", close + 1) and not is_escaped(view, at):
-            link = _destination(raw, close + 1)
+            link = scan_inline_link(raw, close + 1)
             if link is not None:
                 start, stop, after = link
                 # Whether a directive is in it is the lexer's to say: a NUL in the text is only a character.

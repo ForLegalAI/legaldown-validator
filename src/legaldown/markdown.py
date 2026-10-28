@@ -319,7 +319,7 @@ def no_blank_lines(text: str) -> str:
     return _BLANK_LINES_RE.sub(" ", LINE_ENDING_RE.sub("\n", text))
 
 
-def _escapes(text: str, at: int) -> bool:
+def escapes(text: str, at: int) -> bool:
     """True if the backslash at ``text[at]`` escapes the character after it:
     ASCII punctuation (§2.4)."""
     return text[at] == "\\" and at + 1 < len(text) and text[at + 1] in _PUNCTUATION
@@ -329,7 +329,7 @@ def _unescaped(text: str, characters: str) -> bool:
     """True if *text* holds one of *characters* that no backslash escapes."""
     at = 0
     while at < len(text):
-        if _escapes(text, at):
+        if escapes(text, at):
             at += 2
             continue
         if text[at] in characters:
@@ -343,7 +343,7 @@ def _complete(text: str) -> str:
     before the delimiter that follows it, it would escape that."""
     at = 0
     while at < len(text):
-        if _escapes(text, at):
+        if escapes(text, at):
             at += 2
             continue
         if at == len(text) - 1 and text[at] == "\\":
@@ -356,7 +356,7 @@ def _escape(text: str, characters: str) -> str:
     """*text* with a backslash before each of *characters* that none escapes."""
     pieces, at = [], 0
     while at < len(text):
-        if _escapes(text, at):
+        if escapes(text, at):
             pieces.append(text[at:at + 2])
             at += 2
         else:
@@ -365,36 +365,14 @@ def _escape(text: str, characters: str) -> str:
     return "".join(pieces)
 
 
-def _bare_end(text: str, at: int) -> int | None:
-    """Where the bare link destination (§6.3) at ``text[at:]`` ends: it stops
-    at a space or a control character, or at a ``)`` that closes no ``(`` of
-    it. None for one that is empty, whose parentheses are not balanced, or
-    that opens with ``<``."""
-    depth, end = 0, at
-    while end < len(text):
-        char = text[end]
-        if _escapes(text, end):
-            end += 2
-            continue
-        if char <= " " or char == "\x7f":
-            break
-        if char == "(":
-            depth += 1
-            if depth > MAX_DESTINATION_PARENTHESES:
-                return None
-        elif char == ")":
-            if depth == 0:
-                break
-            depth -= 1
-        end += 1
-    return end if end > at and not depth and text[at] != "<" else None
-
-
 def is_bare_destination(target: str) -> bool:
     """True if *target* can be written as a link destination without ``<>``
     (§6.3): not empty, with no space, control character or ``<`` first, and
     balanced parentheses."""
-    return bool(target) and _bare_end(target, 0) == len(target)
+    if not target or target[0] == "<":
+        return False
+    found = scan_destination(target, 0, nonempty=True)
+    return found is not None and found[2] == len(target)
 
 
 def label_end(text: str, at: int) -> int | None:
@@ -407,14 +385,64 @@ def label_end(text: str, at: int) -> int | None:
     return end if end < stop and text[end] == "]" else None
 
 
-def _title_end(text: str, at: int) -> int | None:
+def skip_blanks(text: str, at: int) -> int:
+    """*at* past spaces and tabs."""
+    while at < len(text) and text[at] in " \t":
+        at += 1
+    return at
+
+
+def skip_line_space(text: str, at: int) -> int:
+    """*at* past spaces and tabs and at most one line break (§6.3: what may separate the parts of a
+    link, "optional spaces, tabs, and up to one line ending")."""
+    at = skip_blanks(text, at)
+    if text[at:at + 1] == "\n":
+        at = skip_blanks(text, at + 1)
+    return at
+
+
+def scan_destination(text: str, at: int, *, nonempty: bool = False) -> tuple[int, int, int] | None:
+    """The link destination (§6.3) at ``text[at:]``: ``(start, stop, after)``, the destination being
+    ``text[start:stop]`` and *after* the offset after it (past the ``>`` of a ``<…>`` one); None when there is
+    none. ``<…>`` holds no ``<``, ``>`` or line break but escaped. A bare one stops at a space, a control
+    character (DEL included, §2.1) or a ``)`` that closes no ``(`` of it; its parentheses must balance, to
+    ``MAX_DESTINATION_PARENTHESES`` deep, which also keeps a run of them linear. A NUL is text
+    like any other (§2.3 makes it U+FFFD), which lets a text with its directives masked as NULs be scanned.
+    With *nonempty* a bare destination is not empty (a definition's is not; an inline link's may be)."""
+    if text.startswith("<", at):
+        stop = at + 1
+        while stop < len(text) and text[stop] not in "<>\n":
+            stop += 2 if escapes(text, stop) else 1
+        return (at + 1, stop, stop + 1) if text.startswith(">", stop) else None
+    depth, end = 0, at
+    while end < len(text):
+        char = text[end]
+        if escapes(text, end):
+            end += 2
+            continue
+        if (char <= " " and char != "\0") or char == "\x7f":
+            break
+        if char == "(":
+            depth += 1
+            if depth > MAX_DESTINATION_PARENTHESES:
+                return None
+        elif char == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        end += 1
+    return (at, end, end) if not depth and (end > at or not nonempty) else None
+
+
+def scan_title(text: str, at: int) -> int | None:
     """The offset after the link title opening at ``text[at]``: in ``"``,
     ``'`` or ``()``, backslash escapes honoured; None when it is not closed
-    (a ``(`` title holds no ``(``)."""
+    (a ``(`` title holds no unescaped ``(``). It reads no further than the next
+    closer of its kind, so the scans of a text that has none are linear."""
     closer = ")" if text[at] == "(" else text[at]
     end = at + 1
     while end < len(text):
-        if _escapes(text, end):
+        if escapes(text, end):
             end += 2
             continue
         if text[end] == closer:
@@ -425,18 +453,24 @@ def _title_end(text: str, at: int) -> int | None:
     return None
 
 
-def _skip_blanks(text: str, at: int) -> int:
-    while at < len(text) and text[at] in " \t":
-        at += 1
-    return at
-
-
-def _skip_to_next_line(text: str, at: int) -> int:
-    """*at* past spaces and tabs and at most one line break."""
-    at = _skip_blanks(text, at)
-    if text[at:at + 1] == "\n":
-        at = _skip_blanks(text, at + 1)
-    return at
+def scan_inline_link(text: str, opening: int) -> tuple[int, int, int] | None:
+    """The inline link whose ``(`` is ``text[opening]`` (§6.3): ``(start, stop, after)``, the destination
+    (``scan_destination``, which may be empty) being ``text[start:stop]`` and *after* the offset after the ``)``;
+    None when what follows is no inline link. An optional title is told apart from the destination by the
+    space before it, and the parts are separated by spaces, tabs and up to one line break (``skip_line_space``),
+    so ``<b>"t"`` is no link, and neither is an empty destination with a blank line after it."""
+    at = skip_line_space(text, opening + 1)
+    found = scan_destination(text, at)
+    if found is None:
+        return None
+    start, stop, after = found
+    gap = after if after == stop == start else skip_line_space(text, after)  # (an empty one has had its gap)
+    if gap > after and text[gap:gap + 1] in ('"', "'", "("):
+        closing = scan_title(text, gap)
+        if closing is None:
+            return None
+        gap = skip_line_space(text, closing)
+    return (start, stop, gap + 1) if text.startswith(")", gap) else None
 
 
 def _read_definition(text: str, at: int) -> tuple[str, str, str, int] | None:
@@ -449,30 +483,22 @@ def _read_definition(text: str, at: int) -> tuple[str, str, str, int] | None:
     label = text[at + 1:close].strip(" \t\n")
     if not label:
         return None
-    start = _skip_to_next_line(text, close + 2)
-    if text.startswith("<", start):
-        stop = start + 1
-        while stop < len(text) and text[stop] not in ">\n<":
-            stop += 2 if _escapes(text, stop) else 1
-        if text[stop:stop + 1] != ">":
-            return None
-        target, after = text[start + 1:stop], stop + 1
-    else:
-        stop = _bare_end(text, start)
-        if stop is None:
-            return None
-        target, after = text[start:stop], stop
+    found = scan_destination(text, skip_line_space(text, close + 2), nonempty=True)
+    if found is None:
+        return None
+    start, stop, after = found
+    target = text[start:stop]
     # The title is told apart from the destination by the space before it, and
     # from the paragraph after it by ending its line: else it is dropped, and
     # the definition ends with the destination's line, if that ends there.
-    opening = _skip_to_next_line(text, after)
+    opening = skip_line_space(text, after)
     if opening > after and text[opening:opening + 1] in ('"', "'", "("):
-        closing = _title_end(text, opening)
+        closing = scan_title(text, opening)
         if closing is not None:
-            line_end = _skip_blanks(text, closing)
+            line_end = skip_blanks(text, closing)
             if line_end == len(text) or text[line_end] == "\n":
                 return label, target, text[opening + 1:closing - 1], min(line_end + 1, len(text))
-    line_end = _skip_blanks(text, after)
+    line_end = skip_blanks(text, after)
     if line_end == len(text) or text[line_end] == "\n":
         return label, target, "", min(line_end + 1, len(text))
     return None

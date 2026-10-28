@@ -803,7 +803,7 @@ class _Counted:
 def test_the_brackets_of_a_text_are_paired_once_and_each_image_is_parsed_once(monkeypatch):
     from legaldown.directives import lex
 
-    pairs, parses = _Counted(monkeypatch, "_closing_brackets"), _Counted(monkeypatch, "_destination")
+    pairs, parses = _Counted(monkeypatch, "_closing_brackets"), _Counted(monkeypatch, "scan_inline_link")
     text = "![a](/x) " * 5000
     assert len(paths_module.images(text, lex(text))) == 5000
     assert pairs.calls == 1 and parses.calls == 5000

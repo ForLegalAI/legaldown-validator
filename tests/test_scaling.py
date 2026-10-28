@@ -192,9 +192,9 @@ def test_headings_of_one_title_under_conditions_get_their_suffixes():
 
 
 def test_blanks_on_one_line_share_one_index(monkeypatch):
+    references = _Counter(monkeypatch, templates._InsertionScan, "_read_reference")
     scans = _Counter(monkeypatch, templates, "_InsertionScan")
     containers = _CountedPattern(monkeypatch, templates, "_CONTAINER_RE")
-    references = _CountedPattern(monkeypatch, templates, "_LINK_REFERENCE_RE")
     result = validate(_document("{{placeholder: a}}" * 2000, _QUESTIONS))
     assert result.diagnostics == []
     assert scans.calls == 1  # one index for the paragraph, however many blanks
