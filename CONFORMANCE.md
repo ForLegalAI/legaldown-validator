@@ -294,7 +294,8 @@ blank-separated: the layout is normalized and the model is the same on a second 
 a definition and the block after it (another definition, a paragraph, a list, a quote, a fence) are
 written directly under one another where that is read back as the same two blocks, so that a tight list
 stays tight (a blank line there would make a renderer wrap its items in paragraphs); a title-like
-line under a definition is not, as it would become its title. A reference-style
+line under a definition is not, as it would become its title. (A list is always written tight, as the model
+keeps no looseness (below), so a loose list with a definition in it is written tight after it too.) A reference-style
 image (`![a][r]`, `![a][]`, `![a]`) is checked for `path-not-relative` and `path-outside-root` on its
 definition's destination, once, at the definition, however many images name it (#104, above).
 

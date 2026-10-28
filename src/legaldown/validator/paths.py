@@ -24,7 +24,7 @@ from urllib.parse import unquote
 
 from ..directives import Directive, Lexed, is_escaped, mask_directives
 from ..files import is_absolute_reference, leaves_root, names_below
-from ..markdown import label_end, normalize_label
+from ..markdown import collapse_label_whitespace, label_end, normalize_label
 from ..models import Amends, Document, Metadata
 from ..positions import Locator
 from .result import Line, _Recorder
@@ -457,18 +457,25 @@ class ReferenceImages:
         of the definition's own block."""
         if not self._used or self._definitions is None:
             return
+        # Where each lies among the texts of its top-level block: after the fragment before it,
+        # as an inline image's place is (fragment, offset) — a definition has no offset, so -1.
         placed = sorted(
-            (self._definitions[key] for key in self._used),
-            key=lambda each: (-1 if each.section is None else each.section, each.block, each.ordinal),
+            (
+                (
+                    (-1 if each.section is None else each.section, each.block, each.fragment, -1, each.ordinal),
+                    each,
+                )
+                for each in (self._definitions[key] for key in self._used)
+            ),
+            key=lambda item: item[0],
         )
-        for each in placed:
+        for at, each in placed:
             block = each.definition
-            # (The label as the finding says it has its line breaks and runs of spaces one space.)
-            label = " ".join(block.label.split())
+            # (The finding names the label as CommonMark compares it, line breaks and runs of spaces one space.)
+            label = collapse_label_whitespace(block.label)
             references.check(
                 _decoded(block.target), f"image, by the definition of [{label}]",
-                partial(where.definition, each.section, each.block, each.ordinal),
-                at=(-1 if each.section is None else each.section, each.block, -1, each.ordinal), url=True,
+                partial(where.definition, each.section, each.block, each.ordinal), at=at, url=True,
             )
 
 

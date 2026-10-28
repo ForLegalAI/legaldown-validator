@@ -1040,3 +1040,42 @@ def test_a_definition_with_an_overlong_label_stands_apart_too():
         {"kind": "paragraph", "text": "after"},
     ]})
     assert len(parse(serialize(document)).preamble) == 2
+
+
+# ── Last round: order among images, no-break spaces ───────────────
+
+
+def test_a_definition_is_reported_where_it_lies_among_the_images_of_its_block():
+    """The body of the review: an inline image before the definition's image is reported first."""
+    document = parse(FRONTMATTER + "# A\n\n- ![a](/abs1.png) ![b][r]\n- [r]: /abs2.png\n")
+    found = [(d.line, d.message.split("'")[1]) for d in validate(document).diagnostics if d.rule == "path-not-relative"]
+    assert found == [(7, "/abs1.png"), (8, "/abs2.png")]
+    # And after the definition, an image that comes later in the block is reported later.
+    document = parse(FRONTMATTER + "# A\n\n- ![b][r]\n- [r]: /abs2.png\n- ![a](/abs3.png)\n")
+    found = [(d.line, d.message.split("'")[1]) for d in validate(document).diagnostics if d.rule == "path-not-relative"]
+    assert found == [(8, "/abs2.png"), (9, "/abs3.png")]
+    # Several definitions of one block, with images between: in the order of the source.
+    document = parse(
+        FRONTMATTER + "# A\n\n- ![a][x]\n\n  [x]: /a\n- ![b](/b.png)\n- ![c][y]\n\n  [y]: /c\n"
+    )
+    found = [d.message.split("'")[1] for d in validate(document).diagnostics if d.rule == "path-not-relative"]
+    assert found == ["/a", "/b.png", "/c"]
+
+
+def test_a_definition_in_the_preamble_is_placed_with_the_fragments_before_it():
+    found = locate_link_definitions(parse(FRONTMATTER + "Text.\n\n- one\n\n  [a]: /a\n  two\n\n  [b]: /b\n"))
+    assert [(each.block, each.ordinal, each.fragment) for each in found.values()] == [(1, 0, 1), (1, 1, 2)]
+
+
+def test_a_label_in_a_finding_collapses_only_commonmark_whitespace():
+    """A no-break space is text: ``str.split`` would take it for a space."""
+    from legaldown.markdown import collapse_label_whitespace
+
+    assert collapse_label_whitespace("  a \t\n b\u00a0\u00a0c ") == "a b\u00a0\u00a0c"
+    document = parse(FRONTMATTER + "# A\n\n![a][r\u00a0\u00a0foo]\n\n[r\u00a0\u00a0foo]: /etc/x\n")
+    [finding] = [d for d in validate(document).diagnostics if d.rule == "path-not-relative"]
+    assert "[r\u00a0\u00a0foo]" in finding.message
+
+
+def test_a_label_with_a_no_break_space_is_a_different_label():
+    assert normalize_label("a\u00a0b") != normalize_label("a b")

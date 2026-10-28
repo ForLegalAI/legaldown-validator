@@ -278,11 +278,17 @@ class LinkDefinitionSource(NamedTuple):
     lines: int
 
 
+def collapse_label_whitespace(label: str) -> str:
+    """*label* without the spaces, tabs and line breaks at its ends, each run of them
+    one space (CommonMark's whitespace: other, a no-break space for one, is text)."""
+    return _WHITESPACE_RUN_RE.sub(" ", label.strip(" \t\n\r"))
+
+
 def normalize_label(label: str) -> str:
     """The key a link label is matched by (§4.7): without the spaces and line
     breaks at its ends, each run of them one space, case-folded. ``[Foo  Bar]``
     and ``[foo bar]`` are one label."""
-    return _WHITESPACE_RUN_RE.sub(" ", label.strip(" \t\n\r")).casefold()
+    return collapse_label_whitespace(label).casefold()
 
 
 def no_blank_lines(text: str) -> str:

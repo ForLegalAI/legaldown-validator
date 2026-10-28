@@ -18,6 +18,7 @@ from .directives import format_value
 from .files import write_atomically
 from .markdown import (
     FENCE_OPEN_RE,
+    LinkDefinitionSource,
     close_fences,
     dedent,
     format_link_definition,
@@ -162,34 +163,29 @@ def _definition_lines(block: Block) -> list[str]:
     return _lines_of_paragraph(first, rest)
 
 
-def _is_definition(block: Block) -> bool:
-    """True if *block*, a ``link_definition``, is read back as the definition it is
-    when written: it has a label, and the parser reads what is written as one
-    definition. Not so for one a model built in code holds a directive in (the
-    parser keeps such a definition paragraph text, #92), nor for a label of more than
-    999 characters. Written, those stand apart from the blocks around them, and read
-    back as the text they are."""
-    if block.kind != "link_definition" or is_blank(block.label):
-        return False
-    lines = _definition_lines(block)
+def _read_definition(lines: list[str]) -> list[LinkDefinitionSource] | None:
+    """What the parser reads *lines*, those a ``link_definition`` block is written as
+    (``_definition_lines``), as: the one definition they are, or None when they are
+    not read back as exactly one. Not so for a definition a model built in code
+    holds a directive in (the parser keeps such a definition paragraph text, #92),
+    nor for a label of more than 999 characters. Written, those stand apart from
+    the blocks around them, and read back as the text they are."""
     found, taken = split_link_definitions(lines)
-    return len(found) == 1 and taken == len(lines)
+    return found if len(found) == 1 and taken == len(lines) else None
 
 
-def _reads_apart(definition: Block, block: Block, lines: list[str]) -> bool:
-    """True if *lines*, the block after *definition* written directly under it, are
-    read back as that block and leave the definition as it is: no title from a line
-    of them (``"t"`` under ``[x]: u``), and no definition made of *block* unless
-    *block* is one. *definition* is a definition (``_is_definition``)."""
-    own = _definition_lines(definition)
-    expected = split_link_definitions(own)[0]
-    if block.kind == "link_definition":
-        if not _is_definition(block):
-            return False
-        expected = [*expected, *split_link_definitions(lines)[0]]
-        size = len(own) + len(lines)
-    else:
-        size = len(own)
+def _reads_apart(
+    own: list[str], read: list[LinkDefinitionSource], lines: list[str],
+    next_read: list[LinkDefinitionSource] | None = None,
+) -> bool:
+    """True if *lines*, the block after a definition (*own*, which the parser reads as
+    *read*) written directly under it, are read back as that block and leave the
+    definition as it is: no title from a line of them (``"t"`` under ``[x]: u``), and
+    no definition made of them unless they are one, which the parser reads as
+    *next_read*."""
+    expected, size = read, len(own)
+    if next_read is not None:
+        expected, size = [*read, *next_read], len(own) + len(lines)
     found, taken = split_link_definitions([*own, *lines])
     return found == expected and taken == size
 
@@ -569,10 +565,21 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
     blocks = _written(blocks)
     final = len(blocks) - 1
     markers = _list_markers(blocks)
+    # The definitions among the blocks: the lines each is written as, once, and what the parser
+    # reads of those that are read back as definitions (#92).
+    definition_lines: dict[int, list[str]] = {}
+    reads: dict[int, list[LinkDefinitionSource]] = {}
+    for index, block in enumerate(blocks):
+        if block.kind == "link_definition":
+            definition_lines[index] = _definition_lines(block)
+            if (read := _read_definition(definition_lines[index])) is not None:
+                reads[index] = read
     for index, block in enumerate(blocks):
         following = blocks[index + 1] if index + 1 < len(blocks) else None
         keep_open = last and index == final
         joined = False
+        text = _paragraph_source(block)  # for a paragraph, a definition, a ref or a term: the text it is written as
+        after_definition = index - 1 in reads  # the block before is a definition read back as one
         if block.kind in _LISTS and following is not None and following.kind in ("code", "html", "source"):
             # A block indented to the last item's content would continue it:
             # the item is written with its content further in.
@@ -600,15 +607,16 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # As it stands, but for a fence it leaves open, which would run
             # on into what follows it: closed unless nothing does.
             rendered = block.text if keep_open else close_fences(block.text)
+        elif block.kind == "link_definition":
+            rendered = "\n".join(definition_lines[index])
         else:
             # What is left of a paragraph that opened with definitions may read as the start of a
             # block alone: it is written under them, as the parser read it (#92).
-            text = _paragraph_source(block)
             joined = (
-                text is not None and index > 0 and _is_definition(blocks[index - 1])
-                and _joins_definition(text)
+                text is not None and after_definition and _joins_definition(text)
                 and _reads_apart(
-                    blocks[index - 1], block, [line.lstrip(" \t") for line in text.split("\n") if not is_blank(line)]
+                    definition_lines[index - 1], reads[index - 1],
+                    [line.lstrip(" \t") for line in text.split("\n") if not is_blank(line)],
                 )
             )
             rendered = _render_block(block, in_item=in_item, joined=joined)
@@ -619,12 +627,25 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # blank line, which the parser reads as the item's too (#84).
             before = blocks[index - 1] if index > 0 else None
             closed = before is not None and before.kind == "code" and FENCE_OPEN_RE.match(before.text.split("\n")[0])
+            # A definition read back as one ends its paragraph as a paragraph does (#92)
+            # and is no text, so what follows it follows it directly, where it is read as itself:
+            # a list, a quote or a fence end the paragraph the definition is in; a paragraph or
+            # another definition does not when nothing in it is read into the definition (a
+            # title on its next line, for one). A blank line would make a list loose, and a
+            # renderer wrap its items in paragraphs.
             tight = joined or in_item and before is not None and (
-                _tight_after_definition(before, block, rendered)
-                or (block.kind in _LISTS and before.kind in ("paragraph", "heading", *_LISTS) and not _bare(rendered))
-                or (before.kind == "paragraph" and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered.split("\n")[0])))
+                (block.kind in _LISTS and (before.kind in ("paragraph", "heading", *_LISTS) or after_definition)
+                 and not _bare(rendered))
+                or ((before.kind == "paragraph" or after_definition)
+                    and (block.kind == "quote" or FENCE_OPEN_RE.match(rendered.split("\n")[0])))
                 # After a closed fence a block starts on the next line.
                 or (closed and close_fences(before.text) == before.text and not _bare(rendered))
+                or (
+                    after_definition and (text is not None or index in reads)
+                    and _reads_apart(
+                        definition_lines[index - 1], reads[index - 1], rendered.split("\n"), reads.get(index)
+                    )
+                )
             )
             # A fence left open at the end of the block before would take a
             # blank line into its code: what follows, starting short of its
@@ -632,26 +653,6 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             separated = index > 0 and blocks[index - 1].kind in _LISTS and _ends_open(blocks[index - 1:index])
             parts.extend([rendered] if (tight or separated) and parts else ["", rendered])
     return parts
-
-
-def _tight_after_definition(before: Block, block: Block, rendered: str) -> bool:
-    """True if *block*, *rendered* in a list item's content, is written directly under
-    *before*, a definition (#92), so that the list stays tight where it was: the
-    parser reads the definition as one and the block as the block it is, which is
-    so for a list, a quote or a fence (they end the paragraph the definition is in),
-    and for a paragraph or another definition that is not read into it (a title on
-    its next line, for one). A blank line between them would make the list loose,
-    and a renderer wrap its items in paragraphs."""
-    if not _is_definition(before):
-        return False
-    lines = rendered.split("\n")
-    if block.kind in _LISTS:
-        return not _bare(rendered)
-    if block.kind == "quote" or (block.kind == "code" and FENCE_OPEN_RE.match(lines[0])):
-        return True
-    if block.kind in ("paragraph", "definition", "ref", "term", "link_definition"):
-        return _reads_apart(before, block, lines)
-    return False
 
 
 def _ends_open(blocks: list[Block]) -> bool:

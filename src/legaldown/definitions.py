@@ -247,11 +247,13 @@ def quote_ranges(block: Block) -> list[tuple[str, range]]:
 
 
 def _fragments(
-    block: Block, quotes: list[tuple[str, range]] | None = None
+    block: Block, quotes: list[tuple[str, range]] | None = None, definitions: list[int] | None = None
 ) -> list[tuple[str, bool, tuple[int, ...], int]]:
     """``list_fragments`` of any block, each with its scope
     (``fragment_scopes``): the one walk that numbers fragments, items and
-    scopes, and finds the quotes (``quote_ranges``) when *quotes* is given."""
+    scopes, and finds the quotes (``quote_ranges``) when *quotes* is given, and,
+    when *definitions* is, how many fragments come before each link reference
+    definition (#92), in the order of the definitions."""
     from .parser import MAX_QUOTE_DEPTH, quote_content  # the parser builds on this module
 
     fragments: list[tuple[str, bool, tuple[int, ...], int]] = []
@@ -292,6 +294,8 @@ def _fragments(
             if quotes is not None:
                 quotes[slot] = (quotes[slot][0], range(at, len(fragments)))
         else:
+            if definitions is not None and block.kind == "link_definition":
+                definitions.append(len(fragments))
             own = _scoped_fragments(block)
             fragments.extend((text, position and anchor, path, scope + number) for text, position, number in own)
             if own:
@@ -460,13 +464,17 @@ class PlacedLinkDefinition(NamedTuple):
     top-level block it is in, and its *ordinal* among the ``link_definition``
     blocks in that block, nested ones included, in document order. The
     ordinal names the block for ``Locator.definition`` (its line) and orders
-    the definitions of one top-level block. ``collect_link_definitions`` gives
+    the definitions of one top-level block; *fragment* puts it among its texts. ``collect_link_definitions`` gives
     the ``LinkDefinition`` (url and title) of each, by label."""
 
     section: int | None
     block: int
     ordinal: int
     definition: Block
+    #: How many of the top-level block's ``block_fragments`` come before it, so that
+    #: it has its place among the texts: the definition lies after the fragment
+    #: numbered one less, and before the one with this number.
+    fragment: int = 0
 
 
 def locate_link_definitions(document: Document) -> dict[str, PlacedLinkDefinition]:
@@ -475,12 +483,14 @@ def locate_link_definitions(document: Document) -> dict[str, PlacedLinkDefinitio
     (``markdown.normalize_label``), in document order."""
     found: dict[str, PlacedLinkDefinition] = {}
     for section, index, top in document.iter_indexed_blocks():
+        before: list[int] = []
+        _fragments(top, None, before)  # (the walk that numbers the fragments, so they agree)
         ordinal = 0
         for block in nested_blocks(top):
             if block.kind == "link_definition":
                 key = normalize_label(block.label)
                 if key:
-                    found.setdefault(key, PlacedLinkDefinition(section, index, ordinal, block))
+                    found.setdefault(key, PlacedLinkDefinition(section, index, ordinal, block, before[ordinal]))
                 ordinal += 1
     return found
 
