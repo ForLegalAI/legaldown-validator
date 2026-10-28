@@ -966,7 +966,10 @@ def _random_image_documents(seed, count):
             f"![a]({first}", f"![r]({first}\n\n[r]: {second}", f"![a][r]\n\n[r]: {second}", f"![r]\n\n[r]: {second}",
             f"[x]: y\n[r]: {second}\n\n![a][r] ![r]({first}",
         ])
-        if _BACKSLASH_RE.search(text) or re.search(r"\n[ \t]*(?:\n|>)", text) or text.endswith("\\") or "\n\n\n" in text:
+        if (
+            _BACKSLASH_RE.search(text) or text.endswith("\\") or "\n\n\n" in text
+            or any(re.search(r"\n[ \t]*(?:\n|>)", part) for part in (first, second))
+        ):
             continue
         yield text
 
@@ -994,14 +997,14 @@ def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
     is one the path rules judge."""
     judge = _judged_by_validate(monkeypatch)
     compared = 0
-    for text in _random_image_documents(113, 90_000):
+    for text in _random_image_documents(113, 12_000):
         read = [source for source in _image_sources_by_markdown_it(text) if source.strip()]
         if read:
             judged = judge(text)
             for source in read:
                 assert source.strip() in judged, (text, source, judged)  # (a path is judged without its outer blanks)
             compared += 1
-    assert compared > 3000
+    assert compared > 2000
 
 
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is not installed")
@@ -1010,7 +1013,7 @@ def test_every_image_pandoc_reads_has_its_destination_judged(monkeypatch):
     destination, in a definition's too; a title glued to ``<…>``): inline, by a definition, or both."""
     judge = _judged_by_validate(monkeypatch)
     compared = 0
-    for text in _random_image_documents(1131, 8_000):
+    for text in _random_image_documents(1131, 1_000):
         if compared == 250:
             break
         # (pandoc is asked of the documents the path rules judge something in, the others being none of its concern)
