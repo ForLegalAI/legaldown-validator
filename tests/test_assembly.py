@@ -446,7 +446,7 @@ class TestLineStartsInContext:
         ("1. a\n{{placeholder: name}}\n", "2. b", "1. a\n2\\. b\n"),
         ("3. a\n{{placeholder: name}}\n", "4. b", "3. a\n4\\. b\n"),
         ("3. a\n{{placeholder: name}}\n", "4) b", "3. a\n4\\) b\n"),
-        ("10) a\n    {{placeholder: name}}\n", "11) b", "10) a\n11\\) b\n"),
+        ("10) a\n    {{placeholder: name}}\n", "1) b", "10) a\n    1\\) b\n"),
         ("- a\n  - b\n{{placeholder: name}}\n", "2. c", "- a\n  - b\n2\\. c\n"),
         ("> - a\n{{placeholder: name}}\n", "2. c", "> - a\n2\\. c\n"),
         ("> - a\n> {{placeholder: name}}\n", "2. c", "> - a\n> 2\\. c\n"),
@@ -475,11 +475,46 @@ class TestLineStartsInContext:
         ("[x]: y\n{{placeholder: name}}\n", "2. b"),
         # "2." cannot interrupt the paragraph "text", so it is text, as the markers of the template are.
         ("text\n{{placeholder: name}}\n", "2. two"),
+        ("10) a\n    {{placeholder: name}}\n", "11) b"),
         ("text\n2. {{placeholder: name}}\n", "# h"),
         ("1. a\n2. {{placeholder: name}} second\n", "Ann"),
     ])
     def test_nothing_is_escaped_that_begins_no_block(self, body, answer):
         assert self._assembled(body, {"name": answer}) == body.replace("{{placeholder: name}}", answer)
+
+    def test_the_underline_of_a_heading_of_several_lines_is_its_last_line(self):
+        """In ``> a\\n> {{x}}\\n> ===`` the template's ``===`` underlines both lines, and only it is the
+        underline: the line with ``{{x}}`` is text, and an answer ``===`` there would underline ``a``."""
+        written = self._assembled("> a\n> {{placeholder: name}}\n> ===\n", {"name": "==="})
+        assert written == "> a\n> \\===\n> ===\n"
+
+    @pytest.mark.parametrize(("body", "answers", "written"), [
+        # The template line's own indentation stays: the line is in the item that it was written in.
+        ("- a\n\n  {{placeholder: name}} more\n", {"name": "b"}, "- a\n\n  b more\n"),
+        ("- a\n\n  {{placeholder: name}}\n", {"name": "# h"}, "- a\n\n  \\# h\n"),
+        ("1. a\n\n   {{placeholder: name}} more\n", {"name": "2. b"}, "1. a\n\n   2\\. b more\n"),
+        ("- a\n  - b\n\n    {{placeholder: name}} more\n", {"name": "c"}, "- a\n  - b\n\n    c more\n"),
+        # More indentation than the item's content column goes: the insertion begins the content.
+        ("- a\n\n     {{placeholder: name}}\n", {"name": "c"}, "- a\n\n  c\n"),
+        # The same after a deleted line.
+        ('- a\n\n  {{choose: x, true="", false="T"}}\n  {{placeholder: name}} more\n', {"x": True, "name": "b"},
+         "- a\n\n  b more\n"),
+        ('1. a\n\n   {{choose: x, true="", false="T"}}\n   {{placeholder: name}} more\n', {"x": True, "name": "2. b"},
+         "1. a\n\n   2\\. b more\n"),
+        # Outside any item nothing is kept.
+        ("a\n\n  {{placeholder: name}}\n", {"name": "b"}, "a\n\nb\n"),
+    ])
+    def test_an_insertion_that_begins_the_content_keeps_the_items_indentation(self, body, answers, written):
+        assert self._assembled(body, answers, _BOOL + _TEXT) == written
+
+    @pytest.mark.parametrize(("body", "written"), [
+        # An empty choice leaves bare markers, which hold no paragraph, so the line after is checked.
+        ('> text\n> {{choose: x, true="", false="T"}}\n> <x>\n', "> text\n> \n> \\<x>\n"),
+        ('> {{choose: x, true="", false="T"}}\n> 2. b\n', "> \n> 2\\. b\n"),
+        ('> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n', "> a\n>\n> \n> code\n"),
+    ])
+    def test_the_line_after_bare_container_markers_is_checked(self, body, written):
+        assert self._assembled(body, {"x": True}, _BOOL) == written
 
     def test_a_lone_tag_begins_html_once_the_paragraph_before_it_is_gone(self):
         """``<x>`` cannot interrupt paragraph text, but starts an HTML block (kind 7) after a deleted line."""
@@ -532,7 +567,7 @@ class TestLineStartsInContext:
             '- - - {{choose: x, true="", false="T"}}\n': "- - - \n",
             '* * * {{choose: x, true="", false="T"}}\n': "* * * \n",
             '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n':
-                "> 2. \n\tcode\n> 2. \\- - -\n",
+                "> 2. \ncode\n> 2. \\- - -\n",
             '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n':
                 "  > \n  lazy\na\n  > \\- - --y\n",
         }[body]
