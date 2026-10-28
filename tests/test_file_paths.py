@@ -928,7 +928,10 @@ def _image_sources_by_markdown_it(text):
 
 def _image_sources_by_pandoc(documents):
     """The destinations of the images of each of *documents*, by one run of pandoc: each follows a paragraph that
-    is a marker, and its labels are its own (``[r]`` and ``[x]`` are ``[r3]`` and ``[x3]`` in the fourth)."""
+    is a marker, and its labels are its own (``[r]`` and ``[x]`` are ``[r3]`` and ``[x3]`` in the fourth). A
+    document that leaves a construct open can swallow the next marker, which then is no paragraph of its own and
+    puts the images after it in the wrong document: that document and the one before it are *dropped* (their
+    sources are None). Gives the documents as written to pandoc, the sources and how many were dropped."""
     import json
     import subprocess
 
@@ -937,8 +940,9 @@ def _image_sources_by_pandoc(documents):
     out = subprocess.run(
         ["pandoc", "-f", "commonmark", "-t", "json"], input=source, capture_output=True, text=True, check=True
     ).stdout
-    found: list[list[str]] = [[] for _ in documents]
+    found: list[list[str] | None] = [[] for _ in documents]
     current = 0
+    markers = set()
 
     def walk(node):
         if isinstance(node, dict):
@@ -954,15 +958,21 @@ def _image_sources_by_pandoc(documents):
         marker = block["c"][0].get("c", "") if block.get("t") == "Para" and len(block["c"]) == 1 else ""
         if isinstance(marker, str) and marker.startswith("MARKER") and marker[6:].isdigit():
             current = int(marker[6:])
+            markers.add(current)
         else:
             walk(block)
-    return renamed, found
+    missing = [n for n in range(len(documents)) if n not in markers]
+    dropped = {n for each in missing for n in (each - 1, each) if n >= 0}
+    for n in dropped:
+        found[n] = None
+    return renamed, found, len(dropped)
 
 
 def _random_image_documents(seed, count):
     """Documents with images by an inline destination, a definition or both. Not those with a blank line or a quote
     line in a paragraph, nor with the backslash before a character that is no punctuation (which only markdown-it
-    reads as a pair, #121), nor a definition only pandoc reads (a control character in its destination, #121)."""
+    reads as a pair, #121), nor a definition only pandoc reads (a control character or DEL in its bare
+    destination, #121): one in its title or in a ``<…>`` destination is read by all."""
     rng = random.Random(seed)
 
     def body():
@@ -974,16 +984,26 @@ def _random_image_documents(seed, count):
 
     for _ in range(count):
         first, second = body() + rng.choice([")", ")", ""]), body()
-        text = rng.choice([
+        templates = [
             f"![a]({first}", f"![r]({first}\n\n[r]: {second}", f"![a][r]\n\n[r]: {second}", f"![r]\n\n[r]: {second}",
             f"[x]: y\n[r]: {second}\n\n![a][r] ![r]({first}",
-        ])
+        ]
+        kind = rng.randrange(len(templates))
+        text = templates[kind]
         if (
             BACKSLASH_PAIR_RE.search(text) or text.endswith("\\") or "\n\n\n" in text
-            or _CONTROLS_RE.search(second) or any(PARAGRAPH_END_RE.search(part) for part in (first, second))
+            or any(PARAGRAPH_END_RE.search(part) for part in (first, second))
+            or (kind > 0 and _CONTROLS_RE.search(_bare_destination(second)))
         ):
             continue
         yield text
+
+
+def _bare_destination(definition):
+    """What a definition ``[r]: definition`` has for a bare destination (up to the first blank), or nothing if its
+    destination is in ``<…>``."""
+    rest = definition.lstrip(" \t\n")
+    return "" if rest.startswith("<") else re.split("[ \t\n]", rest, maxsplit=1)[0]
 
 
 def _judged_by_validate(monkeypatch):
@@ -1028,15 +1048,16 @@ def test_every_image_pandoc_reads_has_its_destination_judged(monkeypatch):
     """The same for pandoc, which reads what the specification does not (a control character or DEL in a bare
     destination, a title glued to ``<…>``): inline, by a definition, or both. One run of pandoc reads the documents."""
     judge = _judged_by_validate(monkeypatch)
-    documents, sources = _image_sources_by_pandoc(list(_random_image_documents(1131, 6_000)))
+    documents, sources, dropped = _image_sources_by_pandoc(list(_random_image_documents(1131, 6_000)))
     compared = 0
     for text, read in zip(documents, sources, strict=True):
-        read = [source for source in read if source.strip()]
+        read = [source for source in read or () if source.strip()]
         if read:
             judged = judge(text)
             for source in read:
                 assert source.strip() in judged, (text, source, judged)
             compared += 1
+    assert dropped < len(documents) // 20, dropped  # (a few documents leave a construct open)
     assert compared > 1000
 
 

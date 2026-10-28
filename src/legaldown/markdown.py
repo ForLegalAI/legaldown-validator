@@ -426,9 +426,9 @@ def scan_destination(text: str, at: int, *, nonempty: bool = False) -> tuple[int
 
 
 def _scan_destination(text: str, at: int, nonempty: bool, permissive: bool) -> tuple[int, int, int, bool] | None:
-    """``scan_destination``, with whether it is *lax*: read by *permissive*, a bare destination that ends only at a space,
-    a tab or a line break, as pandoc reads it, which holds a control character or DEL that the specification (and
-    markdown-it) end it at."""
+    """``scan_destination``, with whether it is *lax*: read by *permissive*, a bare destination ends only at a space,
+    a tab or an LF, as pandoc reads it, and holds a control character or DEL that the specification (and markdown-it)
+    end it at. (A CR stays in it too, the wider reading, as parsed text holds no lone CR.)"""
     if text.startswith("<", at):
         stop = at + 1
         while stop < len(text) and text[stop] not in "<>\n":

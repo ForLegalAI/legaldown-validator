@@ -442,7 +442,7 @@ class ReferenceImages:
             return
         # Where each lies among the texts of its top-level block: after the fragment before it,
         # as an inline image's place is (fragment, offset) — a definition has no offset, so -1.
-        placed = []
+        placed: list[tuple[tuple[int, ...], PlacedLinkDefinition, bool]] = []
         for key, outside in self._used.items():
             each = self._definitions[key]
             placed.append(
