@@ -483,6 +483,8 @@ def locate_link_definitions(document: Document) -> dict[str, PlacedLinkDefinitio
     (``markdown.normalize_label``), in document order."""
     found: dict[str, PlacedLinkDefinition] = {}
     for section, index, top in document.iter_indexed_blocks():
+        if not _may_hold_definition(top):
+            continue  # (a quote is not read again for nothing, #92 review)
         before: list[int] = []
         _fragments(top, None, before)  # (the walk that numbers the fragments, so they agree)
         ordinal = 0
@@ -493,6 +495,18 @@ def locate_link_definitions(document: Document) -> dict[str, PlacedLinkDefinitio
                     found.setdefault(key, PlacedLinkDefinition(section, index, ordinal, block, before[ordinal]))
                 ordinal += 1
     return found
+
+
+def _may_hold_definition(block: Block) -> bool:
+    """False if *block* holds no ``link_definition`` block, nested ones included, as
+    far as a look at it can tell, without reading the quotes in it again: a quote
+    holds one only if its text holds ``]:``, which ends the label of every
+    definition; a list item holds the blocks it has."""
+    if block.kind == "link_definition":
+        return True
+    if block.kind in LIST_KINDS:
+        return any(_may_hold_definition(child) for item in list_items(block) for child in item.blocks)
+    return block.kind == "quote" and "]:" in block.text
 
 
 def id_term(def_id: str) -> str:

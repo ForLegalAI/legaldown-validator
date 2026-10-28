@@ -347,6 +347,23 @@ def test_definitions_in_items_and_quotes_count_for_the_document_in_document_orde
     }
 
 
+def test_only_a_block_that_may_hold_a_definition_is_read_for_them(monkeypatch):
+    import legaldown.parser as parser
+
+    read: list[str] = []
+    real = parser.quote_content
+
+    def counting(text, depth):
+        read.append(text)
+        return real(text, depth)
+
+    monkeypatch.setattr(parser, "quote_content", counting)
+    body = "> plain\n> quote\n\n- item\n  > in an item\n\n> [a]: /quote\n\n- item\n  > [b]: /in-item\n"
+    assert set(collected(body)) == {"a", "b"}
+    # The two quotes with no ``]:`` are not read at all; the ones that may hold a definition are.
+    assert set(read) == {"[a]: /quote", "[b]: /in-item"}
+
+
 def test_a_model_built_definition_is_collected_and_an_empty_label_is_not():
     document = parse(FRONTMATTER + "# A\n")
     document.sections[0].blocks += [
