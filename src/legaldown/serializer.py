@@ -20,10 +20,12 @@ from .markdown import (
     FENCE_OPEN_RE,
     close_fences,
     dedent,
+    format_link_definition,
     html_block_end,
     indent_width,
     is_blank,
     is_indented_code,
+    split_link_definitions,
     split_lone_tag,
     strip_text,
 )
@@ -160,17 +162,34 @@ def _paragraph(text: str, *, in_item: bool = False) -> str:
     lines = [line for line in text.split("\n") if not is_blank(line)]
     if not lines:
         return ""
-    written = [_paragraph_line(lines[0].lstrip(" \t"), in_item=in_item, alone=len(lines) == 1)]
-    for line in lines[1:]:
-        # A line's indentation is not its text (``paragraph_text``).
+    written = _lines_of_paragraph(
+        _paragraph_line(lines[0].lstrip(" \t"), in_item=in_item, alone=len(lines) == 1), lines[1:]
+    )
+    if split_link_definitions(written)[0]:
+        # The parser makes a block of every definition a paragraph opens with
+        # (§4.7, #92), so text that reads as one, which only a model built in
+        # code holds, gets a backslash: ``\[x]: u`` is text. The same function
+        # decides as in the parser, so a paragraph it leaves whole (one with
+        # a directive in the definition) is not escaped.
+        written[0] = "\\" + written[0]
+    return "\n".join(written)
+
+
+def _lines_of_paragraph(first: str, rest: list[str]) -> list[str]:
+    """The lines of a paragraph written at the margin: *first*, then *rest*,
+    each without its indentation (``paragraph_text``) and, when it would not
+    continue the paragraph, four columns in."""
+    written = [first]
+    for line in rest:
         line = line.lstrip(" \t")
         # Written as it is where the parser reads it as continuing the
         # paragraph: else four columns in, where a line always does, and is
         # read without its indentation. The parser never makes a paragraph
         # of lines that need it but for lazy ones (``===`` under a quote's
-        # or an item's paragraph, where it is no underline).
+        # or an item's paragraph, where it is no underline), nor a title or
+        # label of a definition (``- b`` in its title, #92).
         written.append(line if _continues([*written, line]) else "    " + line)
-    return "\n".join(written)
+    return written
 
 
 def _continues(lines: list[str]) -> bool:
@@ -259,6 +278,13 @@ def _render_block(block: Block, *, in_item: bool = False) -> str:
         # paragraph of its line, with a backslash before it.
         line = _heading(block)
         return line if in_item else "\\" + line
+    if block.kind == "link_definition":
+        if is_blank(block.label):
+            return ""
+        # A label or title over several lines is written as the lines of a
+        # paragraph are (Revision 2 of #92): ``- b`` in a title is no item.
+        first, *rest = format_link_definition(block.label, block.target, block.title).split("\n")
+        return "\n".join(_lines_of_paragraph(first, rest))
     if block.kind == "definition":
         term = block.term.strip() or block.definition_id.replace("-", " ").title()
         did = block.definition_id.strip()

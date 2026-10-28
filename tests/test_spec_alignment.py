@@ -3433,8 +3433,6 @@ def test_a_source_block_in_a_list_item_is_its_content():
     # whitespace (CommonMark).
     ("a\n   b  \n", "a\nb"),
     ("a\n    - b\n", "a\n- b"),
-    # Link reference definitions, each on its line.
-    ("[a]: https://example.com/a\n[b]: https://example.com/b\n", "[a]: https://example.com/a\n[b]: https://example.com/b"),
 ])
 def test_a_paragraph_keeps_its_lines(body, text):
     [block] = parse(_FRONTMATTER + body).sections[0].blocks
@@ -3449,10 +3447,21 @@ def test_a_paragraph_keeps_its_lines(body, text):
     "- a\\\n  b\n",
     "> a  \n> b\n",
     "- > a  \n  > b\n",
-    "[a]: https://example.com/a\n[b]: https://example.com/b\n\nSee [a] and [b].\n",
 ])
 def test_a_hard_line_break_is_written_back(body):
     assert serialize(parse(_FRONTMATTER + body)).endswith("\n" + body)
+
+
+def test_link_reference_definitions_are_blocks_written_apart():
+    """Each is a block of its own (#92), so the layout is normalised: one per
+    paragraph, the model the same on a second reading."""
+    body = "[a]: https://example.com/a\n[b]: https://example.com/b\n\nSee [a] and [b].\n"
+    document = parse(_FRONTMATTER + body)
+    assert [b.kind for b in document.sections[0].blocks] == ["link_definition", "link_definition", "paragraph"]
+    assert serialize(document).endswith(
+        "\n[a]: https://example.com/a\n\n[b]: https://example.com/b\n\nSee [a] and [b].\n"
+    )
+    _round_trips(body)
 
 
 def test_an_items_and_a_quotes_paragraphs_keep_their_lines():
