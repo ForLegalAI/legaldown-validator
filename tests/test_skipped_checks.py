@@ -83,7 +83,7 @@ def test_an_include_read_by_no_loader_draws_one_warning_at_its_line():
     (warning,) = _warnings(text)
     assert (warning.level, warning.line, warning.host_dependent) == ("warning", _at(text, "p.lgd"), False)
     message = warning.message
-    assert message.startswith("2 `{{include:}}` paragraphs; 2 includes not read: no loader")
+    assert message.startswith("2 `{{include:}}` paragraphs; 2 includes not read (2 have no loader to read them)")
     for rule in ("include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
                  "include-cycle", "include-anchor-duplicate", "combined-document checks (§16.11)"):
         assert rule in message
@@ -124,8 +124,8 @@ def test_each_reason_an_include_is_not_read_is_counted_apart():
     text = _FRONT + _BODY + "{{include: gone.lgd}}\n\n{{include: ../out.lgd}}\n\n{{include: absent.lgd}}\n"
     result = validate(parse(text, filename="main.lgd"), resolve=_loader({}))
     (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
-    assert "2 includes not read: it could not be read (include-file-missing)" in warning.message
-    assert "1 include not read: its path leads out of the document's directory" in warning.message
+    assert "2 could not be read (include-file-missing)" in warning.message
+    assert "1 leads out of the document's directory, which is not read" in warning.message
     # Asked for, and a file that is not there is an Error of its own: that check was made.
     assert [d.rule for d in result.diagnostics if d.rule == "include-file-missing"] == ["include-file-missing"] * 2
     assert "include-file-missing, include-has-frontmatter" in warning.message  # for the one that leads out
@@ -135,7 +135,7 @@ def test_an_include_of_the_document_itself_is_not_read(tmp_path):
     path = tmp_path / "main.lgd"
     path.write_text(_FRONT + _BODY + "{{include: main.lgd}}\n", encoding="utf-8")
     (warning,) = [d for d in validate(load(path)).diagnostics if d.rule == SKIPPED_RULE]
-    assert "1 include not read: it names the document itself" in warning.message
+    assert "1 include not read (1 is the document itself)" in warning.message
     assert "include-cycle" in warning.message
 
 
@@ -155,7 +155,7 @@ def test_a_fragment_validated_on_its_own_does_not_follow_its_includes():
     result = validate(parse(text), fragment=True)
     (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
     assert warning.line == 3 and not warning.host_dependent
-    assert "the includes inside a fragment are not followed" in warning.message
+    assert "1 include not read (1 is in a fragment, where includes are not followed)" in warning.message
 
 
 # ── The other categories of §17.4 ───────────────────────────────────────
@@ -208,9 +208,6 @@ def test_a_path_that_leads_out_of_the_directory_is_an_import_that_did_not_happen
     ) in warning.message
     (amends,) = _warnings(_amended("../shared/orig.lgd"), resolve=loader)
     assert "amend-term-undefined" in amends.message and asked == []
-    # The path is judged as it is written once stripped, as the references are: a leading space is no name.
-    (spaced,) = _warnings(_attached(" ../shared/defs.lgd"), resolve=loader)
-    assert "(1 leads out of the document's directory, which is not read)" in spaced.message and asked == []
 
 
 def test_each_reason_is_counted_and_worded_by_its_number():

@@ -19,7 +19,7 @@ import string
 from bisect import bisect_left
 from collections.abc import Callable, Container
 from functools import cache, partial
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple, assert_never
 from urllib.parse import unquote
 
 from ..directives import Directive, Lexed, is_escaped, mask_directives
@@ -31,6 +31,11 @@ from .result import Line, _Recorder
 
 if TYPE_CHECKING:
     from ..definitions import PlacedLinkDefinition
+
+
+#: What is wrong with a path (``FileReferences._finding``): it is absolute, the document is outside the
+#: root (so every path leaves it), or the path leads out of the root.
+FindingKind = Literal["not-relative", "document-outside", "leaves"]
 
 
 class FileReference(NamedTuple):
@@ -139,7 +144,7 @@ class FileReferences:
         path = path.strip()
         return self._finding(path, path, True) is not None
 
-    def _finding(self, judged: str, decoded: str, whole: bool) -> tuple[str, str, str] | None:
+    def _finding(self, judged: str, decoded: str, whole: bool) -> tuple[FindingKind, str, str] | None:
         """What is wrong with a path, as written (*judged*) and percent-decoded (*decoded*, the
         same when it is not an image's), or None: ``("not-relative", form, form)`` when it is
         absolute, in the *form* that makes it so; ``("document-outside", judged, judged)`` when the
@@ -208,13 +213,15 @@ class FileReferences:
                     line=self._line,
                 )
             self._said_outside = True
-        else:
+        elif kind == "leaves":
             self._result.error(
                 "path-outside-root",
                 f"File reference '{written}' ({what}{_reading(known, judged, form, names)}) leads out of the "
                 f"document root '{self._root}' (§2.3).",
                 line=line,
             )
+        else:
+            assert_never(kind)
         return True
 
 

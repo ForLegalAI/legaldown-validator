@@ -601,14 +601,15 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
   imported, so that a `def-duplicate-id` against them (§16.10) is not made; or a file that could not be read
   (the loader has none, frontmatter that cannot be read, or a backslash or a null byte in the path, which no
   finding reports). The message counts each reason (`3 LegalDown attachment files (1 leads out of the
-  document's directory, which is not read; 2 could not be read)`). A path is judged as it is written once
-  stripped, as the references are. With the deprecated `import_attachment_definitions`, any path the
+  document's directory, which is not read; 2 could not be read)`). With the deprecated `import_attachment_definitions`, any path the
   importer was asked about and gave nothing for is one that could not be read, whatever the path is.
 - **When `amend-term-undefined` is named, for the original.** Whenever the definitions of the original an
   `amends.file` names were not imported, for any reason, so for every one above and also for its own path
   and for a file that is not LegalDown. A term then drops quietly to the Info `amend-term-unresolvable`,
   so the Error check is not made, and §17.5 asks that it be said. Attachment files and the original differ
-  only on the document's own path.
+  in two ways: the document's own path is not counted for an attachment file, and a file that is not
+  LegalDown is never counted for an attachment (it is not imported at all) while the original that is not
+  LegalDown is.
 - **Core rules are not named here.** The Core rules this implementation lacks
   (`translation-implicit-id`, `translation-authoritative-absent`, `language-code-invalid`,
   `authoritative-not-declared`, `definition-used-before-declaration`) are gaps in Core, not

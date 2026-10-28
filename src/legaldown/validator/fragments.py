@@ -21,7 +21,7 @@ from functools import cache, cached_property
 from typing import Literal
 
 from ..directives import Lexed, lex
-from ..files import LoadFile, relative_path, relative_path_problem, within
+from ..files import LoadFile, relative_path, relative_path_check, within
 from ..models import Document, Metadata
 from ..positions import Locator
 from .patterns import LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
@@ -498,8 +498,8 @@ def check_includes(
         # any other is include-file-missing, as assembly refuses the template for it. It is not
         # path-not-relative (an absolute path or a URI scheme, judged above), nor
         # path-outside-root, which judges where it leads.
-        relative = relative_path(include.written)
-        if relative is None and relative_path_problem(include.written) == "leads-out":
+        relative, problem = relative_path_check(include.written)
+        if relative is None and problem == "leads-out":
             # Not judged above, so (given a root) within it: a valid path (§2.3), with a root or
             # without, that this implementation does not read, as it reads nothing outside the
             # document's directory. A known limitation (CONFORMANCE.md, #109), and no finding:

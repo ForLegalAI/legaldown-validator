@@ -86,7 +86,7 @@ def relative_path_problem(path: str) -> Literal["leads-out", "invalid"] | None:
     not one a ``LoadFile`` is asked for; ``"invalid"`` when it is none (empty, absolute,
     with a URI scheme or a drive letter, a backslash or a null byte, or the directory
     itself); None when it is a path to read."""
-    return _check_relative(path)[1]
+    return relative_path_check(path)[1]
 
 
 def relative_path_check(path: str) -> tuple[str | None, Literal["leads-out", "invalid"] | None]:
@@ -103,8 +103,7 @@ def relative_path(path: str) -> str | None:
     a backslash or a null byte, or leading out of the directory
     (``relative_path_problem`` says which). A ``LoadFile`` is asked for these paths
     and no others."""
-    normalized, problem = _check_relative(path)
-    return None if problem else normalized
+    return relative_path_check(path)[0]
 
 
 def file_loader(base: str | os.PathLike[str]) -> LoadFile:

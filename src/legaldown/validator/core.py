@@ -1174,7 +1174,6 @@ def _definitions_in(
 
     # Asked for as assembly asks (§15.7): normalized, and only a path within
     # the document's directory (§2.3).
-    path = path.strip()  # as the references are judged
     if references.is_wrong(path):
         return _Imported(None, "rejected")
     if files is None:
@@ -1947,7 +1946,8 @@ def _validate(
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             owner_of = None  # for definition-circular, once a {{term:}} asks
-            noted = bool(notes) and in_drafting_note(notes, fragment_index)
+            # Only an image or a directive asks, and only a block with a drafting note has one.
+            noted = bool(notes) and ("![" in fragment or bool(lexed.directives)) and in_drafting_note(notes, fragment_index)
             if "![" in fragment:
                 check_fragment_images(
                     fragment, lexed, file_references, where, section_index, block_index, fragment_index,

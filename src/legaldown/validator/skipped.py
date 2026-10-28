@@ -50,23 +50,44 @@ def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
+#: Why a file a document names was not read, as a message says it of one file and of several, for each
+#: ``UnreadReason``: the one wording an include and an attachment file share.
+REASONS: dict[str, tuple[str, str]] = {
+    "no-resolver": ("has no loader to read it", "have no loader to read them"),
+    "leads-out": (
+        "leads out of the document's directory, which is not read",
+        "lead out of the document's directory, which is not read",
+    ),
+    "unreadable": ("could not be read", "could not be read"),
+    "own": ("is the document itself", "are the document itself"),
+    "rejected": (
+        "has a path refused by path-not-relative or path-outside-root",
+        "have paths refused by path-not-relative or path-outside-root",
+    ),
+}
+#: The reasons an import of definitions did not happen for: every one but the document's own, whose
+#: definitions are the document's already (``_Imported.not_imported`` in core.py).
+_IMPORT_REASONS = {reason: phrases for reason, phrases in REASONS.items() if reason != "own"}
+NOT_IMPORTED = frozenset(_IMPORT_REASONS)
+
+
+def _counted(noun: str, reasons: Sequence[str], phrases: dict[str, tuple[str, str]], after: str = "") -> str:
+    """How many files there are and why, a count for each reason: ``3 LegalDown attachment files (1 leads
+    out of the document's directory, which is not read; 2 could not be read)``. *after* follows the noun."""
+    why = [
+        f"{number} {phrases[reason][number != 1]}"
+        for reason in phrases
+        if (number := reasons.count(reason))
+    ]
+    return f"{_count(len(reasons), noun)}{after} ({'; '.join(why)})"
+
+
 def _unread(unread: list[UnreadInclude], fragment: bool) -> list[str]:
     """How many includes were not read, and why, for the message."""
-    reasons = {
-        "no-resolver": (
-            "the includes inside a fragment are not followed" if fragment
-            else "no loader to read it (no `resolve`, and the document has no path)"
-        ),
-        "leads-out": "its path leads out of the document's directory, which is not read",
-        "unreadable": "it could not be read (include-file-missing)",
-        "own": "it names the document itself",
-    }
-    found = []
-    for reason, because in reasons.items():
-        number = sum(1 for each in unread if each.reason == reason)
-        if number:
-            found.append(f"{_count(number, 'include')} not read: {because}")
-    return found
+    phrases = {**REASONS, "unreadable": ("could not be read (include-file-missing)",) * 2}
+    if fragment:
+        phrases["no-resolver"] = ("is in a fragment, where includes are not followed",) * 2
+    return [_counted("include", [each.reason for each in unread], phrases, " not read")] if unread else []
 
 
 def _includes(
@@ -107,29 +128,6 @@ def _includes(
     )
 
 
-#: Why the definitions of a LegalDown attachment file were not imported, each as a message says it of
-#: one file and of several: every reason but the document's own (``own``), whose definitions are the
-#: document's already. This is the one place the reasons are listed (``_Imported.not_imported``).
-NOT_IMPORTED = {
-    "no-resolver": ("has no loader to read it", "have no loader to read them"),
-    "leads-out": ("leads out of the document's directory, which is not read", "lead out of the document's directory, which is not read"),
-    "unreadable": ("could not be read", "could not be read"),
-    "rejected": ("has a path refused by path-not-relative or path-outside-root", "have paths refused by path-not-relative or path-outside-root"),
-}
-
-
-def _not_imported(reasons: Sequence[str]) -> str:
-    """The attachment files with no definitions imported, with a count for each reason:
-    ``3 LegalDown attachment files (1 leads out of the document's directory, which is not read;
-    2 could not be read)``."""
-    why = [
-        f"{number} {NOT_IMPORTED[reason][number != 1]}"
-        for reason in NOT_IMPORTED
-        if (number := reasons.count(reason))
-    ]
-    return f"{_count(len(reasons), 'LegalDown attachment file')} ({'; '.join(why)})"
-
-
 def _attachments(document: Document, where: Locator, unread: Sequence[str]) -> SkippedCategory | None:
     files = [(index, att.file.strip()) for index, att in enumerate(document.metadata.attachments) if att.file.strip()]
     if not files:
@@ -140,7 +138,10 @@ def _attachments(document: Document, where: Locator, unread: Sequence[str]) -> S
         rules += ["attachment-has-frontmatter", "attachment-has-h1", "attachment-anchor-duplicate"]
     parts = [_join(rules)]
     if unread:
-        parts.append(f"importing the definitions of {_not_imported(unread)}")
+        parts.append(
+            "importing the definitions of "
+            + _counted("LegalDown attachment file", unread, _IMPORT_REASONS)
+        )
     return SkippedCategory(
         "attachments",
         f"{_count(len(files), 'attachment file')} declared ({legaldown} LegalDown). Not performed: "
@@ -220,7 +221,7 @@ def skipped_categories(
     did with them; *image* is the first image path to hold no finding of its own
     (``FileReferences.first_image``), or None; *fragment*: the document is validated on its own, as a fragment;
     *attachments_unread*: why each of its LegalDown attachment files had no definitions
-    imported (``_Imported.missing``: not for its own, nor for a path that is a finding);
+    imported (``NOT_IMPORTED``: every reason but the document's own);
     *amends_unread*: the same of the original it amends."""
     found = [
         _includes([each for each in includes if each.paragraph], outcome, template, fragment),
