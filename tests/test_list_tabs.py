@@ -101,13 +101,10 @@ def test_columns_are_counted_from_the_start_of_a_line_that_is_read_whole() -> No
     assert _paragraph_open("- \t-\t a") is True
     assert _paragraph_open("-\t-\t  a") is False
     # After a paragraph, spacing of more than four columns after a marker that cannot interrupt it is no code.
-    assert _paragraph_open("2) 1)     e") is False
-    assert _paragraph_open("2) 1)     e", True) is True
-    assert _paragraph_open("# h", True) is False
+    assert _opens_paragraph("2) 1)     e") is False
+    assert _opens_paragraph("2) 1)     e", after_paragraph=True) is True
     # A bare ``-`` under paragraph text underlines it: a heading, no paragraph open.
-    assert _paragraph_open("-", _paragraph_open("text")) is False
     assert _opens_paragraph("-", after_paragraph=True) is False
-    assert _paragraph_open("2.", True) is True  # an empty item numbered 2 is text there
 
 
 def test_walks_keep_no_entry_for_text_with_a_tab() -> None:

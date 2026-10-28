@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import bisect
 import copy
-import enum
 import posixpath
 import re
 import reprlib
@@ -65,7 +64,6 @@ from .parser import (
     _may_interrupt,
     _opens_paragraph,
     _row_width_end,
-    _skip_markers,
     parse,
     quote_content,
 )
@@ -490,10 +488,6 @@ class _Source:
     #: marker there is a container marker (§15.7.3).
     item_lines: frozenset[int] = frozenset()
     malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
-    #: Whether paragraph text is open after each line as written (``_Paragraph``),
-    #: read one line after the other as far as a line-start check needs
-    #: (``_open_after``).
-    open_after: list[int] = field(default_factory=list)
 
 
 def _unix(text: str) -> tuple[str, str]:
@@ -1304,16 +1298,9 @@ def _emit(source: _Source, removed: set[int], answers: _Answers) -> list[_Line]:
                 continue
             line.check |= line.first is not None
         lines.append(line)
-    # Whether paragraph text is open is read line after line, but only as far as
-    # the last line to check: most documents have none.
-    checked = [k for k, line in enumerate(lines) if line.check]
-    previous_open = _Paragraph.NONE  # what paragraph text is open after the output line before
-    for k in range(checked[-1] + 1 if checked else 0):
-        line = lines[k]
+    for k, line in enumerate(lines):
         if line.check:
-            line.text = _line_start(line, previous_open, source)
-        if k < checked[-1]:
-            previous_open = _paragraph_after(line.text, previous_open)
+            line.text = _line_start(line, lines[k - 1].text if k else None, source)
     return lines
 
 
@@ -1529,16 +1516,15 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
     return None
 
 
-def _paragraph_open(line: str, after_paragraph: bool = False) -> bool:
+def _paragraph_open(line: str | None) -> bool:
     """True if *line* leaves paragraph text open, which the next line would
-    continue — the parser's own reading of a line's content. *after_paragraph*:
-    one is open before it, so that a marker that cannot interrupt it starts no
-    item."""
+    continue — the parser's own reading of a line's content."""
     return (
-        not is_blank(line)
+        line is not None
+        and not is_blank(line)
         and not FENCE_OPEN_RE.match(line)
         and not re.fullmatch(r" {0,3}=+[ \t]*", line)
-        and _opens_paragraph(line, after_paragraph=after_paragraph)
+        and _opens_paragraph(line)
     )
 
 
@@ -1564,98 +1550,28 @@ def _containers(written: str, in_paragraph: bool, limit: int | None, *, item: bo
     return end, listed
 
 
-class _Paragraph(enum.IntEnum):
-    """What paragraph text is open after a line, as far as a line-start check
-    can know it without reading the containers the lines are in. When it is
-    not certain which, it is the one that makes the escaping of what follows
-    more, not less (an escape that was not needed changes no meaning; one that
-    is missing starts a block)."""
-
-    NONE = 0
-    #: One may be open, in a list item or a block quote or not: whether the line
-    #: after it is in the container that holds it is not known, so that line is
-    #: read as after a paragraph and as after none (``_line_start``). (Short
-    #: of the container's content, ``2.`` or an empty item starts an item.)
-    OPEN = 1
-    #: One is open that no container holds: it began at column 0 with no
-    #: container open, and only plain text, or a line that is text there (a
-    #: marker that cannot interrupt a paragraph, or indented code) has
-    #: continued it. The line after it is read as its text.
-    TEXT = 2
-
-
-_UNDERLINE_RE = re.compile(r" {0,3}=+[ \t]*")
-
-
-def _paragraph_after(line: str, before: int) -> int:
-    """What paragraph text is open after *line*, which follows a line that left
-    *before* (a ``_Paragraph``)."""
-    underline = _UNDERLINE_RE.fullmatch(line) is not None
-    if before == _Paragraph.TEXT:
-        if not _paragraph_open(line, True):
-            return _Paragraph.NONE  # (a setext underline too)
-        if _paragraph_open(line) and not _plain(line):
-            return _Paragraph.OPEN  # it opens a container, the paragraph is its
-        return _Paragraph.TEXT
-    if before == _Paragraph.OPEN and (underline or _paragraph_open(line, True)):
-        return _Paragraph.OPEN  # it continues the paragraph, or is one in the container it is in
-    if underline or _paragraph_open(line):
-        # Text at column 0 that no container can hold, with no paragraph open to
-        # continue (the lines before it were blanks, headings, rules...): the
-        # paragraph is the document's.
-        if before == _Paragraph.NONE and line[:1] not in (" ", "\t") and _plain(line):
-            return _Paragraph.TEXT
-        return _Paragraph.OPEN
-    return _Paragraph.NONE
-
-
-def _plain(line: str) -> bool:
-    """True if *line* opens no block quote or list item: it has only text."""
-    position, _code = _skip_markers(line, quotes=True)
-    return not line[:position].strip(" \t")
-
-
-def _open_after(source: _Source, index: int) -> int:
-    """What paragraph text is open after the template line *index* as written
-    (``_Paragraph``): each line read after the one before it, so that a line that
-    is text because of the paragraph open (a marker that cannot interrupt it) is
-    the paragraph's for the lines after it."""
-    opened = source.open_after
-    while len(opened) <= index:
-        opened.append(_paragraph_after(source.lines[len(opened)], opened[-1] if opened else _Paragraph.NONE))
-    return opened[index]
-
-
-def _line_start(line: _Line, previous_open: int, source: _Source) -> str:
-    """The line-start check (§15.7.3) of *line*, which follows an output line
-    after which paragraph text is open as *previous_open* says (``_Paragraph``)."""
-    written = source.lines[line.origin]
-    before = _open_after(source, line.origin - 1) if line.origin > 0 else _Paragraph.NONE
-    # (Not certain to be in a paragraph: the marker of the line as written is read as one that
-    # starts an item, and what it begins as any of the two.)
-    prefix, listed = _containers(written, before == _Paragraph.TEXT, line.first, item=line.origin in source.item_lines)
+def _line_start(line: _Line, previous: str | None, source: _Source) -> str:
+    """The line-start check (§15.7.3) of *line*, which follows *previous* in
+    the output."""
+    template = source.lines
+    written = template[line.origin]
+    written_previous = template[line.origin - 1] if line.origin else None
+    was_open = _paragraph_open(written_previous)
+    prefix, listed = _containers(written, was_open, line.first, item=line.origin in source.item_lines)
     content = line.text[prefix:]
     if line.first is not None and not written[prefix:line.first].strip(" \t"):
         content = content.lstrip(" \t")
-    inside = written[prefix:]
-    was = {_construct(inside, in_paragraph=before != _Paragraph.NONE and not listed)}
-    if before == _Paragraph.OPEN:
-        was.add(_construct(inside, in_paragraph=False))
-    escaped = _escape_start(content, previous_open != _Paragraph.NONE and not listed, was)
-    if not listed and (previous_open == _Paragraph.OPEN or (previous_open and ">" in line.text[:prefix])):
-        # The paragraph may be that of a container the line is not in (a list item
-        # or a quote that it is short of, or a quote that it opens): the line starts
-        # its own blocks there, as after no paragraph. It is read both ways.
-        escaped = _escape_start(escaped, False, was)
-    return line.text[:prefix] + escaped
+    was = _construct(written[prefix:], in_paragraph=was_open and not listed)
+    now_open = _paragraph_open(previous) and not listed
+    return line.text[:prefix] + _escape_start(content, now_open, was)
 
 
-def _escape_start(content: str, in_paragraph: bool, was: set[str | None]) -> str:
+def _escape_start(content: str, in_paragraph: bool, was: str | None) -> str:
     """*content* kept from beginning a block construct the template line did
-    not begin (any of *was*): a backslash before its first character, or before the ``.``
+    not begin: a backslash before its first character, or before the ``.``
     or ``)`` of an ordered-list number; indented code loses its indentation."""
     kind = _construct(content, in_paragraph=in_paragraph)
-    if kind is None or kind in was:
+    if kind is None or kind == was:
         return content
     if kind == "code":
         return _escape_start(content.lstrip(" \t"), in_paragraph, was)
