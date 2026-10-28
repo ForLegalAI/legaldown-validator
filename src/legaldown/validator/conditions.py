@@ -228,40 +228,41 @@ class Exclusivity:
     some question both name, what they want and refuse between them leaves no
     answer. A pair that names no question in common is excluded only in the
     first way, which a caller can use to skip testing it (``appears``,
-    ``questions``). An instance may be called, as ``exclusive`` is."""
+    ``questions``)."""
 
     def __init__(self, questions: Any) -> None:
         self._questions = questions
         self._answers: dict[str, Collection[Any]] = {}
-        self._profiles: dict[Presence, tuple[bool, _Profile]] = {}
+        self._entries: dict[Presence, tuple[bool, _Profile]] = {}
 
-    def _answers_of(self, question: str) -> Collection[Any]:
+    def answers(self, question: str) -> Collection[Any]:
+        """Every answer *question* can have (``question_answers``), kept."""
         if question not in self._answers:
             self._answers[question] = question_answers(question, self._questions)
         return self._answers[question]
 
-    def _profile(self, presence: Presence) -> tuple[bool, _Profile]:
-        if presence not in self._profiles:
+    def _entry(self, presence: Presence) -> tuple[bool, _Profile]:
+        if presence not in self._entries:
             by_wanted_refused = _profile(presence)
             appears = all(
-                _some_answer_wanted(wanted, refused, self._answers_of(question))
+                _some_answer_wanted(wanted, refused, self.answers(question))
                 for question, (wanted, refused) in by_wanted_refused.items()
             )
-            self._profiles[presence] = appears, by_wanted_refused
-        return self._profiles[presence]
+            self._entries[presence] = appears, by_wanted_refused
+        return self._entries[presence]
 
     def appears(self, presence: Presence) -> bool:
         """``satisfiable``: some answers make *presence* hold."""
-        return self._profile(presence)[0]
+        return self._entry(presence)[0]
 
     def questions(self, presence: Presence) -> Collection[str]:
         """The questions *presence* has a condition on."""
-        return self._profile(presence)[1].keys()
+        return self._entry(presence)[1].keys()
 
     def excluded(self, first: Presence, second: Presence) -> bool:
         """``exclusive(first, second, questions)``."""
-        first_appears, first_values = self._profile(first)
-        second_appears, second_values = self._profile(second)
+        first_appears, first_values = self._entry(first)
+        second_appears, second_values = self._entry(second)
         if not (first_appears and second_appears):
             return True
         if len(second_values) < len(first_values):
@@ -281,11 +282,9 @@ class Exclusivity:
             elif other_wanted:
                 if not other_wanted.isdisjoint(refused):
                     return True
-            elif not _some_answer_wanted(wanted, refused | other_refused, self._answers_of(question)):
+            elif not _some_answer_wanted(wanted, refused | other_refused, self.answers(question)):
                 return True
         return False
-
-    __call__ = excluded
 
 
 def always_covered(presence: Presence, targets: Sequence[Presence], questions: Any) -> bool:
@@ -320,55 +319,57 @@ def _covered(possible: dict[str, list[Any]], targets: Sequence[_Profile]) -> boo
     is not the interpreter's (a target for each of many questions would be
     deep), and so that ``possible`` is restored whichever way it ends.
     """
-    stack: list[tuple[str, list[Any], Iterator[tuple[Any, list[_Profile]]]]] = []
+    #: The answers still possible for each question as a set too, to ask in O(1).
+    members = {question: frozenset(answers) for question, answers in possible.items()}
+    stack: list[tuple[str, list[Any], frozenset[Any], Iterator[tuple[Any, list[_Profile]]]]] = []
     covered: bool | None = None  # None: *targets* are still to be looked at
     try:
         while True:
             if covered is None:
-                step = _step(possible, targets)
+                step = _step(possible, members, targets)
                 if isinstance(step, bool):
                     covered = step
                 else:
                     stack.append(step)
             if covered is False or (covered and not stack):
                 return covered
-            question, saved, branches = stack[-1]
+            question, saved, saved_members, branches = stack[-1]
             branch = next(branches, None)
             if branch is None:
-                possible[question] = saved  # every answer to it is covered
+                possible[question], members[question] = saved, saved_members  # every answer to it is covered
                 stack.pop()
                 covered = True
             else:
-                possible[question] = [branch[0]]
+                possible[question], members[question] = [branch[0]], frozenset((branch[0],))
                 targets = branch[1]
                 covered = None
     finally:
         while stack:
-            question, saved, _branches = stack.pop()
-            possible[question] = saved
+            question, saved, saved_members, _branches = stack.pop()
+            possible[question], members[question] = saved, saved_members
 
 
 def _step(
-    possible: dict[str, list[Any]], targets: Sequence[_Profile]
-) -> bool | tuple[str, list[Any], Iterator[tuple[Any, list[_Profile]]]]:
+    possible: dict[str, list[Any]], members: dict[str, frozenset[Any]], targets: Sequence[_Profile]
+) -> bool | tuple[str, list[Any], frozenset[Any], Iterator[tuple[Any, list[_Profile]]]]:
     """Whether the *targets* are decided under the *possible* answers: True
     if one is certain, False if none can hold. Otherwise the question to
-    narrow, its answers as they were, and the branches to try, each an answer
-    and the targets that can hold under it."""
+    narrow, its answers as they were (as a list and as a set), and the branches to
+    try, each an answer and the targets that can hold under it."""
     live: list[tuple[_Profile, int, str]] = []  # a target, the questions it leaves open, the first
     undecided = ""  # a question some live target leaves open
     for profile in targets:
         open_count = 0
         open_question = ""
         for question, (wanted, refused) in profile.items():
-            answers = possible[question]
+            answers = members[question]
             if len(wanted) > 1:
                 holding = 0
             elif wanted:
                 (value,) = wanted
                 holding = int(value in answers and value not in refused)
             else:
-                holding = len(answers) - sum(1 for value in refused if value in answers)
+                holding = len(answers) - len(refused & answers)
             if not holding:
                 break  # impossible under these answers
             if holding < len(answers):
@@ -382,6 +383,7 @@ def _step(
     if not live:
         return False
     answers = possible[undecided]
+    answer_set = members[undecided]
     # The live targets that want an answer to the question, by answer, and those that
     # refuse some (or none): they hold under every other answer.
     wanting: dict[Any, list[_Profile]] = {}
@@ -404,7 +406,7 @@ def _step(
             refusing.append((profile, refused))
             mentioned.update(refused)
             if open_count == 1 and open_question == undecided:
-                refused_here = {value for value in refused if value in answers}
+                refused_here = refused & answer_set
                 sure = refused_here if sure is None else sure & refused_here
 
     def branches() -> Iterator[tuple[Any, list[_Profile]]]:
@@ -422,4 +424,4 @@ def _step(
                 *(profile for profile, refused in refusing if answer not in refused),
             ]
 
-    return undecided, answers, branches()
+    return undecided, answers, answer_set, branches()

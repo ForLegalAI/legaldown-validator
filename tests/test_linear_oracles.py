@@ -1004,3 +1004,21 @@ def test_a_target_for_each_of_many_questions_is_searched_without_recursion():
         assert conditions_module.always_covered(frozenset(), covering, questions)
     finally:
         sys.setrecursionlimit(limit)
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_the_chunked_tally_excludes_what_the_counted_one_did_past_a_chunk(seed):
+    """Thousands of declarations fill several chunks of bits, some answers refused only in the first."""
+    rng = random.Random(110_900 + seed)
+    answers = [f"v{i}" for i in range(rng.randint(3, 9))]
+    old, new = OldAnswerTally(), core._AnswerTally()
+    for count in range(3000):
+        # Late declarations leave out some answers, so those have shorter bitmaps.
+        usable = answers if count < 1500 else answers[: len(answers) - 1]
+        wanted, refusal = _wants_or_refuses(rng, usable)
+        old.add(wanted, refusal)
+        new.add(wanted, refusal)
+        if count % 250 == 0:
+            for _ in range(20):
+                wanted, refusal = _wants_or_refuses(rng, answers)
+                assert new.excluded(wanted, refusal, answers) == old.excluded(wanted, refusal, len(answers)), count

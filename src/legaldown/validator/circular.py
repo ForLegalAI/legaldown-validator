@@ -141,7 +141,7 @@ def find_circular_definitions(
     document: Document,
     registered: Sequence[tuple[DefinitionRef, Presence]],
     uses: Iterable[TermUse],
-    excluded: Callable[[Presence, Presence], bool] | None = None,
+    excluded: Exclusivity | None = None,
 ) -> list[list[int]]:
     """The circles among the definitions of *document*.
 
@@ -164,16 +164,14 @@ def find_circular_definitions(
     where an edge is impossible, one reference and one alternative at a time:
     a circle whose members exclude each other further round (``d1`` when
     ``q``, ``d3`` when not ``q``, with ``d2`` and ``d4`` between) is still
-    found, as a Warning is better given than withheld. The work is a test of
-    each distinct pair of presences, once.
-
-    Given an ``Exclusivity``, a reference is tested only against the
-    alternatives that name a question it names (the others can appear with
-    it, unless one of them can never appear: those are not reached), and at
-    most ``MAX_EXCLUSION_TESTS`` pairs are tested in all. Past that, a
-    reference reaches every alternative of the id it names, which can only
-    join circles, never split one: no circular definition goes unreported,
-    though circles may merge into fewer Warnings, at other lines.
+    found, as a Warning is better given than withheld. A reference is tested
+    only against the alternatives that name a question it names (the others
+    can appear with it, unless one of them can never appear: those are never
+    reached), and at most ``MAX_EXCLUSION_TESTS`` pairs are tested in all.
+    Past that, a reference reaches every alternative of the id it names that
+    can appear, which can only join circles, never split one: no circular
+    definition goes unreported, though circles may merge into fewer Warnings,
+    at other lines.
 
     Each circle is a list of indices into *registered*, ascending. They are
     ordered by their last index: the definition where the circle closes, in
@@ -202,12 +200,25 @@ def find_circular_definitions(
         scope = scope_of(ref.section_index, ref.block_index, ref.fragment_index)
         own_scope.append(scope_node.setdefault(scope, count + len(scope_node)))
         declarations.setdefault(ref.id, []).append(number)
-    # The declarations of an id are one node when a reference reaches them
-    # all: a paragraph that mentions thousands of alternatives of one id, or a
-    # thousand paragraphs that mention the same alternatives, are then not a
+    # What a reference can reach of an id: its declarations, but for those that can
+    # never appear, which no reference reaches in a template (they are excluded
+    # with every presence).
+    reachable = declarations
+    by_question: dict[str, dict[str, list[int]]] = {}  # per id, its numbers by the questions they name
+    if excluded is not None:
+        reachable = {}
+        for def_id, numbers in declarations.items():
+            reachable[def_id] = [number for number in numbers if excluded.appears(registered[number][1])]
+            named = by_question[def_id] = {}
+            for number in reachable[def_id]:
+                for question in excluded.questions(registered[number][1]):
+                    named.setdefault(question, []).append(number)
+    # The reachable declarations of an id are one node when a reference reaches
+    # them all: a paragraph that mentions thousands of alternatives of one id, or
+    # a thousand paragraphs that mention the same alternatives, are then not a
     # product of edges.
     id_node: dict[str, int] = {}
-    for def_id, numbers in declarations.items():
+    for def_id, numbers in reachable.items():
         if len(numbers) > 1:
             id_node[def_id] = count + len(scope_node) + len(id_node)
 
@@ -229,41 +240,24 @@ def find_circular_definitions(
         if scope in scope_node:
             references.setdefault(scope_node[scope], {})[use.target, use.presence] = None
 
-    excludes: dict[tuple[Presence, Presence], bool] = {}
     reached: dict[tuple[str, Presence], list[int]] = {}
-    exclusivity = excluded if isinstance(excluded, Exclusivity) else None
-    tests = 0  # the pairs ``exclusivity`` has tested: it stops pruning at MAX_EXCLUSION_TESTS
-    #: Per id, for an ``Exclusivity``: the numbers of its alternatives that can
-    #: appear, by the questions they name, and those that never can.
-    named: dict[str, tuple[dict[str, list[int]], list[int]]] = {}
+    tests = 0  # the pairs of presences tested: pruning stops at MAX_EXCLUSION_TESTS
 
     def reach_excluding(exclusivity: Exclusivity, target: str, presence: Presence) -> list[int] | None:
         """What a reference with *presence* reaches among the alternatives of
-        *target*, tested only against those that name a question it names: an
-        alternative that can appear cannot exclude a reference that can appear
+        *target* that can appear, tested only against those that name a question
+        it names: one that can appear cannot exclude a reference that can appear
         unless they share a question. None when the tests would pass the cap."""
         nonlocal tests
-        numbers = declarations[target]
-        if target not in named:
-            by_question: dict[str, list[int]] = {}
-            never: list[int] = []
-            for number in numbers:
-                alternative = registered[number][1]
-                if exclusivity.appears(alternative):
-                    for question in exclusivity.questions(alternative):
-                        by_question.setdefault(question, []).append(number)
-                else:
-                    never.append(number)
-            named[target] = by_question, never
-        by_question, never = named[target]
+        numbers = reachable[target]
         if not exclusivity.appears(presence):
             return []  # it excludes every alternative
-        excluded_numbers = set(never)
         questions = exclusivity.questions(presence)
         if len(questions) == 1:
-            candidates: Iterable[int] = by_question.get(next(iter(questions)), ())  # in order
+            candidates: Iterable[int] = by_question[target].get(next(iter(questions)), ())  # in order
         else:
-            candidates = sorted({n for question in questions for n in by_question.get(question, ())})
+            candidates = sorted({n for question in questions for n in by_question[target].get(question, ())})
+        excluded_numbers = set()
         for number in candidates:
             if tests >= MAX_EXCLUSION_TESTS:
                 return None
@@ -274,19 +268,11 @@ def find_circular_definitions(
 
     def reach(target: str, presence: Presence) -> list[int]:
         if (target, presence) not in reached:
-            numbers = declarations[target]
-            if exclusivity is not None:
-                keep = reach_excluding(exclusivity, target, presence)
-                if keep is None:
-                    keep = numbers  # past the cap: the alternatives are not told apart
-            else:
-                keep = []
-                for number in numbers:
-                    pair = (presence, registered[number][1])
-                    if excluded is not None and pair not in excludes:
-                        excludes[pair] = excluded(*pair)
-                    if excluded is None or not excludes[pair]:
-                        keep.append(number)
+            numbers = reachable[target]
+            keep = numbers
+            if excluded is not None:
+                pruned = reach_excluding(excluded, target, presence)
+                keep = numbers if pruned is None else pruned  # past the cap: the alternatives are not told apart
             reached[target, presence] = [id_node[target]] if len(keep) == len(numbers) > 1 else keep
         return reached[target, presence]
 
@@ -302,7 +288,7 @@ def find_circular_definitions(
                 for target, presence in references.get(node, ())
                 for reached_node in reach(target, presence)
             )
-        return declarations[ids_of_node[node]]
+        return reachable[ids_of_node[node]]
 
     circles = []
     for component in strongly_connected_components(total, successors):

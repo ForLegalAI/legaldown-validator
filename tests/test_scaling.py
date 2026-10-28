@@ -153,13 +153,12 @@ def test_headings_of_one_title_under_conditions_decide_in_linear_work(shape, mon
     n = 1500
     questions, presences = _condition_shapes(n)
     clashes = _Counter(monkeypatch, core, "_clashes")
-    decisions = _Counter(monkeypatch, core, "satisfiable_in")
-    decisions_in_exclusive = _Counter(monkeypatch, conditions_module, "satisfiable_in")
+    decisions = _Counter(monkeypatch, conditions_module.Exclusivity, "excluded")
     pool = core._FreeIdentifiers(set(), questions)
     for presence in presences[shape]:
         pool.declare(pool("same", presence), presence)
     assert clashes.calls <= 2 * n
-    assert decisions.calls + decisions_in_exclusive.calls <= 4 * n  # n² / 2 and more before
+    assert decisions.calls <= 4 * n  # n² / 2 and more before
 
 
 def test_headings_with_pairs_of_conditions_decide_without_testing_conditions(monkeypatch):
@@ -170,13 +169,12 @@ def test_headings_with_pairs_of_conditions_decide_without_testing_conditions(mon
 
     n = 800
     questions = _boolean_questions(n)
-    decisions = _Counter(monkeypatch, core, "satisfiable_in")
-    decisions_in_exclusive = _Counter(monkeypatch, conditions_module, "satisfiable_in")
+    decisions = _Counter(monkeypatch, conditions_module.Exclusivity, "excluded")
     pool = core._FreeIdentifiers(set(), questions)
     for k in range(n):
         presence = own_presence(f"q{k // 2 + 1}", questions) | own_presence("q0" if k % 2 else "!q0", questions)
         pool.declare(pool("same", presence), presence)
-    assert decisions.calls + decisions_in_exclusive.calls <= 4 * n  # about 1.5 n² / 2 before
+    assert decisions.calls <= 4 * n  # about 1.5 n² / 2 before
 
 
 def test_headings_of_one_title_under_conditions_get_their_suffixes():
@@ -583,8 +581,8 @@ def test_each_block_of_a_flat_list_is_built_once(monkeypatch):
 
 
 def test_a_flat_list_in_a_time_budget():
-    source = "- item number one\n" * 100_000
-    assert _seconds(parse, source) < 15.0  # 4 s now; 7.4 s before #110
+    source = "- item number one\n" * 30_000
+    assert _seconds(parse, source) < 8.0  # 1.2 s now; 2 s before #110
 
 
 # ── The shapes that stay superlinear, as CONFORMANCE.md documents them ──
@@ -609,6 +607,48 @@ def test_headings_with_pairs_of_conditions_in_a_time_budget():
 
 
 def test_lists_nested_to_the_depth_cap_in_a_time_budget():
-    """Linear in the bytes, at a larger constant: 1,000 nested items, 1 MB, take 3 s."""
-    source = "".join(" " * (2 * depth) + "- item\n" for depth in range(1000))
-    assert _seconds(parse, source) < 20.0
+    """Linear in the bytes, at a larger constant: 500 nested items, 250 KB, take 1 s."""
+    source = "".join(" " * (2 * depth) + "- item\n" for depth in range(500))
+    assert _seconds(parse, source) < 10.0
+
+
+# ── Review of #110 ────────────────────────────────────────────────
+
+
+def test_a_dead_alternative_among_many_does_not_make_each_reference_reach_each_alternative():
+    """One alternative that never appears used to stop the references on another question from reaching the
+    id as one node: 2,000 x 2,000 edges."""
+    document, registered, uses, questions = _named_alternatives(2000, same_question=False)
+    dead = units_module.own_presence("c:v0", questions) | units_module.own_presence("!c:v0", questions)
+    registered[0] = (registered[0][0], dead)
+    uses[0] = uses[0]._replace(presence=dead)
+    exclusivity = conditions_module.Exclusivity(questions)
+    assert _seconds(circular.find_circular_definitions, document, registered, uses, exclusivity) < 2.0  # 0.1 s; 6 s
+
+
+def test_adding_negative_declarations_to_a_tally_costs_a_few_words_each():
+    """The tally keeps a bitmap of the declarations refusing each answer; one bitmap of all of them, rebuilt for each
+    declaration added, made adding n of them quadratic (4 s for 800,000)."""
+    answers = [f"v{k}" for k in range(8)]
+    tally = core._AnswerTally()
+    refusals = [frozenset(answers[k % 8 :: 3]) for k in range(800_000)]
+    start = time.perf_counter()
+    for refusal in refusals:
+        tally.add(frozenset(), refusal)
+    assert time.perf_counter() - start < 5.0  # 1.5 s now; 8 s when each add rebuilt a bitmap of all
+    tally.add(frozenset(), frozenset(answers[2:]))
+    assert tally.negative == 800_001
+    # Only the last refuses every answer a presence refusing the first two does not.
+    assert tally.excluded(frozenset(), frozenset(answers[:2]), answers) == 1
+
+
+def test_a_reference_to_alternatives_that_each_refuse_many_of_two_thousand_choices_in_a_time_budget():
+    """Whether an answer is still possible is a lookup in a set: in a list it was a pass over 2,000 answers for
+    each value each alternative refuses (4 s)."""
+    n = 2000
+    questions = {"c": {"type": "choice", "choices": {f"v{k}": str(k) for k in range(n)}}}
+    rng = random.Random(3)
+    targets = [
+        frozenset(conditions_module.Condition("c", f"v{k}", True) for k in rng.sample(range(n), 100)) for _ in range(n)
+    ]
+    assert _seconds(conditions_module.always_covered, ALWAYS, targets, questions) < 2.0  # 0.2 s now

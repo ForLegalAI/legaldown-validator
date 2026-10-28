@@ -25,7 +25,7 @@ from legaldown.validator.circular import (
     find_circular_definitions,
     strongly_connected_components,
 )
-from legaldown.validator.conditions import ALWAYS, Condition, exclusive
+from legaldown.validator.conditions import ALWAYS, Condition, Exclusivity, exclusive
 
 _SIDES = """sides:
   - name: providers
@@ -554,15 +554,29 @@ def _alternatives(count: int, referenced_when: str | None):
     return document, registered, uses, questions
 
 
-class _Exclusive:
-    """``exclusive`` for a choice question, counting its calls."""
+class _Exclusive(Exclusivity):
+    """An ``Exclusivity`` for a choice question, counting its pair tests."""
 
     def __init__(self, questions):
+        super().__init__(questions)
         self.calls = 0
-        self._questions = questions
 
-    def __call__(self, first, second):
+    def excluded(self, first, second):
         self.calls += 1
+        return super().excluded(first, second)
+
+
+class _EveryPair(Exclusivity):
+    """What was asked before #110: every pair of a reference and an alternative is tested by ``exclusive``,
+    whether or not either can appear or they share a question."""
+
+    def appears(self, presence):
+        return True
+
+    def questions(self, presence):
+        return frozenset(self._questions)
+
+    def excluded(self, first, second):
         return exclusive(first, second, self._questions)
 
 
@@ -638,7 +652,7 @@ def _random_presence(rng):
 def test_exclusivity_is_exclusive_and_satisfiable():
     import random
 
-    from legaldown.validator.conditions import Exclusivity, satisfiable
+    from legaldown.validator.conditions import satisfiable
 
     rng = random.Random(110)
     exclusivity = Exclusivity(_RANDOM_QUESTIONS)
@@ -647,7 +661,6 @@ def test_exclusivity_is_exclusive_and_satisfiable():
         first, second = _random_presence(rng), _random_presence(rng)
         expected = exclusive(first, second, _RANDOM_QUESTIONS)
         assert exclusivity.excluded(first, second) == expected, (first, second)
-        assert exclusivity(first, second) == expected  # it may stand for the call
         assert exclusivity.appears(first) == satisfiable(first, _RANDOM_QUESTIONS)
         assert set(exclusivity.questions(first)) == {c.question for c in first}
         seen.add((expected, exclusivity.appears(first) and exclusivity.appears(second)))
@@ -678,12 +691,8 @@ def _members(circles):
 def test_circles_through_exclusivity_equal_circles_through_the_call(seed):
     import random
 
-    from legaldown.validator.conditions import Exclusivity
-
     document, registered, uses = _random_graph(random.Random(110_000 + seed))
-    expected = find_circular_definitions(
-        document, registered, uses, lambda first, second: exclusive(first, second, _RANDOM_QUESTIONS)
-    )
+    expected = find_circular_definitions(document, registered, uses, _EveryPair(_RANDOM_QUESTIONS))
     assert find_circular_definitions(document, registered, uses, Exclusivity(_RANDOM_QUESTIONS)) == expected
 
 
@@ -747,8 +756,6 @@ class _Tests:
     """Counts the pairs ``Exclusivity.excluded`` is asked about."""
 
     def __init__(self, monkeypatch):
-        from legaldown.validator.conditions import Exclusivity
-
         self.calls = 0
         wrapped = Exclusivity.excluded
 
@@ -760,8 +767,6 @@ class _Tests:
 
 
 def test_references_on_another_question_test_no_pair(monkeypatch):
-    from legaldown.validator.conditions import Exclusivity
-
     count = 300
     document, registered, uses, questions = _two_questions(count, same=False)
     tests = _Tests(monkeypatch)
@@ -773,8 +778,6 @@ def test_references_on_another_question_test_no_pair(monkeypatch):
 
 
 def test_references_on_the_same_question_test_each_pair_once(monkeypatch):
-    from legaldown.validator.conditions import Exclusivity
-
     count = 150
     document, registered, uses, questions = _two_questions(count, same=True)
     tests = _Tests(monkeypatch)
@@ -784,8 +787,6 @@ def test_references_on_the_same_question_test_each_pair_once(monkeypatch):
 
 
 def test_pair_tests_stop_at_the_cap_and_only_add_circles(monkeypatch):
-    from legaldown.validator.conditions import Exclusivity
-
     count = 150
     document, registered, uses, questions = _two_questions(count, same=True)
     exact = find_circular_definitions(document, registered, uses, Exclusivity(questions))
@@ -808,11 +809,41 @@ def test_pair_tests_stop_at_the_cap_and_only_add_circles(monkeypatch):
 def test_a_cap_never_hides_a_circular_definition(seed, monkeypatch):
     import random
 
-    from legaldown.validator.conditions import Exclusivity
-
     rng = random.Random(110_500 + seed)
     document, registered, uses = _random_graph(rng)
     exact = _members(find_circular_definitions(document, registered, uses, Exclusivity(_RANDOM_QUESTIONS)))
     monkeypatch.setattr(circular_module, "MAX_EXCLUSION_TESTS", rng.randint(0, 12))
     capped = _members(find_circular_definitions(document, registered, uses, Exclusivity(_RANDOM_QUESTIONS)))
     assert capped >= exact
+
+
+def _with_a_dead_alternative(count: int):
+    """``_two_questions`` with the first alternative of the id under ``c:v0`` and not ``c:v0``: never."""
+    from legaldown.validator.units import own_presence
+
+    document, registered, uses, questions = _two_questions(count, same=False)
+    dead = own_presence("c:v0", questions) | own_presence("!c:v0", questions)
+    registered[0] = (registered[0][0], dead)
+    uses[0] = uses[0]._replace(presence=dead)
+    return document, registered, uses, questions
+
+
+def test_a_dead_alternative_is_left_out_of_the_alternatives_a_reference_reaches():
+    """The same circles as testing every pair, and the references on another question still reach the id as one
+    node (a dead alternative among them once made each of them an edge to every alternative)."""
+    count = 40
+    document, registered, uses, questions = _with_a_dead_alternative(count)
+    found = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+    assert found == find_circular_definitions(document, registered, uses, _EveryPair(questions))
+    assert 0 not in _members(found) and len(found) == 1  # nothing reaches the dead one
+
+
+def test_a_dead_alternative_does_not_make_each_reference_an_edge_to_each_alternative(monkeypatch):
+    count = 1000
+    document, registered, uses, questions = _with_a_dead_alternative(count)
+    search = _Search(monkeypatch)
+    tests = _Tests(monkeypatch)
+    found = find_circular_definitions(document, registered, uses, Exclusivity(questions))
+    assert len(found) == 1 and len(found[0]) == 2 * count - 2
+    assert tests.calls == 0
+    assert search.edges <= 3 * len(registered)  # 4 million before

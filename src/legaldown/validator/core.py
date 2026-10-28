@@ -13,7 +13,8 @@ import warnings
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from functools import cache, partial
+from functools import cache, partial, reduce
+from operator import and_
 from types import MappingProxyType
 from typing import Any, NamedTuple
 
@@ -50,11 +51,8 @@ from .conditions import (
     condition_issue,
     condition_values,
     exclusive,
-    exclusive_in,
     parse_condition,
-    question_answers,
     satisfiable,
-    satisfiable_in,
 )
 from .fragments import Files, FragmentKind, UnreadReason, check_includes, content_findings, shape_findings
 from .helpers import (
@@ -519,6 +517,10 @@ class _Declarations(Sequence[Presence]):
         return repr(self._presences)
 
 
+#: How many negative declarations a bitmap of ``_AnswerTally`` holds.
+_CHUNK = 1024
+
+
 class _AnswerTally:
     """What the declarations at one place — an identifier, or the suffixes of
     a base — say about one question, counted by the answers they allow, so
@@ -533,9 +535,11 @@ class _AnswerTally:
         self.positive_total = 0
         self.negative = 0
         self.refusing: Counter[Any] = Counter()  # negative declarations refusing a value, by value
-        #: The negative declarations refusing a value, by value, as a bitmap with
-        #: a bit for each declaration in the order they were added (#110).
-        self.refusers: dict[Any, int] = {}
+        #: The negative declarations refusing a value, by value, as bitmaps of
+        #: ``_CHUNK`` declarations each, a bit for each in the order they were
+        #: added (#110). Chunked, so that adding one costs a few words, not a
+        #: bitmap of every declaration.
+        self.refusers: dict[Any, list[int]] = {}
         self.widest = 0  # the most answers one negative declaration refuses
 
     @property
@@ -550,11 +554,14 @@ class _AnswerTally:
             self.positive[value] += 1
             self.positive_total += 1
         else:
-            bit = 1 << self.negative
+            chunk, bit = divmod(self.negative, _CHUNK)
             self.negative += 1
             self.refusing.update(refusal)
             for value in refusal:
-                self.refusers[value] = self.refusers.get(value, 0) | bit
+                chunks = self.refusers.setdefault(value, [])
+                if len(chunks) <= chunk:
+                    chunks.extend([0] * (chunk + 1 - len(chunks)))
+                chunks[chunk] |= 1 << bit
             self.widest = max(self.widest, len(refusal))
 
     def excluded(self, wanted: frozenset[Any], refusal: frozenset[Any], answers: Collection[Any]) -> int:
@@ -571,13 +578,13 @@ class _AnswerTally:
         # refuses every answer the presence does not, which are the declarations
         # in the bitmap of each.
         if self.negative and len(refusal) + self.widest >= len(answers):
-            both = (1 << self.negative) - 1
-            for value in answers:
-                if value not in refusal:
-                    both &= self.refusers.get(value, 0)
-                    if not both:
-                        break
-            count += both.bit_count()
+            others = [value for value in answers if value not in refusal]
+            if not others:
+                count += self.negative  # it refuses every answer: it excludes every one
+            elif all(value in self.refusers for value in others):
+                # zip stops at the shortest: a chunk a value has no bit in holds none.
+                bitmaps = [self.refusers[value] for value in others]
+                count += sum(reduce(and_, chunks).bit_count() for chunks in zip(*bitmaps, strict=False))
         return count
 
 
@@ -630,14 +637,14 @@ class _FreeIdentifiers:
         #: The declarations of each identifier, by presence. Read-only: they
         #: are made by ``declare``, which the indexes below follow.
         self.anchors: Mapping[str, Sequence[Presence]] = MappingProxyType(self._declarations)
-        self._questions = questions
+        #: The answers of each question, and which presences can appear and
+        #: exclude each other, worked out once for the pool.
+        self._exclusivity = Exclusivity(questions)
         #: How many leading suffixes of a base are taken for a presence.
         self._taken: dict[tuple[str, Presence], int] = {}
-        #: Per pool, what is asked of one question or presence again and again.
-        self._answers: dict[str, Collection[Any]] = {}
+        #: Per pool, what is asked of one presence again and again.
         self._grouped: dict[Presence, dict[str, Presence]] = {}
         self._wanted_refused: dict[tuple[str, Presence], tuple[frozenset[Any], frozenset[Any]]] = {}
-        self._appears: dict[Presence, bool] = {}
         self._excludes: dict[tuple[Presence, Presence], bool] = {}
         #: How many declarations that can appear an identifier has.
         self._occupants: dict[str, int] = {}
@@ -703,7 +710,7 @@ class _FreeIdentifiers:
             declared = self._across.get((base, question))
             if declared is None:
                 continue
-            if declared.excluded(*self._values(question, conditions), self._answers_of(question)):
+            if declared.excluded(*self._values(question, conditions), self._exclusivity.answers(question)):
                 return True
         return False
 
@@ -722,7 +729,7 @@ class _FreeIdentifiers:
                     return True  # a declaration that says nothing of the one question
                 if declared is None:
                     continue
-            count = declared.excluded(*self._values(question, conditions), self._answers_of(question))
+            count = declared.excluded(*self._values(question, conditions), self._exclusivity.answers(question))
             if count == occupants:
                 return False  # this question alone excludes every declaration
             excluded += count
@@ -730,11 +737,6 @@ class _FreeIdentifiers:
             return True  # some declaration is excluded by no question
         # The questions together might exclude each declaration, one for each.
         return any(not self._exclude(presence, other) for other in self._declarations[identifier])
-
-    def _answers_of(self, question: str) -> Collection[Any]:
-        if question not in self._answers:
-            self._answers[question] = question_answers(question, self._questions)
-        return self._answers[question]
 
     def _by_question(self, presence: Presence) -> dict[str, Presence]:
         if presence not in self._grouped:
@@ -749,7 +751,7 @@ class _FreeIdentifiers:
         key = (question, conditions)  # the refusal is filtered by this question's answers
         if key not in self._wanted_refused:
             wanted, refused = condition_values(conditions)
-            answers = self._answers_of(question)
+            answers = self._exclusivity.answers(question)
             self._wanted_refused[key] = (
                 frozenset(wanted),
                 frozenset(value for value in refused if value in answers),
@@ -757,14 +759,12 @@ class _FreeIdentifiers:
         return self._wanted_refused[key]
 
     def _can_appear(self, presence: Presence) -> bool:
-        if presence not in self._appears:
-            self._appears[presence] = satisfiable_in(presence, self._answers_of)
-        return self._appears[presence]
+        return self._exclusivity.appears(presence)
 
     def _exclude(self, first: Presence, second: Presence) -> bool:
         key = (first, second)
         if key not in self._excludes:
-            self._excludes[key] = exclusive_in(first, second, self._answers_of)
+            self._excludes[key] = self._exclusivity.excluded(first, second)
         return self._excludes[key]
 
 
