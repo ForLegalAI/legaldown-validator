@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 import re
+import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -925,26 +926,41 @@ def _image_sources_by_markdown_it(text):
     ]
 
 
-@needs_markdown_it
-def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
-    """The safety direction: wherever markdown-it reads an image, inline or by a definition (random destinations
-    with brackets, titles and controls; random definitions), the destination it reads is one the path rules judge.
-    (The backslash before a character that is no punctuation, which only markdown-it reads as a pair, is left out.)"""
-    judged = []
-    real = paths_module.FileReferences.check
-    monkeypatch.setattr(
-        paths_module.FileReferences, "check",
-        lambda self, path, *args, **kwargs: judged.append(path.strip()) or real(self, path, *args, **kwargs),
-    )
-    rng = random.Random(113)
+def _image_sources_by_pandoc(text):
+    import json
+    import subprocess
+
+    out = subprocess.run(
+        ["pandoc", "-f", "commonmark", "-t", "json"], input=text, capture_output=True, text=True, check=True
+    ).stdout
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("t") == "Image":
+                found.append(node["c"][2][0])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(json.loads(out))
+    return found
+
+
+def _random_image_documents(seed, count):
+    """Documents with images by an inline destination, a definition or both, made of random destinations (brackets,
+    titles, controls, line breaks) and random token strings. Not those with a blank line or a quote line in a
+    paragraph, nor the backslash before a character that is no punctuation, which only markdown-it reads as a pair."""
+    rng = random.Random(seed)
 
     def body():
         if rng.random() < 0.3:
             return "".join(rng.choice(_TOKENS) for _ in range(rng.randint(0, 7)))
         return rng.choice(_DESTINATIONS) + rng.choice(_GAPS) + rng.choice(_TITLES) + rng.choice(_GAPS)
 
-    compared = 0
-    for _ in range(90_000):
+    for _ in range(count):
         first, second = body() + rng.choice([")", ")", ""]), body()
         text = rng.choice([
             f"![a]({first}", f"![r]({first}\n\n[r]: {second}", f"![a][r]\n\n[r]: {second}", f"![r]\n\n[r]: {second}",
@@ -952,15 +968,59 @@ def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
         ])
         if _BACKSLASH_RE.search(text) or re.search(r"\n[ \t]*(?:\n|>)", text) or text.endswith("\\") or "\n\n\n" in text:
             continue
-        read = [source for source in _image_sources_by_markdown_it(text) if source.strip()]
-        if not read:
-            continue
+        yield text
+
+
+def _judged_by_validate(monkeypatch):
+    """A function giving the paths the path rules judge in a document."""
+    judged = []
+    real = paths_module.FileReferences.check
+    monkeypatch.setattr(
+        paths_module.FileReferences, "check",
+        lambda self, path, *args, **kwargs: judged.append(path.strip()) or real(self, path, *args, **kwargs),
+    )
+
+    def judge(text):
         judged.clear()
         validate(_body(text))
-        for source in read:
-            assert source in judged, (text, source, judged)
-        compared += 1
+        return list(judged)
+
+    return judge
+
+
+@needs_markdown_it
+def test_every_image_markdown_it_reads_has_its_destination_judged(monkeypatch):
+    """The safety direction: wherever markdown-it reads an image, inline or by a definition, the destination it reads
+    is one the path rules judge."""
+    judge = _judged_by_validate(monkeypatch)
+    compared = 0
+    for text in _random_image_documents(113, 90_000):
+        read = [source for source in _image_sources_by_markdown_it(text) if source.strip()]
+        if read:
+            judged = judge(text)
+            for source in read:
+                assert source in judged, (text, source, judged)
+            compared += 1
     assert compared > 3000
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is not installed")
+def test_every_image_pandoc_reads_has_its_destination_judged(monkeypatch):
+    """The same for pandoc, which reads what the specification does not (a control character or DEL in a bare
+    destination, in a definition's too; a title glued to ``<…>``): inline, by a definition, or both."""
+    judge = _judged_by_validate(monkeypatch)
+    compared = 0
+    for text in _random_image_documents(1131, 8_000):
+        if compared == 250:
+            break
+        # (pandoc is asked of the documents the path rules judge something in, the others being none of its concern)
+        read = [source for source in _image_sources_by_pandoc(text) if source.strip()]
+        if read:
+            judged = judge(text)
+            for source in read:
+                assert source in judged, (text, source, judged)
+            compared += 1
+    assert compared == 250
 
 
 def test_the_decoded_form_is_still_absolute_with_a_slash_and_still_escapes():
