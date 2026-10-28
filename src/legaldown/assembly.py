@@ -1893,7 +1893,7 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
         if not line.check:
             window.written(k)
             continue
-        simple = _simple_start(line, reading, perturbed)
+        simple = None if perturbed else _simple_start(line, reading)
         if simple is not None:
             line.text = simple
             window.written(k)
@@ -1904,14 +1904,13 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
         window.read(k, before, tail)
 
 
-def _simple_start(line: _Line, reading: _Reading, perturbed: bool) -> str | None:
+def _simple_start(line: _Line, reading: _Reading) -> str | None:
     """The checked *line* when the parser need not be asked: what it begins cannot start a
     block, and the markers before the insertion are the template's own. None if it must be
     read. Only the template's ``-``, ``+``, ``*``, ``1.``, ``1)`` and ``>`` are known to be
     markers without asking the parser; any other run of item markers is, if the parser reads
-    the template line as beginning that many items and no line before it was deleted. And a line that
-    keeps the indentation of its item needs the parser if the items of the output may not be the
-    template's (*perturbed*, ``_line_starts``)."""
+    the template line as beginning that many items and no line before it was deleted. All this holds
+    if the output is as the template reads it, not after a line that differs (``_line_starts``)."""
     text, first = line.text, line.first
     if first is None:
         return None if _could_begin(text) else text
@@ -1927,8 +1926,6 @@ def _simple_start(line: _Line, reading: _Reading, perturbed: bool) -> str | None
     keep = ""
     if not prefix and head:  # only whitespace before the insertion: indentation
         keep = reading.start(line)[2]
-        if keep and perturbed:
-            return None  # it is code if the items of the output are not those of the template
     content = text[prefix:].lstrip(" \t")
     return text[:prefix] + keep + content if not _could_begin(content) else None
 
