@@ -25,7 +25,7 @@ def _block_shape(block: Block) -> tuple[Any, ...]:
     of its texts, and its items' blocks."""
     return (
         block.kind,
-        *(len(text) for text in (block.text, block.prefix, block.suffix, block.term, block.target)),
+        *(len(text) for text in (block.text, block.prefix, block.suffix, block.term, block.target, block.label, block.title)),
         tuple(len(cell) for row in [block.headers, *block.rows] for cell in row),
         tuple(tuple(_block_shape(child) for child in getattr(item, "blocks", ())) for item in block.items),
     )

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from .directives import Directive, Lexed, blank_fenced_code, lex, mask_directives
-from .markdown import FENCE_OPEN_RE, is_indented_code
+from .markdown import FENCE_OPEN_RE, is_indented_code, normalize_label
 from .models import LIST_KINDS, Block, Document, list_items
 from .validator.helpers import generate_identifier
 from .validator.patterns import IDENTIFIER_RE
@@ -269,12 +269,14 @@ def _fragments(
                 if units:
                     inner = (*path, count)
                     count += 1
-                for k, child in enumerate(item.blocks):
+                k = 0  # the blocks before child that are text: a link reference definition is none (§4.7, #92)
+                for child in item.blocks:
                     # A nested list's items' first paragraphs are anchor
                     # positions as its own are; of the item's other blocks,
                     # the first paragraph it opens with.
                     first = child.kind in LIST_KINDS or (k == 0 and child.kind == "paragraph")
                     walk(child, depth + 1, inner, anchor and first, units)
+                    k += child.kind != "link_definition"
         elif block.kind == "quote":
             at, slot = len(fragments), len(quotes) if quotes is not None else 0
             if quotes is not None:
@@ -329,7 +331,7 @@ def _scoped_fragments(block: Block) -> list[tuple[str, bool, int]]:
     """``_own_fragments``, each with its scope within the block
     (``fragment_scopes``): 0 for the text, prefix and suffix, 1 for the
     header row of a table and 2 on for its rows."""
-    if block.kind in ("html", "source") or (
+    if block.kind in ("html", "source", "link_definition") or (
         block.kind == "code" and (
             is_indented_code(block.text)
             or ("\n" not in block.text and FENCE_OPEN_RE.match(block.text))
@@ -337,7 +339,10 @@ def _scoped_fragments(block: Block) -> list[tuple[str, bool, int]]:
     ):
         # Raw HTML and indented code: no directive or marker is recognized
         # (§11.4). A source block is not read at all: its text is read once
-        # written and parsed (``serialize``). A fenced block's text
+        # written and parsed (``serialize``). Nor is a link reference
+        # definition, which holds no text: the parser leaves a definition
+        # with a directive in it a paragraph (#92), so there is none to read
+        # in a block, and a model built in code is written as it is. A fenced block's text
         # is read with its fence blanked (below): text a model puts after its
         # closing fence is checked -- which needs
         # at least the fence's own line and one more, so a fence with nothing
@@ -418,6 +423,41 @@ def collect_definitions(
                     )
                 )
     return refs
+
+
+class LinkDefinition(NamedTuple):
+    """What a link reference definition (``[label]: url "title"``, §4.7)
+    gives the links and images that name its label: its *url* and *title*,
+    raw as a ``link_definition`` block holds them (without ``<>`` and the
+    title's delimiters, backslash escapes and character references not
+    decoded); *title* is "" for none."""
+
+    url: str
+    title: str
+
+
+def collect_link_definitions(document: Document) -> dict[str, LinkDefinition]:
+    """The link reference definitions of *document* (§4.7, #92), by label.
+
+    The key is the label as CommonMark matches it (``markdown.normalize_label``):
+    without the space around it, each run of spaces and line breaks in it one
+    space, case-folded. The first definition in the document wins, as in
+    CommonMark, wherever it is: a definition in a list item or a block quote
+    counts for the whole document, and is met in document order — a list
+    item's blocks and the blocks of a quote (``nested_blocks``) in the place
+    they are written. A definition a quote holds past ``MAX_QUOTE_DEPTH``
+    is not read, nor one a model built in code gives an empty label. A
+    definition holding a directive is paragraph text (#92), so it is none:
+    its destination is not final until the directive is filled in. Derived
+    from the blocks on each call, not a field of the document."""
+    found: dict[str, LinkDefinition] = {}
+    for _section, _index, top in document.iter_indexed_blocks():
+        for block in nested_blocks(top):
+            if block.kind == "link_definition":
+                key = normalize_label(block.label)
+                if key:
+                    found.setdefault(key, LinkDefinition(block.target, block.title))
+    return found
 
 
 def id_term(def_id: str) -> str:

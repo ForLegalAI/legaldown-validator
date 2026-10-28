@@ -24,9 +24,11 @@ from .definitions import (
     DefinitionAnchor,
     DefinitionRef,
     Fragment,
+    LinkDefinition,
     ListFragment,
     block_fragments,
     collect_definitions,
+    collect_link_definitions,
     definition_lookup,
     find_definition_anchors,
     id_term,
@@ -45,6 +47,7 @@ from .markdown import (
     dedent,
     fence_end,
     indent_width,
+    normalize_label,
     strip_comments,
     strip_text,
 )
@@ -104,6 +107,10 @@ __all__ = [
     "id_term",
     "find_definition_anchors",
     "DefinitionAnchor",
+    # Link reference definitions (CommonMark §4.7): the ones a document holds,
+    # by the label links and images name them with
+    "collect_link_definitions",
+    "LinkDefinition",
     # A block or list item written as LegalDown source
     "render_block",
     "render_item",
@@ -119,6 +126,7 @@ __all__ = [
     "dedent",
     "indent_width",
     "strip_text",
+    "normalize_label",
     # Where a parsed document's parts are in its file (``Document.layout``),
     # and where a body text's are (``body_layout``)
     "body_layout",

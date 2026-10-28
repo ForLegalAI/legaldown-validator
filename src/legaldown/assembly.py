@@ -358,6 +358,8 @@ _KINDS = {
     "paragraph": "paragraph", "definition": "paragraph", "ref": "paragraph", "term": "paragraph",
     "ordered_list": "list", "unordered_list": "list",
     "quote": "quote", "code": "code", "table": "table", "rule": "rule", "html": "html",
+    # No text and no unit (§4.7, #92): its lines are left as they are.
+    "link_definition": "link_definition",
 }
 
 
@@ -399,7 +401,7 @@ def _content(
     are in."""
     for span, block in zip(spans, blocks, strict=True):
         read = block.kind == "quote" and depth < MAX_QUOTE_DEPTH
-        leaf = not read and block.kind not in (*LIST_KINDS, "code", "rule", "html")
+        leaf = not read and block.kind not in (*LIST_KINDS, "code", "rule", "html", "link_definition")
         yield span, block, base, leaf
         for item_span, item in zip(span.items, block.items, strict=True):
             yield from _content(item_span.blocks, item.blocks, depth + 1, base)
@@ -607,7 +609,9 @@ def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, q
         if not marker.marker.condition or marker.fragment >= len(paths) or not paths[marker.fragment]:
             continue
         item = items[paths[marker.fragment][-1]]
-        first_end = item.blocks[0].end if item.blocks else item.start + 1  # its first paragraph
+        # Its first paragraph: link reference definitions before it are no text (#92).
+        opening = next((block for block in item.blocks if block.kind != "link_definition"), None)
+        first_end = opening.end if opening is not None else item.start + 1
         line = _marker_line(lines, item.start, first_end, marker.source)
         source.units.append(_Unit(item.start, _trim(lines, item.start, item.end),
                                   _test(marker.marker.condition, questions), line, marker.source))
