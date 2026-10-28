@@ -244,11 +244,12 @@ def test_a_fragment_at_a_deeper_path_is_named_by_its_path_from_the_documents_dir
 
 # ── A nested include, outside a template ─────────────────────────
 
-def test_a_nested_include_outside_a_template_is_allowed_and_not_followed():
+def test_a_nested_include_outside_a_template_is_allowed_and_followed():
     part = "## P {#p}\n\n{{include: nested.lgd}}\n\n{{include: notes.txt}}\n"
     result, loader = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part})
-    # Not read, so neither missing nor judged: include-cycle is not implemented (CONFORMANCE.md).
-    assert loader.asked == ["part.lgd"] and _found(result) == []
+    # Followed (#114), and judged as the document's are, in the file it is in.
+    assert loader.asked == ["part.lgd", "nested.lgd"]
+    assert _found(result) == [("include-file-missing", "part.lgd", 3), ("include-not-legaldown", "part.lgd", 5)]
 
 
 # ── A template's fragments (§15.3, §16.12) ───────────────────────
@@ -597,7 +598,7 @@ def test_a_fragment_on_its_own_reads_none_of_its_includes():
     loader = _Loader({"g.lgd": "# H {#h}\n"})
     result = validate(parse("## B {#b}\n\n{{include: g.lgd}}\n"), fragment=True, resolve=loader)
     assert loader.asked == [] and [d.rule for d in result.diagnostics] == [_SKIPPED]
-    assert "not followed" in result.diagnostics[0].message
+    assert "validated on its own, which reads no file" in result.diagnostics[0].message
 
 
 def test_fragment_kind_is_only_for_a_fragment_and_is_one_of_two():
@@ -922,11 +923,12 @@ def test_an_include_paragraph_that_names_no_file_is_missing_in_validate_and_in_a
     assert "'{{include:  }}' names no file" in written[0].message
 
 
-def test_an_include_paragraph_that_names_no_file_in_a_plain_fragment_is_refused_by_assembly_alone():
+def test_an_include_paragraph_that_names_no_file_in_a_plain_fragment_is_refused_by_assembly_and_validate():
     part = "## P {#p}\n\nText.\n\n{{include:}}\n"
-    # Nested includes are allowed outside a template and not followed (§12.2): validate says nothing.
+    # Nested includes are allowed outside a template (§12.2) and followed by validate (#114), which says the
+    # same as assembly of one that names no file.
     result, _ = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part})
-    assert _found(result) == []
+    assert _found(result) == [("include-file-missing", "part.lgd", 5)]
     template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": part}.get)
     assert [(d.rule, d.file, d.line) for d in template.problems] == [("include-file-missing", "part.lgd", 5)]
 

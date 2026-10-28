@@ -69,8 +69,8 @@ IMPLEMENTED_RULES = {
     "field-type-key-format", "field-type-key-reserved", "field-type-missing",
     "field-type-undeclared", "frontmatter-invalid-yaml",
     "heading-depth", "heading-hardcoded-number", "heading-skip",
-    "include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
-    "include-not-legaldown", "insertion-boundary",
+    "include-anchor-duplicate", "include-cycle", "include-file-missing", "include-has-frontmatter",
+    "include-has-h1", "include-heading-skip", "include-not-legaldown", "insertion-boundary",
     "issuer-side-required", "legaldown-version-newer", "metadata-date-invalid",
     "money-invalid-amount", "money-missing-currency", "money-unknown-currency",
     "note-invalid", "parties-minimum",
@@ -90,11 +90,10 @@ IMPLEMENTED_RULES = {
 
 # The Full rules a validator that reads the include fragments through a loader reports
 # (#35): their cases are multi-file, so they are run with the loader of their directory,
-# and judged by file as well as by line. The others of the Includes group stay unimplemented
-# (include-cycle, include-anchor-duplicate); include-not-legaldown is Core and runs as any case.
+# and judged by file as well as by line. include-not-legaldown is Core and runs as any case.
 _FULL_WITH_A_LOADER = {
-    "include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
-    "template-fragment-invalid",
+    "include-anchor-duplicate", "include-cycle", "include-file-missing", "include-has-frontmatter",
+    "include-has-h1", "include-heading-skip", "template-fragment-invalid",
 }
 
 

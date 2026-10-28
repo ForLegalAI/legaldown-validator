@@ -84,6 +84,7 @@ def test_an_include_read_by_no_loader_draws_one_warning_at_its_line():
     assert (warning.level, warning.line, warning.host_dependent) == ("warning", _at(text, "p.lgd"), False)
     message = warning.message
     assert message.startswith("2 `{{include:}}` paragraphs; 2 includes not read (2 have no loader to read them: no `resolve`, and the document has no path)")
+    # Fragments not read: none of the checks that read one was made, the two that follow includes included.
     for rule in ("include-file-missing", "include-has-frontmatter", "include-has-h1", "include-heading-skip",
                  "include-cycle", "include-anchor-duplicate", "combined-document checks (§16.11)"):
         assert rule in message
@@ -96,7 +97,9 @@ def test_an_include_read_by_a_loader_still_names_what_is_never_performed():
     assert warning.line == _at(text, "p.lgd")
     message = warning.message
     assert "not read" not in message
-    assert "include-cycle and include-anchor-duplicate, which are not implemented" in message
+    # Implemented (#114): neither is named when the fragments were read; the combined document is still never built.
+    assert "include-cycle" not in message and "include-anchor-duplicate" not in message
+    assert "not implemented" not in message
     assert "combined-document checks (§16.11)" in message
     # Done, not listed: the fragment was read, so these were made.
     assert "include-file-missing" not in message and "include-has-frontmatter" not in message
@@ -131,12 +134,14 @@ def test_each_reason_an_include_is_not_read_is_counted_apart():
     assert "include-file-missing, include-has-frontmatter" in warning.message  # for the one that leads out
 
 
-def test_an_include_of_the_document_itself_is_not_read(tmp_path):
+def test_an_include_of_the_document_itself_is_include_cycle_and_not_unread(tmp_path):
     path = tmp_path / "main.lgd"
     path.write_text(_FRONT + _BODY + "{{include: main.lgd}}\n", encoding="utf-8")
-    (warning,) = [d for d in validate(load(path)).diagnostics if d.rule == SKIPPED_RULE]
-    assert "1 include not read (1 is the document itself)" in warning.message
-    assert "include-cycle" in warning.message
+    result = validate(load(path))
+    assert [d.rule for d in result.diagnostics if d.rule == "include-cycle"] == ["include-cycle"]
+    (warning,) = [d for d in result.diagnostics if d.rule == SKIPPED_RULE]
+    # An Error of its own, like a path judged: not an include left unread.
+    assert "not read" not in warning.message and "include-cycle" not in warning.message
 
 
 def test_an_include_that_is_already_a_finding_is_not_counted_as_unread():
@@ -150,12 +155,12 @@ def test_an_include_that_is_already_a_finding_is_not_counted_as_unread():
     assert "combined-document checks (§16.11)" in warning.message
 
 
-def test_a_fragment_validated_on_its_own_does_not_follow_its_includes():
+def test_a_fragment_validated_on_its_own_reads_no_file_for_its_includes():
     text = "## Part {#part}\n\n{{include: q.lgd}}\n"
     result = validate(parse(text), fragment=True)
     (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
     assert warning.line == 3 and not warning.host_dependent
-    assert "1 include not read (1 is in a fragment, where includes are not followed)" in warning.message
+    assert "1 include not read (1 is in a fragment validated on its own, which reads no file)" in warning.message
 
 
 # ── The other categories of §17.4 ───────────────────────────────────────
@@ -397,7 +402,7 @@ def test_the_rule_is_an_implementation_rule_of_level_warning():
 def test_the_fragment_wording_has_a_plural():
     text = "## Part {#part}\n\n{{include: q.lgd}}\n\n{{include: r.lgd}}\n"
     (warning,) = [d for d in validate(parse(text), fragment=True).diagnostics if d.rule == SKIPPED_RULE]
-    assert "2 includes not read (2 are in a fragment, where includes are not followed)" in warning.message
+    assert "2 includes not read (2 are in a fragment validated on its own, which reads no file)" in warning.message
 
 
 def test_a_parsed_document_with_no_loader_is_told_what_to_do_about_it():

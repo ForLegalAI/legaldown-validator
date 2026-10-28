@@ -100,7 +100,8 @@ def _unread(document: Document, unread: list[UnreadInclude], fragment: bool) -> 
     phrases = {**REASONS, "unreadable": ("could not be read (include-file-missing)",) * 2}
     if fragment:
         phrases["no-resolver"] = (
-            "is in a fragment, where includes are not followed", "are in a fragment, where includes are not followed"
+            "is in a fragment validated on its own, which reads no file",
+            "are in a fragment validated on its own, which reads no file",
         )
     else:
         phrases = _wording(document, phrases)
@@ -117,10 +118,15 @@ def _includes(
     if any(each.reason in ("no-resolver", "leads-out") for each in unread):
         rules.append("include-file-missing")
     if unread:
-        rules += ["include-has-frontmatter", "include-has-h1", "include-heading-skip"]
+        # Of a fragment not read nothing is known to follow or to join: both checks that look
+        # across fragments (§16.11) go with it.
+        rules += ["include-has-frontmatter", "include-has-h1", "include-heading-skip", "include-cycle",
+                  "include-anchor-duplicate"]
         if template:
             rules.append("the parts of template-fragment-invalid that read a fragment")
     met = [_count(len(paragraphs), "`{{include:}}` paragraph"), *_unread(document, unread, fragment)]
+    if outcome.nested:
+        met.insert(1, f"{_count(outcome.nested, 'include')} in the fragments they take in")
     parts = []
     if rules:
         parts.append(f"{_join(rules)} for the fragments not read")
@@ -129,7 +135,6 @@ def _includes(
             "include-heading-skip under every combination of answers to the conditions on the includes, "
             "judged with every include present"
         )
-    parts.append("include-cycle and include-anchor-duplicate, which are not implemented")
     # The combined document is never put together (§12.2, §16.11): what refers across a
     # fragment and the document is judged as if the fragment were not there.
     parts.append(

@@ -460,7 +460,7 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   and an explicit identifier on every heading, each offender one `template-fragment-invalid` at its
   line. An attachment file (`fragment_kind="attachment"`) may hold conditions and notes of its own,
   and is asked only for no `{{include:}}` (§16.12). Fragment mode reads no file: the includes of the
-  fragment are judged by their path (`include-not-legaldown`, `path-not-relative`), not followed.
+  fragment are judged by their path (`include-not-legaldown`, `path-not-relative`), not followed (the document that includes the fragment follows them).
 - `legaldown validate --fragment` shows a flagged finding with `(host-dependent)` at the end of its
   line, and its exit status ignores them (also under `--strict`): a fragment that only uses what its
   host declares or defines exits `0`, and one with a finding of its own exits `1`. The summary line
@@ -486,6 +486,11 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   a path that leaves a `document_root` is `path-outside-root` alone; a path that only leads out of the
   document's directory (`../x.lgd`) is valid: with a `document_root` that holds it, it is read like any
   other; without one it is skipped, not read, and the Warning of §17.5 says so);
+- `include-cycle` (§16.11) at the include that closes a circular chain, in the file that holds it
+  (`parts/b.lgd:3` for a document that includes `a`, which includes `b`, which includes `a`); a document that
+  includes itself is one. The includes of a fragment are followed (outside a template, where §12.2 allows
+  them) and judged as the document's are, from the fragment's directory and at their line in it; the walk stops
+  at a depth of 32 fragments and 10,000 includes and headings, and `ldv-check-skipped` says so;
 - `include-has-frontmatter` and `include-has-h1` (§16.11), `include-has-frontmatter` also for a block
   whose YAML cannot be read;
 - `include-heading-skip`: the headings of every fragment are placed where its include paragraph is,
@@ -493,10 +498,14 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   that follows one of a fragment's is reported at its own line; a `heading-skip` of the document
   that a fragment read between the headings fills (`# One`, an include of `## Deep`, `### Three`) is
   not reported, as §4.1 judges the combined document, unless an include before that heading is not
-  known for certain (missing, not LegalDown, unreadable, conditional, or itself reported as not a
-  fragment). This is one pass with every include
+  known for certain (missing, not LegalDown, unreadable, conditional, itself reported as not a
+  fragment, or with something it includes not followed). This is one pass with every include
   present: a template's conditional includes are not tried in every combination (§16.11), which
   [CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612) lists with the other limits;
+- `include-anchor-duplicate` at the later declaration of an explicit section identifier that the combined
+  document declares twice (a fragment's heading in its file, a heading of the document at its own line), unless
+  the two can never be there together (alternatives, §15.4); a fragment included twice is reported once, at its
+  heading. Auto-generated identifiers are not compared across files;
 - in a template, `template-fragment-invalid` for what §15.3 forbids in a fragment (a condition, a
   drafting note, an `{{include:}}`, a heading without an explicit identifier), one finding for each
   offender, and for an `{{include:}}` in a LegalDown attachment file.
@@ -504,8 +513,10 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
 `include-not-legaldown` needs no file: an include paragraph whose path does not end in `.lgd`,
 `.legaldown` or `.legal.md` is reported at its line (Core), and the path is never read. A path
 already reported as `path-not-relative` or `path-outside-root` is that finding alone. A fragment's own
-includes are not followed (`include-cycle` is not implemented). Assembly makes the same checks of the
-same files with the same code, so `Template.problems` and `validate` never judge a file two ways.
+includes are followed by `validate` (not by `validate(fragment=True)`, which reads no file; the
+document that includes it does). Assembly makes the same checks of the
+same files with the same code, and still refuses an include in a fragment of a document that is not a
+template (it does not assemble it), so `Template.problems` and `validate` never judge a file two ways.
 
 ### File references and the document root
 
@@ -1003,9 +1014,10 @@ checks lie beyond Core — an `{{include:}}` paragraph, an attachment file, `ame
 `supersedes.file` (the object form), an image path — draws a Warning, `ldv-check-skipped`, for each
 such category: one, at the first construct, naming what this validation did not do (§17.5). Which
 checks are named depends on the validation: a fragment that was read (a document with a path, or
-`validate(resolve=)`) is not listed as unread, but the combined-document checks of §16.11 and
-`include-cycle` and `include-anchor-duplicate` are never performed, so a document with an include
-always draws it. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
+`validate(resolve=)`) is not listed as unread, and neither are the `include-cycle` and
+`include-anchor-duplicate` checks made over what it includes; but the combined-document checks of
+§16.11 (a reference or a term into a fragment, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117))
+are never performed, so a document with an include always draws it. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
 (`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`). It is a Warning: the exit status is
 unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
 `--ignore ldv-check-skipped` once it has read what it says.

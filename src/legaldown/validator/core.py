@@ -974,8 +974,8 @@ def validate(
     an attachment file, ``amends.file``, ``translations``, ``supersedes.file``, an image
     path) draws the Warning ``ldv-check-skipped`` that §17.5 asks for, once for each category
     and at its first construct, naming what this validation did not perform (the
-    combined-document checks of §16.11, ``include-cycle`` and ``include-anchor-duplicate``
-    always; a fragment that was not read, its checks). A document without such a construct
+    combined-document checks of §16.11 always, for a document with an include; a fragment
+    that was not read, its checks; the limits reached when following includes). A document without such a construct
     draws none.
 
     Parameters
@@ -1001,7 +1001,7 @@ def validate(
         (attachment-has-frontmatter and attachment-has-h1 for an attachment
         file, *fragment_kind*); the metadata is then not read, so nothing is
         checked of it. The fragment's own includes are not read: *resolve*
-        belongs to the document that includes it. A
+        belongs to the document that includes it, which follows them. A
         definition the fragment declares and does not reference is still
         reported (def-unreferenced), as ``host_dependent``: the host may
         reference it (§12.2). Default False: a complete document, as before.
@@ -1065,8 +1065,12 @@ def validate(
         nothing but the Warning of §17.5 (given a root it leaves, it is
         path-outside-root, and nothing outside the root is ever read, nor anything
         a document outside it names). Only the referenced file's own
-        definitions are read, not those it refers to in turn; an include a
-        fragment holds is not followed (``include-cycle`` is not implemented).
+        definitions are read, not those it refers to in turn. The includes a fragment
+        holds are followed (§12.2), outside a template: each is judged as the document's
+        are, from the fragment's directory, at its line in the fragment, a chain that comes back
+        is ``include-cycle`` and an identifier the combined document declares twice
+        ``include-anchor-duplicate`` (§16.11); to a depth of 32 fragments and 10,000 includes and
+        headings, past which nothing is followed and the Warning of §17.5 says so.
     document_root:
         The directory every file the document refers to must lie within
         (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
@@ -2300,7 +2304,8 @@ def _validate(
         files=None if mode.fragment else files,
         template=template,
         first_level=first_level,
-        unconditional=lambda include: units.presence(include.section, include.block, include.fragment) == ALWAYS,
+        units=units,
+        questions=questions,
         lex_fragment=lex_fragment,
     )
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
