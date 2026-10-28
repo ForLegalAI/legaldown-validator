@@ -290,7 +290,11 @@ A definition is no text to the validator and no unit to assembly: it holds no di
 anchor, an item's first paragraph (where an anchor may end, and a condition applies, §5.7, §15.3)
 is the first block after any definitions it opens with, and `[x]: u` over a lone `{{include:}}`
 line leaves the line an include paragraph. Written back, each definition is a paragraph of its own,
-blank-separated: the layout is normalized and the model is the same on a second reading. A reference-style
+blank-separated: the layout is normalized and the model is the same on a second reading. In a list item
+a definition and the block after it (another definition, a paragraph, a list, a quote, a fence) are
+written directly under one another where that is read back as the same two blocks, so that a tight list
+stays tight (a blank line there would make a renderer wrap its items in paragraphs); a title-like
+line under a definition is not, as it would become its title. A reference-style
 image (`![a][r]`, `![a][]`, `![a]`) is checked for `path-not-relative` and `path-outside-root` on its
 definition's destination, once, at the definition, however many images name it (#104, above).
 
@@ -301,8 +305,9 @@ Where this differs from CommonMark, or is read more simply:
   final until assembly fills the directive in, and the validator must see the line as written
   (`[x]: {{ref: nope}}` is a `ref` block, `ref-broken`; `[label]: {{placeholder: p}}` is an
   `insertion-boundary` Error). The definitions before it are blocks, it and everything after it one paragraph.
-  A `link_definition` that a model built in code holds a directive in is written as it is and read back as
-  that text.
+  A `link_definition` that a model built in code holds a directive in (or a label of more than 999 characters)
+  is not read back as a definition: it is written as it is, always apart from the blocks around it by blank
+  lines, and read back as the text it is.
 - **A setext underline under only definitions, in a quote or an item, followed by a line without the
   container's marker:** CommonMark starts a paragraph at `===` that the line continues; here the quote or
   item has closed its paragraph at the underline, so the line is not read into it (`> [x]: u`, `> ===`,

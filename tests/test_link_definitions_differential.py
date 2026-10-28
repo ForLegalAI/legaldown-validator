@@ -105,7 +105,7 @@ def paragraph(rng: random.Random, *, underline: bool = False) -> list[str]:
     return lines
 
 
-def block(rng: random.Random, depth: int = 0, *, lazy: bool = True) -> list[str]:
+def block(rng: random.Random, depth: int = 0, *, lazy: bool = True, loose: bool = True) -> list[str]:
     """The lines of a block. Without *lazy*, every line of an item is indented to its content and
     none of a quote or an item lacks its marker."""
     kind = rng.choice(["paragraph"] * 4 + ["setext"] * 2 + ["list", "list", "quote", "quote", "heading", "rule"])
@@ -125,17 +125,17 @@ def block(rng: random.Random, depth: int = 0, *, lazy: bool = True) -> list[str]
             bullet = rng.choice(["-", "*", "1."])
             indent = " " * (len(bullet) + 1) if not lazy else "  "  # (two columns under "1." is short of its content)
             for _ in range(rng.randint(1, 3)):
-                inner = block(rng, depth + 1, lazy=lazy) if rng.random() < 0.3 else paragraph(rng)
+                inner = block(rng, depth + 1, lazy=lazy, loose=loose) if rng.random() < 0.3 else paragraph(rng)
                 if lazy and rng.random() < 0.15:
                     inner = [*inner[:1], "lazy " + rng.choice(TEXT)] + inner[1:]  # a line that continues, not indented
                     lines += [f"{bullet} {inner[0]}", inner[1], *(indent + each for each in inner[2:])]
                 else:
                     lines += [f"{bullet} {inner[0]}", *(indent + each for each in inner[1:])]
-                if rng.random() < 0.3:
+                if loose and rng.random() < 0.3:
                     lines.append("")
             return lines
         case _:
-            inner = block(rng, depth + 1, lazy=lazy) if rng.random() < 0.3 else paragraph(rng)
+            inner = block(rng, depth + 1, lazy=lazy, loose=loose) if rng.random() < 0.3 else paragraph(rng)
             lines = ["> " + each if each else ">" for each in inner]
             # (A line after an underline under only definitions, which CommonMark reads into a
             # paragraph the underline starts: a known difference, CONFORMANCE.md, #92.)
@@ -144,12 +144,16 @@ def block(rng: random.Random, depth: int = 0, *, lazy: bool = True) -> list[str]
             return lines
 
 
-def generate(seed: int, *, lazy: bool = True) -> str:
-    """A document body of a few blocks."""
+def generate(seed: int, *, lazy: bool = True, loose: bool = True) -> str:
+    """A document body of a few blocks. Without *loose*, no blank line is in a list: its items
+    are tight, as the model keeps them (it does not keep a loose list)."""
     rng = random.Random(seed)
     lines: list[str] = []
     for _ in range(rng.randint(1, 4)):
-        lines += block(rng, lazy=lazy)
+        made = block(rng, lazy=lazy, loose=loose)
+        lines += made
+        if not loose and re.match(r"(?:[-*]|1\.) ", made[0]):
+            lines += ["", "***"]  # (a list after a list of its kind, a blank line between, is one loose list)
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -354,6 +358,45 @@ def test_the_blocks_are_pandocs(seed, lazy):
     source = generate(seed, lazy=lazy)
     blocks, _reference = pandoc_definitions(source)
     assert document_nodes(source) == blocks, source
+
+
+def pandoc_html(source: str) -> str:
+    return subprocess.run(
+        ["pandoc", "-f", "commonmark", "-t", "html"], input=source, capture_output=True, text=True, check=True
+    ).stdout
+
+
+#: What an item may hold for its tightness to be kept: blocks written directly under one another.
+#: A heading, a table, code or raw HTML is written after a blank line, which makes a list loose
+#: whether or not there are definitions (a limit of the format, not of #92).
+TIGHT_KINDS = {"link_definition", "paragraph", "ref", "term", "unordered_list", "ordered_list", "quote"}
+
+
+def keeps_tightness(blocks: list[Any]) -> bool:
+    from legaldown.models import LIST_KINDS
+
+    return all(
+        every.kind in TIGHT_KINDS and keeps_tightness([every])
+        for each in blocks
+        if each.kind in LIST_KINDS
+        for item in list_items(each)
+        for every in item.blocks
+    )
+
+
+@pytest.mark.parametrize("seed", range(SEEDS.stop * 2))
+def test_a_tight_list_written_is_tight_in_html_as_it_was(seed):
+    """Revision of #92: a blank line written between a definition and the next block of an
+    item would make a tight list loose, and a renderer wrap its items in paragraphs. The HTML
+    of what is written is that of what was read, for the documents whose lists can be tight."""
+    source = generate(seed, lazy=False, loose=False)
+    document = parse(FRONTMATTER + source)
+    if not keeps_tightness(document.preamble) or any(
+        not keeps_tightness(section.blocks) for section in document.sections
+    ):
+        pytest.skip("a list that holds a heading, a table or code is written loose")
+    written = serialize(document)
+    assert pandoc_html(written.split("---\n\n", 1)[1]) == pandoc_html(source), (source, written)
 
 
 @pytest.mark.parametrize("lazy", LAZY)

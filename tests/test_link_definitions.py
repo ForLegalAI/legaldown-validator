@@ -7,6 +7,9 @@ differential against pandoc and markdown-it over generated documents is in
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
+
 import pytest
 
 from legaldown import Block, Document, parse, parse_template, serialize, validate
@@ -20,11 +23,13 @@ from legaldown.markdown import (
 from legaldown.parser import quote_blocks
 from legaldown.syntax import (
     LinkDefinition,
+    PlacedLinkDefinition,
     block_fragments,
     collect_link_definitions,
     item_text,
     list_fragments,
     list_items,
+    locate_link_definitions,
 )
 
 FRONTMATTER = "---\ntitle: T\n---\n\n"
@@ -862,3 +867,176 @@ def test_many_definitions_images_and_labels_are_linear():
         start = time.perf_counter()
         validate(parse(FRONTMATTER + "# A\n\n" + body + "\n"), document_root="/tmp/root")
         assert time.perf_counter() - start < 15, name
+
+
+# ── Review: reference-style images, where they are reported ───────
+
+
+def test_definitions_in_the_preamble_and_in_a_section_are_both_checked():
+    """The preamble's index is None, which does not sort with a section's."""
+    found = paths("![a][r]\n\n[r]: /e1\n")
+    assert found == [("path-not-relative", 9)]
+    document = parse(FRONTMATTER + "![a][r]\n\n[r]: /e1\n\n# A\n\n![b][s]\n\n[s]: /e2\n")
+    result = validate(document)
+    assert [(d.rule, d.line) for d in result.diagnostics if d.rule.startswith("path-")] == [
+        ("path-not-relative", 7), ("path-not-relative", 13)
+    ]
+
+
+def test_a_finding_is_at_the_line_of_the_definition_block_not_of_its_text():
+    # A label with spaces around it: the text of the source is not the label.
+    assert paths("![a][ foo ]\n\n[ foo ]: /etc/x\n") == [("path-not-relative", 9)]
+    assert paths("![a][foo]\n\n[   foo   ]: /etc/x\n") == [("path-not-relative", 9)]
+    # An image that names the label earlier in the same top-level block.
+    assert paths("- ![a][foo]\n\n  [foo]: /etc/x\n") == [("path-not-relative", 9)]
+    assert paths("- text\n\n  ![a](ok.png) ![b][r]\n\n  [r]: /etc/x\n") == [("path-not-relative", 11)]
+    assert paths("> ![c][q]\n>\n> [q]: /etc/y\n") == [("path-not-relative", 9)]
+    assert paths("- a\n\n  - ![c][q] [q]\n\n    [q]: /etc/y\n") == [("path-not-relative", 11)]
+    # A label over two lines, found at its first line.
+    assert paths("![a][r foo]\n\n[r\nfoo]: /etc/x\n") == [("path-not-relative", 9)]
+
+
+def test_definitions_of_one_block_are_reported_in_document_order():
+    document = parse(FRONTMATTER + "# A\n\n- ![a][b] ![c][a]\n\n  [a]: /etc/a\n\n  [b]: /etc/b\n")
+    result = validate(document)
+    assert [(d.line, d.message.split("'")[1]) for d in result.diagnostics if d.rule == "path-not-relative"] == [
+        (9, "/etc/a"), (11, "/etc/b")
+    ]
+
+
+def test_the_finding_names_the_label_with_its_spaces_collapsed():
+    result = validate(parse(FRONTMATTER + "# A\n\n![a][r foo]\n\n[r\n  foo]: /etc/x\n"))
+    [finding] = [d for d in result.diagnostics if d.rule == "path-not-relative"]
+    assert "[r foo]" in finding.message and "\n" not in finding.message
+
+
+def test_definitions_are_only_looked_for_when_an_image_is(monkeypatch):
+    from legaldown import definitions
+
+    calls = []
+    real = definitions.locate_link_definitions
+    monkeypatch.setattr(definitions, "locate_link_definitions", lambda document: calls.append(1) or real(document))
+    validate(parse(FRONTMATTER + "# A\n\n[x]: u\n\nText [x] and a [link](here).\n"))
+    assert calls == []
+    validate(parse(FRONTMATTER + "# A\n\n[x]: u\n\n![a][x] and ![b][x]\n\n- ![c][x]\n"))
+    assert calls == [1]
+
+
+def test_a_text_is_scanned_once_for_its_inline_and_its_reference_images(monkeypatch):
+    from legaldown.validator import paths as paths_module
+
+    seen = []
+    real = paths_module._closing_brackets
+    monkeypatch.setattr(paths_module, "_closing_brackets", lambda view: seen.append(view) or real(view))
+    validate(parse(FRONTMATTER + "# A\n\n![a](x.png) ![b][r] ![c]\n\n[r]: y.png\n"))
+    assert len(seen) == 1
+
+
+def test_locate_link_definitions_gives_the_blocks_and_where_they_are():
+    document = parse(FRONTMATTER + "[a]: /p\n\n# A\n\n[b]: /one\n\n- text\n\n  [c]: /two\n  [d]: /three\n\n> [B]: /later\n")
+    found = locate_link_definitions(document)
+    assert list(found) == ["a", "b", "c", "d"]
+    assert [(each.section, each.block, each.ordinal, each.definition.target) for each in found.values()] == [
+        (None, 0, 0, "/p"), (0, 0, 0, "/one"), (0, 1, 0, "/two"), (0, 1, 1, "/three")
+    ]
+    assert isinstance(found["a"], PlacedLinkDefinition)
+    assert {key: LinkDefinition(each.definition.target, each.definition.title) for key, each in found.items()} == (
+        collect_link_definitions(document)
+    )
+
+
+def test_the_locator_gives_the_line_of_a_definitions_own_block():
+    from legaldown.positions import Locator
+
+    document = parse(FRONTMATTER + "# A\n\n- text\n\n  [c]: /two\n  [d]: /three\n\n> text\n>\n> [e]: /four\n")
+    where = Locator(document)
+    assert [where.definition(0, 0, n) for n in range(3)] == [9, 10, None]  # in a list item
+    assert [where.definition(0, 1, n) for n in range(2)] == [14, None]  # in a quote
+    document.sections[0].blocks[0].items[0].blocks[1].label = "changed"
+    assert Locator(document).definition(0, 0, 0) is None  # no longer the source's shape
+
+
+# ── Review: tight items, and what is not read back as a definition ─
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- [x]: u\n  b\n- c\n",
+        "- [x]: u\n  [y]: v\n  b\n- c\n",
+        "- [x]: u\n  [y]: v\n- c\n",
+        "- [x]: u\n  - n\n- c\n",
+        "- [x]: u\n  > q\n- c\n",
+        "- [x]: u\n  ```\n  c\n  ```\n- d\n",
+        "- [x]: u\n  b\n  - n\n- c\n",
+        "1. [x]: u 't'\n   b\n2. c\n",
+        "- [x]: u\n  <span>\n- c\n",
+        "- [a]: u\n  [b]: {{placeholder: p}}\n  c\n- d\n",
+    ],
+)
+def test_a_definition_and_the_block_after_it_are_tight_in_an_item(body):
+    written = serialize(parse(FRONTMATTER + body)).split("---\n\n", 1)[1]
+    assert "\n\n" not in written.rstrip("\n"), written  # no blank line: the list stays tight
+    round_trips(body)
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is not installed")
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- [x]: u\n  b\n- c\n",
+        "- [x]: u\n  [y]: v\n  b\n- c\n\n[x] [y]\n",
+        "- [x]: u\n  - n\n- c\n",
+        "- [x]: u\n  > q\n- c\n",
+        "- [x]: u\n  ```\n  c\n  ```\n- d\n",
+    ],
+)
+def test_a_tight_list_is_tight_in_html_after_it_is_written(body):
+    """pandoc renders a loose list's items in paragraphs: the HTML says what a reader sees."""
+    def html(text: str) -> str:
+        return subprocess.run(
+            ["pandoc", "-f", "commonmark", "-t", "html"], input=text, capture_output=True, text=True, check=True
+        ).stdout
+
+    written = serialize(parse(FRONTMATTER + body)).split("---\n\n", 1)[1]
+    assert html(written) == html(body)
+
+
+def test_a_title_like_line_after_a_definition_is_not_made_its_title_by_writing_them_together():
+    document = Document.from_dict({"preamble": [{"kind": "unordered_list", "items": [{"blocks": [
+        {"kind": "link_definition", "label": "x", "target": "u"},
+        {"kind": "paragraph", "text": '"not a title"'},
+    ]}]}]})
+    [item] = list_items(parse(serialize(document)).preamble[0])
+    assert [(b.kind, b.title or b.text) for b in item.blocks] == [("link_definition", ""), ("paragraph", '"not a title"')]
+
+
+def test_a_definition_the_parser_would_not_read_stands_apart():
+    """Review of #92: a model-built definition with a directive in it is read back as text, so it is
+    written as a paragraph of its own, never glued to the block before or after it."""
+    texts = [{"kind": "link_definition", "label": "x", "target": "{{ref: a}}"}]
+    for before, after in [
+        ({"kind": "link_definition", "label": "a", "target": "u"}, {"kind": "paragraph", "text": "<span>"}),
+        ({"kind": "paragraph", "text": "one"}, {"kind": "paragraph", "text": "two"}),
+    ]:
+        document = Document.from_dict({"preamble": [before, *texts, after]})
+        written = serialize(document).split("---\n\n", 1)[1]
+        assert "\n\n[x]: <{{ref: a}}>\n\n" in "\n\n" + written
+        assert len(parse(serialize(document)).preamble) == 3
+    # The same in an item: no tight list is made of text and a definition.
+    document = Document.from_dict({"preamble": [{"kind": "unordered_list", "items": [{"blocks": [
+        {"kind": "link_definition", "label": "a", "target": "u"}, *texts, {"kind": "paragraph", "text": "after"},
+    ]}]}]})
+    [item] = list_items(parse(serialize(document)).preamble[0])
+    # (A directive in an item stays in its text: the paragraph is not a ``ref`` block.)
+    assert [(b.kind, b.text) for b in item.blocks] == [
+        ("link_definition", ""), ("paragraph", "[x]: <{{ref: a}}>"), ("paragraph", "after")
+    ]
+
+
+def test_a_definition_with_an_overlong_label_stands_apart_too():
+    document = Document.from_dict({"preamble": [
+        {"kind": "link_definition", "label": "a" * 1000, "target": "u"},
+        {"kind": "paragraph", "text": "after"},
+    ]})
+    assert len(parse(serialize(document)).preamble) == 2
