@@ -17,10 +17,10 @@ import pytest
 
 from legaldown import directives as directives_module
 from legaldown import markdown
-from legaldown.directives import lex
+from legaldown.directives import lex, mask_directives
 from legaldown.parser import parse
 from legaldown.validator import conditions as conditions_module
-from legaldown.validator import core, templates, validate
+from legaldown.validator import core, paths, templates, validate
 from legaldown.validator import units as units_module
 from legaldown.validator.conditions import ALWAYS
 from legaldown.validator.units import find_markers
@@ -205,6 +205,78 @@ def test_blanks_on_one_line_share_one_index(monkeypatch):
 def test_blanks_on_one_line_in_a_time_budget():
     document = _document("{{placeholder: a}}" * 40000, _QUESTIONS)
     assert _seconds(validate, document) < 3.0  # 0.8 s now; the old checks took minutes
+
+
+# ── Link reference definitions of the insertion boundary, and link destinations (#113) ──
+
+_REFERENCE_LINES = {
+    "unclosed labels": "[a {{placeholder: a}}\n",
+    "unclosed parenthesis titles": "[a]: u ({{placeholder: a}}\n",
+    "unclosed quoted titles": '[a]: u "{{placeholder: a}}\n',
+    "unclosed single-quoted titles": "[a]: u '{{placeholder: a}}\n",
+    "empty labels": "[]: u {{placeholder: a}}\n",
+}
+
+
+@pytest.mark.parametrize("shape", _REFERENCE_LINES)
+def test_a_label_or_title_with_no_closer_is_not_read_to_the_end_at_each_line(shape):
+    """The pattern for a link reference definition read an unclosed label or title to the end of the text, at every
+    line: 5 s for 20000 of them, 6 s for the parenthesis titles. Each closer is found by bisect now."""
+    text = _REFERENCE_LINES[shape] * 20000
+    lexed = lex(text)
+    scan = templates._InsertionScan(text, mask_directives(text, lexed.directives), lexed.directives)
+    insertions = [directive for directive in lexed.directives if directive.name == "placeholder"]
+    assert len(insertions) == 20000
+    assert _seconds(lambda: [scan.problem(insertion) for insertion in insertions]) < 1.0  # 0.1 s now
+
+
+def test_a_definition_line_and_its_trailing_blanks_are_read_once_for_the_insertions_it_holds(monkeypatch):
+    reads = _Counter(monkeypatch, templates._InsertionScan, "_read_reference")
+    real = templates._NON_BLANK_RE
+
+    class CountingSearch:
+        calls = 0
+
+        def search(self, *args):
+            CountingSearch.calls += 1
+            return real.search(*args)
+
+    monkeypatch.setattr(templates, "_NON_BLANK_RE", CountingSearch())
+    text = "[a]: " + "{{placeholder: a}}" * 3000 + " " * 20000 + "\n"
+    lexed = lex(text)
+    scan = templates._InsertionScan(text, mask_directives(text, lexed.directives), lexed.directives)
+    problems = [scan.problem(directive) for directive in lexed.directives]
+    assert reads.calls == 1  # where the definition ends, once
+    assert CountingSearch.calls == 1  # and that the blanks after it end the line, once
+    assert problems.count("it is in a link reference definition") == 3000
+
+
+_LINKS = {
+    "unclosed destinations": ("[a](x(", ""),
+    "unclosed angle destinations": ("[a](<x", ""),
+    "unclosed titles": ('[a](<x> "', ""),
+    "unclosed single-quoted titles": ("[a](<x> '", ""),
+    "unclosed parenthesis titles": ("[a](<x> (", ""),
+    "escaped closers": ('[a](<x> "t\\', ""),
+    "a backslash run": ("[a](", "\\"),
+    "line breaks": ("[a](\n", ""),
+    "definitions with angle destinations": ("[a]: <x\n", ""),
+    "definitions with unclosed titles": ('[a]: u "\n', ""),
+    "definitions with unclosed parenthesis titles": ("[a]: u (\n", ""),
+    "definitions with their destinations below": ("[a]:\n", ""),
+}
+
+
+@pytest.mark.parametrize("shape", _LINKS)
+def test_link_destinations_and_titles_are_read_in_linear_time(shape):
+    """The one scanner (``scan_inline_link``, ``scan_destination``, ``scan_title``), at its three callers: an unclosed
+    title ends at the next closer of its kind, which is where the next scan begins; a bare destination at its 33rd
+    ``(``; a gap at one line break."""
+    unit, repeated = _LINKS[shape]
+    text = unit + repeated * 200_000 if repeated else unit * (200_000 // len(unit))
+    assert _seconds(markdown.split_link_definitions, text.split("\n")) < 3.0  # milliseconds now
+    assert _seconds(lambda: paths.images(text, lex(text))) < 3.0
+    assert _seconds(lambda: core._inline_html(text, lex(text))) < 3.0
 
 
 # ── Unclosed declarations, processing instructions and CDATA sections (#111) ──
