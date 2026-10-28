@@ -207,6 +207,39 @@ def test_blanks_on_one_line_in_a_time_budget():
     assert _seconds(validate, document) < 3.0  # 0.8 s now; the old checks took minutes
 
 
+# ── Unclosed declarations, processing instructions and CDATA sections (#111) ──
+
+_UNCLOSED_HTML = {
+    "processing instruction": "x <?a ",
+    "declaration": "x <!a ",
+    "CDATA section": "x <![CDATA[ ",
+}
+
+
+@pytest.mark.parametrize("opener", _UNCLOSED_HTML.values(), ids=_UNCLOSED_HTML.keys())
+def test_inline_html_without_a_closer_is_not_matched_at_each_opener(monkeypatch, opener):
+    """The pattern reads on to the closer, to the end of the text when there is none: it was tried at every opener."""
+    real = core.INLINE_HTML_RE
+
+    class Counting:
+        calls = 0
+
+        def match(self, text, pos):
+            Counting.calls += 1
+            return real.match(text, pos)
+
+    monkeypatch.setattr(core, "INLINE_HTML_RE", Counting())
+    text = opener * 5000
+    assert core._inline_html(text, lex(text)) is None
+    assert Counting.calls == 0
+
+
+@pytest.mark.parametrize("opener", _UNCLOSED_HTML.values(), ids=_UNCLOSED_HTML.keys())
+def test_unclosed_inline_html_in_a_time_budget(opener):
+    document = _document(opener * 40000)
+    assert _seconds(validate, document) < 2.0  # 0.1 s now; a processing instruction took 12 s at half the size
+
+
 # ── Unclosed comments ─────────────────────────────────────────────
 
 

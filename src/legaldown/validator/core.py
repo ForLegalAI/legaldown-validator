@@ -756,11 +756,19 @@ def _inline_html(text: str, lexed: Lexed) -> str | None:
     written, or None: outside code spans, comments and directives (``lex``),
     not after a backslash, and not a link's ``<…>`` destination."""
     # What the lexer blanked, a comment or a code span, is filled with a
-    # character no tag holds outside a quoted value: no tag runs across it.
+    # character no tag holds outside a quoted value: no tag runs across it, and
+    # neither does a declaration, processing instruction or CDATA section. (In
+    # CommonMark the HTML that starts first wins, so ``<!a `>` b`` is a
+    # declaration, ending in the code span, and so is ``<!a <!-- c --> b``, ending
+    # in the comment's ``>``; those are not found here: CONFORMANCE.md, #111.)
     view = "".join(
         "`" if seen == " " and written not in " \t\n" else seen
         for seen, written in zip(mask_directives(lexed.view, lexed.directives), text, strict=True)
     )
+    # A processing instruction, declaration or CDATA section is read to its closer, which takes the rest of
+    # the text to look for when there is none: so once there is no closer after an offset, none is searched
+    # for there again (the last one of each kind decides), and every ``<`` costs what it reads.
+    last_pi, last_cdata, last_gt = view.rfind("?>"), view.rfind("]]>"), view.rfind(">")
     opened = -1  # the last unescaped ``[`` before *at* with no ``]`` after it but a link's
     scanned = 0
     pos = 0
@@ -784,7 +792,15 @@ def _inline_html(text: str, lexed: Lexed) -> str | None:
             pos = scanned = destination.end()
             opened = -1
             continue
-        if tag := INLINE_HTML_RE.match(view, at):
+        if view.startswith("<?", at):
+            unclosed = last_pi < at + 2
+        elif view.startswith("<![CDATA[", at):
+            unclosed = last_cdata < at + 9
+        elif view.startswith("<!", at):
+            unclosed = last_gt < at + 3
+        else:
+            unclosed = False
+        if not unclosed and (tag := INLINE_HTML_RE.match(view, at)):
             return text[at:tag.end()]
     return None
 
