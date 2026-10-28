@@ -576,18 +576,18 @@ _FIRST_LINES = [
 _SECOND_LINES = [None, "more", "- d", "#", "===", "---", "> q", "1. n", "[z]: /w"]
 
 
+@pytest.mark.parametrize("second", _SECOND_LINES)
+@pytest.mark.parametrize("shape", _FIRST_LINES)
 @pytest.mark.parametrize("where", ["top level", "list item", "quote"])
-def test_what_follows_a_definition_reads_back_the_same_whatever_its_first_line(where):
+def test_what_follows_a_definition_reads_back_the_same_whatever_its_first_line(where, shape, second):
     first, rest = {"top level": ("", ""), "list item": ("- ", "  "), "quote": ("> ", "> ")}[where]
-    for shape in _FIRST_LINES:
-        for second in _SECOND_LINES:
-            lines = [first + "[x]: /u", rest + "    " + shape] + ([] if second is None else [rest + "    " + second])
-            body = "\n".join(lines) + "\n"
-            document = parse(FRONTMATTER + body)
-            written = serialize(document)
-            again = parse(written)
-            assert (again.preamble, again.sections) == (document.preamble, document.sections), (body, written)
-            assert serialize(again) == written, (body, written)
+    lines = [first + "[x]: /u", rest + "    " + shape] + ([] if second is None else [rest + "    " + second])
+    body = "\n".join(lines) + "\n"
+    document = parse(FRONTMATTER + body)
+    written = serialize(document)
+    again = parse(written)
+    assert (again.preamble, again.sections) == (document.preamble, document.sections), (body, written)
+    assert serialize(again) == written, (body, written)
 
 
 @pytest.mark.parametrize("line", ["- c", "# c", "1. c"])

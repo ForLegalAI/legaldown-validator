@@ -620,9 +620,13 @@ def _render_blocks(blocks: list[Block], *, last: bool = False, in_item: bool = F
             # What is left of a paragraph that opened with definitions may read as the start of a
             # block alone: it is written under them, as the parser read it (#92).
             under = None
-            if text is not None and after_definition and _joins_definition(text, in_item=in_item):
+            if text is not None and after_definition and _joins_definition(
+                text, in_item=in_item and block.kind == "paragraph"
+            ):
                 under = _paragraph(text, joined=True)
-                if not _reads_apart(definition_lines[index - 1], reads[index - 1], under.split("\n")):
+                lines = under.split("\n")
+                # Written under the definition they are its paragraph's, one paragraph, and no more of it.
+                if not (_continues(["[a]: b", *lines]) and _reads_apart(definition_lines[index - 1], reads[index - 1], lines)):
                     under = None
             joined = under is not None
             rendered = _render_block(block, in_item=in_item) if under is None else under

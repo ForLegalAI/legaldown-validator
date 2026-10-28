@@ -2235,14 +2235,14 @@ def _validate(
     )
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
     # rest are recorded where the loop met them, the last first so that the places hold. That
-    # needs the diagnostics since then only to have been added to: nothing between the loop and
-    # here may remove, replace or reorder one, or a finding would be placed among the wrong ones.
+    # needs the diagnostics since then only to have been added to. If one was moved or removed
+    # (nothing does today), the place is not known: the skip is still reported, at the end.
     for index, (position, before, message, line) in reversed(heading_skips.items()):
-        assert (position == 0 and before is None) or result.diagnostics[position - 1] is before, (
-            "the diagnostics were changed after the heading loop (heading-skip is recorded in place)"
-        )
-        if index not in filled:
-            result.error_at(position, "heading-skip", message, line=line)
+        if index in filled:
+            continue
+        if not ((position == 0 and before is None) or result.diagnostics[position - 1 : position] == [before]):
+            position = len(result.diagnostics)
+        result.error_at(position, "heading-skip", message, line=line)
     if final:
         _check_final(placeholders, chooses, body.notes, conditions, questions, result, where.key("questions"))
 
