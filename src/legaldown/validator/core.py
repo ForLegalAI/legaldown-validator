@@ -30,7 +30,14 @@ from ..directives import (
     mask_directives,
 )
 from ..files import LoadFile, file_loader
-from ..markdown import INLINE_HTML_RE, inline_html_unclosed, is_comment_only, scan_inline_link, strip_comments
+from ..markdown import (
+    INLINE_HTML_RE,
+    back_line_space,
+    inline_html_unclosed,
+    is_comment_only,
+    scan_inline_link,
+    strip_comments,
+)
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
@@ -748,15 +755,9 @@ class _FreeIdentifiers:
 
 def _link_destination_end(view: str, at: int) -> int | None:
     """Where the inline link whose ``<…>`` destination opens at ``view[at]`` ends (after its ``)``), or
-    None when it is none: the ``<`` follows ``](``, with spaces, tabs and up to one line break between
-    (``scan_inline_link``), and no raw HTML is in a link's destination (CommonMark)."""
-    before = at
-    while before > 0 and view[before - 1] in " \t":
-        before -= 1
-    if view[before - 1:before] == "\n":
-        before -= 1
-        while before > 0 and view[before - 1] in " \t":
-            before -= 1
+    None when it is none: the ``<`` follows ``](``, with the gap of ``scan_inline_link`` between, and no raw
+    HTML is in a link's destination (CommonMark)."""
+    before = back_line_space(view, at)
     if view[before - 2:before] != "](":
         return None
     link = scan_inline_link(view, before - 1)

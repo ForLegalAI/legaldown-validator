@@ -317,7 +317,7 @@ _TITLES = [
 #: The tokens random inputs are made of (a link's parts, and what could end or extend them).
 _TOKENS = [
     "<b>", "<", ">", "(", ")", "\\", '"', "'", " ", "\t", "\n", "\x7f", "\0", "\\)", '\\"', "\\>", '"t"', "'x'",
-    "(t)", "b", "a", "\x01", "]", "[", ":", "](", "\\\\", "\r",
+    "(t)", "b", "a", "\x01", "]", "[", ":", "](", "\\\\", "\r", "\x1f", "\x0b",
 ]
 
 
@@ -373,7 +373,7 @@ def test_a_definition_is_read_as_before_but_a_nul_is_text():
 
 
 def test_a_target_is_bare_as_before_but_a_nul_is_text():
-    """``is_bare_destination`` (``format_link_definition`` writes a target that is not bare in ``<>``)."""
+    """``is_bare_destination`` (``format_link_definition`` writes a target that is not bare in ``<>``, and one with a NUL: below)."""
     seen = 0
     for target in _random_texts(_TOKENS, 40_000, 7, seed=1132):
         old = bool(target) and _old_bare_end(target, 0) == len(target)
@@ -383,6 +383,22 @@ def test_a_target_is_bare_as_before_but_a_nul_is_text():
             assert "\0" in target and new and not old, repr(target)
             seen += 1
     assert seen > 50
+
+
+def test_a_target_is_written_in_angle_brackets_as_before():
+    """``format_link_definition``: a bare target as before, and one with a NUL in ``<>`` though a NUL is text."""
+    for target in _random_texts(_TOKENS, 20_000, 7, seed=1138):
+        if target != target.strip(" \t") or "\n" in target or "\r" in target:
+            continue  # (the target is written without its line breaks and its outer blanks)
+        written = markdown.format_link_definition("a", target)
+        assert written.startswith("[a]: ")
+        bare = not written.startswith("[a]: <")
+        assert bare == (bool(target) and _old_bare_end(target, 0) == len(target)), repr(target)
+        if bare:
+            assert written == f"[a]: {target}"
+        if not any(char in target for char in "<>\\"):  # (those are escaped in ``<>``, and read back as they were written)
+            read = markdown.split_link_definitions([written])[0]
+            assert read == [LinkDefinitionSource("a", target, "", 1)], repr(target)
 
 
 # ── The image paths ───────────────────────────────────────────────
@@ -415,7 +431,8 @@ def _paths_inputs():
     yield from (f"({text}" for text in _random_texts(_TOKENS, 60_000, 9, seed=1131))
 
 
-def test_an_inline_link_is_read_as_before_but_for_del_a_glued_title_and_two_line_breaks():
+def test_the_strict_reading_of_an_inline_link_is_the_old_but_for_del_a_glued_title_and_two_line_breaks():
+    """``scan_inline_link`` as the raw-HTML check reads a link (the paths read it permissively, below)."""
     seen = Counter()
     for text in _paths_inputs():
         new = markdown.scan_inline_link(text, 0)
@@ -440,6 +457,34 @@ def test_an_inline_link_is_read_as_before_but_for_del_a_glued_title_and_two_line
     }, seen
 
 
+#: The control characters a bare destination may hold when it is read permissively (pandoc): DEL and the C0 ones
+#: but NUL (text), tab and line break (which end it), read by the old code as the ``a`` they are made.
+_CONTROLS = {code: "a" for code in [*range(1, 32), 127] if code not in (9, 10)}
+
+
+def test_an_image_destination_is_read_as_before_but_across_no_blank_line_and_with_controls_as_text():
+    """The path checks over-approximate: they read what any renderer reads as an image, so a DEL or other control
+    character in a bare destination and a title glued to ``<…>`` (pandoc) are images (``permissive``). The old code
+    ended a bare destination at a C0 control, so the one value-level substitution is that: ``new(s)`` is the old code's
+    reading of ``s`` with its controls made ``a`` (``control-in-bare``). The other class is ``extra-line-break``:
+    where the old code read across a blank line, which ends the paragraph for every renderer, the new reads none."""
+    seen = Counter()
+    for text in _paths_inputs():
+        new = markdown.scan_inline_link(text, 0, permissive=True)
+        plain = text.translate(_CONTROLS)
+        old = old_destination(plain, 0)
+        if old is not None and any(gap.count("\n") >= 2 for gap in _Gaps.of(plain, old)):
+            assert new is None, repr(text)
+            seen["extra-line-break"] += 1
+        else:
+            assert new == old, repr(text)
+        if new != old_destination(text, 0):
+            seen["del-in-bare" if "\x7f" in text else "c0-in-bare"] += 1
+    assert {name: count > 50 for name, count in seen.items()} == {
+        "extra-line-break": True, "del-in-bare": True, "c0-in-bare": True
+    }, seen
+
+
 def test_a_line_break_in_a_gap_is_read_as_a_space_by_the_old_code():
     """What the new accepts and the old does not in a gap is a line break: with it a space the old agrees."""
     for text in _products(_GAPS, _GAPS, _GAPS):
@@ -451,13 +496,15 @@ def test_a_line_break_in_a_gap_is_read_as_a_space_by_the_old_code():
 
 @pytest.mark.parametrize(("text", "found"), [
     ('![a](<x.png> "t")', ["x.png"]),
-    ('![a](<x.png>"t")', []),
+    ('![a](<x.png>"t")', ["x.png"]),
     ("![a](<x.png>\n\"t\")", ["x.png"]),
     ("![a](\n<x.png>)", ["x.png"]),
     ("![a](\n\nx.png)", []),
     ("![a](x.png\n\n)", []),
-    ("![a](x.png\x7f)", []),
-    ("![a](x.png\x01)", []),
+    ("![a](x.png\x7f)", ["x.png\x7f"]),
+    ("![a](x.png\x01)", ["x.png\x01"]),
+    ("![a](/etc/passwd\x1f)", ["/etc/passwd\x1f"]),
+    ("![a](x.png\ty)", []),
     ("![a](x\0y.png)", ["x\0y.png"]),
     ('![a](x.png "t\\"u")', ["x.png"]),
     ("![a](<x.png> (t\\)u))", ["x.png"]),
@@ -614,7 +661,6 @@ def test_the_link_reference_end_of_the_cases_that_differ_from_commonmark(templat
 
 # ── The implementations of CommonMark ─────────────────────────────
 
-markdown_it = pytest.importorskip("markdown_it")
 
 _BLOCKS_RE = re.compile(r"\n[ \t]*(?:\n|>)")  # a blank line or a quote ends the paragraph a link is in
 #: markdown-it reads a backslash before any character as a pair, not only before punctuation (cmark does not).
@@ -622,6 +668,7 @@ _BACKSLASH_RE = re.compile(r"\\(?![!-/:-@\[-`{-~])")
 
 
 def _links_by_markdown_it(text):
+    markdown_it = pytest.importorskip("markdown_it")  # (only the tests that ask markdown-it need it)
     for token in markdown_it.MarkdownIt("commonmark").parse(text):
         if any(child.type == "link_open" for child in token.children or []):
             return True
@@ -632,6 +679,7 @@ def test_an_inline_link_is_one_as_markdown_it_reads_it():
     """``[a](…)`` is a link to ``scan_inline_link`` when it is one to markdown-it, but for what the paragraph
     would not hold (a blank line, a quote) and the backslash before a character that is no punctuation. (A CR is
     left out, as a document's line endings are LF, and so are brackets, which would make links of their own.)"""
+    pytest.importorskip("markdown_it")
     read = 0
     for body in _random_texts([token for token in _TOKENS if token not in ("\r", "[", "](", "]")], 30_000, 9, seed=1136):
         text = f"[a]({body}"
@@ -649,10 +697,28 @@ _PANDOC_DEVIATIONS = ['[a](<b>"t")', "[a](b\x7fc)", "[a](b\x01c)", "[a](b\x1fc)"
 
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is not installed")
 @pytest.mark.parametrize("text", _PANDOC_DEVIATIONS, ids=repr)
-def test_pandoc_reads_a_link_where_the_specification_and_markdown_it_read_none(text):
+def test_pandoc_reads_a_link_where_the_specification_reads_none(text):
+    """Strictly it is none; permissively (the path checks) it is one, as pandoc reads it."""
     pandoc = subprocess.run(
         ["pandoc", "-f", "commonmark", "-t", "json"], input=text, capture_output=True, text=True, check=True
     ).stdout
     assert '"t":"Link"' in pandoc.replace(" ", "")
     assert markdown.scan_inline_link(text, 3) is None
+    assert markdown.scan_inline_link(text, 3, permissive=True) is not None
+
+
+@pytest.mark.parametrize("text", _PANDOC_DEVIATIONS, ids=repr)
+def test_markdown_it_reads_no_link_where_pandoc_reads_one(text):
     assert not _links_by_markdown_it(text)
+
+
+def test_nothing_a_renderer_reads_as_a_link_is_none_to_the_permissive_reading():
+    """The safety direction, on random text: where markdown-it reads a link (an image is one), so does
+    ``scan_inline_link(permissive=True)`` (pandoc: see ``test_pandoc_reads_a_link_where_the_specification_reads_none``)."""
+    pandoc_less = [token for token in _TOKENS if token not in ("\r", "[", "](", "]")]
+    for body in _random_texts(pandoc_less, 20_000, 9, seed=1137):
+        text = f"[a]({body}"
+        if _BLOCKS_RE.search(text) or _BACKSLASH_RE.search(text) or text.endswith("\\"):
+            continue
+        if _links_by_markdown_it(text):
+            assert markdown.scan_inline_link(text, 3, permissive=True) is not None, repr(text)

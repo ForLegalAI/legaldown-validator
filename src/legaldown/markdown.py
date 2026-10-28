@@ -401,14 +401,31 @@ def skip_line_space(text: str, at: int) -> int:
     return at
 
 
-def scan_destination(text: str, at: int, *, nonempty: bool = False) -> tuple[int, int, int] | None:
+def back_line_space(text: str, at: int) -> int:
+    """The offset where the spaces and tabs and at most one line break that end at ``text[at]`` begin: the
+    gap ``skip_line_space`` crosses, read backwards."""
+    while at > 0 and text[at - 1] in " \t":
+        at -= 1
+    if text[at - 1:at] == "\n":
+        at -= 1
+        while at > 0 and text[at - 1] in " \t":
+            at -= 1
+    return at
+
+
+def scan_destination(
+    text: str, at: int, *, nonempty: bool = False, permissive: bool = False
+) -> tuple[int, int, int] | None:
     """The link destination (§6.3) at ``text[at:]``: ``(start, stop, after)``, the destination being
     ``text[start:stop]`` and *after* the offset after it (past the ``>`` of a ``<…>`` one); None when there is
     none. ``<…>`` holds no ``<``, ``>`` or line break but escaped. A bare one stops at a space, a control
     character (DEL included, §2.1) or a ``)`` that closes no ``(`` of it; its parentheses must balance, to
     ``MAX_DESTINATION_PARENTHESES`` deep, which also keeps a run of them linear. A NUL is text
     like any other (§2.3 makes it U+FFFD), which lets a text with its directives masked as NULs be scanned.
-    With *nonempty* a bare destination is not empty (a definition's is not; an inline link's may be)."""
+    With *nonempty* a bare destination is not empty (a definition's is not; an inline link's may be). With
+    *permissive* a bare destination ends only at a space, a tab or a line break, as pandoc reads it (it keeps a control
+    character or DEL, which the specification and markdown-it end it at): for a rule that must cover what any
+    renderer reads (``path-not-relative``), not for the model."""
     if text.startswith("<", at):
         stop = at + 1
         while stop < len(text) and text[stop] not in "<>\n":
@@ -420,7 +437,7 @@ def scan_destination(text: str, at: int, *, nonempty: bool = False) -> tuple[int
         if escapes(text, end):
             end += 2
             continue
-        if (char <= " " and char != "\0") or char == "\x7f":
+        if (char in " \t\n") if permissive else ((char <= " " and char != "\0") or char == "\x7f"):
             break
         if char == "(":
             depth += 1
@@ -453,19 +470,21 @@ def scan_title(text: str, at: int) -> int | None:
     return None
 
 
-def scan_inline_link(text: str, opening: int) -> tuple[int, int, int] | None:
+def scan_inline_link(text: str, opening: int, *, permissive: bool = False) -> tuple[int, int, int] | None:
     """The inline link whose ``(`` is ``text[opening]`` (§6.3): ``(start, stop, after)``, the destination
     (``scan_destination``, which may be empty) being ``text[start:stop]`` and *after* the offset after the ``)``;
     None when what follows is no inline link. An optional title is told apart from the destination by the
     space before it, and the parts are separated by spaces, tabs and up to one line break (``skip_line_space``),
-    so ``<b>"t"`` is no link, and neither is an empty destination with a blank line after it."""
+    so ``<b>"t"`` is no link, and neither is an empty destination with a blank line after it. With *permissive*
+    (``scan_destination``) a bare destination holds a control character or DEL, and a title may follow the ``>``
+    of a ``<…>`` directly, as pandoc reads both."""
     at = skip_line_space(text, opening + 1)
-    found = scan_destination(text, at)
+    found = scan_destination(text, at, permissive=permissive)
     if found is None:
         return None
     start, stop, after = found
     gap = after if after == stop == start else skip_line_space(text, after)  # (an empty one has had its gap)
-    if gap > after and text[gap:gap + 1] in ('"', "'", "("):
+    if (gap > after or permissive) and text[gap:gap + 1] in ('"', "'", "("):
         closing = scan_title(text, gap)
         if closing is None:
             return None
@@ -531,7 +550,7 @@ def split_link_definitions(lines: list[str]) -> tuple[list[LinkDefinitionSource]
 def format_link_definition(label: str, target: str, title: str = "") -> str:
     """A link reference definition as source (§4.7): ``[label]: target
     "title"``. The target is wrapped in ``<>`` unless it is a bare
-    destination (``is_bare_destination``); the title takes the first of
+    destination (``is_bare_destination``) that holds no NUL; the title takes the first of
     ``"``, ``'`` and ``()`` that it holds no unescaped one of, else its
     ``"`` are escaped. A backslash that would escape the closing bracket or
     delimiter is doubled, an unescaped bracket in the label is escaped, and a
@@ -541,7 +560,7 @@ def format_link_definition(label: str, target: str, title: str = "") -> str:
     the lines of a paragraph."""
     label = _escape(_complete(no_blank_lines(label).strip(" \t\n")), "[]")
     target = LINE_ENDING_RE.sub("", target).strip(" \t")
-    if not is_bare_destination(target):
+    if "\0" in target or not is_bare_destination(target):  # (a NUL is written in ``<>`` as it always was)
         target = "<" + _escape(_complete(target), "<>") + ">"
     written = f"[{label}]: {target}"
     title = _complete(no_blank_lines(title))

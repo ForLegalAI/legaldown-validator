@@ -329,7 +329,7 @@ def images(text: str, lexed: Lexed, scanned: Scan | None = None) -> list[Image]:
     while at >= 0:
         close = closing.get(at + 1)
         if close is not None and view.startswith("(", close + 1) and not is_escaped(view, at):
-            link = scan_inline_link(raw, close + 1)
+            link = scan_inline_link(raw, close + 1, permissive=True)  # what any renderer reads as an image
             if link is not None:
                 start, stop, after = link
                 # Whether a directive is in it is the lexer's to say: a NUL in the text is only a character.
