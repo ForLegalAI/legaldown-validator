@@ -264,6 +264,60 @@ def test_assembly_reads_a_fragment_at_a_parent_directory_with_a_root(tree):
     assert [d.rule for d in load_template(outside, document_root=tree / "root").problems][:1] == ["include-file-missing"]
 
 
+_TWICE = (
+    "---\ntitle: T\nquestions:\n  who:\n    type: text\n---\n\n# Scope {#scope}\n\n"
+    "{{include: a.lgd}}\n\n{{include: ../doc/a.lgd}}\n"
+)
+
+
+def test_assembly_reads_one_file_once_under_two_spellings(tree):
+    # ``a.lgd`` and ``../doc/a.lgd``, from ``root/doc``, are the file the validator's ``Files.key`` says they are.
+    _write(tree / "root" / "doc" / "a.lgd", _PART)
+    path = _write(tree / "root" / "doc" / "t.lgd", _TWICE)
+    asked = []
+    loader = file_loader(path.parent, root=tree / "root")
+
+    def resolve(relative):
+        asked.append(relative)
+        return loader(relative)
+
+    template = parse_template(_TWICE, resolve=resolve, document_root=tree / "root", path=path)
+    assert template.problems == () and asked == ["a.lgd"]
+    result = template.form({"who": "Ann"}).assemble()
+    assert result.ok and list(result.files) == ["a.lgd"]  # the first spelling names it
+    assert load_template(path, document_root=tree / "root").form({"who": "Ann"}).assemble().files == result.files
+    # The other way round: the spelling that is first names it.
+    flipped = _TWICE.replace("{{include: a.lgd}}", "{{include: X}}").replace("../doc/a.lgd", "a.lgd").replace("X", "../doc/a.lgd")
+    assert list(parse_template(flipped, resolve=loader, document_root=tree / "root", path=path)
+                .form({"who": "Ann"}).assemble().files) == ["../doc/a.lgd"]
+    # Without the root, ``../doc/a.lgd`` is not read, and is its own file.
+    assert [d.rule for d in parse_template(_TWICE, resolve=loader, path=path).problems] == ["include-file-missing"]
+
+
+def test_an_include_and_an_attachment_file_in_two_spellings_are_one_file(tree):
+    _write(tree / "root" / "doc" / "a.lgd", _PART)
+    text = (
+        "---\ntitle: T\nquestions:\n  who:\n    type: text\n"
+        "attachments:\n  - id: sched\n    title: Schedule\n    file: ../doc/a.lgd\n---\n\n"
+        "# Scope {#scope}\n\n{{include: a.lgd}}\n"
+    )
+    path = _write(tree / "root" / "doc" / "t.lgd", text)
+    result = load_template(path, document_root=tree / "root").form({"who": "Ann"}).assemble()
+    assert result.ok and list(result.files) == ["a.lgd"]
+
+
+def test_the_command_line_writes_a_file_named_twice_once(tree, capsys):
+    _write(tree / "root" / "doc" / "a.lgd", _PART)
+    template = _write(tree / "root" / "doc" / "t.lgd", _TWICE)
+    answers = _write(tree / "answers.yaml", "who: Ann\n")
+    out = tree / "out"
+    code = main(["assemble", str(template), "--document-root", str(tree / "root"), "--answers", str(answers),
+                 "-o", str(out)])
+    assert code == EXIT_OK, capsys.readouterr().err
+    assert sorted(p.name for p in out.iterdir()) == ["a.lgd", "t.lgd"]
+    assert (out / "a.lgd").read_text(encoding="utf-8") == "Hello Ann.\n"
+
+
 def test_a_template_made_from_text_is_at_the_root_unless_it_is_given_a_path(tree):
     loader = _Loader({"../shared/part.lgd": _PART})
     assert [d.rule for d in parse_template(_TEMPLATE, resolve=loader, document_root=tree / "root").problems] == [

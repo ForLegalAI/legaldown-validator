@@ -903,8 +903,23 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
     headings take part in identifier generation (step 7). *reach* says which paths
     may be asked for: those within the template's directory, and, given a document
     root, those that lead out of it and stay within the root (§2.3, #109)."""
-    wanted: list[tuple[str, FragmentKind]] = [(include.path, "include") for include in main.includes if include.path]
+    # A file is the same file however it is written (``a.lgd``, and ``../docs/a.lgd`` from a template in
+    # ``docs``, given a root): it is read once, and the spelling that first names it names it everywhere
+    # (the validator's ``Files.key``). A path the loader is not asked for is its own.
+    names: dict[str, str] = {}
+
+    def first(path: str) -> str:
+        relative = reach.relative(path)
+        return path if relative is None else names.setdefault(reach.key(relative), path)
+
     items = front.items if front else []
+    for include in main.includes:
+        if include.path:
+            include.path = first(include.path)
+    for item in items:
+        if item.file:
+            item.file = first(item.file)
+    wanted: list[tuple[str, FragmentKind]] = [(include.path, "include") for include in main.includes if include.path]
     wanted += [(item.file, "attachment") for item in items if item.file]
     subs: dict[str, _Source] = {}
     # An include paragraph that names no file, at its line (the validator's include-file-missing).
