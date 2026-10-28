@@ -563,13 +563,13 @@ Decisions the specification leaves open:
   path only (`include-not-legaldown`, `path-not-relative`); the document that includes it follows them.
 - **The identifiers and the combined document.** `include-heading-skip` is judged on the combined document
   **under every combination of answers** ([#108](https://github.com/ForLegalAI/legaldown-validator/issues/108);
-  §15.3, §15.4, §16.11). The questions are those that the presence of a heading that takes part
-  names: a read, spliceable include paragraph (its own condition and those of the sections around it,
-  `Units.presence`) and every section of the document (a combination takes a conditional section out with
-  its subsections, which changes what comes before the heading after it, whether or not an include is under
-  it), in the order they are first used in the document (within one presence, as the frontmatter declares
-  them); a question that no section and no include names (a paragraph's or an item's condition) is not varied,
-  and its conditions hold, as do those on a question that has no answer to try. For each combination (true before false, a choice's values as declared, the last question changing
+  §15.3, §15.4, §16.11). The questions are those that the presence of a read, spliceable include paragraph
+  names (its own condition and those of the sections around it, `Units.presence`), as §15.3 says ("the
+  questions named in the presence conditions of `{{include:}}` paragraphs"), in the order they are first used in
+  the document (within one presence, as the frontmatter declares them). A question that only a section, a
+  paragraph or an item names is not varied, and its conditions hold, as do those on a question that has no
+  answer to try: a conditional section takes its subsections with it, so taking it out cannot break §4.1 by
+  itself (§15.3, "Heading hierarchy"). Every unit a combination makes absent is removed all the same. For each combination (true before false, a choice's values as declared, the last question changing
   fastest) every unit it makes absent is removed (an include, and a section with its subsections, since a
   presence is cumulative), the fragments of the includes that are left are spliced in, and §4.1 is judged.
   Each fragment's headings are placed after

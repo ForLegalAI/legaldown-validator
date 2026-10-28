@@ -206,28 +206,20 @@ def test_a_heading_the_include_fills_under_a_conditional_section_is_filled_when_
     assert _found(_run(text, {"p.lgd": "## Deep {#deep}\n"})) == []
 
 
-def test_a_section_with_a_condition_is_varied_too_whether_or_not_an_include_is_under_it():
-    # r is on a section that holds no include, and is tried all the same (a combination takes the section out):
-    # the first combination names it, before x, which an include after it names.
+def test_a_question_only_a_section_names_is_not_varied():
+    # §15.3 ("Heading hierarchy"): the combinations are those of "the questions named in the presence conditions of
+    # {{include:}} paragraphs". r is on a section with no include under it: its condition holds, and r is not tried
+    # (nor does it count towards the limit of questions).
     text = _front("r", "x") + (
         "# Scope {#scope}\n\n## Opt {#opt when=r}\n\nText.\n\n## Other {#other}\n\n{{include: p.lgd}} {when=x}\n"
     )
     result = _run(text, {"p.lgd": "#### Deep {#deep}\n"})
     assert _found(result) == [("include-heading-skip", "p.lgd", 1)]
-    assert _messages(result)[0].endswith("It is so when r=true, x=true.")
-
-
-def test_sections_count_towards_the_limit_of_questions():
-    # 13 questions, each on a section of its own, and one include with no condition: too many to try.
+    assert _messages(result)[0].endswith("It is so when x=true.")
     count = MAX_COMBINATION_QUESTIONS + 1
     text = _front(*(f"q{i}" for i in range(count))) + "# Scope {#scope}\n\n" + "".join(
         f"## S{i} {{#s{i} when=q{i}}}\n\nText.\n\n" for i in range(count)
     ) + "{{include: p.lgd}}\n"
-    result = _run(text, {"p.lgd": "## Fine {#fine}\n"})
-    warning = next(d for d in result.diagnostics if d.rule == SKIPPED_RULE)
-    assert "include-heading-skip under every combination of answers" in warning.message
-    # ... and 12 are not.
-    text = text.replace(f"## S{count - 1} {{#s{count - 1} when=q{count - 1}}}", f"## S{count - 1} {{#s{count - 1}}}")
     result = _run(text, {"p.lgd": "## Fine {#fine}\n"})
     assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
 

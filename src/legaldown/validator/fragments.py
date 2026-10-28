@@ -473,13 +473,11 @@ def include_heading_skips(
     §15.3 asks for the combined document to satisfy §4.1 under every combination of answers to the questions
     that the presence of an include names, with every unit a combination makes absent removed (the
     include, and the section that holds it, with its subsections, since a presence is cumulative,
-    ``Units.presence``). The questions tried are those of the presences of every heading that takes part,
-    the document's sections as well as the includes (a section that a combination takes out changes what
-    comes before the heading after it, whether or not an include is in it). Each combination is tried
-    (``answer_combinations``: the limits are ``MAX_COMBINATION_QUESTIONS`` and ``MAX_COMBINATIONS``; past
-    them, one pass with every include present, *capped*, and an include that is conditional fills nothing). A
-    question that no section and no include names is not varied: a condition on a paragraph or an item
-    is not one of a heading. A heading is reported where it is, once however many combinations
+    ``Units.presence``). The questions tried are those the presences of the includes name, as §15.3 says; a
+    question that only a section, a paragraph or an item names is not varied, and its condition holds. Each
+    combination is tried (``answer_combinations``: the limits are ``MAX_COMBINATION_QUESTIONS`` and
+    ``MAX_COMBINATIONS``; past them, one pass with every include present, *capped*, and an include that is
+    conditional fills nothing). A heading is reported where it is, once however many combinations
     skip at it, and under the first (in the order of ``answer_combinations``) with the answers in the
     message: a fragment's heading in its file, and a heading of the document after a fragment's at its own
     line. A heading of the document after one of its own is ``heading-skip``'s, not reported again.
@@ -500,10 +498,11 @@ def include_heading_skips(
     presences = [
         each.presence if each is not None else units.presence(section) for section, each in items  # type: ignore[arg-type]
     ]
-    # The questions to try are those of every unit that takes part: a section with a condition is taken out
-    # (with its subsections) by a combination as an include is, whether or not an include is under it.
+    # The questions to try are those the presences of the includes name (§15.3, "Heading hierarchy"); a section
+    # that a combination takes out goes with its subsections, and a question only a section names is not varied.
     tried = answer_combinations(
-        presences, questions, max_questions=MAX_COMBINATION_QUESTIONS, max_combinations=MAX_COMBINATIONS
+        (each.presence for _section, each in items if each is not None), questions,
+        max_questions=MAX_COMBINATION_QUESTIONS, max_combinations=MAX_COMBINATIONS,
     )
     result = HeadingSkips(capped=tried is None)
     combinations = [{}] if tried is None else tried[1]
