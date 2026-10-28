@@ -583,7 +583,7 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
 |---|---|---|
 | Includes (§12, §16.11) | an include paragraph | always: `include-cycle` and `include-anchor-duplicate` (not implemented), and the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document; [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)). For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, and in a template the part of `template-fragment-invalid` that reads a fragment. In a template with a conditional include: `include-heading-skip` under every combination of answers (it is judged with every include present) |
 | Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file also `attachment-has-frontmatter`, `attachment-has-h1` and `attachment-anchor-duplicate`, and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below) |
-| Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (the reasons below, or a file that is not LegalDown), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
+| Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (for any reason, see below), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
 | Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch` |
 | Declared paths (§17.4) | `supersedes.file` (the object form), an image path | `supersedes-file-missing`; the existence of image paths (§8.7), which has no rule id |
 
@@ -593,15 +593,20 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
   `path-outside-root` is not an image to check either. An include that a loader cannot find is
   `include-file-missing`, and the Warning counts its fragment as unread, since its content was not
   checked. An include of the document itself is not read (`include-cycle` is not implemented).
-- **When "importing the definitions" is named** (an attachment file, and the original an `amends.file` names,
-  agree). Of a file whose definitions were not imported, for one of: no loader to read it (no `resolve`,
-  and the document has no path); a path that leads out of the document's directory (valid, §2.3, and never
-  asked for, as for an include, #109); or a file that could not be read (the loader has none, frontmatter
-  that cannot be read, or a backslash or a null byte in the path, which no finding reports). It is not named
-  for the document's own path (its definitions are the document's already), nor for a path that is a
-  finding of its own (`path-not-relative`, or `path-outside-root` given a root). With the deprecated
-  `import_attachment_definitions` or `import_definitions`, any path the importer was asked about and gave
-  nothing for is one that could not be read, whatever the path is. The message gives the reasons.
+- **When "importing the definitions" is named, for an attachment file.** Of a LegalDown attachment file
+  whose definitions were not imported, for one of: no loader to read it (no `resolve`, and the document has
+  no path); a path that leads out of the document's directory (valid, §2.3, and never asked for, as for an
+  include, #109); or a file that could not be read (the loader has none, frontmatter that cannot be read, or
+  a backslash or a null byte in the path, which no finding reports). It is not named for the document's own
+  path (its definitions are the document's already), nor for a path that is a finding of its own
+  (`path-not-relative`, or `path-outside-root` given a root): a failed import of an attachment file leaves a
+  `term-undefined` Error for what it would have defined, so nothing is silent. With the deprecated
+  `import_attachment_definitions`, any path the importer was asked about and gave nothing for is one that
+  could not be read, whatever the path is. The message gives the reasons.
+- **When `amend-term-undefined` is named, for the original.** Whenever the definitions of the original an
+  `amends.file` names were not imported, for any reason: those above, and also the document's own path, a path
+  that is a finding of its own, and a file that is not LegalDown. A term then drops quietly to the Info
+  `amend-term-unresolvable`, so the Error check is not made, and §17.5 asks that it be said.
 - **Core rules are not named here.** The Core rules this implementation lacks
   (`translation-implicit-id`, `translation-authoritative-absent`, `language-code-invalid`,
   `authoritative-not-declared`, `definition-used-before-declaration`) are gaps in Core, not

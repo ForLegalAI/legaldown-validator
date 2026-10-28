@@ -1822,7 +1822,7 @@ def _validate(
     # declares no definitions still counts as consulted, so a missing term is
     # an Error (§16.8) rather than being downgraded to Info.
     _amends_import_succeeded = False
-    # For the Warning of §17.5: the original is named and was not imported for a reason it names.
+    # For the Warning of §17.5: the original is named and its definitions were not imported.
     _amends_unread = bool(document.metadata.amends and document.metadata.amends.file)
     _imported_definitions: dict[str, str] = {}
     if document.metadata.amends and document.metadata.amends.file:
@@ -1833,7 +1833,8 @@ def _validate(
                 imported = _imported(import_definitions(amends_file, document.filename))
             else:
                 imported = _definitions_in(document, files, amends_file, file_references)
-            _amends_unread = imported.missing
+            # For any reason: the Error check of a term is not made, and a term drops to the Info.
+            _amends_unread = imported.definitions is None
             if imported.definitions is not None:
                 _amends_import_succeeded = True
                 _imported_definitions = imported.definitions

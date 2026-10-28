@@ -223,23 +223,39 @@ def test_a_backslash_or_null_byte_path_is_unreadable_and_said_so():
         assert "amend-term-undefined" in amends.message
 
 
-def test_a_path_that_is_a_finding_is_not_an_import_that_did_not_happen(tmp_path):
-    for build, rule in ((_attached, "importing"), (_amended, "amend-term-undefined")):
-        absolute = validate(parse(build("/abs.lgd")), resolve=lambda _path: pytest.fail("asked"))
-        outside = validate(parse(build("../out.lgd")), resolve=lambda _path: pytest.fail("asked"), document_root=tmp_path)
-        for result, found in ((absolute, "path-not-relative"), (outside, "path-outside-root")):
-            assert found in result.rules()
-            (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
-            assert rule not in warning.message, (build.__name__, found)
+def test_a_path_that_is_a_finding_is_not_an_import_that_did_not_happen_for_an_attachment(tmp_path):
+    # A failed import of an attachment file is `term-undefined` for what it would have defined:
+    # nothing is silent, and a path that is a finding is not said again.
+    absolute = validate(parse(_attached("/abs.lgd")), resolve=lambda _path: pytest.fail("asked"))
+    outside = validate(parse(_attached("../out.lgd")), resolve=lambda _path: pytest.fail("asked"), document_root=tmp_path)
+    for result, found in ((absolute, "path-not-relative"), (outside, "path-outside-root")):
+        assert found in result.rules()
+        (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
+        assert "importing" not in warning.message, found
 
 
-def test_the_document_itself_is_not_an_import_that_did_not_happen_for_both(tmp_path):
-    # Its own definitions are already the document's; attachment and original agree.
-    for build, rule in ((_attached, "importing"), (_amended, "amend-term-undefined")):
-        path = tmp_path / "main.lgd"
-        path.write_text(build("main.lgd"), encoding="utf-8")
-        (warning,) = [d for d in validate(load(path)).diagnostics if d.rule == SKIPPED_RULE]
-        assert rule not in warning.message, build.__name__
+def test_a_path_that_is_a_finding_is_still_an_original_not_imported(tmp_path):
+    # A failed import of the original drops a term to the Info amend-term-unresolvable: the Error
+    # check is not made for any reason, and the Warning says so.
+    absolute = validate(parse(_amended("/abs.lgd")), resolve=lambda _path: pytest.fail("asked"))
+    outside = validate(parse(_amended("../out.lgd")), resolve=lambda _path: pytest.fail("asked"), document_root=tmp_path)
+    for result, found in ((absolute, "path-not-relative"), (outside, "path-outside-root")):
+        assert found in result.rules()
+        (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
+        assert "amend-term-undefined" in warning.message, found
+
+
+def test_the_document_itself_is_no_import_that_did_not_happen_for_an_attachment_but_is_for_the_original(tmp_path):
+    # An attachment that is the document adds nothing to it. An original that is the document is not
+    # imported either, so its terms are the Info and the Error check is not made.
+    path = tmp_path / "main.lgd"
+    path.write_text(_attached("main.lgd"), encoding="utf-8")
+    (warning,) = [d for d in validate(load(path)).diagnostics if d.rule == SKIPPED_RULE]
+    assert "importing" not in warning.message
+    path.write_text(_amended("main.lgd") + "{{term: foo}}\n", encoding="utf-8")
+    result = validate(load(path))
+    (warning,) = [d for d in result.diagnostics if d.rule == SKIPPED_RULE]
+    assert "amend-term-undefined" in warning.message and "amend-term-unresolvable" in result.rules()
 
 
 def test_a_deprecated_importer_that_gave_nothing_is_an_import_that_did_not_happen_whatever_the_path():
