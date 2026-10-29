@@ -37,7 +37,7 @@ from .assembly import (
     _Template,
 )
 from .directives import PLACEHOLDER_TYPE_PARAMS
-from .files import LoadFile, Reach, file_loader
+from .files import LoadFile, file_loader
 from .validator.core import validate_template
 from .validator.patterns import VALID_DURATION_UNITS
 from .validator.result import Diagnostic, ValidationResult
@@ -251,7 +251,7 @@ class Template:
         self.path: Path | None = None if path is None else Path(path).absolute()
         self._root = None if document_root is None else Path(document_root).absolute()
         self._resolve = _snapshot(resolve)
-        self._t = _read(text, self._resolve, Reach.of(self._root, None if self.path is None else self.path.parent))
+        self._t = _read(text, self._resolve, self._root, self.path)
         self._check = _check
 
     @cached_property

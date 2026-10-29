@@ -31,6 +31,9 @@ FINAL_CHECK_RULES: frozenset[str] = frozenset({_UNFILLED, _CONSTRUCT_PRESENT})
 # the one it reports for a check category it did not perform (§17.5).
 IMPLEMENTATION_RULE_PREFIX = "ldv-"
 SKIPPED_RULE = "ldv-check-skipped"
+# And the Error of assembly, not of validation, for a document whose includes cannot all be
+# followed: they nest deeper, or run to more includes and headings, than it goes (#118).
+INCLUDE_LIMIT_RULE = IMPLEMENTATION_RULE_PREFIX + "include-limit"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 

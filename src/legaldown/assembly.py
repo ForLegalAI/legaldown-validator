@@ -24,27 +24,35 @@ fragments and LegalDown attachment files are read through ``load_file`` (a
 Full capability, §17.4); without it such a template is refused rather than
 assembled partially (§17.6), and so is a template with ``translations``,
 whose linked templates are assembled with it (§15.7.2).
+
+An ordinary document's include fragments may include fragments of their own
+(§12.2): each is read from the directory of the file that holds the include,
+and written at its own path, as any fragment is. A circular chain, and one that
+nests or runs on past the validator's caps, is refused (``include-cycle``,
+``ldv-include-limit``). A template's is not allowed (§15.3).
 """
 from __future__ import annotations
 
 import bisect
 import copy
+import os
 import posixpath
 import re
 import reprlib
 import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import InitVar, dataclass, field
+from dataclasses import InitVar, dataclass, field, replace
 from datetime import date
 from functools import cache
 from itertools import islice
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from ._deprecation import LegaldownDeprecationWarning
 from .definitions import list_fragments
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
-from .files import LoadFile, Reach
+from .files import LoadFile
 from .markdown import (
     FENCE_OPEN_RE,
     LINE_ENDING_RE,
@@ -73,9 +81,27 @@ from .parser import (
 from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
-from .validator.fragments import FragmentFile, FragmentKind, fragment_findings, nested_includes, noun
+from .validator.fragments import (
+    Files,
+    FragmentFile,
+    FragmentKind,
+    IncludeBudget,
+    _Chain,
+    closes,
+    cycle_message,
+    fragment_findings,
+    nested_includes,
+    noun,
+    too_deep,
+)
 from .validator.helpers import is_positive_numeric, is_valid_money_amount
-from .validator.patterns import DURATION_UNITS, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, VALID_PLACEHOLDER_TYPES
+from .validator.patterns import (
+    DURATION_UNITS,
+    IDENTIFIER_RE,
+    INCLUDE_LIMIT_RULE,
+    LEGALDOWN_EXTENSIONS,
+    VALID_PLACEHOLDER_TYPES,
+)
 from .validator.result import Diagnostic
 from .validator.templates import (
     DECISION_QUESTION_TYPES,
@@ -464,8 +490,12 @@ class _Occurrence:
 class _Include:
     start: int
     end: int
-    path: str
+    path: str  # as written, normalised: from the directory of the file that holds it
     source: str  # the directive as written
+    section: int | None = None  # the section of its file that holds it (None: before the first)
+    #: The file it takes in, by its path from the template's directory (the key of ``_Template.subs``):
+    #: set when it is resolved, else "".
+    target: str = ""
 
 
 @dataclass(slots=True)
@@ -481,6 +511,7 @@ class _Source:
     occurrences: list[_Occurrence]
     newline: str = "\n"
     malformed: list[Directive] = field(default_factory=list)  # placeholders and choices
+    headings: list[int] = field(default_factory=list)  # the line of each section's heading
 
 
 def _unix(text: str) -> tuple[str, str]:
@@ -512,12 +543,13 @@ def _read_body(
         if marker.placed(template) and marker.marker is not None:
             found.setdefault((marker.section, marker.block), []).append(marker)
     source = _Source(path, lines, _section_units(layout, document, lines, questions), set(), [], [])
+    source.headings = [heading.start for heading in layout.headings]
     for section, index, span, block in _pairs(layout, document):
         markers = found.get((section, index), [])
         if _kind(span) == "list":
             _read_list(source, span, block, markers, questions)
         elif _kind(span) == "paragraph":
-            _read_paragraph(source, span, block, markers, questions)
+            _read_paragraph(source, span, block, markers, questions, section)
         for inner, inner_block, base, _leaf in _content([span], [block]):
             if inner_block.kind == "quote" and is_drafting_note(inner_block):
                 source.notes.update(range(base + inner.start, base + inner.end))
@@ -558,7 +590,7 @@ def _marker_line(lines: list[str], start: int, end: int, marker: str) -> int:
 
 
 def _read_paragraph(
-    source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any
+    source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any, section: int | None
 ) -> None:
     """A conditional paragraph, and whether it is an include paragraph: one
     holding a single ``{{include:}}`` and at most its marker (§12.2)."""
@@ -573,7 +605,7 @@ def _read_paragraph(
     # (#35). One that names no file (``{{include:}}``) has the path "", refused in ``_read_files``.
     include = block_include(block)
     if include is not None:
-        source.includes.append(_Include(span.start, span.end, include_key(include), include.source))
+        source.includes.append(_Include(span.start, span.end, include_key(include), include.source, section))
 
 
 def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:
@@ -858,7 +890,9 @@ class _Template:
     identifiers: dict | None = None
 
 
-def _read(template: str, load_file: LoadFile | None, reach: Reach | None = None) -> _Template:
+def _read(
+    template: str, load_file: LoadFile | None, root: str | os.PathLike[str] | None = None, path: Path | None = None
+) -> _Template:
     bom = "\ufeff" if template.startswith("\ufeff") else ""
     source, newline = _unix(template)
     document = parse(source)
@@ -869,7 +903,10 @@ def _read(template: str, load_file: LoadFile | None, reach: Reach | None = None)
     main.newline = newline
     if front is not None:
         _read_frontmatter(front, document, declared)
-    subs, problems = _read_files(main, front, load_file, declared, template_like, reach or Reach())
+    # The files the template names, as the validator reads them: *path* says which file the template is (an
+    # include of it is a cycle), *root* which paths may be asked for (§2.3).
+    files = Files(load_file or (lambda _path: None), replace(document, path=path) if path is not None else document, root)
+    subs, problems = _read_files(main, front, load_file, declared, template_like, files)
     problems += _malformed(main, *subs.values(), front=front)
     for path in document.metadata.translations.values():
         # A translation group is assembled together (§15.7.2), which this
@@ -896,66 +933,222 @@ def _read(template: str, load_file: LoadFile | None, reach: Reach | None = None)
     return _Template(front, main, subs, declared, blanks, types, bom, problems, document)
 
 
-def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
-                declared: dict, template: bool, reach: Reach) -> tuple[dict[str, _Source], list[Diagnostic]]:
-    """Read every include fragment and LegalDown attachment file — the absent
-    ones too: their placeholders are the template's (answer-unknown) and their
-    headings take part in identifier generation (step 7). *reach* says which paths
-    may be asked for: those within the template's directory, and, given a document
-    root, those that lead out of it and stay within the root (§2.3, #109)."""
-    wanted: list[tuple[str, FragmentKind]] = [(include.path, "include") for include in main.includes if include.path]
-    items = front.items if front else []
-    wanted += [(item.file, "attachment") for item in items if item.file]
-    subs: dict[str, _Source] = {}
-    # An include paragraph that names no file, at its line (the validator's include-file-missing).
-    rows = front.rows if front else 0  # the body's lines are the file's, after the frontmatter's
-    problems: list[Diagnostic] = [
-        Diagnostic(
-            "include-file-missing", "error",
-            f"'{include.source}' names no file: an include paragraph names the LegalDown file it takes in "
-            f"(§12.2); the template is not assembled.",
-            line=include.start + 1 + rows,
-        )
-        for include in main.includes if not include.path
-    ]
-    unreadable: set[str] = set()  # reported once, however often it is referenced
-    for path, kind in wanted:
-        relative = reach.relative(path)
-        if path in subs or relative in unreadable:
-            continue
-        # Only a path within the template's directory, or its document root (§2.3), is asked
-        # for: a loader is not handed ``../x`` without one, an absolute path or a drive letter.
-        text = load_file(path) if load_file is not None and relative is not None else None
+def _no_file(include: _Include, file: str, line: int) -> Diagnostic:
+    """An include paragraph that names no file (the validator's include-file-missing), at its *line* in *file*."""
+    return Diagnostic(
+        "include-file-missing", "error",
+        f"'{include.source}' names no file: an include paragraph names the LegalDown file it takes in "
+        f"(§12.2); the template is not assembled.",
+        line=line, file=file,
+    )
+
+
+class _Fragments:
+    """The include fragments and LegalDown attachment files of a template, each read once (*subs*, by its path
+    from the template's directory) and judged once, what is wrong with them in *problems*.
+
+    Outside a template the include fragments of a fragment are read too (``expand``, §12.2), each from the
+    directory of the file that holds the include, as the validator reads them. They are followed as
+    ``fragments._Walk`` follows them, so that both stop at the same place: the same test for a cycle,
+    the same caps in the same order (an include costs one of ``IncludeBudget`` before it is judged, and so
+    does each heading of a fragment, in section order; the includes of the document itself cost none).
+    Where the validator warns (§17.5) that it did not go on, assembly does not assemble: it would be
+    leaving out a part of the document (§17.6)."""
+
+    def __init__(
+        self, files: Files, load_file: LoadFile | None, declared: dict, template: bool, problems: list[Diagnostic]
+    ) -> None:
+        self._files = files
+        self._load_file = load_file
+        self._declared = declared
+        self._template = template
+        self.problems = problems
+        self.subs: dict[str, _Source] = {}
+        self._spliceable: dict[str, bool] = {}  # of the fragments read: no frontmatter, no level 1 heading
+        self._unreadable: set[str] = set()  # reported once, however often it is referenced
+        self._placed: dict[str, dict[int | None, list[tuple[int, _Include]]]] = {}
+        self._budget = IncludeBudget()
+        self._met: set[tuple[str, int]] = set()  # the includes (file, number) already judged
+        self._capped: set[str] = set()
+        self._stopped = False
+
+    def refuse(self, path: str, kind: FragmentKind, file: str = "", line: int | None = None) -> None:
+        """*path*, named by *file* at *line*, cannot be asked for or is not there."""
+        reason = "cannot be read" if self._load_file else "needs the Full level (§17.6)"
+        message = f"'{path}' {reason}; the template is not assembled."
+        self.problems.append(Diagnostic(f"{kind}-file-missing", "error", message, line=line, file=file))
+
+    def read(
+        self, path: str, kind: FragmentKind, file: str = "", line: int | None = None, report: bool = True
+    ) -> _Source | None:
+        """The file at *path*, a path a loader may be asked for, read once. If there is none, it is *refused*
+        (as named by *file* at *line*) when *report*; if its frontmatter cannot be read, once."""
+        if path in self.subs:
+            return self.subs[path]
+        if path in self._unreadable:
+            return None
+        text = self._load_file(path) if self._load_file is not None else None
         if text is None:
-            reason = "cannot be read" if load_file else "needs the Full level (§17.6)"
-            message = f"'{path}' {reason}; the template is not assembled."
-            problems.append(Diagnostic(f"{kind}-file-missing", "error", message))
-            continue
+            if report:
+                self.refuse(path, kind, file, line)
+            return None
         text, newline = _unix(text)
         try:
-            sub_document = parse(text)
+            document = parse(text)
         except FrontmatterError as exc:
             # What plain `validate` reports of a document with this frontmatter, with
             # its message and line, in the file it is in. (`validate(fragment=True)`
             # reports include-has-frontmatter instead, by design: a fragment must
-            # have none.) A text was read only for a path that `relative_path` accepts: *relative*.
-            unreadable.add(relative)
-            problems.append(frontmatter_diagnostic(exc, file=relative))
+            # have none.)
+            self._unreadable.add(path)
+            self.problems.append(frontmatter_diagnostic(exc, file=path))
+            return None
+        _front, body = _split(text, document)
+        source = self.subs[path] = _read_body(path, body, document, self._declared, template=self._template)
+        source.newline = newline
+        fragment = FragmentFile(path, document)
+        self._spliceable[path] = fragment.spliceable
+        self.problems += _file_problems(fragment, kind, self._template)
+        return source
+
+    def spliceable(self, path: str) -> bool:
+        """Whether the file at *path*, which was read, is a fragment in the sense of §12.2 (``FragmentFile.spliceable``):
+        one that is not is refused, and its includes are not followed."""
+        return self._spliceable.get(path, False)
+
+    def expand(self, owner: _Source, chain: _Chain) -> None:
+        """Follow the include paragraphs of the fragment *owner*, the last of *chain* (the files being
+        included, outermost first): those before its first heading, then for each section its heading, which
+        costs one, and the includes it holds."""
+        if self._stopped:
+            return
+        if owner.path not in self._placed:
+            placed: dict[int | None, list[tuple[int, _Include]]] = {}
+            for number, include in enumerate(owner.includes):
+                placed.setdefault(include.section, []).append((number, include))
+            self._placed[owner.path] = placed
+        placed = self._placed[owner.path]
+
+        def follow(section: int | None) -> None:
+            for number, include in placed.get(section, ()):
+                self._follow(owner, number, include, chain)
+
+        follow(None)
+        for index, heading in enumerate(owner.headings):
+            if self._spend(owner.path, heading + 1):
+                break
+            follow(index)
+
+    def _spend(self, file: str, line: int) -> bool:
+        """Count one more include or heading followed (``IncludeBudget``), or, when the count is reached,
+        refuse the document at *line* of *file*: True, and nothing more is followed."""
+        if self._stopped:
+            return True
+        cap = self._budget.spend()
+        if cap is None:
+            return False
+        self._stopped = True
+        self._limit(cap, file, line)
+        return True
+
+    def _limit(self, cap: str, file: str, line: int) -> None:
+        """The Error of ``ldv-include-limit``, once for each cap."""
+        if cap not in self._capped:
+            self._capped.add(cap)
+            self.problems.append(Diagnostic(
+                INCLUDE_LIMIT_RULE, "error",
+                f"The include limit is reached: {cap}. The document is not assembled.",
+                line=line, file=file,
+            ))
+
+    def _follow(self, owner: _Source, number: int, include: _Include, chain: _Chain) -> None:
+        """The *number*th include paragraph of *owner*, followed in the order ``_Walk.attempt`` judges it: it
+        names a file, a path that can be read from the directory of *owner*, no file of *chain* (or the
+        template), not deeper than the cap, a file that is there. What is wrong is reported once,
+        the first time the include is met (a fragment is followed at each place it is included)."""
+        key = (owner.path, number)
+        first = key not in self._met
+        self._met.add(key)
+        file, line = owner.path, include.start + 1
+        if self._spend(file, line):
+            return
+        if not include.path:
+            if first:
+                self.problems.append(_no_file(include, file, line))
+            return
+        relative, _problem = self._files.locate(posixpath.dirname(owner.path), include.path)
+        if relative is None:
+            if first:
+                self.refuse(include.path, "include", file, line)
+            return
+        if closes(self._files, chain, relative):
+            if first:
+                self.problems.append(Diagnostic(
+                    "include-cycle", "error", cycle_message(self._files, include.source, chain, relative),
+                    line=line, file=file,
+                ))
+            return
+        if (cap := too_deep(chain)) is not None:
+            self._limit(cap, file, line)
+            return
+        include.target = relative
+        target = self.read(relative, "include", file, line, report=first)
+        if target is not None and self.spliceable(relative):
+            self.expand(target, _Chain((*chain.paths, relative), chain.keys | {self._files.key(relative)}))
+
+
+def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
+                declared: dict, template: bool, files: Files) -> tuple[dict[str, _Source], list[Diagnostic]]:
+    """Read every include fragment and LegalDown attachment file — the absent
+    ones too: their placeholders are the template's (answer-unknown) and their
+    headings take part in identifier generation (step 7). *files* says which paths
+    may be asked for: those within the template's directory, and, given a document
+    root, those that lead out of it and stay within the root (§2.3, #109). Outside
+    a template the include fragments of a fragment are read as well (``_Fragments``)."""
+    items = front.items if front else []
+    # An include paragraph that names no file, at its line (the validator's include-file-missing).
+    rows = front.rows if front else 0  # the body's lines are the file's, after the frontmatter's
+    problems: list[Diagnostic] = [
+        _no_file(include, "", include.start + 1 + rows) for include in main.includes if not include.path
+    ]
+    reading = _Fragments(files, load_file, declared, template, problems)
+    for include in main.includes:
+        if not include.path:
             continue
-        _front, body = _split(text, sub_document)
-        subs[path] = _read_body(path, body, sub_document, declared, template=template)
-        subs[path].newline = newline
-        problems += _file_problems(path, kind, sub_document, template)
-    return subs, problems
+        line = include.start + 1 + rows
+        # Only a path within the template's directory, or its document root (§2.3), is asked
+        # for: a loader is not handed ``../x`` without one, an absolute path or a drive letter.
+        relative, _problem = files.locate("", include.path)
+        if relative is None:
+            reading.refuse(include.path, "include", line=line)
+            continue
+        if not template and closes(files, _Chain(), relative):  # the template itself
+            problems.append(Diagnostic(
+                "include-cycle", "error", cycle_message(files, include.source, _Chain(), relative), line=line,
+            ))
+            continue
+        include.target = relative
+        source = reading.read(relative, "include", line=line)
+        if source is not None and not template and reading.spliceable(relative):
+            reading.expand(source, _Chain((relative,), frozenset({files.key(relative)})))
+    for item in items:
+        if not item.file or item.file in reading.subs:
+            continue
+        relative, _problem = files.locate("", item.file)
+        if relative is None:
+            reading.refuse(item.file, "attachment")
+        else:
+            reading.read(relative, "attachment")
+    return reading.subs, problems
 
 
-def _file_problems(path: str, kind: FragmentKind, document: Document, template: bool) -> list[Diagnostic]:
+def _file_problems(fragment: FragmentFile, kind: FragmentKind, template: bool) -> list[Diagnostic]:
     """The Full checks on a loaded file (§16.10, §16.11, §16.12) that the
     assembled output depends on; the file is read here, so they are made
     here rather than left to a validator that may not read it. They are the
     validator's own (``fragment_findings``, #35), one for each offender, at
     its line in the file: this refuses the template, the validator reports them."""
-    fragment = FragmentFile(path, document)
+    path = fragment.path
     lexed = cache(lex)
     problems = [
         Diagnostic(
@@ -968,15 +1161,16 @@ def _file_problems(path: str, kind: FragmentKind, document: Document, template: 
         )
         for finding in fragment_findings(fragment, kind=kind, template=template, lex_fragment=lexed)
     ]
-    # Outside a template an include in a fragment or attachment file is allowed (§12.2), but
-    # assembly does not assemble it, and refuses (an include in a drafting note is removed
-    # with it, unread, §15.6). In a template it is template-fragment-invalid (reported above).
-    if not template:
+    # Outside a template an include in an include fragment is followed (``_Fragments``, §12.2), but an
+    # attachment file is not one: assembly does not assemble an include in it, and refuses (an include in
+    # a drafting note is removed with it, unread, §15.6). In a template it is
+    # template-fragment-invalid (reported above).
+    if not template and kind == "attachment":
         problems += [
             Diagnostic(
                 "include-file-missing", "error",
-                f"{noun(kind, 'the').capitalize()} holds '{source}'; an include in an included "
-                f"or attached file is not assembled, so the template is not assembled.",
+                f"{noun(kind, 'the').capitalize()} holds '{source}'; an include in an attached "
+                f"file is not assembled, so the template is not assembled.",
                 line=line, file=path,
             )
             for source, line in nested_includes(fragment, lexed)
@@ -1197,27 +1391,34 @@ def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decisi
             use(occ)
     walked: set[str] = set()
 
-    # A file included twice is kept or removed as its last include says.
-    last = {include.path: include for include in t.main.includes}
+    # A file included twice is kept or removed as its last include says (in the order the files were
+    # read, which is the document's: a fragment's includes follow the fragment).
+    last = {include.target: include for source in (t.main, *t.subs.values()) for include in source.includes}
+
+    def visit(path: str, source: _Source) -> None:
+        """Decide *source*, and with it which of the files it includes are present (those of a template's
+        fragment are none: it holds no include)."""
+        walked.add(path)
+        decision.removed[path], pending = _walk(source, holds, use, enter if inline else None)
+        for include in source.includes:
+            if include.target:
+                if include.start in decision.removed[path]:
+                    decision.files[include.target] = False
+                else:
+                    decision.files[include.target] = None if include.start in pending else True
 
     def enter(include: _Include) -> None:
-        source = t.subs.get(include.path)
-        if source is not None and last[include.path] is include and include.path not in walked:
-            walked.add(include.path)
-            decision.removed[include.path], _pending = _walk(source, holds, use)
+        source = t.subs.get(include.target)
+        if source is not None and last[include.target] is include and include.target not in walked:
+            visit(include.target, source)
 
-    decision.removed[""], pending = _walk(t.main, holds, use, enter if inline else None)
-    for include in t.main.includes:
-        if include.start in decision.removed[""]:
-            decision.files[include.path] = False
-        else:
-            decision.files[include.path] = None if include.start in pending else True
+    visit("", t.main)
     for item, kept in zip(front.items if front else [], decision.attachments, strict=True):
         if item.file:
             decision.files[item.file] = kept
     for path, source in t.subs.items():
         if decision.files.get(path) and path not in walked:
-            decision.removed[path], _pending = _walk(source, holds, use)
+            visit(path, source)
     return decision
 
 
@@ -2139,21 +2340,30 @@ def _attachment_rows(files: list[tuple[str, list[str], str]], taken: str) -> lis
     return rows
 
 
-def _combined(main: list[str], includes: dict[int, tuple[int, str, list[str]]],
+def _combined(texts: dict[str, list[str]], includes: dict[str, dict[int, tuple[int, str]]],
               attachments: list[_Row]) -> list[_Row]:
     """The combined document (§15.7.2 step 7): each fragment spliced in at its
-    ``{{include:}}`` paragraph, the attachment files after the body."""
-    rows: list[_Row] = []
-    index = 0
-    while index < len(main):
-        if index in includes:
-            end, path, lines = includes[index]
-            rows += [("", None), *((text, (path, k)) for k, text in enumerate(lines)), ("", None)]
-            index = end
-            continue
-        rows.append((main[index], ("", index)))
-        index += 1
-    return rows + attachments
+    ``{{include:}}`` paragraph, those it includes in it, the attachment files
+    after the body. *texts* are the lines of each file (the body's is ``""``), and
+    *includes* those of each that hold a fragment to splice: the line it starts at
+    with the line it ends before, and the file. (A fragment included twice is
+    spliced twice, and a heading of it is known by the last place it has.)"""
+
+    def splice(path: str) -> list[_Row]:
+        rows: list[_Row] = []
+        lines, at = texts[path], includes.get(path, {})
+        index = 0
+        while index < len(lines):
+            if index in at:
+                end, target = at[index]
+                rows += [("", None), *splice(target), ("", None)]
+                index = end
+                continue
+            rows.append((lines[index], (path, index)))
+            index += 1
+        return rows
+
+    return splice("") + attachments
 
 
 def _identifiers(head: str, rows: list[_Row]) -> dict[_Key, tuple[str, bool]]:
@@ -2182,10 +2392,11 @@ def _compute_template_identifiers(t: _Template) -> dict[_Key, tuple[str, bool]]:
     front = t.front
     files = [(item.file, t.subs[item.file].lines, str(item.test) if item.test else "")
              for item in (front.items if front else []) if item.file in t.subs]
-    includes = {inc.start: (inc.end, inc.path, t.subs[inc.path].lines)
-                for inc in t.main.includes if inc.path in t.subs}
+    texts = {"": t.main.lines, **{path: source.lines for path, source in t.subs.items()}}
+    includes = {path: {inc.start: (inc.end, inc.target) for inc in source.includes if inc.target in t.subs}
+                for path, source in (("", t.main), *t.subs.items())}
     taken = "\n".join(t.main.lines)
-    rows = _combined(t.main.lines, includes, _attachment_rows(files, taken))
+    rows = _combined(texts, includes, _attachment_rows(files, taken))
     return _identifiers(front.text() if front else "", rows)
 
 
@@ -2196,17 +2407,18 @@ def _preserve_identifiers(t: _Template, head: str, main: list[_Line],
     template_ids = _template_identifiers(t)
     outputs = {"": main, **subs}
     texts = {path: [line.text for line in lines] for path, lines in outputs.items()}
-    includes = {}
-    for include in t.main.includes:
-        if include.path in subs:
-            kept = [k for k, line in enumerate(main) if include.start <= line.origin < include.end]
-            if kept:
-                includes[kept[0]] = (kept[-1] + 1, include.path, texts[include.path])
+    includes: dict[str, dict[int, tuple[int, str]]] = {}
+    for path, lines in outputs.items():
+        for include in (t.main if path == "" else t.subs[path]).includes:
+            if include.target in subs:
+                kept = [k for k, line in enumerate(lines) if include.start <= line.origin < include.end]
+                if kept:
+                    includes.setdefault(path, {})[kept[0]] = (kept[-1] + 1, include.target)
     files = [(item.file, texts[item.file], "")
              for item, kept in zip(t.front.items if t.front else [], decision.attachments, strict=True)
              if kept and item.file in subs]
     taken = "\n".join(texts[""])
-    rows = _combined(texts[""], includes, _attachment_rows(files, taken))
+    rows = _combined(texts, includes, _attachment_rows(files, taken))
     for (path, index), (identifier, explicit) in _identifiers(head, rows).items():
         line = outputs[path][index]
         was = template_ids.get((path, line.origin))
@@ -2271,8 +2483,9 @@ def assemble(
 
     A draft or an ordinary document goes through the same steps: its drafting
     notes are removed, its answered blanks filled and its blank lines
-    collapsed. *load_file* reads the include fragments and LegalDown
-    attachment files; the assembled ones are returned in ``files``.
+    collapsed. *load_file* reads the include fragments (those they include
+    too, in an ordinary document) and LegalDown attachment files; the
+    assembled ones are returned in ``files``.
     """
     warnings.warn(
         "legaldown.assemble() is deprecated since 0.4.0 and will be removed in 0.5.0; "
