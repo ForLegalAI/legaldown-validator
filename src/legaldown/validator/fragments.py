@@ -701,6 +701,11 @@ class _NamedInclude(Protocol):
     written: str
 
 
+def no_file_message(source: str) -> str:
+    """The message of ``include-file-missing`` for the include paragraph *source* (as written), which names no file."""
+    return f"'{source}' names no file: an include paragraph names the LegalDown file it takes in (§12.2)."
+
+
 def not_legaldown(include: _NamedInclude) -> str | None:
     """The message of ``include-not-legaldown`` (§12.2) for *include*, whose path does not end in a LegalDown
     extension, or None when it does or names no file. It needs no file."""
@@ -824,7 +829,7 @@ class _Walk:
         if not include.path:
             refuse(
                 "include-file-missing",
-                f"'{include.source}' names no file: an include paragraph names the LegalDown file it takes in (§12.2).",
+                no_file_message(include.source),
                 "unreadable",
             )
             return None

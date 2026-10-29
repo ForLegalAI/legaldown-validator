@@ -327,6 +327,19 @@ def test_what_is_wrong_with_a_nested_include_is_reported_in_its_file_at_its_line
     _refused(result)
 
 
+def test_a_missing_nested_file_is_named_as_the_fragment_wrote_it_as_the_validator_does():
+    files = {"sub/a.lgd": "### A\n\n{{include: ./b.lgd}}\n\n{{include: ../gone/../c.lgd}}\n"}
+    template = Template(_FRONT + _MAIN, resolve=files.get)
+    assert [(d.rule, d.file, d.line) for d in template.problems] == [
+        ("include-file-missing", "sub/a.lgd", 3), ("include-file-missing", "sub/a.lgd", 5),
+    ]
+    assert "'./b.lgd' cannot be read" in template.problems[0].message
+    assert "'../gone/../c.lgd' cannot be read" in template.problems[1].message
+    # The validator names it the same way.
+    validated = [d for d in template.validation.diagnostics if d.rule == "include-file-missing" and d.file == "sub/a.lgd"]
+    assert "'./b.lgd'" in validated[0].message
+
+
 def test_an_include_that_names_no_file_says_so_as_a_documents_does():
     result = _assembled(_MAIN, {"sub/a.lgd": "### A\n\n{{include:}}\n"})
     (diagnostic,) = result.diagnostics
@@ -405,6 +418,20 @@ def test_the_chain_helpers_are_the_validators(tmp_path):
     chain = extend(files, extend(files, EMPTY_CHAIN, "sub/a.lgd"), "sub/b.lgd")
     assert chain.paths == ("sub/a.lgd", "sub/b.lgd")
     assert closes(files, chain, "sub/a.lgd") and not closes(files, chain, "sub/c.lgd") and not closes(files, EMPTY_CHAIN, "sub/a.lgd")
+
+
+# ── Scale ─────────────────────────────────────────────────────────────────────
+
+def test_a_fragment_of_ten_thousand_include_paragraphs_is_assembled_in_linear_time():
+    import time
+
+    count = MAX_INCLUDE_EXPANDED - 1  # the most the walk follows: each include costs one, and the heading of f
+    files = {"f.lgd": "## F\n\n" + "{{include: x.lgd}}\n\n" * count, "x.lgd": "X.\n"}
+    start = time.perf_counter()
+    result = _assembled("# Doc\n\n{{include: f.lgd}}\n", files)
+    elapsed = time.perf_counter() - start
+    assert result.ok and set(result.files) == {"f.lgd", "x.lgd"}
+    assert elapsed < 12.0  # about 5 s now (the parse of the combined document); over 20 s when step 7 looked at every line of the file for each include
 
 
 # ── Cycles ────────────────────────────────────────────────────────────────────
