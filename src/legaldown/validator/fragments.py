@@ -695,13 +695,13 @@ class IncludeOutcome:
     caps: list[str] = field(default_factory=list)
 
 
-class _Named(Protocol):
+class NamedInclude(Protocol):
     """What names a file to include: an ``IncludeDirective``, or assembly's own reading of one."""
     path: str
     written: str
 
 
-def not_legaldown(include: _Named) -> str | None:
+def not_legaldown(include: NamedInclude) -> str | None:
     """The message of ``include-not-legaldown`` (§12.2) for *include*, whose path does not end in a LegalDown
     extension, or None when it does or names no file. It needs no file."""
     if not include.path or include.path.endswith(LEGALDOWN_EXTENSIONS):
@@ -719,8 +719,10 @@ class _Chain(NamedTuple):
     keys: frozenset[str] = frozenset()
 
 
-#: The chain of the document itself, which has included nothing yet.
-EMPTY_CHAIN = _Chain()
+#: The chain type, for a reader of the includes that holds one (assembly), and the chain of the document itself,
+#: which has included nothing yet.
+IncludeChain = _Chain
+EMPTY_CHAIN = IncludeChain()
 
 
 def extend(files: Files, chain: _Chain, path: str) -> _Chain:

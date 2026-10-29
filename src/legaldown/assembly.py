@@ -87,6 +87,7 @@ from .validator.fragments import (
     FragmentFile,
     FragmentKind,
     IncludeBudget,
+    IncludeChain,
     closes,
     cycle_message,
     extend,
@@ -124,9 +125,6 @@ __all__ = [
     "needed_questions",
     "template_questions",
 ]
-
-#: The files being included, outermost first, and the same as ``Files.key`` (``fragments._Chain``).
-_IncludeChain = tuple[tuple[str, ...], frozenset[str]]
 
 #: A question with neither an answer nor a default.
 _MISSING = object()
@@ -975,8 +973,12 @@ class _Fragments:
         #: The files read, by their path from the template's directory: what is in each, and the file as the
         #: validator reads it.
         self._read: dict[str, tuple[_Source, FragmentFile]] = {}
-        #: The include of each file that is last, in the order the walk meets them, which is the combined document's.
+        #: The sources of the files read, in the order they were met (set by ``finish``).
+        self.subs: dict[str, _Source] = {}
+        #: The include of each file that is last in the combined document (set by ``finish``).
         self.last: dict[str, _Include] = {}
+        #: The includes in the order the walk meets them, which is the combined document's, with their files.
+        self._met_includes: list[tuple[str, _Include]] = []
         self._unreadable: set[str] = set()  # reported once, however often it is referenced
         self._placed: dict[str, dict[int | None, list[tuple[int, _Include]]]] = {}
         self._attached: set[str] = set()  # the attachment files already checked as such
@@ -1028,16 +1030,16 @@ class _Fragments:
     def __contains__(self, path: str) -> bool:
         return path in self._read
 
-    @property
-    def subs(self) -> dict[str, _Source]:
-        """The sources of the files read, in the order they were met."""
-        return {path: source for path, (source, _fragment) in self._read.items()}
+    def meet(self, relative: str, include: _Include) -> None:
+        """*include* takes in the file at *relative*, and is followed."""
+        include.target = relative
+        self._met_includes.append((relative, include))
 
     def attach(self, path: str) -> None:
         """The checks of an attachment file on the file at *path*, which is also an include fragment, and was
         read as one: an include in it is not assembled (``_attachment_includes``), once however often it is
         attached. (The rest of what is checked of a file is the same for both, or was found by the first.)"""
-        if path not in self._attached and not self._template:
+        if path in self._read and path not in self._attached and not self._template:
             self._attached.add(path)
             self.problems += _attachment_includes(self._read[path][1], cache(lex))
 
@@ -1063,18 +1065,22 @@ class _Fragments:
         return relative
 
     def finish(self) -> None:
-        """Take the target from each include that closed a cycle: an include is shared by every place its
-        file is included, and a cycle is refused only in the chain it was met in, so the targets
-        could lead round (and the template is refused for it anyway)."""
+        """End the reading: take the target from each include that closed a cycle (an include is shared by
+        every place its file is included, and a cycle is refused only in the chain it was met in, so the
+        targets could lead round, and the template is refused for it anyway), and settle ``subs`` and ``last``."""
         for include in self._cyclic.values():
             include.target = ""
+        self.subs = {path: source for path, (source, _fragment) in self._read.items()}
+        # An include that closed a cycle in another chain than the one it was followed in has no target now,
+        # and is not the last of its file.
+        self.last = {relative: include for relative, include in self._met_includes if include.target}
 
     def spliceable(self, path: str) -> bool:
         """Whether the file at *path*, which was read, is a fragment in the sense of §12.2 (``FragmentFile.spliceable``):
         one that is not is refused, and its includes are not followed."""
         return path in self._read and self._read[path][1].spliceable
 
-    def expand(self, owner: _Source, chain: _IncludeChain) -> None:
+    def expand(self, owner: _Source, chain: IncludeChain) -> None:
         """Follow the include paragraphs of the fragment *owner*, the last of *chain* (the files being
         included, outermost first): those before its first heading, then for each section its heading, which
         costs one, and the includes it holds."""
@@ -1119,7 +1125,7 @@ class _Fragments:
                 line=line, file=file,
             ))
 
-    def _follow(self, owner: _Source, number: int, include: _Include, chain: _IncludeChain) -> None:
+    def _follow(self, owner: _Source, number: int, include: _Include, chain: IncludeChain) -> None:
         """The *number*th include paragraph of *owner*, followed in the order ``_Walk.attempt`` judges it: it
         names a file, is a LegalDown file, a path that can be read from the directory of *owner*, no file of
         *chain* (or the template), not deeper than the cap, a file that is there. What is wrong is reported once,
@@ -1148,8 +1154,7 @@ class _Fragments:
         if (cap := too_deep(chain)) is not None:
             self._limit(cap, file, line)
             return
-        include.target = relative
-        self.last[relative] = include
+        self.meet(relative, include)
         target = self.read(relative, "include", file, line, report=first)
         if target is not None and self.spliceable(relative):
             self.expand(target, extend(self._files, chain, relative))
@@ -1185,8 +1190,7 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
                 "include-cycle", "error", cycle_message(files, include.source, EMPTY_CHAIN, relative), line=line,
             ))
             continue
-        include.target = relative
-        reading.last[relative] = include
+        reading.meet(relative, include)
         source = reading.read(relative, "include", line=line)
         if source is not None and not template and reading.spliceable(relative):
             reading.expand(source, extend(files, EMPTY_CHAIN, relative))

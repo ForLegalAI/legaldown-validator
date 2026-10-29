@@ -168,13 +168,44 @@ def test_a_fragment_included_directly_and_through_another_is_asked_at_its_last_i
     assert result.ok and result.files["c.lgd"] == "## C\n\nC 3.\n"
 
 
-def test_a_tree_the_walk_cut_short_is_not_walked_again_to_decide_what_is_kept():
-    levels = 40  # 2**40 paths
+def _last_in_the_combined_document(t):
+    """The include of each file that is last in the combined document, by expanding the tree from the document
+    (the oracle: every path, so only for a small one)."""
+    found = {}
+
+    def walk(source, within):
+        for include in source.includes:
+            if include.target:
+                found[include.target] = include
+                if include.target in t.subs and include.target not in within:
+                    walk(t.subs[include.target], within | {include.target})
+
+    walk(t.main, frozenset())
+    return found
+
+
+def test_the_last_include_of_a_file_is_one_that_is_still_followed_when_the_walk_is_done(tmp_path):
+    # a is included by the document and by b, which the document includes after a: b's include of a closes a
+    # cycle in the chain a, b, and is followed in the chain b; it is cleared at the end, and the document's
+    # include of a (and of b) is the last that is left.
+    main = "# Doc\n\n{{include: a.lgd}}\n\n{{include: b.lgd}}\n"
+    files = {"a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "## B\n\n{{include: a.lgd}}\n"}
+    t = Template(_FRONT + main, resolve=files.get, path=tmp_path / "main.lgd")._t
+    assert t.last["a.lgd"] is t.main.includes[0] and t.last["b.lgd"] is t.main.includes[1]
+    assert t.last == _last_in_the_combined_document(t)
+    assert not t.subs["a.lgd"].includes[0].target and not t.subs["b.lgd"].includes[0].target
+
+
+def test_the_walk_that_was_cut_short_records_the_last_include_it_met_before_the_cap():
+    # The template is refused by ldv-include-limit anyway; what `last` holds is only what the walk met, and is
+    # not the document's true last include (which the walk did not get to), but it ends and covers the walk.
+    levels = 40  # 2**40 paths, which are not walked again to decide what is kept
     files = {f"p{i}.lgd": f"{{{{include: p{i + 1}.lgd}}}}\n\n{{{{include: p{i + 1}.lgd}}}}\n" for i in range(levels)}
     files[f"p{levels}.lgd"] = "## Leaf\n"
     template = Template(_FRONT + "# Doc\n\n{{include: p0.lgd}}\n", resolve=files.get)
-    template.form({})  # the walk that was cut short left targets, and this must end
-    assert template._t.last["p1.lgd"] is template._t.subs["p0.lgd"].includes[0]  # (the walk stopped before the second)
+    assert INCLUDE_LIMIT_RULE in {d.rule for d in template.problems}
+    template.form({})  # ends
+    assert set(template._t.last) <= set(template._t.subs) and "p0.lgd" in template._t.last
 
 
 _ATTACHED = _FRONT.replace("---\n\n", "attachments:\n  - id: d\n    title: D\n    file: d.lgd\n---\n\n")
@@ -220,7 +251,13 @@ def test_no_graph_of_includes_and_attachments_makes_a_template_raise(tmp_path, s
     front = _FRONT.replace("---\n\n", "".join(
         ["attachments:\n"] + [f"  - id: {n[0]}\n    title: T\n    file: {n}\n" for n in attached] + ["---\n\n"]
     )) if attached else _FRONT
-    _survives(front, main, files, tmp_path)
+    template = _survives(front, main, files, tmp_path)
+    last = template._t.last
+    assert all(include.target == relative for relative, include in last.items())
+    if "include-cycle" not in {d.rule for d in template.problems}:
+        # (With a cycle the template is refused, and an include met only through an edge that closed a
+        # cycle in another chain may be the walk's last without being the combined document's.)
+        assert last == _last_in_the_combined_document(template._t)
 
 
 def test_each_fragment_is_parsed_once_when_the_template_has_a_path(monkeypatch, tmp_path):
@@ -502,6 +539,14 @@ def test_assembly_finds_what_the_validator_finds_of_the_includes_it_judges_befor
     assembled = sorted((d.rule, d.file, d.line) for d in template.problems if d.rule in rules)
     assert assembled == validated and assembled == sorted(set(assembled))
     assert bool(assembled) == (graph != "diamond")
+
+
+@pytest.mark.parametrize("graph", sorted(_GRAPHS))
+def test_the_last_include_the_walk_records_is_the_last_of_the_combined_document(tmp_path, graph):
+    files = dict(_GRAPHS[graph])
+    main = files.pop("<main>", "# Doc\n\n{{include: a.lgd}}\n")
+    t = Template(_FRONT + main, resolve=files.get, path=tmp_path / "main.lgd")._t
+    assert t.last == _last_in_the_combined_document(t)
 
 
 # ── The limits ────────────────────────────────────────────────────────────────
