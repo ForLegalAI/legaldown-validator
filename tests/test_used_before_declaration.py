@@ -175,6 +175,26 @@ def test_a_use_is_judged_against_the_declaration_it_can_appear_with():
     assert _infos('"A" {{def: a}} means x. {when=q}\n\nSee {{term: a}}.\n\n"A" {{def: a}} means y. {when=!q}', questions) == []
 
 
+def test_past_the_cap_of_the_tests_a_use_is_not_judged(monkeypatch):
+    from legaldown.validator import circular as circular_module
+
+    questions = "questions:\n  q:\n    type: boolean\n"
+    body = '"A" {{def: a}} means x. {when=q}\n\nSee {{term: a}}. {when=!q}\n\n"A" {{def: a}} means y. {when=!q}'
+    assert len(_infos(body, questions)) == 1
+    # The first declaration cannot be told from the use (they name `q`) and the cap is reached: an Info
+    # missed, not one given for a declaration the use can never appear with.
+    monkeypatch.setattr(circular_module, "MAX_EXCLUSION_TESTS", 0)
+    assert _infos(body, questions) == []
+    # Pairs that name no question in common need no test: they are told apart under any cap.
+    other = "questions:\n  q:\n    type: boolean\n  r:\n    type: boolean\n"
+    assert len(_infos('See {{term: a}}. {when=r}\n\n"A" {{def: a}} means x. {when=q}', other)) == 1
+    # ... one test is not enough to tell the first declaration, which is excluded, and the second; two are.
+    monkeypatch.setattr(circular_module, "MAX_EXCLUSION_TESTS", 1)
+    assert _infos(body, questions) == []
+    monkeypatch.setattr(circular_module, "MAX_EXCLUSION_TESTS", 2)
+    assert len(_infos(body, questions)) == 1
+
+
 def test_a_declaration_that_can_never_appear_is_no_declaration():
     questions = "questions:\n  q:\n    type: boolean\n"
     body = (

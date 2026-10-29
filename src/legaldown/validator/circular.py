@@ -144,25 +144,38 @@ def used_before_declaration(
         group.sort()
 
     first: dict[tuple[str, Presence], tuple[tuple[int, int, int, int], int] | None] = {}
-    tests = 0  # the pairs of presences tested: past MAX_EXCLUSION_TESTS they are no longer told apart
+    tests = 0  # the pairs of presences tested, at most MAX_EXCLUSION_TESTS
 
-    def compatible(use: Presence, declaration: Presence) -> bool:
+    def compatible(use: Presence, declaration: Presence) -> bool | None:
+        """Whether *declaration* can appear with a use of *use*; None when it cannot be told, the cap
+        of the tests having been reached."""
         nonlocal tests
         if exclusivity is None:
             return True
         if not exclusivity.appears(declaration):
             return False
         # Presences that name no question in common can appear together (as for find_circular_definitions).
-        if tests >= MAX_EXCLUSION_TESTS or set(exclusivity.questions(use)).isdisjoint(exclusivity.questions(declaration)):
+        if set(exclusivity.questions(use)).isdisjoint(exclusivity.questions(declaration)):
             return True
+        if tests >= MAX_EXCLUSION_TESTS:
+            return None
         tests += 1
         return not exclusivity.excluded(use, declaration)
 
     def first_declaration(target: str, presence: Presence) -> tuple[tuple[int, int, int, int], int] | None:
+        """The first declaration of *target* that can appear with *presence*; None if there is none, or
+        if one could not be told apart (past the cap): a use is then not judged, as an Info missed is
+        better than one given for a declaration it can never appear with."""
         if (target, presence) not in first:
-            first[target, presence] = next(
-                (each for each in declared[target] if compatible(presence, registered[each[1]][1])), None
-            )
+            found = None
+            for each in declared[target]:
+                fits = compatible(presence, registered[each[1]][1])
+                if fits is None:
+                    break
+                if fits:
+                    found = each
+                    break
+            first[target, presence] = found
         return first[target, presence]
 
     earlier: dict[int, list[tuple[tuple[int, int, int, int], TermUse]]] = {}

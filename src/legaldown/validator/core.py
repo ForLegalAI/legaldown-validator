@@ -268,8 +268,7 @@ def _check_implicit_identifiers(
     primary and a translation mirrors them explicitly. Without ``authoritative`` the primary cannot
     be told from its translations, and the document draws a Warning for each, as any linked file
     does. *refs* are the definitions outside drafting notes (assembly removes the others, §15.6, and
-    ``drafting-note-def`` reports them); one whose
-    generated identifier ``anchor-format`` rejects is not counted either. The linked files'
+    ``drafting-note-def`` reports them), with a valid id. The linked files'
     own identifiers are Full (§17.4, §17.5)."""
     meta = document.metadata
     rule, _why_not = identifier_rule(meta)
@@ -290,7 +289,7 @@ def _check_implicit_identifiers(
                 line=where.heading(index),
             )
     for ref in refs:
-        if not ref.auto_id or not IDENTIFIER_RE.fullmatch(ref.id):
+        if not ref.auto_id:
             continue
         report(
             rule, f"Definition '{ref.term}' has no explicit identifier ('{ref.id}' is generated from the "
@@ -1880,7 +1879,6 @@ def _validate(
     #: Every definition with a valid id written outside a drafting note, a duplicate too, for
     #: definition-used-before-declaration.
     written: list[tuple[DefinitionRef, Presence]] = []
-    outside: list[DefinitionRef] = []  # the same, for the identifier rules
     term_uses: list[TermUse] = []
     for ref in definition_refs:
         def_id = ref.id
@@ -1901,7 +1899,6 @@ def _validate(
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
         if not in_a_note(ref):
             written.append((ref, presence))
-            outside.append(ref)
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.
         together = [
@@ -1925,6 +1922,7 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
+    outside = [ref for ref, _presence in written]  # the definitions the identifier rules ask for ids
     _check_implicit_identifiers(document, outside, where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──

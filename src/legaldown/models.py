@@ -391,29 +391,21 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _parse_str_dict(raw: Any) -> dict[str, str]:
+def _parse_str_dict(raw: Any, *, skip_blank: bool = False) -> dict[str, str]:
     """Parse a dict with string keys and values, stripped, skipping an entry whose key or value is
-    null or empty (a whitespace-only one is kept, stripped to ``""``)."""
-    if not isinstance(raw, dict):
-        return {}
-    return {str(k).strip(): str(v).strip() for k, v in raw.items() if k and v}
-
-
-def _parse_translations(raw: Any) -> dict[str, str]:
-    """Parse ``translations`` (language code to file) in one pass: an entry whose key or value is
-    falsy (null, empty, ``false``, ``0``), as ``_parse_str_dict`` skips it, or blank once stripped,
-    is skipped, as it names no file or no language. Of keys that are the same once stripped, the last
-    entry kept stays: a blank sibling written differently (``fr`` and ``' fr'``) never overwrites it.
-    (An exact duplicate key is resolved by YAML before this reads it: #126.) ``field_types`` does not
-    skip a blank description: it is a declaration."""
+    null or empty (a whitespace-only one is kept, stripped to ``""``). With *skip_blank* (``translations``:
+    a blank key names no language, a blank value no file; ``field_types`` keeps a blank description,
+    which is a declaration) it skips one that is blank once stripped too, before it can overwrite a
+    sibling written differently (``fr`` and ``' fr'``); the last of the rest stays. An exact duplicate
+    key is resolved by YAML before this reads it (#126)."""
     if not isinstance(raw, dict):
         return {}
     parsed: dict[str, str] = {}
-    for key, value in raw.items():
-        if not key or not value:
+    for k, v in raw.items():
+        if not (k and v):
             continue
-        key, value = str(key).strip(), str(value).strip()
-        if key and value:
+        key, value = str(k).strip(), str(v).strip()
+        if not skip_blank or (key and value):
             parsed[key] = value
     return parsed
 
@@ -666,7 +658,7 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         include_signatures=_to_bool(payload.get("include_signatures"), default=True),
         tags=_clean_list(list(tags)),
         sides=sides,
-        translations=_parse_translations(payload.get("translations")),
+        translations=_parse_str_dict(payload.get("translations"), skip_blank=True),
         authoritative=normalise_field(payload.get("authoritative")),
         adopted_by=normalise_field(payload.get("adopted_by")),
         adoption_date=normalise_field(payload.get("adoption_date")),

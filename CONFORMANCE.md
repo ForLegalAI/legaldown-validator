@@ -194,7 +194,7 @@ directive there); a use in the definition's own quoted term (`"Self {{term: s}}"
 declares, which is in force before the document (§7.5). A `{{def:}}` in a drafting note is no declaration either (assembly removes it, and `drafting-note-def` reports it); nor is it a missing identifier for the translation rules. A use is judged against the first declaration of its id that can appear with it (in a
 template, one that can appear and is not excluded from the use's presence, §15.4): a use between two alternatives
 is judged against the one it resolves to, a declaration that can never appear is no declaration, and a use that can
-never appear is no use. The files the document includes and
+never appear is no use. The pairs of presences tested are capped as for `definition-circular` (`MAX_EXCLUSION_TESTS`); a use whose declaration could not be told apart past the cap is not judged, an Info missed rather than one given for a declaration it can never appear with. The files the document includes and
 attaches are not expanded, so a definition that only they declare is no declaration here (as
 `term-undefined` reads it). The auto-linking of §7.4 is not implemented, so a term written without
 `{{term:}}` is no use. `legaldown validate --strict` counts the Info, so a document that keeps its
