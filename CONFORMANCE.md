@@ -961,24 +961,40 @@ template with Errors in the validator's template rules (`Template.problems`); th
     once for the validation). It is the validator's own test, so that a chain through
     another spelling of a file, or back to the template (when the template has a `path`; without one
     nothing says which file it is, and it is read as a fragment and refused for its frontmatter), is
-    caught the same way. A template that includes *itself* is now `include-cycle` too, at its
-    line, where assembly said `include-has-frontmatter` of it.
+    caught the same way. A document that is not a template and includes *itself* is now `include-cycle`, at its
+    line, where assembly said `include-has-frontmatter` of it. A **template** that includes itself is refused as
+    it was (the file is read as a fragment, and has frontmatter and a heading of level 1, and its include is
+    `template-fragment-invalid`): there is no `include-cycle` of assembly's in a template, which has no nested
+    include to follow, though the validator names the cycle.
   - **The caps are Errors.** Assembly shares the validator's walk limits (32 fragments deep, 10,000 includes
     and headings) and spends them in the walk's order: an include costs one before it is judged, a fragment's
     headings cost one each in section order, and the document's own includes cost none; so
     both stop at the same place (a test lowers the caps and compares them). Where the validator warns that it
     did not check past a cap (`ldv-check-skipped`), assembly would be leaving a part of the document out, which §17.6
-    forbids; it refuses with **`ldv-include-limit`**, an Error, at the include or heading where the cap was
-    reached, and assembles nothing. The id is the implementation's own (§16.1, `ldv-`; `INCLUDE_LIMIT_RULE`).
+    forbids; it refuses with **`ldv-include-limit`**, an Error ("assembly stopped at its limit on ..."), at the
+    include or heading where the cap was reached, and assembles nothing. The id is the implementation's own
+    (§16.1, `ldv-`; `legaldown.grammar.INCLUDE_LIMIT_RULE`).
     **Changed:** a fragment of more than 10,000 headings, which was assembled when it included nothing, is now
     refused for the same reason (so is one of 32 or more levels of includes, which was refused anyway).
+  - An include is judged in the validator's order: it names a file, **is a LegalDown file**, is a path that can be
+    read from the directory of the file that holds it, closes no cycle, is not too deep, is there. An
+    include of a file that is not LegalDown (`a.txt`) is `include-not-legaldown`, an Error at its line, nested
+    or the template's own ([#128](https://github.com/ForLegalAI/legaldown-validator/issues/128); assembly
+    used to read it if the loader had it), and the loader is not asked for it. (The validator judges the
+    path of the template's own include, if it is absolute or leaves the root, as `path-not-relative` or
+    `path-outside-root` alone; assembly refuses it as `include-file-missing`, as before.) **A deliberate
+    difference:** a valid path that only leads out of the document's directory, where no `document_root`
+    holds it, is unread for the validator (the Warning of §17.5) and `include-file-missing` for assembly,
+    as for a flat include, since no output can be made without the file.
   - Everything else is as for a flat include: a file that is not there or cannot be read is
     `include-file-missing` (with its file and line, now); `include-has-frontmatter`, `include-has-h1`
     and unreadable frontmatter are reported for a nested file, which is then not followed; an include that is not an
     include paragraph (in a sentence, a list item, a quote, a drafting note) is text and is not read.
-    **Not changed:** a template's nested include and any in an attachment file stay refused, and an include
-    of `a.txt` (`include-not-legaldown`, which the validator reports and does not read) is read by assembly if the
-    loader has it, nested or not: tracked apart.
+    A file that is an attachment file as well as an include fragment is read once, as a fragment, and is still
+    checked as an attachment file: an include in it is refused. **Not changed:** a template's nested include
+    and any in an attachment file stay refused.
+  - A fragment included from two places is asked its questions at the last include of it in the combined
+    document, however the files were read (`Form.questions`).
 - A `{{placeholder:}}` or `{{choose:}}` written across two lines is refused with
   `directive-malformed`, which the validator reports too (see above): it could not be filled.
 - A template with `translations` is refused with `translation-file-missing`: its linked templates

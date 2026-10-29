@@ -228,6 +228,7 @@ that stays within `DIR` is then read, and nothing outside `DIR` is, nor anything
 The ones assembly keeps are written under `-o` at their relative paths — an ordinary document's fragments
 that include fragments of their own too (each is read from the directory of the fragment that holds the
 include, as `validate` reads it, and written at its own path; the `{{include:}}` lines stay as written). A
+file that is not LegalDown is `include-not-legaldown`, a
 circular chain is `include-cycle`, and a chain deeper than 32 fragments, or a walk of more than
 10,000 includes and headings, is `ldv-include-limit`: both are Errors, and nothing is assembled. A
 template's fragments may not include any (`template-fragment-invalid`), nor may an attachment file;
@@ -762,7 +763,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
 | `LIST_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
-| `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), and the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5) |
+| `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`, `INCLUDE_LIMIT_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5), and the Error of assembly for a document whose includes nest or run past the limits (`"ldv-include-limit"`, #118) |
 | `slugify_identifier(value, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term text, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
 | `is_valid_iso_date`, `is_valid_numeric`, `is_valid_money_amount`, `is_positive_numeric` | Value checks (§3.10, §10) |
 | `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units can never appear together |
@@ -1051,7 +1052,7 @@ checks are named depends on the validation: a fragment that was read (a document
 `include-anchor-duplicate` checks made over what it includes; but the combined-document checks of
 §16.11 (a reference or a term into a fragment, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117))
 are never performed, so a document with an include always draws it. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
-(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`). It is a Warning: the exit status is
+(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`, `INCLUDE_LIMIT_RULE`). It is a Warning: the exit status is
 unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
 `--ignore ldv-check-skipped` once it has read what it says.
 
