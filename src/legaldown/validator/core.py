@@ -32,6 +32,7 @@ from ..directives import (
 from ..files import LoadFile, file_loader
 from ..markdown import (
     INLINE_HTML_RE,
+    DraftingNotes,
     back_line_space,
     inline_html_unclosed,
     is_comment_only,
@@ -67,6 +68,7 @@ from .patterns import (
     _CONSTRUCT_PRESENT,
     _UNFILLED,
     DURATION_UNITS,
+    FRONTMATTER_KEY_DUPLICATE_RULE,
     IDENTIFIER_RE,
     ISO_639_1_CODES,
     KNOWN_CURRENCIES,
@@ -87,11 +89,9 @@ from .templates import (
     Quote,
     _BlankState,
     _fixed_by_all,
-    block_quotes,
     check_choose,
     check_questions,
     check_template_body,
-    in_drafting_note,
     question_type,
 )
 from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
@@ -144,6 +144,15 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
         and (directive.start, directive.end) == (0, len(value))
         and _placeholder_type(directive, declared) == "date"
     )
+
+
+def _shown(key: str) -> str:
+    """A key as it is written in the source, for a message: its line breaks (and the indentation after them)
+    folded to a space, between backticks (a longer fence if it holds backticks, padded, as CommonMark does)."""
+    text = re.sub(r"\s*\n\s*", " ", key).strip()
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
 
 
 def _frontmatter_fields(
@@ -267,10 +276,10 @@ def _check_implicit_identifiers(
     A translation (``identifier_rule``) draws an Error for each, since identifiers originate in the
     primary and a translation mirrors them explicitly. Without ``authoritative`` the primary cannot
     be told from its translations, and the document draws a Warning for each, as any linked file
-    does. *refs* are the definitions outside drafting notes (assembly removes the others, §15.6, and
-    ``drafting-note-def`` reports them); one whose generated identifier ``anchor-format`` rejects is
-    not counted either (the validator passes none: a generated identifier is always valid, §5.3). The
-    linked files' own identifiers are Full (§17.4, §17.5)."""
+    does. *refs* are ``collect_definitions``', which holds none in a drafting note (§15.6); one whose
+    generated identifier ``anchor-format`` rejects is not counted (the validator passes none: a
+    generated identifier is always valid, §5.3). The linked files' own identifiers are Full (§17.4,
+    §17.5)."""
     meta = document.metadata
     rule, _why_not = identifier_rule(meta)
     if rule is None:
@@ -1352,6 +1361,7 @@ def _validate(
         find_definition_anchors,
         fragments_before_target,
         id_term,
+        quote_ranges,
         text_fragments,
     )
     from .circular import TermUse, circular_message, find_circular_definitions, term_owners, used_before_declaration
@@ -1424,6 +1434,42 @@ def _validate(
                 f"name (date, money, duration, party, text).", line=where.key("field_types", ft_key),
             )
 
+    # ── Entries of `translations` and `field_types` that another replaces (#126) ──
+    # The model reads the keys of these maps as text, stripped, and keeps the last of the keys it reads as
+    # one: the same key written twice (`fr` and `"fr"` too), keys that read alike as text (`1` and `'1'`),
+    # keys that strip alike (`fr` and `' fr'`). The earlier entry is never checked, and nothing else says so:
+    # each is reported at its own line, naming the entry that repeats it (the one written again) or the entry
+    # the model keeps. A rule of this implementation
+    # (§16.1). An Error when YAML itself rejects the key written twice (strict readers fail the document as
+    # `frontmatter-invalid-yaml`); a Warning for different keys the model reads as one, as the specification
+    # judges a padded language code a Warning (`language-code-invalid`) and a rule of ours does not fail a
+    # document it accepts. Judged against the model, not for one edited since it was parsed. Other mappings
+    # are not checked (#131).
+    if not mode.empty_metadata:
+        for map_name, each in where.ignored():
+            if (each.by.key in getattr(document.metadata, map_name)) == bool(each.skipped):
+                continue
+            entry, by = each.entry, each.by
+            again = f" at line {by.line}" if by.start != entry.start else ""  # an aliased key is one node
+            what = {
+                "repeated": f"is written again{again}" if not each.skipped else "is written again",
+                "text": f"is the same key as {_shown(by.written)} once read as text",
+                "stripped": f"is the same key as {_shown(by.written)} once stripped",
+                "value": f"is the same key as {_shown(by.written)} once read as a YAML value (Python treats them as equal)",
+            }[each.why]
+            if each.skipped:
+                stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"
+            elif each.why != "repeated" and again:
+                stays = f", and the entry at line {by.line} is the one read"
+            else:
+                stays = ""
+            report = result.error if each.why == "repeated" else result.warning
+            report(
+                FRONTMATTER_KEY_DUPLICATE_RULE,
+                f"The {map_name} key {_shown(entry.written)} {what}: this entry is ignored{stays}.",
+                line=entry.line,
+            )
+
     # ── Metadata dates (§16.6) ──
     for field_name, field_value in (
         ("effective_date", document.metadata.effective_date),
@@ -1448,7 +1494,7 @@ def _validate(
                 f"such as 'en' or 'cs'.", line=where.key(*path),
             )
 
-    # The keys the reader kept, as it stripped them. Where a padded or repeated key is written is #126.
+    # The keys the reader kept, as it stripped them, at the line of the entry that stays (#126).
     for label, code in (("language", language), ("authoritative", meta.authoritative)):
         if code:
             check_code(label, code, (label,))
@@ -1852,20 +1898,13 @@ def _validate(
         document, language=meta.language, lex_fragment=lex_fragment
     )
     # The drafting notes of each top-level block (§15.6), worked out once for the validation.
-    notes_of_block: dict[tuple[int | None, int], list[Quote]] = {}
+    notes_of_block: dict[tuple[int | None, int], DraftingNotes] = {}
 
-    def drafting_notes(section: int | None, index: int) -> list[Quote]:
+    def drafting_notes(section: int | None, index: int) -> DraftingNotes:
         if (section, index) not in notes_of_block:
             block = document.preamble[index] if section is None else document.sections[section].blocks[index]
-            notes_of_block[section, index] = [quote for quote in block_quotes(block) if quote.is_drafting_note]
+            notes_of_block[section, index] = DraftingNotes(quote_ranges(block))
         return notes_of_block[section, index]
-
-    def in_a_note(ref: DefinitionRef) -> bool:
-        """Whether a definition is in a drafting note: assembly removes it, and ``drafting-note-def``
-        reports it, so it is no declaration of the document's text."""
-        return ref.fragment_index is not None and in_drafting_note(
-            drafting_notes(ref.section_index, ref.block_index), ref.fragment_index
-        )
 
     def definition_line(ref: Any) -> int | None:
         if ref.fragment_index is None:  # a definition block's own anchor
@@ -1877,7 +1916,7 @@ def _validate(
     # The definitions that are registered, and the {{term:}} uses outside
     # drafting notes, for definition-circular (§16.3, #105).
     registered: list[tuple[DefinitionRef, Presence]] = []
-    #: Every definition with a valid id written outside a drafting note, a duplicate too, for
+    #: The registered definitions and the duplicates among those with a valid id, for
     #: definition-used-before-declaration.
     written: list[tuple[DefinitionRef, Presence]] = []
     term_uses: list[TermUse] = []
@@ -1898,8 +1937,7 @@ def _validate(
                 f"id (§5.3, §7.2).", line=definition_line(ref),
             )
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
-        if not in_a_note(ref):
-            written.append((ref, presence))
+        written.append((ref, presence))
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.
         together = [
@@ -1923,8 +1961,7 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
-    outside = [ref for ref, _presence in written]  # the definitions the identifier rules ask for ids
-    _check_implicit_identifiers(document, outside, where, definition_line, result)
+    _check_implicit_identifiers(document, definition_refs, where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():
@@ -2091,7 +2128,7 @@ def _validate(
             owner_of = None  # for definition-circular, once a {{term:}} asks
             has_image = "![" in fragment
             # Only an image or a directive asks, and only a block with a drafting note has one.
-            noted = bool(notes) and (has_image or bool(lexed.directives)) and in_drafting_note(notes, fragment_index)
+            noted = bool(notes) and (has_image or bool(lexed.directives)) and fragment_index in notes
             if has_image:
                 check_fragment_images(
                     fragment, lexed, file_references, where, section_index, block_index, fragment_index,

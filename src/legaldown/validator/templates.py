@@ -16,7 +16,7 @@ from functools import partial
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
-from ..markdown import find_all, scan_destination
+from ..markdown import DRAFTING_MARKER, DraftingNotes, find_all, is_drafting_marker, scan_destination
 from ..models import Block, Document
 from ..positions import Locator
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
@@ -275,8 +275,6 @@ def check_questions(
 
 #: The first line of a quote that looks like a GitHub-flavoured alert.
 _ALERT_RE = re.compile(r"\[![A-Za-z]+\]")
-#: The first line that makes a quote a drafting note, letters in any case (§15.6).
-DRAFTING_MARKER = "[!DRAFTING]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,7 +289,7 @@ class Quote:
     def is_drafting_note(self) -> bool:
         """True if the quote is a drafting note: its first line is exactly
         ``[!DRAFTING]``, letters in any case (§15.6)."""
-        return self.first_line.upper() == DRAFTING_MARKER
+        return is_drafting_marker(self.first_line)
 
     @property
     def is_unrecognized_alert(self) -> bool:
@@ -299,13 +297,6 @@ class Quote:
         ``]``) but is not a drafting note's: an ordinary quote, whose
         guidance would reach the finished document (§15.6)."""
         return _ALERT_RE.match(self.first_line) is not None and not self.is_drafting_note
-
-
-def in_drafting_note(notes: list[Quote], fragment: int) -> bool:
-    """True if fragment *fragment* of a block's ``block_fragments`` is in one of
-    its drafting *notes*: assembly removes it before anything is inserted
-    (§15.7.2)."""
-    return any(fragment in note.fragments for note in notes)
 
 
 def is_drafting_note(quote: Block) -> bool:
@@ -700,7 +691,7 @@ def check_template_body(
     gives the lines."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
-    from ..definitions import find_definition_anchors, fragment_kinds
+    from ..definitions import find_definition_anchors, fragment_kinds, quote_ranges
     from .units import include_key, paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
@@ -727,9 +718,10 @@ def check_template_body(
     includes: list[IncludeDirective] = []
     all_notes: list[tuple[Quote, Line]] = []
     for block_section, block_index, block in document.iter_indexed_blocks():
-        notes: list[Quote] = []
+        ranges = quote_ranges(block)
         firsts: list[str] = []  # the first lines of the quotes before
-        for quote in block_quotes(block):
+        for first_line, fragments in ranges:
+            quote = Quote(first_line, fragments)
             first = quote.first_line.strip()
             line = find(block_section, block_index, first, nth=firsts.count(first))
             firsts.append(first)
@@ -742,12 +734,12 @@ def check_template_body(
                     line=line,
                 )
             elif quote.is_drafting_note:
-                notes.append(quote)
                 all_notes.append((quote, line))
+        notes = DraftingNotes(ranges)
         for index, (fragment, kind) in enumerate(fragment_kinds(block)):
             lexed = lex_fragment(fragment)
             scan = None  # the fragment's, for its first insertion
-            in_note = in_drafting_note(notes, index)
+            in_note = index in notes
             # The include of a paragraph that holds only it (§12.2): only a top-level
             # paragraph's first fragment is one, an include in a quote, a list or a table is text.
             only = paragraph_include(block, fragment, lexed) if index == 0 else None

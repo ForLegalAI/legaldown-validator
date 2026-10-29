@@ -191,7 +191,7 @@ otherwise draw one for every use of every term. The fixture has it at the use, l
 `{{term:}}` in a drafting note (assembly removes it), in code or in a comment; one in a heading (§4.2 has no
 directive there); a use in the definition's own quoted term (`"Self {{term: s}}" {{def: s}}`), which is
 `definition-circular`'s; an id the document does not declare (`term-undefined`); an id the amended original
-declares, which is in force before the document (§7.5). A `{{def:}}` in a drafting note is no declaration either (assembly removes it, and `drafting-note-def` reports it); nor is it a missing identifier for the translation rules. A use is judged against the first declaration of its id that can appear with it (in a
+declares, which is in force before the document (§7.5). A `{{def:}}` in a drafting note is no declaration either ([below](#definitions-in-drafting-notes-156-125)). A use is judged against the first declaration of its id that can appear with it (in a
 template, one that can appear and is not excluded from the use's presence, §15.4): a use between two alternatives
 is judged against the one it resolves to, a declaration that can never appear is no declaration, and a use that can
 never appear is no use. The pairs of presences tested are capped, within a budget of their own (`MAX_EXCLUSION_TESTS`, see Limits). Past it a use whose first compatible declaration cannot be told apart is left unjudged, so an Info can be missed but is never false. The files the document includes and
@@ -206,7 +206,7 @@ codes of the registry (`legaldown.grammar.ISO_639_1_CODES`, beside `KNOWN_CURREN
 registry has them: `EN`, `en-US` and `eng` draw the Warning once, at the line of the value, which says
 what to write (a `translations` key is also the path's lookup key, and `authoritative` is compared with the
 keys exactly). The check covers `language`, a non-empty `authoritative`, and each `translations` key (found by the
-key as stripped, if it is written padded; a `translations` entry whose key or value is null, empty or blank once stripped is ignored when the frontmatter is read, and of keys that are the same once stripped the last stays; where a padded or repeated key is found is [#126](https://github.com/ForLegalAI/legaldown-validator/issues/126)); a value holding a `{{placeholder:}}` is
+key as stripped, at the line where it is written, padded; a `translations` entry whose key or value is null, empty or blank once stripped is ignored when the frontmatter is read, and of keys that are the same once stripped the last stays, as `ldv-frontmatter-key-duplicate` below reports); a value holding a `{{placeholder:}}` is
 `placeholder-in-structural-field`'s alone. `authoritative` must equal the document's `language` or a
 `translations` key. §3.2 gives `language` no default, so the model holds none (`Metadata.language` is `""` for a
 document that says none, an empty `language:` included, and `empty_document()` says `"en"`), and
@@ -217,6 +217,45 @@ writing it back. **A value that is no code is
 no language**, so the checks that compare languages judge only the codes that passed (the rule of §16.6, that a value that fails one
 format check is exempt from the checks that assume it): `language: english` with `authoritative: en` draws
 `language-code-invalid` alone, and so does a `translations` key that might have been the authoritative.
+
+**`ldv-frontmatter-key-duplicate`** (#126) reports an entry of `translations` or `field_types` that another one
+replaces, at its own line, so that it does not go silently. The id is this implementation's own (§16.1, `ldv-`;
+`legaldown.grammar.FRONTMATTER_KEY_DUPLICATE_RULE`): the specification has no rule for it. The model reads the keys
+of these two maps as text, stripped, and keeps the last of the keys it reads as one (in the order the model holds
+them: `fr: a`, `' fr': b`, `fr: c` keeps the entry at the second line, not the last written). Each entry that does
+not stay is reported at its own line, and the finding names the line of the one that does (for a key written again,
+the entry that repeats it, in the same key as read); when the model keeps
+none, because the last entry written has an empty or blank key or a null, empty or blank value, the finding
+says which. The keys are shown as they are written in the source (quotes and escapes included, between backticks),
+so that `1` and `"1"` differ; an aliased key (`&k fr`, then `*k`) is one node for the YAML reader, which keeps
+no position for the alias, so it is at its anchor's line, and the finding does not name that line again. Three cases:
+
+- **The same YAML key written twice** (`fr` and `fr`, or `fr` and `"fr"`): invalid YAML, which a strict loader
+  fails as `frontmatter-invalid-yaml`, and this implementation's YAML reader, like PyYAML, reads as the last.
+  An Error.
+- **Keys that YAML keeps apart but the model reads as the same text** (`1` and `'1'`: the model reads every
+  plain scalar as written), "once read as text".
+- **Keys that strip alike** (`fr` and `' fr'`), "once stripped": the reader strips these keys
+  ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)).
+
+The last two are a **Warning**, in both maps: the specification does not forbid them (it judges a padded language
+code a Warning, `language-code-invalid`, and says nothing of a padded `field_types` key, which no other rule sees
+as the reader strips it), and a rule of this implementation's own does not fail a document that the specification
+accepts. The first is an Error. A `translations` entry that is blank once stripped is skipped before it can replace
+a sibling (#116), so it draws nothing; a blank `field_types` description is a declaration, and does. A key merged
+into a map (`<<`) is not an entry written there, and a mapping shared through an alias is judged under each map that
+holds it.
+
+**Other mappings are not checked yet:** a key written twice in any other frontmatter mapping (`title:` twice, a
+party's `name:` twice, `questions` keys that read alike) is still silent, as the YAML reader resolves it to the
+last ([#131](https://github.com/ForLegalAI/legaldown-validator/issues/131)).
+
+The keys of these maps are found at the line where they are written, padded or not, by the checks that report on
+one (`language-code-invalid`, `path-not-relative`, `placeholder-in-structural-field`, and the checks of a `field_types`
+key, which judge it stripped), and the path of the entry that stays is the one judged.
+A document built from a dict has no source map, so it draws no finding; neither does a document whose body
+was changed after it was parsed, nor an entry for a key that the model no longer holds (or holds again after it
+did not): the findings are judged against the model. A fragment (`fragment=True`) has no metadata to check.
 
 `translation-implicit-id` (§16.7, Error) and `translation-authoritative-absent` (§16.7, Warning) are the
 single-file translation rows that §17.2 makes Core: the identifiers of the document itself. **A file is a
@@ -237,8 +276,7 @@ cannot be told from its translations, so the linked files are checked symmetrica
 node**, at its own line, like `anchor-lossy-slug` and `def-lossy-slug`; the message of the Warning says that one line,
 `authoritative:`, ends all of them. The two are exclusive. An identifier that is written but invalid is `anchor-format`,
 not implicit; a duplicate generated identifier draws the Error at each declaration besides `def-duplicate-id`; a heading in a list
-item or a quote is a block, not a section; a `{{def:}}` in a drafting note is not counted (assembly removes it,
-and `drafting-note-def` reports it). The identifiers of the *linked* files are Full (§17.4) and are
+item or a quote is a block, not a section; a `{{def:}}` in a drafting note is not counted ([below](#definitions-in-drafting-notes-156-125)). The identifiers of the *linked* files are Full (§17.4) and are
 named in the Warning of §17.5 as not read ([below](#constructs-beyond-the-level-175)).
 
 `raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
@@ -635,6 +673,36 @@ question, among the blanks; one that no placeholder uses is not listed. Before t
 written before the body's placeholder could give a text blank the type `money`, and the answer
 `five hundred` was `answer-invalid`.
 
+## Definitions in drafting notes (§15.6, #125)
+
+A `{{def:}}` "MUST NOT appear inside a drafting note, because assembly would remove the definition" (§15.6),
+and assembly deletes every note, its whole extent, before anything else is resolved (§15.7.2 step 2). So a
+definition in a note declares nothing: it is not registered (`collect_definitions` leaves it out, and so do
+`index.definition_lookup`, `definition_lookup` and the definitions read from an amended original or an
+attachment file), and `drafting-note-def` is the one finding about it
+([#125](https://github.com/ForLegalAI/legaldown-validator/issues/125)). The directive is still "recognized and
+validated" (§15.6), as to its form; what stops is everything about its identifier:
+
+| Check | A `{{def:}}` in a note |
+|---|---|
+| `drafting-note-def` | reported, at the occurrence |
+| `directive-malformed`, `def-no-quoted-span`, `def-emphasis`, `def-single-quote-ambiguous` | reported, at the occurrence: they are about the directive's form |
+| `anchor-format`, `def-lossy-slug` | not made: the identifier is not registered, so a note's invalid or lossy identifier is not judged. It is when the definition is moved out of the note |
+| `def-duplicate-id`, `def-autogen-collision` | not made, in either order: a note's definition neither is a duplicate of a definition outside notes nor makes it one, and a definition outside notes keeps the identifier |
+| `def-unreferenced` | not made on a note's definition, and it no longer hides the Warning of the definition outside notes that has its identifier |
+| `amend-def-override`, `amend-term-undefined` | a note's definition overrides nothing in the amended original, and one in the original's own note is not imported |
+| `translation-implicit-id`, `translation-authoritative-absent` | a note's definition without an identifier is not a missing one |
+| `condition-reference-unsafe`, `definition-circular`, `definition-used-before-declaration` | a note's definition is no declaration, in a conditional alternative or not |
+| `term-undefined` | a `{{term:}}` that only a note's definition declares is undefined, at the use |
+
+A `{{term:}}`, in a note or outside one, resolves against the definitions outside notes only, so a note that
+both defines and uses its term draws `term-undefined` beside `drafting-note-def`: §15.4 exempts a reference
+in a note from resolving "in every assembled document", but it is still checked against the template as
+written, and a note's `{{def:}}` is not part of it. A `{{term:}}` in a note still counts as a use for
+`def-unreferenced`, as the validator counts one in a conditional section that may be removed (a Warning, §16.4);
+it does not for `definition-circular` and `definition-used-before-declaration` (above). A `{{ref:}}` to the
+identifier of a definition is `ref-broken` either way: a definition is not an anchor (§5.6).
+
 ## Include fragments (§12.2, §16.11, §16.12)
 
 When the validation can read files (`validate(resolve=)`, or a document with a path, which is read
@@ -813,7 +881,9 @@ for a check of its own, namespaced with a prefix that ends in a hyphen (`ldv-`,
 assigns later can collide with it. It is not in the fixtures corpus (`coverage.json`) and no fixture
 expects or forbids it. It is a Warning for every output, so `is_valid` and the exit status are
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
-Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)).
+Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
+validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
+(`translations` and `field_types`, #126) and not a skipped one.
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct

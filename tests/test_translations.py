@@ -93,10 +93,9 @@ def test_each_bad_translations_key_is_reported_at_its_own_line():
 
 
 def test_a_padded_translations_key_is_judged_stripped():
-    # The key is the one the reader kept; the line of a padded or repeated key is #126's, and falls back
-    # to the `translations:` line (5) as the other rules' do.
+    # The key is the one the reader kept, found at the line where it is written, padded (#126).
     front = "language: en\nauthoritative: en\ntranslations:\n  ' fr ': x.fr.lgd\n  ' english ': x.en.lgd\n"
-    assert _found(front) == [("language-code-invalid", "warning", 5)]
+    assert _found(front) == [("language-code-invalid", "warning", 7)]
 
 
 def test_the_message_names_the_field_and_the_value():
@@ -477,8 +476,8 @@ def test_keys_that_are_alike_once_stripped_are_one_and_the_last_stays():
 
 
 def test_a_key_the_reader_kept_is_reported_once_whatever_it_was_written_as():
-    # The model keeps one entry for keys that are the same once stripped; where a padded or repeated
-    # key is written is #126's, and not asserted here.
+    # The model keeps one entry for keys that are the same once stripped; the entry that is ignored draws
+    # `ldv-frontmatter-key-duplicate` (#126), which is not asserted here.
     for front in (
         "translations:\n  ' Fr ': a.lgd\n  Fr: b.lgd\n",
         "translations:\n  ' Fr ': ~\n  Fr: b.lgd\n",

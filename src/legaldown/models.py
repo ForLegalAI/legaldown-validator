@@ -391,22 +391,50 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _keeps(each: Any, skip_blank: bool) -> bool:
+    """Whether ``_parse_str_dict`` keeps an entry whose key or value is *each*: not if it is falsy (null,
+    empty, ``0``, ``false``), as on main, and with *skip_blank* not if it is blank once stripped either."""
+    return bool(each) and not (skip_blank and not str(each).strip())
+
+
+def str_dict_skip(key: Any, value: Any, *, skip_blank: bool = False) -> str:
+    """Why ``_parse_str_dict`` skips an entry, in words, or ``""`` if it keeps it: an entry whose raw key or
+    value is falsy (null, empty, ``0``, ``false``) is skipped, as on main, and a whitespace-only one is kept as
+    ``""``. With *skip_blank*, one that is blank once stripped is skipped too. The one place that judges it,
+    for the model and for ``positions.read_maps``."""
+    for what, each in (("key", key), ("value", value)):
+        if not _keeps(each, skip_blank):
+            if each is None:
+                return f"its {what} is null"
+            if each:  # truthy, so blank once stripped
+                return f"its {what} is blank"
+            empty = isinstance(each, (str, bytes, list, dict, tuple, set, frozenset))
+            return f"its {what} is empty" if empty else f"its {what} is `{each}`"
+    return ""
+
+
+def str_dict_entry(key: Any, value: Any, *, skip_blank: bool = False) -> tuple[str, str] | None:
+    """What ``_parse_str_dict`` makes of one raw entry, or None when it skips it (``str_dict_skip``): the key
+    and the value, stripped."""
+    if not (_keeps(key, skip_blank) and _keeps(value, skip_blank)):
+        return None
+    return str(key).strip(), str(value).strip()
+
+
 def _parse_str_dict(raw: Any, *, skip_blank: bool = False) -> dict[str, str]:
-    """Parse a dict with string keys and values, stripped; an entry whose raw key or value is falsy
-    (null, empty, ``0``, ``false``) is skipped, as on main, and a whitespace-only one is kept as ``""``.
-    With *skip_blank*, used for ``translations``
-    only, one that is blank once stripped is skipped too, before it can overwrite a sibling written
-    differently (``fr`` and ``' fr'``); ``field_types`` keeps a blank description, which is a declaration.
-    The last of the entries kept stays; an exact duplicate key is YAML's to resolve (#126)."""
+    """Parse a dict with string keys and values, stripped (``str_dict_entry``). With *skip_blank*, used for
+    ``translations`` only, an entry that is blank once stripped is skipped, before it can overwrite a sibling
+    written differently (``fr`` and ``' fr'``); ``field_types`` keeps a blank description, which is a
+    declaration. The last of the entries kept stays: of two keys that strip alike, and, as YAML's reader
+    resolves it, of an exact duplicate key. The validator reports the others as
+    ``ldv-frontmatter-key-duplicate`` (#126)."""
     if not isinstance(raw, dict):
         return {}
     parsed: dict[str, str] = {}
     for k, v in raw.items():
-        if not (k and v):
-            continue
-        key, value = str(k).strip(), str(v).strip()
-        if not skip_blank or (key and value):
-            parsed[key] = value
+        entry = str_dict_entry(k, v, skip_blank=skip_blank)
+        if entry is not None:
+            parsed[entry[0]] = entry[1]
     return parsed
 
 

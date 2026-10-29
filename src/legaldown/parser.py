@@ -60,7 +60,15 @@ from .models import (
     normalise_text,
     normalise_title,
 )
-from .positions import SourceMap, document_shape, frontmatter_keys
+from .positions import (
+    SourceMap,
+    StrippedMap,
+    document_shape,
+    frontmatter_keys,
+    line_breaks,
+    read_maps,
+    written_maps,
+)
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -236,14 +244,32 @@ def _check_frontmatter_option(on_frontmatter_error: str) -> None:
         raise ValueError(f"on_frontmatter_error must be 'raise' or 'keep', not {on_frontmatter_error!r}")
 
 
-def _split_frontmatter(
-    source: str, keep_error: bool = False
-) -> tuple[list[str], dict[str, Any], str, bool, dict[tuple[Any, ...], int], FrontmatterError | None]:
+class _Frontmatter(NamedTuple):
+    """What ``_split_frontmatter`` makes of a source: the fields of its docstring, in its order."""
+
+    not_line_editable: list[str]
+    metadata: dict[str, Any]
+    body: str
+    absent: bool
+    keys: dict[tuple[Any, ...], int]
+    error: FrontmatterError | None
+    maps: dict[str, StrippedMap]
+
+
+def _no_fields(body: str, absent: bool = False, error: FrontmatterError | None = None) -> _Frontmatter:
+    """A source whose frontmatter holds no fields: *absent*, or present but empty, or unreadable (*error*). Its
+    ``keys`` are then empty, or only the opening ``---``."""
+    return _Frontmatter([], {}, body, absent, {} if absent else {(): 1}, error, {})
+
+
+def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
-    body, absent, lines, error)``; the first is read from how the YAML is
-    written, which the parsed data loses, and *lines* is where each
+    body, absent, keys, error, maps)``; the first is read from how the YAML
+    is written, which the parsed data loses, and *keys* is where each
     frontmatter node is (``positions.frontmatter_keys``, the opening ``---``
-    at the empty path), empty without frontmatter. The frontmatter is
+    at the empty path), empty without frontmatter. *maps* is what the model made of
+    the entries of ``translations`` and ``field_types`` (``positions.read_maps``, #126).
+    The frontmatter is
     *absent* when no closed ``---`` block opens the source, or when the
     block's YAML is a scalar or a list rather than a mapping of fields: then
     its ``---`` lines are thematic breaks, and the whole source is body. A
@@ -251,57 +277,62 @@ def _split_frontmatter(
     whose YAML cannot be read (frontmatter-invalid-yaml, §16.6) raises
     ``FrontmatterError``, or, with *keep_error*, is returned as *error*
     (None otherwise): the block is still the frontmatter, empty and not
-    absent, with only its opening ``---`` in *lines*, and the rest is the
+    absent, with only its opening ``---`` in *keys*, and the rest is the
     body, so that it can be validated (#43)."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return [], {}, source, True, {}, None
+        return _no_fields(source, absent=True)
+    block = match.group(1) or ""
     loader = None
     try:
         # Inside the try: a character YAML does not allow fails the reader here.
-        loader = _StrDateSafeLoader(match.group(1) or "")
+        loader = _StrDateSafeLoader(block)
         node = loader.get_single_node()
         if node is None:
-            return [], {}, source[match.end():], False, {(): 1}, None
+            return _no_fields(source[match.end():])
         if not isinstance(node, yaml.MappingNode):
-            return [], {}, source, True, {}, None
+            return _no_fields(source, absent=True)
         if node.tag != "tag:yaml.org,2002:map":
             # A mapping tagged as something else (!!set, a flow !!omap) is
             # meant as frontmatter, but holds no fields. (A block !!omap is
             # a sequence: not frontmatter.)
             raise FrontmatterError(
-                "Frontmatter must be a YAML mapping of fields.", _file_line(match.group(1) or "", node.start_mark.index)
+                "Frontmatter must be a YAML mapping of fields.", _file_line(block, node.start_mark.index)
             )
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
         loader.flatten_mapping(node)
         # The YAML starts on the line after the opening `---` (line 1).
-        keys = {(): 1, **frontmatter_keys(node, match.group(1) or "", 2)}
+        breaks = line_breaks(block)
+        keys = {(): 1, **frontmatter_keys(node, breaks, 2)}
+        written = written_maps(node, block, breaks, 2)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
+        # After the nodes are read as written: the maps are judged as the model reads them.
+        maps = read_maps(written, loader.construct_object, metadata)
     except FrontmatterError as exc:
         if not keep_error:
             raise
         _forget_frames(exc)
-        return [], {}, source[match.end():], False, {(): 1}, exc
+        return _no_fields(source[match.end():], error=exc)
     except (yaml.YAMLError, ValueError, KeyError, RecursionError) as exc:
         # What the YAML says, not a fault of this parser: malformed YAML, a
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or "", loader))
+        error = FrontmatterError(_error_message(exc), _error_line(exc, block, loader))
         if not keep_error:
             raise error from exc
         error.__cause__ = exc  # as `raise ... from` sets it
         _forget_frames(error)
-        return [], {}, source[match.end():], False, {(): 1}, error
+        return _no_fields(source[match.end():], error=error)
     finally:
         if loader is not None:
             loader.dispose()
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
-    return not_line_editable, metadata, source[match.end():], False, keys, None
+    return _Frontmatter(not_line_editable, metadata, source[match.end():], False, keys, None, maps)
 
 
 def _file_line(block: str, index: int) -> int:
@@ -2022,10 +2053,8 @@ def parse(
     # LF, CR, or CRLF (CommonMark), and nowhere else.
     source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
     _check_frontmatter_option(on_frontmatter_error)
-    not_line_editable, metadata, body, absent, keys, frontmatter_error = _split_frontmatter(
-        source, keep_error=on_frontmatter_error == "keep"
-    )
-    lines = body.split("\n")
+    front = _split_frontmatter(source, keep_error=on_frontmatter_error == "keep")
+    lines = front.body.split("\n")
     if lines[-1] == "":
         lines.pop()  # the last line's ending, not a line
     layout = _Layout()
@@ -2033,7 +2062,7 @@ def parse(
     # The blocks are built as they stand (``normalise_text``, ``normalise_field``): the same
     # normalisation as ``document_from_dict``, without building them twice (#110).
     document = Document(
-        metadata=metadata_from_dict(metadata or {}),
+        metadata=metadata_from_dict(front.metadata or {}),
         sections=[
             Section(
                 title=normalise_title(title),
@@ -2049,13 +2078,14 @@ def parse(
         filename=normalise_field(filename),
         preamble=preamble,
     )
-    document.metadata.not_line_editable = not_line_editable
-    document.metadata.frontmatter_absent = absent
-    document.frontmatter_error = frontmatter_error
+    document.metadata.not_line_editable = front.not_line_editable
+    document.metadata.frontmatter_absent = front.absent
+    document.frontmatter_error = front.error
     document.source_map = SourceMap(
         lines=source.split("\n"),
-        body_start=source.count("\n", 0, len(source) - len(body)),
-        keys=keys,
+        body_start=source.count("\n", 0, len(source) - len(front.body)),
+        keys=front.keys,
+        maps=front.maps,
         layout=layout,
         shape=document_shape(document),
     )

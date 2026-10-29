@@ -10,13 +10,50 @@ from __future__ import annotations
 
 import re
 import string
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from .models import Block
+
+#: The first line that makes a quote a drafting note, letters in any case (§15.6).
+DRAFTING_MARKER = "[!DRAFTING]"
+
+
+def is_drafting_marker(first_line: str) -> bool:
+    """True if a quote's *first_line* (without the ``>`` marker) makes it a drafting note: exactly
+    ``[!DRAFTING]``, letters in any case (§15.6)."""
+    return first_line.upper() == DRAFTING_MARKER
+
+
+class DraftingNotes:
+    """The drafting notes of a block, from its *quotes* (each one's first line and the indices of its
+    fragments in ``block_fragments``, outermost first, as ``quote_ranges`` lists them): ``fragment in
+    notes`` is whether a fragment is in one of them, which assembly removes before anything is
+    inserted (§15.7.2). A note in a note and a note without a fragment add nothing, so the ranges
+    that are kept are ordered and disjoint, and the lookup is a bisect."""
+
+    __slots__ = ("_spans", "_starts")
+
+    def __init__(self, quotes: Iterable[tuple[str, range]]) -> None:
+        spans: list[range] = []
+        for first_line, span in quotes:
+            if span and is_drafting_marker(first_line) and (not spans or span.start >= spans[-1].stop):
+                spans.append(span)
+        self._spans = spans
+        self._starts = [span.start for span in spans]
+
+    def __bool__(self) -> bool:
+        return bool(self._spans)
+
+    def __contains__(self, fragment: object) -> bool:
+        if not isinstance(fragment, int):
+            return False
+        at = bisect_right(self._starts, fragment) - 1
+        return at >= 0 and fragment in self._spans[at]
+
 
 # A fenced code block opens with three or more backticks or tildes, indented
 # at most three columns; a backtick fence's info string cannot contain a
