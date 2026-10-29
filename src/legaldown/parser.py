@@ -60,7 +60,7 @@ from .models import (
     normalise_text,
     normalise_title,
 )
-from .positions import SourceMap, document_shape, frontmatter_keys
+from .positions import RepeatedKey, SourceMap, StrippedMap, document_shape, frontmatter_keys, read_maps, written_maps
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -236,14 +236,22 @@ def _check_frontmatter_option(on_frontmatter_error: str) -> None:
         raise ValueError(f"on_frontmatter_error must be 'raise' or 'keep', not {on_frontmatter_error!r}")
 
 
+#: What ``_split_frontmatter`` finds of the keys written twice, and of the maps that
+#: strip their keys (#126): ``(positions.RepeatedKey, ...)`` and ``positions.read_maps``.
+_Repeats = tuple[tuple[RepeatedKey, ...], dict[str, StrippedMap]]
+_NO_REPEATS: _Repeats = ((), {})
+
+
 def _split_frontmatter(
     source: str, keep_error: bool = False
-) -> tuple[list[str], dict[str, Any], str, bool, dict[tuple[Any, ...], int], FrontmatterError | None]:
+) -> tuple[list[str], dict[str, Any], str, bool, dict[tuple[Any, ...], int], FrontmatterError | None, _Repeats]:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
-    body, absent, lines, error)``; the first is read from how the YAML is
-    written, which the parsed data loses, and *lines* is where each
+    body, absent, lines, error, repeats)``; the first is read from how the YAML
+    is written, which the parsed data loses, and *lines* is where each
     frontmatter node is (``positions.frontmatter_keys``, the opening ``---``
-    at the empty path), empty without frontmatter. The frontmatter is
+    at the empty path), empty without frontmatter. *repeats* is what the YAML
+    says of the keys it writes twice and of the entries that strip alike (#126).
+    The frontmatter is
     *absent* when no closed ``---`` block opens the source, or when the
     block's YAML is a scalar or a list rather than a mapping of fields: then
     its ``---`` lines are thematic breaks, and the whole source is body. A
@@ -255,16 +263,16 @@ def _split_frontmatter(
     body, so that it can be validated (#43)."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return [], {}, source, True, {}, None
+        return [], {}, source, True, {}, None, _NO_REPEATS
     loader = None
     try:
         # Inside the try: a character YAML does not allow fails the reader here.
         loader = _StrDateSafeLoader(match.group(1) or "")
         node = loader.get_single_node()
         if node is None:
-            return [], {}, source[match.end():], False, {(): 1}, None
+            return [], {}, source[match.end():], False, {(): 1}, None, _NO_REPEATS
         if not isinstance(node, yaml.MappingNode):
-            return [], {}, source, True, {}, None
+            return [], {}, source, True, {}, None, _NO_REPEATS
         if node.tag != "tag:yaml.org,2002:map":
             # A mapping tagged as something else (!!set, a flow !!omap) is
             # meant as frontmatter, but holds no fields. (A block !!omap is
@@ -274,17 +282,22 @@ def _split_frontmatter(
             )
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
+        written = frozenset(id(key) for key, _value in node.value)  # before the merged ones are brought in
         loader.flatten_mapping(node)
         # The YAML starts on the line after the opening `---` (line 1).
-        keys = {(): 1, **frontmatter_keys(node, match.group(1) or "", 2)}
+        found, repeated = frontmatter_keys(node, match.group(1) or "", 2, written)
+        keys = {(): 1, **found}
+        maps = written_maps(node, match.group(1) or "", 2)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
+        # After the nodes are read as written: the maps are judged as the model reads them.
+        repeats = (repeated, read_maps(maps, lambda each: loader.construct_object(each, deep=True)))
     except FrontmatterError as exc:
         if not keep_error:
             raise
         _forget_frames(exc)
-        return [], {}, source[match.end():], False, {(): 1}, exc
+        return [], {}, source[match.end():], False, {(): 1}, exc, _NO_REPEATS
     except (yaml.YAMLError, ValueError, KeyError, RecursionError) as exc:
         # What the YAML says, not a fault of this parser: malformed YAML, a
         # value its tag cannot hold (an integer too long to convert; a
@@ -295,13 +308,13 @@ def _split_frontmatter(
             raise error from exc
         error.__cause__ = exc  # as `raise ... from` sets it
         _forget_frames(error)
-        return [], {}, source[match.end():], False, {(): 1}, error
+        return [], {}, source[match.end():], False, {(): 1}, error, _NO_REPEATS
     finally:
         if loader is not None:
             loader.dispose()
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
-    return not_line_editable, metadata, source[match.end():], False, keys, None
+    return not_line_editable, metadata, source[match.end():], False, keys, None, repeats
 
 
 def _file_line(block: str, index: int) -> int:
@@ -2022,7 +2035,7 @@ def parse(
     # LF, CR, or CRLF (CommonMark), and nowhere else.
     source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
     _check_frontmatter_option(on_frontmatter_error)
-    not_line_editable, metadata, body, absent, keys, frontmatter_error = _split_frontmatter(
+    not_line_editable, metadata, body, absent, keys, frontmatter_error, (repeats, maps) = _split_frontmatter(
         source, keep_error=on_frontmatter_error == "keep"
     )
     lines = body.split("\n")
@@ -2056,6 +2069,8 @@ def parse(
         lines=source.split("\n"),
         body_start=source.count("\n", 0, len(source) - len(body)),
         keys=keys,
+        repeats=repeats,
+        maps=maps,
         layout=layout,
         shape=document_shape(document),
     )

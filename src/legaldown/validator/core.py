@@ -68,6 +68,7 @@ from .patterns import (
     _CONSTRUCT_PRESENT,
     _UNFILLED,
     DURATION_UNITS,
+    FRONTMATTER_KEY_DUPLICATE_RULE,
     IDENTIFIER_RE,
     ISO_639_1_CODES,
     KNOWN_CURRENCIES,
@@ -143,6 +144,13 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
         and (directive.start, directive.end) == (0, len(value))
         and _placeholder_type(directive, declared) == "date"
     )
+
+
+def _frontmatter_path(path: tuple[Any, ...]) -> str:
+    """A frontmatter mapping's name for a message: ``frontmatter`` for the root, else its path as
+    ``sides[0].parties[1]``."""
+    named = "".join(f"[{part}]" if isinstance(part, int) else f".{part}" for part in path)
+    return named.removeprefix(".") or "frontmatter"
 
 
 def _frontmatter_fields(
@@ -1424,6 +1432,32 @@ def _validate(
                 f"name (date, money, duration, party, text).", line=where.key("field_types", ft_key),
             )
 
+    # ── Frontmatter entries that another replaces (#126) ──
+    # YAML's reader keeps the last of a key written twice in a mapping, and the model keeps the last of
+    # the `translations` or `field_types` keys that are one once stripped (`fr` and `' fr'`): the earlier
+    # entry is never checked, and nothing else says so. Each is reported at its own line. A rule of this
+    # implementation (§16.1). An Error: strict YAML readers reject the first as invalid YAML
+    # (`frontmatter-invalid-yaml`), and a `field_types` key that is padded is `field-type-key-format`'s.
+    # But for two `translations` keys that strip alike: the specification judges the padded key a
+    # Warning (`language-code-invalid`), and a rule of ours does not fail a document it accepts.
+    if not mode.empty_metadata:
+        for repeat in where.repeated():
+            result.error(
+                FRONTMATTER_KEY_DUPLICATE_RULE,
+                f"The {_frontmatter_path(repeat.path)} key '{repeat.key}' is written again at line "
+                f"{repeat.stays}, and the last is the one read: this entry is ignored.",
+                line=repeat.line,
+            )
+        for map_name, ignored, stays in where.ignored():
+            if stays.key in getattr(document.metadata, map_name):  # not for a model edited since it was parsed
+                report = result.warning if map_name == "translations" else result.error
+                report(
+                    FRONTMATTER_KEY_DUPLICATE_RULE,
+                    f"The {map_name} key {ignored.written!r} is the same key as {stays.written!r} once "
+                    f"stripped: the entry at line {stays.line} stays, and this one is ignored.",
+                    line=ignored.line,
+                )
+
     # ── Metadata dates (§16.6) ──
     for field_name, field_value in (
         ("effective_date", document.metadata.effective_date),
@@ -1448,7 +1482,7 @@ def _validate(
                 f"such as 'en' or 'cs'.", line=where.key(*path),
             )
 
-    # The keys the reader kept, as it stripped them. Where a padded or repeated key is written is #126.
+    # The keys the reader kept, as it stripped them, at the line of the entry that stays (#126).
     for label, code in (("language", language), ("authoritative", meta.authoritative)):
         if code:
             check_code(label, code, (label,))
