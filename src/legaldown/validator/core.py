@@ -53,8 +53,10 @@ from .conditions import (
 )
 from .fragments import Files, FragmentKind, UnreadReason, check_includes, content_findings, shape_findings
 from .helpers import (
+    declared_language,
     format_section_number,
     generate_identifier,
+    identifier_rule,
     is_positive_numeric,
     is_valid_iso_date,
     is_valid_money_amount,
@@ -255,7 +257,6 @@ def _check_date_field(
 def _check_implicit_identifiers(
     document: Document,
     refs: Sequence[DefinitionRef],
-    declared_language: str,
     where: Locator,
     definition_line: Callable[[DefinitionRef], Line],
     result: _Recorder,
@@ -263,36 +264,45 @@ def _check_implicit_identifiers(
     """The headings and ``{{def:}}`` without an explicit identifier of a document that links
     translations (§14.2, §16.7), as far as the document alone shows: the Core rows (§17.2).
 
-    A translation (its ``language`` differs from its ``authoritative``, both declared and valid
-    codes, and it links the other files) draws an Error for each, since identifiers originate in the
+    A translation (``identifier_rule``) draws an Error for each, since identifiers originate in the
     primary and a translation mirrors them explicitly. Without ``authoritative`` the primary cannot
     be told from its translations, and the document draws a Warning for each, as any linked file
-    does. The linked files' own identifiers are Full (§17.4, §17.5)."""
+    does. A definition in a drafting note is not one (assembly removes it, and ``drafting-note-def``
+    reports it), nor is one whose generated identifier ``anchor-format`` rejects. The linked files'
+    own identifiers are Full (§17.4, §17.5)."""
     meta = document.metadata
-    if not meta.translations:
+    rule, _why_not = identifier_rule(meta)
+    if rule is None:
         return
-    if not meta.authoritative:
-        rule, report = "translation-authoritative-absent", result.warning
+    if rule == "translation-authoritative-absent":
+        report = result.warning
         why = "and authoritative is not declared, so the primary cannot be told from its translations"
         fix = "declare authoritative, and write the primary's identifier"
-    elif declared_language != meta.authoritative and {declared_language, meta.authoritative} <= ISO_639_1_CODES:
-        rule, report = "translation-implicit-id", result.error
-        why = f"and the document is a translation ({declared_language}, of the authoritative {meta.authoritative})"
-        fix = "write the primary's identifier"
     else:
-        return
+        report = result.error
+        why = f"and the document is a translation ({declared_language(meta)}, of the authoritative {meta.authoritative})"
+        fix = "write the primary's identifier"
     for index, section in enumerate(document.sections):
         if not section.identifier.strip():
             report(
                 rule, f"Heading '{section.title}' has no explicit identifier, {why}: {fix}, {{#id}} (§14.2).",
                 line=where.heading(index),
             )
+    notes: dict[tuple[int | None, int], list[Any]] = {}  # the drafting notes of each block that holds a definition
     for ref in refs:
-        if ref.auto_id:
-            report(
-                rule, f"Definition '{ref.term}' has no explicit identifier ('{ref.id}' is generated from the "
-                f"term), {why}: {fix}, {{{{def: id}}}} (§14.2).", line=definition_line(ref),
-            )
+        if not ref.auto_id or not IDENTIFIER_RE.fullmatch(ref.id):
+            continue
+        if ref.fragment_index is not None:
+            at = (ref.section_index, ref.block_index)
+            if at not in notes:
+                block = document.preamble[at[1]] if at[0] is None else document.sections[at[0]].blocks[at[1]]
+                notes[at] = [quote for quote in block_quotes(block) if quote.is_drafting_note]
+            if notes[at] and in_drafting_note(notes[at], ref.fragment_index):
+                continue
+        report(
+            rule, f"Definition '{ref.term}' has no explicit identifier ('{ref.id}' is generated from the "
+            f"term), {why}: {fix}, {{{{def: id}}}} (§14.2).", line=definition_line(ref),
+        )
 
 
 def _check_duration_unit(unit: str, result: _Recorder) -> None:
@@ -1435,10 +1445,10 @@ def _validate(
     # A placeholder is the placeholder rule's. A value that is no code is no language, so the
     # comparisons judge only the codes that pass (the translation rules below too): one typo
     # draws one Warning.
-    declared_language = meta.language if where.has("language") or where.start() is None else ""
+    language = declared_language(meta)
     written_keys = {raw.strip(): raw for raw in where.children("translations")}
     for label, code, path in [
-        ("language", declared_language, ("language",)),
+        ("language", language, ("language",)),
         ("authoritative", meta.authoritative, ("authoritative",)),
         *[("translations key", key, ("translations", written_keys.get(key, key))) for key in meta.translations],
     ]:
@@ -1448,13 +1458,13 @@ def _validate(
                 f"The {label} '{code}' must be an ISO 639-1 language code: two lowercase letters, "
                 f"such as 'en' or 'cs'.", line=where.key(*path),
             )
-    declared_languages = [code for code in (declared_language, *meta.translations) if code]
+    declared_languages = [code for code in (language, *meta.translations) if code]
     if (
         meta.authoritative in ISO_639_1_CODES
         and meta.authoritative not in declared_languages
         and all(code in ISO_639_1_CODES for code in declared_languages)
     ):
-        own_language = f"'{declared_language}'" if declared_language else "not declared"
+        own_language = f"'{language}'" if language else "not declared"
         keys = ", ".join(f"'{key}'" for key in meta.translations) or "none"
         result.warning(
             "authoritative-not-declared",
@@ -1901,7 +1911,7 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
-    _check_implicit_identifiers(document, definition_refs, declared_language, where, definition_line, result)
+    _check_implicit_identifiers(document, definition_refs, where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():

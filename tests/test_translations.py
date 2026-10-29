@@ -201,9 +201,10 @@ def test_a_value_that_is_no_code_draws_language_code_invalid_alone(front):
 
 def test_a_translations_key_that_is_no_code_is_not_compared_with_the_authoritative():
     # `english` might have been `en`: authoritative-not-declared would say a second thing about
-    # the same value. (The document is a translation all the same: `fr` of `en`, linking a file.)
+    # the same value. Nor is the document a translation: `en` is not one of its keys.
     front = "language: fr\nauthoritative: en\ntranslations:\n  english: x.lgd\n"
     assert _found(front) == [("language-code-invalid", "warning", 6)]
+    assert _identifiers(front, "# Definitions\n") == []
 
 
 # ── translation-implicit-id and translation-authoritative-absent ───
@@ -400,6 +401,96 @@ def test_an_authoritative_that_is_no_code_ends_neither_rule():
     # Declared, so not absent; no language, so no translation: language-code-invalid alone.
     front = "language: en\nauthoritative: English\ntranslations:\n  fr: doc-fr.lgd\n"
     assert _identifiers(front, "# Definitions\n") == []
+
+
+def test_a_mistyped_authoritative_makes_the_primary_no_translation():
+    # `de` is not a language of the group: authoritative-not-declared is the finding, and it is not
+    # said besides that every heading of the document, which may well be the primary, is an Error.
+    front = "language: en\nauthoritative: de\ntranslations:\n  fr: a.lgd\n"
+    body = "# Definitions\n\n" + _DEF.replace("{{def: services}}", "{{def:}}")
+    assert _identifiers(front, body) == []
+    assert _found(front) == [("authoritative-not-declared", "warning", 4)]
+    # ... where `de` is a key it is the primary, and this document its translation.
+    assert [rule for rule, _level, _line in _identifiers(front + "  de: b.lgd\n", body)] == ["translation-implicit-id"] * 2
+
+
+def test_the_authoritative_must_be_a_key_for_a_translation():
+    body = "# Definitions\n"
+    assert _identifiers("language: fr\nauthoritative: en\ntranslations:\n  de: a.lgd\n", body) == []
+    assert _identifiers("language: fr\nauthoritative: en\ntranslations:\n  en: a.lgd\n", body) != []
+
+
+def test_a_definition_in_a_drafting_note_is_no_missing_identifier():
+    # Assembly removes the note, and drafting-note-def says what is wrong with it.
+    body = "# Définitions {#definitions}\n\n> [!DRAFTING]\n> « Services » {{def:}} désigne x.\n\n« Autre » {{def:}} désigne y.\n"
+    result = validate(parse(_source(_FR, body), filename="t.lgd"))
+    assert [(d.rule, d.line) for d in result.diagnostics if d.rule in {*_IDENTIFIERS, "drafting-note-def"}] == [
+        ("translation-implicit-id", 14),
+        ("drafting-note-def", 12),
+    ]
+
+
+def test_a_generated_identifier_that_anchor_format_rejects_is_not_also_implicit():
+    # A generated identifier is always valid (§5.3), so this takes a ref built by hand.
+    from legaldown.definitions import DefinitionRef
+    from legaldown.positions import Locator
+    from legaldown.validator.core import _check_implicit_identifiers
+    from legaldown.validator.result import _Recorder
+
+    document = parse(_source(_FR, "# Définitions {#definitions}\n\n« Services » {{def:}} désigne x.\n"), filename="t.lgd")
+    good = DefinitionRef("services", "Services", 0, 0, 0, True, True, offset=0)
+    bad = DefinitionRef("Bad_Id", "Bad", 0, 0, 0, True, True, offset=0)
+    result = _Recorder()
+    _check_implicit_identifiers(document, [good, bad], Locator(document), lambda _ref: None, result)
+    assert [d.message[:21] for d in result.diagnostics] == ["Definition 'Services'"]
+
+
+# ── The language a document says ──
+
+
+def test_an_empty_language_is_no_language_said():
+    for front in ("language:\n", "language: ''\n", ""):
+        assert _found(front + "authoritative: en\n") == [("authoritative-not-declared", "warning", 3 + front.count("\n"))]
+        assert not _identifiers(front + "authoritative: en\ntranslations:\n  en: a.lgd\n", "# Definitions\n")
+
+
+def test_what_the_language_says_does_not_depend_on_a_source_map():
+    from dataclasses import replace
+
+    fronts = [
+        "authoritative: en\n",
+        "language:\nauthoritative: en\n",
+        "language: en\nauthoritative: en\n",
+        "language: fr\nauthoritative: en\ntranslations:\n  en: a.lgd\n",
+        "authoritative: fr\ntranslations:\n  fr: a.lgd\n",
+        "language: english\nauthoritative: en\n",
+    ]
+    for front in fronts:
+        document = parse(_source(front, "# Definitions\n"), filename="t.lgd")
+
+        def rules(each):
+            return sorted((d.rule, d.level) for d in validate(each).diagnostics if d.rule in _NEW_RULES)
+
+        assert rules(replace(document, source_map=None)) == rules(document), front
+        assert rules(Document.from_dict(document.to_dict())) == rules(document), front
+
+
+def test_the_language_said_is_kept_by_the_model_and_by_writing_it_back():
+    from legaldown import serialize
+
+    said = parse(_source("language: en\n"), filename="t.lgd")
+    assert said.metadata.language_declared and said.metadata.language == "en"
+    for front in ("", "language:\n", "language: ''\n"):
+        unsaid = parse(_source(front), filename="t.lgd")
+        assert not unsaid.metadata.language_declared and unsaid.metadata.language == "en"
+        # ... and writing it back does not make it said.
+        assert "language" not in serialize(unsaid)
+        assert not parse(serialize(unsaid)).metadata.language_declared
+    assert "language: en" in serialize(said)
+    assert Document.from_dict(said.to_dict()).metadata.language_declared
+    assert not Document.from_dict(unsaid.to_dict()).metadata.language_declared
+    # A document built by hand with another language says it.
+    assert validate(Document.from_dict({"metadata": {"language": "fr", "authoritative": "en"}})).diagnostics
 
 
 # ── The documents the specification gives as right ────────────────

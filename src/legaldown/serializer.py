@@ -79,7 +79,10 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
         payload["sides"] = [_side(side) for side in metadata.sides]
     if metadata.governing_law:
         payload["governing_law"] = metadata.governing_law
-    payload["language"] = metadata.language
+    # Only a language that is said: writing the model's "en" would make a document that does not say
+    # its language say it (and change what the language rules report) when it is written back.
+    if metadata.language_declared or metadata.language != "en":
+        payload["language"] = metadata.language
     if metadata.translations:
         payload["translations"] = metadata.translations
     if metadata.authoritative:

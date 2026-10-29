@@ -7,6 +7,8 @@ import unicodedata
 from datetime import date as date_type
 
 from ..markdown import strip_comments
+from ..models import Metadata
+from .patterns import ISO_639_1_CODES
 
 # The §5.3 transliteration table, exhaustive: exactly these mappings.
 _TRANSLITERATION = str.maketrans({
@@ -112,3 +114,36 @@ def is_positive_numeric(value: str) -> bool:
     """Return True if *value* is a positive integer or decimal (§10.5): a
     period as the decimal separator, and no sign or exponent."""
     return bool(_DECIMAL_RE.fullmatch(value or "")) and float(value) > 0
+
+
+def declared_language(meta: Metadata) -> str:
+    """The document's ``language`` if it says one, else ``""``: §3.2 has no default, and the
+    ``"en"`` the model holds for a document that does not say (``Metadata.language_declared``) is
+    its own, so it is no language said."""
+    return meta.language if meta.language_declared or meta.language != "en" else ""
+
+
+def identifier_rule(meta: Metadata) -> tuple[str | None, str]:
+    """The rule that asks the document's own headings and ``{{def:}}`` for explicit identifiers
+    (§14.2, §16.7; Core, §17.2), or None, and then why not.
+
+    ``translation-authoritative-absent`` when it links ``translations`` and declares no
+    ``authoritative`` (the primary cannot be told from its translations). ``translation-implicit-id``
+    when it is itself a translation: it links ``translations``, and its ``language`` and
+    ``authoritative`` are declared, valid ISO 639-1 codes that differ, ``authoritative`` being one of
+    the group's languages, a ``translations`` key (else ``authoritative-not-declared`` is the finding,
+    and a typo in it is not the primary). A value that is no code is no language."""
+    if not meta.translations:
+        return None, "it links no translations"
+    if not meta.authoritative:
+        return "translation-authoritative-absent", ""
+    language = declared_language(meta)
+    if not language:
+        return None, "its language is not declared"
+    if language not in ISO_639_1_CODES or meta.authoritative not in ISO_639_1_CODES:
+        return None, "its language or authoritative is not an ISO 639-1 code"
+    if language == meta.authoritative:
+        return None, "it is the primary: its language is its authoritative"
+    if meta.authoritative not in meta.translations:
+        return None, "its authoritative is not one of its translations"
+    return "translation-implicit-id", ""
