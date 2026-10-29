@@ -191,7 +191,7 @@ otherwise draw one for every use of every term. The fixture has it at the use, l
 `{{term:}}` in a drafting note (assembly removes it), in code or in a comment; one in a heading (§4.2 has no
 directive there); a use in the definition's own quoted term (`"Self {{term: s}}" {{def: s}}`), which is
 `definition-circular`'s; an id the document does not declare (`term-undefined`); an id the amended original
-declares, which is in force before the document (§7.5). A `{{def:}}` in a drafting note is no declaration either (assembly removes it, and `drafting-note-def` reports it); nor is it a missing identifier for the translation rules. A use is judged against the first declaration of its id that can appear with it (in a
+declares, which is in force before the document (§7.5). A `{{def:}}` in a drafting note is no declaration either ([below](#definitions-in-drafting-notes-156-125)). A use is judged against the first declaration of its id that can appear with it (in a
 template, one that can appear and is not excluded from the use's presence, §15.4): a use between two alternatives
 is judged against the one it resolves to, a declaration that can never appear is no declaration, and a use that can
 never appear is no use. The pairs of presences tested are capped, within a budget of their own (`MAX_EXCLUSION_TESTS`, see Limits). Past it a use whose first compatible declaration cannot be told apart is left unjudged, so an Info can be missed but is never false. The files the document includes and
@@ -237,8 +237,7 @@ cannot be told from its translations, so the linked files are checked symmetrica
 node**, at its own line, like `anchor-lossy-slug` and `def-lossy-slug`; the message of the Warning says that one line,
 `authoritative:`, ends all of them. The two are exclusive. An identifier that is written but invalid is `anchor-format`,
 not implicit; a duplicate generated identifier draws the Error at each declaration besides `def-duplicate-id`; a heading in a list
-item or a quote is a block, not a section; a `{{def:}}` in a drafting note is not counted (assembly removes it,
-and `drafting-note-def` reports it). The identifiers of the *linked* files are Full (§17.4) and are
+item or a quote is a block, not a section; a `{{def:}}` in a drafting note is not counted ([below](#definitions-in-drafting-notes-156-125)). The identifiers of the *linked* files are Full (§17.4) and are
 named in the Warning of §17.5 as not read ([below](#constructs-beyond-the-level-175)).
 
 `raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
@@ -634,6 +633,36 @@ notes use, in the order the notes first use them. A declared question without a 
 question, among the blanks; one that no placeholder uses is not listed. Before this a note
 written before the body's placeholder could give a text blank the type `money`, and the answer
 `five hundred` was `answer-invalid`.
+
+## Definitions in drafting notes (§15.6, #125)
+
+A `{{def:}}` "MUST NOT appear inside a drafting note, because assembly would remove the definition" (§15.6),
+and assembly deletes every note, its whole extent, before anything else is resolved (§15.7.2 step 2). So a
+definition in a note declares nothing: it is not registered (`collect_definitions` leaves it out, and so do
+`index.definition_lookup`, `definition_lookup` and the definitions read from an amended original or an
+attachment file), and `drafting-note-def` is the one finding about it
+([#125](https://github.com/ForLegalAI/legaldown-validator/issues/125)). The directive is still "recognized and
+validated" (§15.6), as to its form; what stops is everything about its identifier:
+
+| Check | A `{{def:}}` in a note |
+|---|---|
+| `drafting-note-def` | reported, at the occurrence |
+| `directive-malformed`, `def-no-quoted-span`, `def-emphasis`, `def-single-quote-ambiguous` | reported, at the occurrence: they are about the directive's form |
+| `anchor-format`, `def-lossy-slug` | not made: the identifier is not registered, so a note's invalid or lossy identifier is not judged. It is when the definition is moved out of the note |
+| `def-duplicate-id`, `def-autogen-collision` | not made, in either order: a note's definition neither is a duplicate of a definition outside notes nor makes it one, and a definition outside notes keeps the identifier |
+| `def-unreferenced` | not made on a note's definition, and it no longer hides the Warning of the definition outside notes that has its identifier |
+| `amend-def-override`, `amend-term-undefined` | a note's definition overrides nothing in the amended original, and one in the original's own note is not imported |
+| `translation-implicit-id`, `translation-authoritative-absent` | a note's definition without an identifier is not a missing one |
+| `condition-reference-unsafe`, `definition-circular`, `definition-used-before-declaration` | a note's definition is no declaration, in a conditional alternative or not |
+| `term-undefined` | a `{{term:}}` that only a note's definition declares is undefined, at the use |
+
+A `{{term:}}`, in a note or outside one, resolves against the definitions outside notes only, so a note that
+both defines and uses its term draws `term-undefined` beside `drafting-note-def`: §15.4 exempts a reference
+in a note from resolving "in every assembled document", but it is still checked against the template as
+written, and a note's `{{def:}}` is not part of it. A `{{term:}}` in a note still counts as a use for
+`def-unreferenced`, as the validator counts one in a conditional section that may be removed (a Warning, §16.4);
+it does not for `definition-circular` and `definition-used-before-declaration` (above). A `{{ref:}}` to the
+identifier of a definition is `ref-broken` either way: a definition is not an anchor (§5.6).
 
 ## Include fragments (§12.2, §16.11, §16.12)
 

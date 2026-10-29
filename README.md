@@ -154,6 +154,11 @@ document. A file that is not there, or cannot be read, is as if it had not been 
 an attachment file, `amends.file`, `translations`, `supersedes.file`, an image path) now draws the
 Warning `ldv-check-skipped` that §17.5 asks for, for each category of checks not performed ([Scope](#scope));
 a CI gate on `--strict` or `--warnings-as-errors` can start to fail for it: `--ignore ldv-check-skipped`.
+A `{{def:}}` in a drafting note is no longer a definition (§15.6, [#125](https://github.com/ForLegalAI/legaldown-validator/issues/125)):
+assembly removes the note, so `collect_definitions`, and `result.index.definition_lookup` with it, leave it out. A
+term that only a note defines now draws a `term-undefined` Error beside `drafting-note-def`, and a note's
+definition is no longer a `def-duplicate-id` of (or hidden `def-unreferenced` for) a real definition with its
+identifier ([Definitions in drafting notes](CONFORMANCE.md#definitions-in-drafting-notes-156-125)).
 A document that includes fragments (`{{include:}}` paragraphs, §12.2)
 now has them read from beside it, like the files above, and they are checked ([Include
 fragments](#include-fragments)): `include-file-missing` at the include of a fragment that is not there,
@@ -637,7 +642,7 @@ grammar — parameters in any order, quoted values decoded — and is what the v
 `definition_lookup(collect_definitions(document))` (`legaldown.syntax`) gives a document's definitions, id to term,
 without validating it: the same map as `result.index.definition_lookup`, except for definitions
 imported from an amended original or an attachment file. A term written empty (`"" {{def: x}}`)
-reads as its id (`id_term`), and an id that is not a valid identifier is left out.
+reads as its id (`id_term`), and an id that is not a valid identifier is left out. A `{{def:}}` in a drafting note is left out too (§15.6); `find_definition_anchors` over `block_fragments` still finds it.
 
 One guarantee worth knowing: the parser is **faithful** — it never rewrites your input to make it
 valid, so what you authored is exactly what the validator judges. The serializer, by contrast,
@@ -790,7 +795,7 @@ for _section, _index, block in document.iter_blocks():
 | `Marker`, `MARKER_RE`, `parse_marker`, `format_marker`, `is_look_alike` | Anchor and condition markers (§5.7, §15.3) |
 | `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`) |
 | `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `text_fragments`, `list_items`, `item_text` | Where a block's text is, and a list's items |
-| `collect_definitions(document)` → `DefinitionRef`, `definition_lookup`, `id_term` | The definitions a document declares in its own source (§7), in document order, each with where it is; `definition_lookup(refs)` is their id-to-term map as `validate` builds `result.index.definition_lookup` (but for definitions imported from other files); `id_term(id)` is the term an empty one reads as |
+| `collect_definitions(document)` → `DefinitionRef`, `definition_lookup`, `id_term` | The definitions a document declares in its own source (§7), in document order, each with where it is; `definition_lookup(refs)` is their id-to-term map as `validate` builds `result.index.definition_lookup` (but for definitions imported from other files), and leaves out a `{{def:}}` in a drafting note (§15.6); `id_term(id)` is the term an empty one reads as |
 | `collect_link_definitions(document)` → `{label: LinkDefinition(url, title)}`, `normalize_label(label)` | The link reference definitions of a document (`link_definition` blocks, CommonMark §4.7), in an item or a quote too, by label, the first of each label winning: the key is `normalize_label(label)`, the label with each run of whitespace one space and case-folded, so look a label up with `definitions[normalize_label("Foo  Bar")]`. `url` and `title` are raw as the block holds them (backslash escapes and character references not decoded); `title` is `""` for none. Derived on each call; a definition with a directive in it is paragraph text and is none. `locate_link_definitions(document)` → `{label: PlacedLinkDefinition(section, block, ordinal, definition)}` is the same map with the `link_definition` blocks themselves and where each is: the section (`None`: the preamble) and index of its top-level block, and its `ordinal` among that block's definitions, nested ones included, in document order |
 | `find_definition_anchors(text)` → `DefinitionAnchor` | Every `{{def:}}` in a text, with the quoted term it anchors and where that term starts (§7.2) |
 | `render_block(block)`, `render_item(item)` | The other way: a block written as LegalDown source, and a list item's content as written after its marker, as `serialize` writes them |
