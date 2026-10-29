@@ -7,6 +7,8 @@ import unicodedata
 from datetime import date as date_type
 
 from ..markdown import strip_comments
+from ..models import Metadata
+from .patterns import ISO_639_1_CODES
 
 # The §5.3 transliteration table, exhaustive: exactly these mappings.
 _TRANSLITERATION = str.maketrans({
@@ -112,3 +114,45 @@ def is_positive_numeric(value: str) -> bool:
     """Return True if *value* is a positive integer or decimal (§10.5): a
     period as the decimal separator, and no sign or exponent."""
     return bool(_DECIMAL_RE.fullmatch(value or "")) and float(value) > 0
+
+
+def authoritative_mismatch(meta: Metadata) -> bool:
+    """Whether ``authoritative-not-declared`` is the finding (§16.6): ``authoritative`` is a valid
+    code that is neither the document's ``language`` nor a ``translations`` key. Only valid codes
+    are judged, so it is not when ``language`` or a key is no code: that one may be what was meant,
+    and ``language-code-invalid`` is the finding."""
+    languages = [meta.language] if meta.language else []
+    languages += meta.translations  # the keys
+    return (
+        meta.authoritative in ISO_639_1_CODES
+        and meta.authoritative not in languages
+        and all(code in ISO_639_1_CODES for code in languages)
+    )
+
+
+def identifier_rule(meta: Metadata) -> tuple[str | None, str]:
+    """The rule that asks the document's own headings and ``{{def:}}`` for explicit identifiers
+    (§14.2, §16.7; Core, §17.2), or None, and then why not.
+
+    ``translation-authoritative-absent`` when it links ``translations`` and declares no
+    ``authoritative`` (the primary cannot be told from its translations). ``translation-implicit-id``
+    when it is itself a translation: it links ``translations``, and its ``language`` and
+    ``authoritative`` are declared, valid ISO 639-1 codes that differ, ``authoritative`` being one of
+    the group's languages, a ``translations`` key: else ``authoritative-not-declared`` is the finding,
+    and a typo in ``authoritative`` is not the primary. That rule judges only valid codes, so it is
+    silent when a ``translations`` key is no code (the key may be what was meant); then the absence of
+    ``authoritative`` from the keys is not held against the document, which is a translation all the same."""
+    if not meta.translations:
+        return None, "it links no translations"
+    if not meta.authoritative:
+        return "translation-authoritative-absent", ""
+    language = meta.language
+    if not language:
+        return None, "its language is not declared"
+    if language not in ISO_639_1_CODES or meta.authoritative not in ISO_639_1_CODES:
+        return None, "its language or authoritative is not an ISO 639-1 code"
+    if language == meta.authoritative:
+        return None, "it is the primary: its language is its authoritative"
+    if authoritative_mismatch(meta):
+        return None, "its authoritative is not one of its translations"
+    return "translation-implicit-id", ""

@@ -21,6 +21,7 @@ from functools import partial
 from ..models import Amends, Document
 from ..positions import Locator
 from .fragments import IncludeOutcome, UnreadInclude, UnreadReason
+from .helpers import identifier_rule
 from .paths import FileReference
 from .patterns import LEGALDOWN_EXTENSIONS
 from .result import Line
@@ -197,10 +198,21 @@ def _bilingual(document: Document, where: Locator) -> SkippedCategory | None:
         "translation-file-missing", "translation-hierarchy-mismatch", "translation-anchor-mismatch",
         "translation-def-mismatch", "translation-language-set-mismatch", "translation-template-mismatch",
     ]
+    # The identifiers of the document itself are checked (Core, §17.2) when it is a translation, or has
+    # no authoritative; if it is not, they were not asked to be explicit, and the message says why not.
+    rule, why_not = identifier_rule(document.metadata)
+    own = "this document's own were checked" if rule else (
+        f"this document's own were not checked: it is not a translation (§17.2), because {why_not}"
+    )
+    parts = [
+        _join(rules),
+        f"translation-implicit-id and translation-authoritative-absent for the linked files, whose identifiers "
+        f"were not read ({own})",
+    ]
     return SkippedCategory(
         "bilingual",
         f"translations declared ({_count(len(translations), 'linked document')}); bilingual validation not "
-        f"performed: {_join(rules)} (§14, §16.7; bilingual validation is Full, §17.4; §17.5).",
+        f"performed: {_items(parts)} (§14, §16.7; bilingual validation is Full, §17.4; §17.5).",
         partial(where.key, "translations"),
     )
 

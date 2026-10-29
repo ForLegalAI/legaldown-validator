@@ -21,7 +21,7 @@ from typing import Any, Literal, NamedTuple
 import yaml
 
 from ._deprecation import LegaldownDeprecationWarning
-from .definitions import DefinitionAnchor, block_fragments, find_definition_anchors
+from .definitions import DefinitionAnchor, block_fragments, find_definition_anchors, fragments_before_target
 from .directives import Directive, lex
 from .markdown import (
     FENCE_OPEN_RE,
@@ -2107,8 +2107,7 @@ def iter_document_directives(document: Document) -> Iterator[DirectiveLocation]:
         if block.kind == "definition":
             yield from _lifted_directive(section, index, block)
         lifted = block.kind in ("ref", "term") and bool(block.target)
-        # The fragments before the lifted directive: its text, and its prefix.
-        before = bool(block.text) + bool(block.prefix)
+        before = fragments_before_target(block) if lifted else 0  # the fragments before the lifted directive
         for fragment, (text, _anchor) in enumerate(block_fragments(block)):
             if lifted and fragment == before:
                 yield from _lifted_directive(section, index, block)

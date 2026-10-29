@@ -79,7 +79,8 @@ def _metadata_to_frontmatter(metadata: Metadata) -> dict[str, Any]:
         payload["sides"] = [_side(side) for side in metadata.sides]
     if metadata.governing_law:
         payload["governing_law"] = metadata.governing_law
-    payload["language"] = metadata.language
+    if metadata.language:
+        payload["language"] = metadata.language
     if metadata.translations:
         payload["translations"] = metadata.translations
     if metadata.authoritative:

@@ -55,13 +55,13 @@ IMPLEMENTED_RULES = {
     "amends-title-empty", "amend-def-override", "amend-term-undefined",
     "amend-term-unresolvable",
     "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",
-    "attachment-title-empty", "attachment-unreferenced", "brace-stray", "choose-invalid",
+    "attachment-title-empty", "attachment-unreferenced", "authoritative-not-declared", "brace-stray", "choose-invalid",
     "condition-invalid", "condition-never-true", "condition-reference-unsafe",
     "date-invalid", "date-of-birth-invalid",
     "def-autogen-collision", "def-duplicate-id", "def-emphasis", "def-lossy-slug",
     "def-term-variable",
     "def-no-quoted-span", "def-single-quote-ambiguous", "def-unreferenced",
-    "definition-circular",
+    "definition-circular", "definition-used-before-declaration",
     "directive-duplicate-param", "directive-malformed", "directive-unknown",
     "directive-unknown-param", "document-type-invalid", "drafting-note-def",
     "drafting-note-unrecognized",
@@ -71,7 +71,7 @@ IMPLEMENTED_RULES = {
     "heading-depth", "heading-hardcoded-number", "heading-skip",
     "include-anchor-duplicate", "include-cycle", "include-file-missing", "include-has-frontmatter",
     "include-has-h1", "include-heading-skip", "include-not-legaldown", "insertion-boundary",
-    "issuer-side-required", "legaldown-version-newer", "metadata-date-invalid",
+    "issuer-side-required", "language-code-invalid", "legaldown-version-newer", "metadata-date-invalid",
     "money-invalid-amount", "money-missing-currency", "money-unknown-currency",
     "note-invalid", "parties-minimum",
     "party-name-duplicate", "party-name-malformed", "party-type-invalid",
@@ -85,6 +85,7 @@ IMPLEMENTED_RULES = {
     "side-name-duplicate", "side-name-malformed", "side-party-name-format",
     "side-unknown", "sides-absent", "sides-minimum", "supersedes-title-empty",
     "template-construct-present", "template-fragment-invalid", "term-undefined", "title-missing",
+    "translation-authoritative-absent", "translation-implicit-id",
 }
 
 
@@ -99,12 +100,32 @@ _FULL_WITH_A_LOADER = {
 
 # Expected lines this implementation disputes, by case (file or directory
 # name), rule and level: each points elsewhere than the node the diagnostic
-# is about, as the corpus's other cases do (ForLegalAI/LegalDown#42).
+# is about, as the corpus's other cases do (ForLegalAI/LegalDown#42). The value
+# is the line asserted instead, so that a regression is still caught.
 _DISPUTED_LINES = {
     # Line 10 is the second side; the duplicate party is its entry at line 12,
     # as side-name-duplicate and representative-name-empty point at theirs.
-    ("basic.lgd", "party-name-duplicate", "error"),
+    ("basic.lgd", "party-name-duplicate", "error"): 12,
+    # Line 8 is the second attachment's title; the duplicate id is written at line 7, on the
+    # entry's own `- id:`, as attachment-id-collision's is.
+    ("attachment-id-duplicate", "attachment-id-duplicate", "error"): 7,
 }
+
+
+# Cases whose entry this implementation disputes, by case (directory) name: the file to validate
+# instead. translation-implicit-id expects its finding in doc-fr.lgd, but its entry is doc-en.lgd,
+# the primary, and the row is Core (§17.2): "every heading and `{{def:}}` carries an explicit
+# identifier when the document itself is a translation". A Core validator is "not required to
+# open any file other than the document itself" and reports translation rows only when the
+# validated document is itself a translation, so the primary draws nothing and the translation is
+# the entry to validate (CONFORMANCE.md).
+_DISPUTED_ENTRY = {
+    "translation-implicit-id": "doc-fr.lgd",
+}
+
+
+# The Core rules whose cases name the file too, asserted besides the line.
+_FILE_ASSERTED = {"include-not-legaldown", "translation-authoritative-absent", "translation-implicit-id"}
 
 
 def _load_expectation(case_dir_or_file: Path) -> tuple[Path, dict]:
@@ -119,7 +140,7 @@ def _load_expectation(case_dir_or_file: Path) -> tuple[Path, dict]:
         return case_dir_or_file, expected
     expected_path = case_dir_or_file / "expected.json"
     expected = json.loads(expected_path.read_text(encoding="utf-8"))
-    entry = case_dir_or_file / expected.get("entry", "main.lgd")
+    entry = case_dir_or_file / _DISPUTED_ENTRY.get(case_dir_or_file.name, expected.get("entry", "main.lgd"))
     return entry, expected
 
 
@@ -245,7 +266,12 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
     config = expected.get("requires_config") or {}
     if not set(config) <= _SUPPORTED_CONFIG:
         pytest.skip("requires runner configuration")
-    if case.is_dir() and len(list(case.glob("*.lgd"))) > 1 and not with_a_loader:
+    if (
+        case.is_dir()
+        and len(list(case.glob("*.lgd"))) > 1
+        and not with_a_loader
+        and any(diag.get("file", entry.name) != entry.name for diag in expected.get("diagnostics", []))
+    ):
         pytest.skip("multi-file case (single-document harness)")
 
     result = _validate_with_a_loader(entry) if with_a_loader else _validate_file(entry, config)
@@ -260,9 +286,12 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         )
         # The line, where the case gives one (§16.9) — but for the answer
         # rules, whose line is in the answers file, which assembly receives
-        # parsed — and where the corpus is not known to be wrong (below).
+        # parsed — and where the corpus is not known to be wrong (_DISPUTED_LINES: the line
+        # asserted instead).
         line = diag.get("line")
-        if line is not None and "answers" not in config and (case.name, *want) not in _DISPUTED_LINES:
+        if line is not None:
+            line = _DISPUTED_LINES.get((case.name, *want), line)
+        if line is not None and "answers" not in config:
             assert (*want, line) in located, (
                 f"expected {want} at line {line}; got it at "
                 f"{sorted(d.line or 0 for d in result.diagnostics if (d.rule, d.level) == want)}"
@@ -270,7 +299,7 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         # The file too (§16.9) for the cases that name a fragment's: the entry's own name for
         # what is in the entry, else the fragment's.
         file = diag.get("file")
-        if file is not None and line is not None and (with_a_loader or rule_id == "include-not-legaldown"):
+        if file is not None and line is not None and (with_a_loader or rule_id in _FILE_ASSERTED):
             assert (*want, line, file) in {(d.rule, d.level, d.line, d.file) for d in result.diagnostics}, (
                 f"expected {want} at {file}:{line}; got "
                 f"{sorted((d.file, d.line or 0) for d in result.diagnostics if (d.rule, d.level) == want)}"

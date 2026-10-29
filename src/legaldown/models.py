@@ -90,7 +90,9 @@ class Metadata:
     effective_date: str = ""
     field_types: dict[str, str] = field(default_factory=dict)
     governing_law: str = ""
-    language: str = "en"
+    #: The document's language (ISO 639-1), or ``""`` when it says none: §3.2 gives it no default,
+    #: so none is invented here (as for ``Party.type``). ``empty_document`` says ``"en"``.
+    language: str = ""
     include_signatures: bool = True
     tags: list[str] = field(default_factory=list)
     sides: list[Side] = field(default_factory=list)
@@ -389,11 +391,23 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _parse_str_dict(raw: Any) -> dict[str, str]:
-    """Parse a dict with string keys and values, skipping empty entries."""
+def _parse_str_dict(raw: Any, *, skip_blank: bool = False) -> dict[str, str]:
+    """Parse a dict with string keys and values, stripped; an entry whose raw key or value is falsy
+    (null, empty, ``0``, ``false``) is skipped, as on main, and a whitespace-only one is kept as ``""``.
+    With *skip_blank*, used for ``translations``
+    only, one that is blank once stripped is skipped too, before it can overwrite a sibling written
+    differently (``fr`` and ``' fr'``); ``field_types`` keeps a blank description, which is a declaration.
+    The last of the entries kept stays; an exact duplicate key is YAML's to resolve (#126)."""
     if not isinstance(raw, dict):
         return {}
-    return {str(k).strip(): str(v).strip() for k, v in raw.items() if k and v}
+    parsed: dict[str, str] = {}
+    for k, v in raw.items():
+        if not (k and v):
+            continue
+        key, value = str(k).strip(), str(v).strip()
+        if not skip_blank or (key and value):
+            parsed[key] = value
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -640,11 +654,11 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         effective_date=normalise_field(payload.get("effective_date")),
         field_types=_parse_str_dict(payload.get("field_types")),
         governing_law=normalise_field(payload.get("governing_law")),
-        language=normalise_field(payload.get("language"), "en"),
+        language=normalise_field(payload.get("language")),
         include_signatures=_to_bool(payload.get("include_signatures"), default=True),
         tags=_clean_list(list(tags)),
         sides=sides,
-        translations=_parse_str_dict(payload.get("translations")),
+        translations=_parse_str_dict(payload.get("translations"), skip_blank=True),
         authoritative=normalise_field(payload.get("authoritative")),
         adopted_by=normalise_field(payload.get("adopted_by")),
         adoption_date=normalise_field(payload.get("adoption_date")),

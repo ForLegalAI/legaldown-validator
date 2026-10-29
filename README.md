@@ -166,6 +166,24 @@ missing, or beside the document under another name, is now an Error, where it wa
 document without reading its fragments, validate it without its path
 (`validate(dataclasses.replace(document, path=None))`; `resolve=lambda path: None` says that every file
 is missing). `parse(text)` has no path and reads nothing, as before.
+Five rules that §17.2 places at Core are now checked ([What gets checked](#what-gets-checked)), and a
+CI gate that was passing can fail for them. **A translation without explicit identifiers is now an
+Error** (`translation-implicit-id`): a document that links `translations`, and whose `language` differs
+from its `authoritative`, one of the languages it links, must give every heading and `{{def:}}` an explicit identifier (§14.2); without
+`authoritative`, the same headings and definitions are a Warning (`translation-authoritative-absent`).
+**`--strict` now fails a document that keeps its Definitions at the end** (`definition-used-before-declaration`,
+an Info): a `{{term:}}` written before the `{{def:}}` it names draws one Info for each definition, at its
+first earlier use, and `--strict` counts an Info; to keep that layout, `--ignore
+definition-used-before-declaration`. A `language`, `authoritative` or `translations` key that is not a
+lowercase ISO 639-1 code (`EN`, `en-US`, `english`) is a Warning (`language-code-invalid`), and so is an
+`authoritative` language that is neither the document's `language` nor a `translations` key
+(`authoritative-not-declared`), which `--warnings-as-errors` counts. **`Metadata.language` is now `""` for a document that
+says none** (it was `"en"`): §3.2 gives `language` no default, so the model holds none, as it holds no `authoritative`;
+`empty_document()` says `"en"`, and `serialize` writes `language` only when the model holds one, so writing a document back
+does not say a language it never did. Code that read `document.metadata.language` as "en" for such a document should
+treat `""` so. Dicts that 0.4's `to_dict` wrote always carry `"language": "en"`, so they now load as declaring English. The text of `ldv-check-skipped` for
+`translations` changed: it now names the identifier rules for the linked files, and says whether this
+document's own were checked.
 
 ### Assembling a template
 
@@ -732,7 +750,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 |---|---|
 | `SPEC_VERSION`, `LEGALDOWN_EXTENSIONS` | The specification version implemented; the file extensions of LegalDown source (§2.1) |
 | `KNOWN_DIRECTIVES`, `DIRECTIVE_PARAMS`, `PLACEHOLDER_TYPE_PARAMS` | The directive vocabulary and the parameters each defines (§11) |
-| `IDENTIFIER_RE`, `RESERVED_VALUE_TYPES`, `VALID_DOC_TYPES`, `PARTY_TYPES`, `KNOWN_CURRENCIES`, `DELIMITER_PAIRS` | Identifier format (§5.3), reserved value-type names, document types, party types, ISO 4217 codes, accepted definition delimiters (§7.2) |
+| `IDENTIFIER_RE`, `RESERVED_VALUE_TYPES`, `VALID_DOC_TYPES`, `PARTY_TYPES`, `KNOWN_CURRENCIES`, `ISO_639_1_CODES`, `DELIMITER_PAIRS` | Identifier format (§5.3), reserved value-type names, document types, party types, ISO 4217 codes, ISO 639-1 codes (§3.2), accepted definition delimiters (§7.2) |
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
 | `LIST_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
@@ -833,7 +851,7 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, unquoted values that begin with a curly quote, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
 | **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions and lost letters, markers outside an anchor position |
-| **Definitions** | Undefined `{{term:}}`, duplicate ids, auto-generated ids that lost letters, missing quoted span, ambiguous quoting, unreferenced definitions, circular definitions (a definition's paragraph names a term whose paragraph leads back to it; one Warning for each such set, §7.2) |
+| **Definitions** | Undefined `{{term:}}`, duplicate ids, auto-generated ids that lost letters, missing quoted span, ambiguous quoting, unreferenced definitions, circular definitions (a definition's paragraph names a term whose paragraph leads back to it; one Warning for each such set, §7.2), a `{{term:}}` written before the definition it names (Info, once for each definition) |
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |
 | **Placeholders** | Malformed ids, invalid types, one blank with two types, currencies, or units, placeholders in structural and format-checked frontmatter fields |
@@ -841,7 +859,7 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Includes** | An include of a file that is not LegalDown, a fragment that is missing, with frontmatter or a level-1 heading, or whose headings skip a level where it is spliced in; with a template, a fragment that holds what §15.3 forbids |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
-| **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2 |
+| **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2, a `language`, `authoritative` or `translations` key that is not an ISO 639-1 code, an `authoritative` language the document does not declare, and in a document that links translations the headings and definitions without an explicit identifier (an Error in a translation, a Warning when `authoritative` is absent) |
 | **Beyond Core** | `ldv-check-skipped` (Warning, this implementation's own id, §16.1): for each category of checks that a construct in the document calls for and the validation did not perform, as §17.5 requires, once and listing exactly what was not done ([below](#scope)) |
 
 Each check reports at the severity the specification assigns it — Error, Warning, or Info. The one
@@ -1007,9 +1025,11 @@ covers authoring, editing, CI validation, and assembly of individual documents.
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — every rule it
-implements passes, bar seven whose fixtures span several files or are marked for the Full level,
+implements passes, bar three (the amendment rules) whose fixtures are marked for the Full level,
 and are covered by unit tests instead (the include cases it implements run with a loader, asserting
-the file and the line). The specification (§17.5) requires an implementation to be explicit about the
+the file and the line). One case is run against another entry than its own, the translation of
+`translation-implicit-id`, as a Core validator reads the document it is given
+([CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md)). The specification (§17.5) requires an implementation to be explicit about the
 checks it does not perform, so those are listed in
 [CONFORMANCE.md](https://github.com/ForLegalAI/legaldown-validator/blob/main/CONFORMANCE.md) rather than left to be discovered.
 

@@ -39,6 +39,7 @@ from .validator.patterns import (
     FINAL_CHECK_RULES,
     IDENTIFIER_RE,
     IMPLEMENTATION_RULE_PREFIX,
+    ISO_639_1_CODES,
     KNOWN_CURRENCIES,
     LEGALDOWN_EXTENSIONS,
     MAX_SECTION_LEVEL,
@@ -74,6 +75,7 @@ __all__ = [
     "DURATION_UNITS",
     "VALID_DURATION_UNITS",
     "KNOWN_CURRENCIES",
+    "ISO_639_1_CODES",
     "DELIMITER_PAIRS",
     # Structure and limits
     "LIST_KINDS",

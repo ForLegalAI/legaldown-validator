@@ -31,13 +31,14 @@ a ring of any length (#94).
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from typing import NamedTuple
 
 from ..definitions import DefinitionRef, find_definition_anchors, fragment_scopes
 from ..directives import Directive, Lexed
 from ..models import Document
 from .conditions import Exclusivity, Presence
+from .result import Line
 
 #: The most pairs of presences ``find_circular_definitions`` tests, given an
 #: ``Exclusivity``. Past it alternatives are no longer told apart: a reference
@@ -60,6 +61,12 @@ class TermUse(NamedTuple):
     #: The offset in its fragment of the ``{{def:}}`` whose quoted term holds
     #: this use (``"Self {{term: s}}" {{def: s}}``), or None.
     owner: int | None = None
+    #: Its offset in its fragment, and its line (§16.9, found only if asked): for
+    #: ``used_before_declaration``. The target the parser lifted has no fragment: it is read
+    #: before the fragment ``before``, at offset -1 (``definitions.fragments_before_target``).
+    offset: int = 0
+    line: Line = None
+    before: int = 0
 
 
 def term_owners(
@@ -83,6 +90,112 @@ def term_owners(
         return spans[at][1] if at >= 0 and directive.end <= spans[at][1] else None
 
     return owner
+
+
+def own_term_of(registered: Sequence[tuple[DefinitionRef, Presence]]) -> Callable[[TermUse], int | None]:
+    """For a use, the index in *registered* of the definition whose own quoted term holds it, when
+    the use names that definition (``"Self {{term: s}}" {{def: s}}``), else None: the one
+    self-reference ``definition-circular`` reports, and no ordering one."""
+    defined_at = {
+        (ref.section_index, ref.block_index, ref.fragment_index, ref.offset): number
+        for number, (ref, _presence) in enumerate(registered)
+    }
+
+    def owner(use: TermUse) -> int | None:
+        if use.owner is None:
+            return None
+        number = defined_at.get((use.section, use.block, use.fragment, use.owner))
+        return number if number is not None and registered[number][0].id == use.target else None
+
+    return owner
+
+
+def used_before_declaration(
+    registered: Sequence[tuple[DefinitionRef, Presence]],
+    uses: Iterable[TermUse],
+    imported: Collection[str] = (),
+    exclusivity: Exclusivity | None = None,
+) -> list[tuple[int, list[TermUse]]]:
+    """The definitions that *uses* name before their declaration, in the order the document is
+    written, preamble first (``definition-used-before-declaration``, §16.3, #116).
+
+    Each is an index into *registered* (the definitions that count, as for
+    ``find_circular_definitions``), with its uses before the declaration in document order,
+    ordered by the first of them. A use is judged against the first declaration of its id that
+    can appear with it: given an *exclusivity* (a template's, §15.4), one that can appear and is
+    not excluded from the use's presence, so a use between two alternatives is judged against the
+    one it resolves to, and a declaration that can never appear is no declaration. A definition
+    of an id in *imported* is in force before the document's text (§7.5), and an id none of
+    *registered* declares is no definition of the document (an imported one is a target only, as
+    there); a ``{{term:}}`` in the definition's own quoted term is the circle's
+    (``own_term_of``). A use in a drafting note is not in *uses*."""
+    own_term = own_term_of(registered)
+
+    def place(section: int | None, block: int, fragment: int, offset: int) -> tuple[int, int, int, int]:
+        # The preamble before the first section; within a block, the fragments in order.
+        return (-1 if section is None else section, block, fragment, offset)
+
+    declared: dict[str, list[tuple[tuple[int, int, int, int], int]]] = {}  # per id: where, and the index
+    for number, (ref, _presence) in enumerate(registered):
+        # The anchor a definition block holds in its own fields comes before its text.
+        fragment = -1 if ref.fragment_index is None else ref.fragment_index
+        declared.setdefault(ref.id, []).append((place(ref.section_index, ref.block_index, fragment, ref.offset), number))
+    for group in declared.values():
+        group.sort()
+
+    first: dict[tuple[str, Presence], tuple[tuple[int, int, int, int], int] | None] = {}
+    tests = 0  # the pairs of presences tested, at most MAX_EXCLUSION_TESTS
+
+    def compatible(use: Presence, declaration: Presence) -> bool | None:
+        """Whether *declaration* can appear with a use of *use*; None when it cannot be told, the cap
+        of the tests having been reached."""
+        nonlocal tests
+        if exclusivity is None:
+            return True
+        if not exclusivity.appears(declaration):
+            return False
+        # Presences that name no question in common can appear together (as for find_circular_definitions).
+        if exclusivity.questions(use).isdisjoint(exclusivity.questions(declaration)):
+            return True
+        if tests >= MAX_EXCLUSION_TESTS:
+            return None
+        tests += 1
+        return not exclusivity.excluded(use, declaration)
+
+    def first_declaration(target: str, presence: Presence) -> tuple[tuple[int, int, int, int], int] | None:
+        """The first declaration of *target* that can appear with *presence*; None if there is none, or
+        if one could not be told apart (past the cap): a use is then not judged, as an Info missed is
+        better than one given for a declaration it can never appear with."""
+        if (target, presence) not in first:
+            found = None
+            for each in declared[target]:
+                fits = compatible(presence, registered[each[1]][1])
+                if fits is None:
+                    break
+                if fits:
+                    found = each
+                    break
+            first[target, presence] = found
+        return first[target, presence]
+
+    earlier: dict[int, list[tuple[tuple[int, int, int, int], TermUse]]] = {}
+    for use in uses:
+        if use.target not in declared or use.target in imported or own_term(use) is not None:
+            continue
+        if exclusivity is not None and not exclusivity.appears(use.presence):
+            continue
+        declaration = first_declaration(use.target, use.presence)
+        if declaration is None:
+            continue
+        written = place(use.section, use.block, use.before if use.fragment is None else use.fragment, use.offset)
+        if written < declaration[0]:
+            earlier.setdefault(declaration[1], []).append((written, use))
+    for group in earlier.values():
+        group.sort(key=lambda each: each[0])
+    return [
+        (number, [use for _written, use in group])
+        for number, group in sorted(earlier.items(), key=lambda each: each[1][0][0])
+    ]
 
 
 def strongly_connected_components(
@@ -220,18 +333,14 @@ def find_circular_definitions(
 
     # The distinct (target, presence) each paragraph with a definition names.
     references: dict[int, dict[tuple[str, Presence], None]] = {}  # in order
-    defined_at = {
-        (ref.section_index, ref.block_index, ref.fragment_index, ref.offset): number
-        for number, (ref, _presence) in enumerate(registered)
-    }
+    owner_of = own_term_of(registered)
     own_term: set[int] = set()  # the definitions whose quoted term holds a {{term:}} to their id
     for use in uses:
         if use.target not in declarations or (use.section, use.block) not in scopes:
             continue
-        if use.owner is not None:
-            owner = defined_at.get((use.section, use.block, use.fragment, use.owner))
-            if owner is not None and registered[owner][0].id == use.target:
-                own_term.add(owner)
+        owner = owner_of(use)
+        if owner is not None:
+            own_term.add(owner)
         scope = scope_of(use.section, use.block, use.fragment)
         if scope in scope_node:
             references.setdefault(scope_node[scope], {})[use.target, use.presence] = None

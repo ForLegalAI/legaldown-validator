@@ -15,7 +15,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cache, partial
 from types import MappingProxyType
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .._deprecation import LegaldownDeprecationWarning
 from ..directives import (
@@ -53,8 +53,10 @@ from .conditions import (
 )
 from .fragments import Files, FragmentKind, UnreadReason, check_includes, content_findings, shape_findings
 from .helpers import (
+    authoritative_mismatch,
     format_section_number,
     generate_identifier,
+    identifier_rule,
     is_positive_numeric,
     is_valid_iso_date,
     is_valid_money_amount,
@@ -66,6 +68,7 @@ from .patterns import (
     _UNFILLED,
     DURATION_UNITS,
     IDENTIFIER_RE,
+    ISO_639_1_CODES,
     KNOWN_CURRENCIES,
     LEGALDOWN_EXTENSIONS,
     MAX_SECTION_LEVEL,
@@ -92,6 +95,9 @@ from .templates import (
     question_type,
 )
 from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
+
+if TYPE_CHECKING:
+    from ..definitions import DefinitionRef
 
 # Type aliases for the definitions-import callbacks: deprecated since 0.4.0,
 # removed in 0.5.0, with the callbacks (``validate(resolve=)`` replaces them).
@@ -246,6 +252,50 @@ def _check_date_field(
         else ""
     )
     result.error(rule, f"{label} '{value}' must be a valid ISO 8601 date (YYYY-MM-DD).{hint}")
+
+
+def _check_implicit_identifiers(
+    document: Document,
+    refs: Sequence[DefinitionRef],
+    where: Locator,
+    definition_line: Callable[[DefinitionRef], Line],
+    result: _Recorder,
+) -> None:
+    """The headings and ``{{def:}}`` without an explicit identifier of a document that links
+    translations (§14.2, §16.7), as far as the document alone shows: the Core rows (§17.2).
+
+    A translation (``identifier_rule``) draws an Error for each, since identifiers originate in the
+    primary and a translation mirrors them explicitly. Without ``authoritative`` the primary cannot
+    be told from its translations, and the document draws a Warning for each, as any linked file
+    does. *refs* are the definitions outside drafting notes (assembly removes the others, §15.6, and
+    ``drafting-note-def`` reports them); one whose generated identifier ``anchor-format`` rejects is
+    not counted either (the validator passes none: a generated identifier is always valid, §5.3). The
+    linked files' own identifiers are Full (§17.4, §17.5)."""
+    meta = document.metadata
+    rule, _why_not = identifier_rule(meta)
+    if rule is None:
+        return
+    if rule == "translation-authoritative-absent":
+        report = result.warning
+        why = "and authoritative is not declared, so the primary cannot be told from its translations"
+        fix = "declare authoritative, and write the primary's identifier"
+    else:
+        report = result.error
+        why = f"and the document is a translation ({meta.language}, of the authoritative {meta.authoritative})"
+        fix = "write the primary's identifier"
+    for index, section in enumerate(document.sections):
+        if not section.identifier.strip():
+            report(
+                rule, f"Heading '{section.title}' has no explicit identifier, {why}: {fix}, {{#id}} (§14.2).",
+                line=where.heading(index),
+            )
+    for ref in refs:
+        if not ref.auto_id or not IDENTIFIER_RE.fullmatch(ref.id):
+            continue
+        report(
+            rule, f"Definition '{ref.term}' has no explicit identifier ('{ref.id}' is generated from the "
+            f"term), {why}: {fix}, {{{{def: id}}}} (§14.2).", line=definition_line(ref),
+        )
 
 
 def _check_duration_unit(unit: str, result: _Recorder) -> None:
@@ -1297,14 +1347,14 @@ def _validate(
     # Imported here to avoid a module-level import cycle (definitions ->
     # validator.helpers -> validator/__init__ -> core).
     from ..definitions import (
-        DefinitionRef,
         block_fragments,
         collect_definitions,
         find_definition_anchors,
+        fragments_before_target,
         id_term,
         text_fragments,
     )
-    from .circular import TermUse, circular_message, find_circular_definitions, term_owners
+    from .circular import TermUse, circular_message, find_circular_definitions, term_owners, used_before_declaration
 
     # Each text is lexed once per validation and shared by the passes below.
     lex_fragment = cache(lex)
@@ -1381,6 +1431,37 @@ def _validate(
     ):
         with result.at(where.key(field_name)):
             _check_date_field(field_name, field_value, questions, "metadata-date-invalid", result)
+
+    # ── Language codes and the authoritative language (§3.2, §16.6) ──
+    # `language`, `authoritative` and the `translations` keys, when present, are ISO 639-1 codes;
+    # `authoritative`, when present, is the document's language or a key. §3.2 gives `language` no
+    # default, and the model holds none (`""`): a document that does not say its language has none.
+    # A placeholder is the placeholder rule's. A value that is no code is no language, so the
+    # comparisons judge only the codes that pass (`authoritative_mismatch`, and the translation
+    # rules below): one typo draws one Warning.
+    language = meta.language
+    def check_code(label: str, code: str, path: tuple[str, ...]) -> None:
+        if code not in ISO_639_1_CODES and not named(code, "placeholder"):
+            result.warning(
+                "language-code-invalid",
+                f"The {label} '{code}' must be an ISO 639-1 language code: two lowercase letters, "
+                f"such as 'en' or 'cs'.", line=where.key(*path),
+            )
+
+    # The keys the reader kept, as it stripped them. Where a padded or repeated key is written is #126.
+    for label, code in (("language", language), ("authoritative", meta.authoritative)):
+        if code:
+            check_code(label, code, (label,))
+    for key in meta.translations:
+        check_code("translations key", key, ("translations", key))
+    if authoritative_mismatch(meta):
+        own_language = f"'{language}'" if language else "not declared"
+        keys = ", ".join(f"'{key}'" for key in meta.translations) or "none"
+        result.warning(
+            "authoritative-not-declared",
+            f"authoritative '{meta.authoritative}' is neither the document's language ({own_language}) "
+            f"nor a translations key ({keys}).", line=where.key("authoritative"),
+        )
 
     # ── Build party lookup from metadata ──
     seen_side_names: set[str] = set()
@@ -1768,8 +1849,24 @@ def _validate(
     # either as a leading-anchor "definition" block or inline at first use, and
     # may appear anywhere.
     definition_refs = collect_definitions(
-        document, language=document.metadata.language, lex_fragment=lex_fragment
+        document, language=meta.language, lex_fragment=lex_fragment
     )
+    # The drafting notes of each top-level block (§15.6), worked out once for the validation.
+    notes_of_block: dict[tuple[int | None, int], list[Quote]] = {}
+
+    def drafting_notes(section: int | None, index: int) -> list[Quote]:
+        if (section, index) not in notes_of_block:
+            block = document.preamble[index] if section is None else document.sections[section].blocks[index]
+            notes_of_block[section, index] = [quote for quote in block_quotes(block) if quote.is_drafting_note]
+        return notes_of_block[section, index]
+
+    def in_a_note(ref: DefinitionRef) -> bool:
+        """Whether a definition is in a drafting note: assembly removes it, and ``drafting-note-def``
+        reports it, so it is no declaration of the document's text."""
+        return ref.fragment_index is not None and in_drafting_note(
+            drafting_notes(ref.section_index, ref.block_index), ref.fragment_index
+        )
+
     def definition_line(ref: Any) -> int | None:
         if ref.fragment_index is None:  # a definition block's own anchor
             return where.lifted(ref.section_index, ref.block_index, "{{def")
@@ -1780,6 +1877,9 @@ def _validate(
     # The definitions that are registered, and the {{term:}} uses outside
     # drafting notes, for definition-circular (§16.3, #105).
     registered: list[tuple[DefinitionRef, Presence]] = []
+    #: Every definition with a valid id written outside a drafting note, a duplicate too, for
+    #: definition-used-before-declaration.
+    written: list[tuple[DefinitionRef, Presence]] = []
     term_uses: list[TermUse] = []
     for ref in definition_refs:
         def_id = ref.id
@@ -1798,6 +1898,8 @@ def _validate(
                 f"id (§5.3, §7.2).", line=definition_line(ref),
             )
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
+        if not in_a_note(ref):
+            written.append((ref, presence))
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.
         together = [
@@ -1821,12 +1923,14 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
+    outside = [ref for ref, _presence in written]  # the definitions the identifier rules ask for ids
+    _check_implicit_identifiers(document, outside, where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():
         for fragment_index, fragment in enumerate(text_fragments(block)):
             for anchor in find_definition_anchors(
-                fragment, language=document.metadata.language, lexed=lex_fragment(fragment)
+                fragment, language=meta.language, lexed=lex_fragment(fragment)
             ):
                 anchor_line = where.find(
                     block_section, block_index, anchor.directive.source, fragment_index, anchor.directive.start
@@ -1975,8 +2079,13 @@ def _validate(
             (ref_targets if block.kind == "ref" else term_targets).append((block.target.strip(), lifted_line))
             references[block.kind].append((block.target.strip(), block_presence, False, lifted_line))
             if block.kind == "term":
-                term_uses.append(TermUse(section_index, block_index, None, block.target.strip(), block_presence))
-        notes = [quote for quote in block_quotes(block) if quote.is_drafting_note]
+                term_uses.append(
+                    TermUse(
+                        section_index, block_index, None, block.target.strip(), block_presence,
+                        offset=-1, line=lifted_line, before=fragments_before_target(block),
+                    )
+                )
+        notes = drafting_notes(section_index, block_index)
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
             owner_of = None  # for definition-circular, once a {{term:}} asks
@@ -2029,9 +2138,12 @@ def _validate(
                 if name in references and value:
                     references[name].append((value, presence, in_note, line))
                     if name == "term" and not in_note:
-                        owner_of = owner_of or term_owners(fragment, lexed, document.metadata.language)
+                        owner_of = owner_of or term_owners(fragment, lexed, meta.language)
                         term_uses.append(
-                            TermUse(section_index, block_index, fragment_index, value, presence, owner_of(directive))
+                            TermUse(
+                                section_index, block_index, fragment_index, value, presence, owner_of(directive),
+                                directive.start, line,
+                            )
                         )
                 if name in ("ref", "term") and not value:
                     # Whatever the host holds, a reference with no target is wrong.
@@ -2246,6 +2358,21 @@ def _validate(
             "definition-circular",
             circular_message(registered[number][0].id for number in circle),
             line=definition_line(registered[circle[-1]][0]),
+        )
+
+    # Definitions used before declaration (§16.3, Info): one for each definition, at its first
+    # earlier use. The original an amendment amends is in force before the document (§7.5).
+    for number, earlier in used_before_declaration(
+        written, term_uses, _imported_definitions, exclusivity if template else None
+    ):
+        ref = written[number][0]
+        declared = definition_line(ref)
+        times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
+        at = f" at line {declared}" if declared else ""
+        result.info(
+            "definition-used-before-declaration",
+            f"Definition '{ref.id}' is used {times} before its declaration{at} (§7.2).",
+            line=earlier[0].line,
         )
 
     # Reference safety (§15.4): a reference resolves in every assembled
