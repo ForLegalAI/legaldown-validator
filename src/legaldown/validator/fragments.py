@@ -709,6 +709,46 @@ class _Chain(NamedTuple):
     keys: frozenset[str] = frozenset()
 
 
+def closes(files: Files, chain: _Chain, relative: str) -> bool:
+    """Whether following the include of *relative* (a path from the document's directory, as ``Files.locate``
+    gives it) closes a circular chain (§12.2): it is a file of *chain*, or the document itself. The one test of
+    ``include-cycle``, for the validator and for assembly."""
+    return files.key(relative) in chain.keys or files.is_own(relative)
+
+
+def cycle_message(files: Files, source: str, chain: _Chain, relative: str) -> str:
+    """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*."""
+    said = " -> ".join(["the document", *chain.paths, "the document" if files.is_own(relative) else relative])
+    return (
+        f"'{source}' closes a circular include chain ({said}); a file cannot include "
+        f"itself, directly or through others (§12.2)."
+    )
+
+
+def too_deep(chain: _Chain) -> str | None:
+    """The phrase that says the depth cap is reached, when *chain* is as long as the includes are followed
+    (``MAX_INCLUDE_DEPTH``), else None. The caps are read when asked, so that a test can lower them."""
+    if len(chain.paths) < MAX_INCLUDE_DEPTH:
+        return None
+    return f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels (not checked past that point)"
+
+
+class IncludeBudget:
+    """How many includes and headings of fragments one document has had followed (``MAX_INCLUDE_EXPANDED``):
+    the count is spent before an include is judged or a heading joined, and nothing is followed once it is reached."""
+
+    def __init__(self) -> None:
+        self.spent = 0
+
+    def spend(self) -> str | None:
+        """Count one more include or heading followed, or, when the count is reached, the phrase that says so
+        (and nothing is spent)."""
+        if self.spent >= MAX_INCLUDE_EXPANDED:
+            return f"following the includes of fragments past {MAX_INCLUDE_EXPANDED:,} includes and headings (not checked past that point)"
+        self.spent += 1
+        return None
+
+
 class _Walk:
     """The include fragments reached from a document, those nested in them too (§12.2): each is read and
     judged once, and expanded into the headings it brings into the combined document, in order. A
@@ -732,7 +772,7 @@ class _Walk:
         #: The include paragraphs of each fragment by the section that holds them, with their number: once.
         self._includes: dict[str, dict[int | None, list[tuple[int, IncludeDirective]]]] = {}
         self._met: set[tuple[str, int]] = set()  # the includes of fragments (file, number) already judged
-        self._expanded = 0
+        self._budget = IncludeBudget()
         self.incomplete = False
 
     def shape(self, fragment: FragmentFile) -> None:
@@ -800,19 +840,10 @@ class _Walk:
                     "unreadable",
                 )
             return None
-        if self._files.key(relative) in chain.keys or self._files.is_own(relative):
-            said = " -> ".join(
-                ["the document", *chain.paths, "the document" if self._files.is_own(relative) else relative]
-            )
-            refuse(
-                "include-cycle",
-                f"'{include.source}' closes a circular include chain ({said}); a file cannot include "
-                f"itself, directly or through others (§12.2).",
-                None,
-            )
+        if closes(self._files, chain, relative):
+            refuse("include-cycle", cycle_message(self._files, include.source, chain, relative), None)
             return None
-        if len(chain.paths) >= MAX_INCLUDE_DEPTH:
-            cap = f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels (not checked past that point)"
+        if (cap := too_deep(chain)) is not None:
             if cap not in self._outcome.caps:
                 self._outcome.caps.append(cap)
             return None
@@ -851,18 +882,17 @@ class _Walk:
 
         follow(None)
         for index in range(len(fragment.document.sections)):
-            if self._full():
+            if self._spend():
                 break
-            self._expanded += 1
             headings.append(Heading(fragment, index))
             follow(index)
         return headings
 
-    def _full(self) -> bool:
-        """Whether the count of includes and headings followed is reached: said once, and nothing is followed past it."""
-        if self._expanded < MAX_INCLUDE_EXPANDED:
+    def _spend(self) -> bool:
+        """Count one more include or heading followed (``IncludeBudget``), or, when the count is reached, say so
+        once and return True: nothing is followed past it."""
+        if (cap := self._budget.spend()) is None:
             return False
-        cap = f"following the includes of fragments past {MAX_INCLUDE_EXPANDED:,} includes and headings (not checked past that point)"
         if cap not in self._outcome.caps:
             self._outcome.caps.append(cap)
         self.incomplete = True
@@ -883,9 +913,8 @@ class _Walk:
             if first:
                 self._outcome.unread.append(UnreadInclude(include, "in-template"))
             return []
-        if self._full():
+        if self._spend():
             return []
-        self._expanded += 1
         target = self.attempt(include, fragment, chain, first)
         if target is None:
             self.incomplete = True
