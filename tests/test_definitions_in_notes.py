@@ -7,6 +7,7 @@ import pytest
 
 from legaldown import collect_definitions, definition_lookup, parse, validate
 from legaldown.files import file_loader
+from legaldown.markdown import DraftingNotes
 
 _SIDES = """sides:
   - name: providers
@@ -118,6 +119,33 @@ def test_only_the_definitions_in_the_notes_of_a_list_are_left_out():
     body = f"{items}\n- Last\n  > [!DRAFTING]\n  > > [!DRAFTING]\n  > > \"In\" {{{{def: inner}}}} x.\n\n  \"Out\" {{{{def: out}}}} y."
     document = parse(_source(body))
     assert [ref.id for ref in collect_definitions(document)] == ["r0", "r1", "r2", "out"]
+
+
+def test_a_definition_after_a_note_in_a_note_is_still_in_the_outer_note():
+    body = '> [!DRAFTING]\n> text\n>\n> > [!DRAFTING]\n> > inner\n>\n> "Late" {{def: late}} x.\n\n' + _REAL
+    document = parse(_source(body))
+    assert [ref.id for ref in collect_definitions(document)] == ["fee"]
+    assert "term-undefined" in _rules(body + "\n\nPay the {{term: late}}.")
+
+
+@pytest.mark.parametrize(
+    ("quotes", "inside", "outside"),
+    [
+        # a note in a note, then more of the outer one
+        ([("[!DRAFTING]", range(0, 5)), ("[!DRAFTING]", range(1, 2))], [0, 1, 2, 4], [5]),
+        # a note without a fragment, inside a note and after one
+        ([("[!DRAFTING]", range(0, 3)), ("[!DRAFTING]", range(1, 1)), ("[!DRAFTING]", range(3, 3))], [0, 1, 2], [3, 4]),
+        # quotes that are no notes count for nothing, whatever they hold
+        ([("[!NOTE]", range(0, 3)), ("", range(1, 1))], [], [0, 1, 2, 3]),
+        # two notes apart
+        ([("[!drafting]", range(1, 2)), ("[!DRAFTING]", range(4, 6))], [1, 4, 5], [0, 2, 3, 6]),
+    ],
+    ids=["nested", "empty", "no notes", "apart"],
+)
+def test_drafting_notes_place_a_fragment_by_the_outermost_notes(quotes, inside, outside):
+    notes = DraftingNotes(quotes)
+    assert [i for i in [*inside, *outside] if i in notes] == inside
+    assert bool(notes) == bool(inside)
 
 
 def test_an_ordinary_quote_is_no_note():

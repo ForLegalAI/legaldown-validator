@@ -28,23 +28,31 @@ def is_drafting_marker(first_line: str) -> bool:
     return first_line.upper() == DRAFTING_MARKER
 
 
-def drafting_note_spans(quotes: Iterable[tuple[str, range]]) -> list[range]:
-    """The fragments of the drafting notes among a block's *quotes* (each one's first line and the
-    indices of its fragments in ``block_fragments``, outermost first, as ``quote_ranges`` lists them),
-    as ordered, disjoint ranges: a note in a note adds nothing, and one without a fragment is no range."""
-    spans: list[range] = []
-    for first_line, span in quotes:
-        if span and is_drafting_marker(first_line) and (not spans or span.start >= spans[-1].stop):
-            spans.append(span)
-    return spans
+class DraftingNotes:
+    """The drafting notes of a block, from its *quotes* (each one's first line and the indices of its
+    fragments in ``block_fragments``, outermost first, as ``quote_ranges`` lists them): ``fragment in
+    notes`` is whether a fragment is in one of them, which assembly removes before anything is
+    inserted (§15.7.2). A note in a note and a note without a fragment add nothing, so the ranges
+    that are kept are ordered and disjoint, and the lookup is a bisect."""
 
+    __slots__ = ("_spans", "_starts")
 
-def in_note_spans(spans: list[range], fragment: int) -> bool:
-    """True if fragment *fragment* of a block's ``block_fragments`` is in one of its drafting notes
-    (*spans*, as ``drafting_note_spans`` gives them): assembly removes it before anything is inserted
-    (§15.7.2)."""
-    at = bisect_right(spans, fragment, key=lambda span: span.start) - 1
-    return at >= 0 and fragment in spans[at]
+    def __init__(self, quotes: Iterable[tuple[str, range]]) -> None:
+        spans: list[range] = []
+        for first_line, span in quotes:
+            if span and is_drafting_marker(first_line) and (not spans or span.start >= spans[-1].stop):
+                spans.append(span)
+        self._spans = spans
+        self._starts = [span.start for span in spans]
+
+    def __bool__(self) -> bool:
+        return bool(self._spans)
+
+    def __contains__(self, fragment: object) -> bool:
+        if not isinstance(fragment, int):
+            return False
+        at = bisect_right(self._starts, fragment) - 1
+        return at >= 0 and fragment in self._spans[at]
 
 
 # A fenced code block opens with three or more backticks or tildes, indented

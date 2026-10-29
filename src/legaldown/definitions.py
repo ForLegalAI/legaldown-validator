@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from .directives import Directive, Lexed, blank_fenced_code, lex, mask_directives
-from .markdown import FENCE_OPEN_RE, in_note_spans, is_drafting_marker, is_indented_code, normalize_label
+from .markdown import FENCE_OPEN_RE, DraftingNotes, is_indented_code, normalize_label
 from .models import LIST_KINDS, Block, Document, list_items
 from .validator.helpers import generate_identifier
 from .validator.patterns import IDENTIFIER_RE
@@ -415,7 +415,7 @@ def collect_definitions(
     refs: list[DefinitionRef] = []
     for section_index, block_index, block in document.iter_indexed_blocks():
         quotes: list[tuple[str, range]] = []
-        notes: list[range] | None = None  # the fragments of the block's drafting notes, once a definition asks (§15.6)
+        notes: DraftingNotes | None = None  # the block's drafting notes, once a definition asks (§15.6)
         if block.kind == "definition":
             term = (block.term or "").strip()
             raw_id = (block.definition_id or "").strip()
@@ -442,8 +442,8 @@ def collect_definitions(
                 if anchor.term is None or anchor.directive.malformed:
                     continue
                 if notes is None:
-                    notes = [span for first, span in quotes if is_drafting_marker(first)]
-                if in_note_spans(notes, fragment_index):
+                    notes = DraftingNotes(quotes)
+                if fragment_index in notes:
                     continue
                 term = anchor.term
                 raw_id = anchor.directive.positional or ""

@@ -16,14 +16,7 @@ from functools import partial
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
-from ..markdown import (
-    DRAFTING_MARKER,
-    drafting_note_spans,
-    find_all,
-    in_note_spans,
-    is_drafting_marker,
-    scan_destination,
-)
+from ..markdown import DRAFTING_MARKER, DraftingNotes, find_all, is_drafting_marker, scan_destination
 from ..models import Block, Document
 from ..positions import Locator
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
@@ -282,6 +275,8 @@ def check_questions(
 
 #: The first line of a quote that looks like a GitHub-flavoured alert.
 _ALERT_RE = re.compile(r"\[![A-Za-z]+\]")
+
+
 @dataclass(frozen=True, slots=True)
 class Quote:
     """A block quote in a block: its first line without the ``>`` marker,
@@ -696,7 +691,7 @@ def check_template_body(
     gives the lines."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
-    from ..definitions import find_definition_anchors, fragment_kinds
+    from ..definitions import find_definition_anchors, fragment_kinds, quote_ranges
     from .units import include_key, paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
@@ -723,9 +718,10 @@ def check_template_body(
     includes: list[IncludeDirective] = []
     all_notes: list[tuple[Quote, Line]] = []
     for block_section, block_index, block in document.iter_indexed_blocks():
-        notes: list[Quote] = []
+        ranges = quote_ranges(block)
         firsts: list[str] = []  # the first lines of the quotes before
-        for quote in block_quotes(block):
+        for first_line, fragments in ranges:
+            quote = Quote(first_line, fragments)
             first = quote.first_line.strip()
             line = find(block_section, block_index, first, nth=firsts.count(first))
             firsts.append(first)
@@ -738,13 +734,12 @@ def check_template_body(
                     line=line,
                 )
             elif quote.is_drafting_note:
-                notes.append(quote)
                 all_notes.append((quote, line))
-        spans = drafting_note_spans((note.first_line, note.fragments) for note in notes)
+        notes = DraftingNotes(ranges)
         for index, (fragment, kind) in enumerate(fragment_kinds(block)):
             lexed = lex_fragment(fragment)
             scan = None  # the fragment's, for its first insertion
-            in_note = in_note_spans(spans, index)
+            in_note = index in notes
             # The include of a paragraph that holds only it (§12.2): only a top-level
             # paragraph's first fragment is one, an include in a quote, a list or a table is text.
             only = paragraph_include(block, fragment, lexed) if index == 0 else None
