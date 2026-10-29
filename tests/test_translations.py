@@ -1,8 +1,10 @@
-"""Language codes at the Core level (§3.2, §16.6): ``language-code-invalid`` and
-``authoritative-not-declared`` (#116).
+"""Language codes and translations at the Core level (§3.2, §16.6, §16.7, §17.2):
+``language-code-invalid`` and ``authoritative-not-declared`` (#116), and the two single-file
+translation rules, ``translation-implicit-id`` and ``translation-authoritative-absent``.
 
 A value that is no ISO 639-1 code is no language: the rules that compare languages judge only
-the codes that pass, so one typo draws one Warning."""
+the codes that pass, so one typo draws one Warning. The translation rules need the document
+alone: the files its ``translations`` link are Full (§17.4), and ``ldv-check-skipped`` says so."""
 from __future__ import annotations
 
 import os
@@ -10,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from legaldown import parse, validate
+from legaldown import Document, parse, validate
 from legaldown.grammar import ISO_639_1_CODES
 from legaldown.parser import FrontmatterError
 
@@ -189,13 +191,215 @@ def test_a_translation_with_no_translations_is_the_authoritative_rules_alone():
         "language: EN\nauthoritative: en\n",
         "language: en-US\nauthoritative: en\ntranslations:\n  fr: x.fr.lgd\n",
         "language: en\nauthoritative: EN\n",  # the authoritative is no code
-        "language: fr\nauthoritative: en\ntranslations:\n  english: x.lgd\n",  # a key that might have been `en`
     ],
 )
 def test_a_value_that_is_no_code_draws_language_code_invalid_alone(front):
     rules = {d.rule for d in validate(parse(_source(front, "# Scope\n\nText.\n"), filename="t.lgd")).diagnostics}
     assert rules & {"language-code-invalid", "authoritative-not-declared"} == {"language-code-invalid"}
     assert not rules & {"translation-implicit-id", "translation-authoritative-absent"}
+
+
+def test_a_translations_key_that_is_no_code_is_not_compared_with_the_authoritative():
+    # `english` might have been `en`: authoritative-not-declared would say a second thing about
+    # the same value. (The document is a translation all the same: `fr` of `en`, linking a file.)
+    front = "language: fr\nauthoritative: en\ntranslations:\n  english: x.lgd\n"
+    assert _found(front) == [("language-code-invalid", "warning", 6)]
+
+
+# ── translation-implicit-id and translation-authoritative-absent ───
+
+_IDENTIFIERS = {"translation-implicit-id", "translation-authoritative-absent"}
+_FR = "language: fr\nauthoritative: en\ntranslations:\n  en: doc-en.lgd\n"
+_EN = "language: en\nauthoritative: en\ntranslations:\n  fr: doc-fr.lgd\n"
+_DEF = "\"Services\" {{def: services}} means x. See {{term: services}}.\n"
+
+
+def _identifiers(front: str, body: str):
+    return _found(front, body, _IDENTIFIERS)
+
+
+def test_the_fixture_case_is_reported_for_the_translation_at_its_heading():
+    # fixtures/invalid/translation-implicit-id/doc-fr.lgd (the case's entry is doc-en.lgd, the
+    # primary, which a Core validator finds clean: the harness validates doc-fr.lgd, CONFORMANCE.md).
+    body = "# Definitions\n\n« Services » {{def: services}} désigne x. Voir {{term: services}}.\n"
+    assert _identifiers(_FR, body) == [("translation-implicit-id", "error", 9)]
+    assert _identifiers(_EN, "# Definitions {#definitions}\n\n" + _DEF) == []
+
+
+def test_the_fixture_case_for_an_absent_authoritative_is_reported_for_the_document_itself():
+    # fixtures/invalid/translation-authoritative-absent/doc-en.lgd
+    front = "language: en\ntranslations:\n  fr: doc-fr.lgd\n"
+    assert _identifiers(front, "# Definitions\n\n" + _DEF) == [("translation-authoritative-absent", "warning", 8)]
+
+
+def test_the_pair_of_section_14_2_is_clean():
+    # contract-en.lgd and contract-fr.lgd: identifiers explicit in both, `{{def:}}` included.
+    body = "# Definitions {#definitions}\n\n\"Confidential Information\" {{def: confidential-info}} means any information.\n"
+    assert _identifiers("language: en\ntranslations:\n  fr: contract-fr.lgd\nauthoritative: en\n", body) == []
+    assert _identifiers("language: fr\ntranslations:\n  en: contract-en.lgd\nauthoritative: en\n", body) == []
+
+
+def test_every_heading_and_def_without_an_identifier_is_one_error_at_its_line():
+    body = (
+        "# Definitions {#definitions}\n\n"
+        "« Services » {{def: services}} désigne x.\n\n"
+        "« Droit applicable » {{def:}} désigne y.\n\n"
+        "# Droit applicable\n\n"
+        "## Sous-section {#sub}\n\n"
+        "## Autre\n"
+    )
+    # The headings, then the definitions.
+    found = _identifiers(_FR, body)
+    assert found == [
+        ("translation-implicit-id", "error", 15),
+        ("translation-implicit-id", "error", 19),
+        ("translation-implicit-id", "error", 13),
+    ]
+    assert all(rule == "translation-implicit-id" and level == "error" for rule, level, _line in found)
+
+
+def test_a_def_without_an_identifier_is_an_error_though_its_heading_has_one():
+    body = "# Definitions {#definitions}\n\n« Services » {{def:}} désigne x.\n"
+    assert _identifiers(_FR, body) == [("translation-implicit-id", "error", 11)]
+
+
+def test_the_message_names_the_node_and_the_remedy():
+    body = "# Définitions\n\n« Services » {{def:}} désigne x.\n"
+    result = validate(parse(_source(_FR, body), filename="t.lgd"))
+    heading, definition = [d for d in result.diagnostics if d.rule == "translation-implicit-id"]
+    assert heading.message == (
+        "Heading 'Définitions' has no explicit identifier, and the document is a translation (fr, of the "
+        "authoritative en): write the primary's identifier, {#id} (§14.2)."
+    )
+    assert definition.message == (
+        "Definition 'Services' has no explicit identifier ('services' is generated from the term), and the "
+        "document is a translation (fr, of the authoritative en): write the primary's identifier, "
+        "{{def: id}} (§14.2)."
+    )
+
+
+def test_the_primary_is_not_a_translation():
+    assert _identifiers(_EN, "# Definitions\n\n" + _DEF.replace("{{def: services}}", "{{def:}}")) == [], (
+        "the primary's identifiers are generated, and mirrored into the translation (§14.2)"
+    )
+
+
+def test_the_same_language_as_the_authoritative_is_not_a_translation():
+    front = "language: en\nauthoritative: en\ntranslations:\n  en: other.lgd\n"
+    assert _identifiers(front, "# Definitions\n") == []
+
+
+def test_a_document_that_links_nothing_is_no_translation():
+    # §16.7 is about linked files: `fr` against `en` with no `translations` is the authoritative
+    # rule's Warning (above) alone, not an Error on every heading.
+    assert _identifiers("language: fr\nauthoritative: en\n", "# Definitions\n\n" + _DEF.replace("{{def: services}}", "{{def:}}")) == []
+
+
+def test_without_a_language_written_the_document_is_no_translation():
+    # The model's "en" is its own default: a document that does not say its language is not
+    # said to differ from `authoritative: fr` (its Warning is authoritative-not-declared).
+    front = "authoritative: fr\ntranslations:\n  fr: doc-fr.lgd\n"
+    assert _identifiers(front, "# Definitions\n") == []
+    assert _found(front) == []
+
+
+@pytest.mark.parametrize(
+    "front",
+    [
+        "language: english\nauthoritative: en\ntranslations:\n  en: a.lgd\n",
+        "language: fr\nauthoritative: EN\ntranslations:\n  en: a.lgd\n",
+        "language: en-US\nauthoritative: en\ntranslations:\n  fr: a.lgd\n",
+        "language: fr\nauthoritative: eng\ntranslations:\n  en: a.lgd\n",
+    ],
+)
+def test_a_code_that_is_no_language_makes_no_translation(front):
+    body = "# Definitions\n\n« Services » {{def:}} désigne x.\n"
+    assert _identifiers(front, body) == []
+    assert [rule for rule, _level, _line in _found(front)] == ["language-code-invalid"]
+
+
+def test_an_invalid_identifier_is_anchor_format_not_an_implicit_one():
+    body = "# Définitions {#Bad_Id}\n\n« Services » {{def: Bad_Id}} désigne x.\n"
+    result = validate(parse(_source(_FR, body), filename="t.lgd"))
+    rules = {d.rule for d in result.diagnostics}
+    assert "anchor-format" in rules and "translation-implicit-id" not in rules
+
+
+def test_a_duplicate_generated_identifier_is_an_error_at_each_declaration():
+    body = (
+        "# Définitions {#definitions}\n\n« Services » {{def:}} désigne x.\n\n« Services » {{def:}} désigne y.\n"
+    )
+    result = validate(parse(_source(_FR, body), filename="t.lgd"))
+    assert [(d.rule, d.line) for d in result.diagnostics if d.rule in {*_IDENTIFIERS, "def-duplicate-id"}] == [
+        ("def-duplicate-id", 13),
+        ("translation-implicit-id", 11),
+        ("translation-implicit-id", 13),
+    ]
+
+
+def test_a_heading_in_a_quote_or_a_list_is_no_section():
+    body = "# Définitions {#definitions}\n\n> ## Quoted\n\n- ## Item\n"
+    assert _identifiers(_FR, body) == []
+
+
+def test_a_document_without_a_source_map_is_judged_by_the_model():
+    document = Document.from_dict({
+        "metadata": {"title": "Contrat", "language": "fr", "authoritative": "en", "translations": {"en": "doc-en.lgd"}},
+        "sections": [{"title": "Définitions", "identifier": "", "blocks": []}, {"title": "Objet", "identifier": "objet"}],
+    })
+    found = [(d.rule, d.level, d.line) for d in validate(document).diagnostics if d.rule in _IDENTIFIERS]
+    assert found == [("translation-implicit-id", "error", None)]
+
+
+def test_a_fragment_is_no_translation():
+    document = parse("# Scope\n\nText.\n")
+    assert [d.rule for d in validate(document, fragment=True).diagnostics if d.rule in _IDENTIFIERS] == []
+
+
+# ── translation-authoritative-absent ──
+
+
+def test_without_an_authoritative_each_node_without_an_identifier_is_a_warning():
+    front = "language: en\ntranslations:\n  fr: doc-fr.lgd\n"
+    body = (
+        "# Scope\n\n" + _DEF.replace("{{def: services}}", "{{def:}}")
+        + "\n## Sub\n\n" + _DEF.replace("services", "other")  # explicit
+        + "\n# Last {#last}\n"
+    )
+    assert _identifiers(front, body) == [
+        ("translation-authoritative-absent", "warning", 8),
+        ("translation-authoritative-absent", "warning", 12),
+        ("translation-authoritative-absent", "warning", 10),
+    ]
+
+
+def test_both_files_of_a_pair_without_an_authoritative_warn_for_their_own_nodes():
+    for front in ("language: en\ntranslations:\n  fr: doc-fr.lgd\n", "language: fr\ntranslations:\n  en: doc-en.lgd\n"):
+        assert [rule for rule, _level, _line in _identifiers(front, "# Definitions\n")] == ["translation-authoritative-absent"]
+
+
+def test_the_warning_says_how_to_end_it():
+    front = "language: en\ntranslations:\n  fr: doc-fr.lgd\n"
+    result = validate(parse(_source(front, "# Definitions\n"), filename="t.lgd"))
+    (warning,) = [d for d in result.diagnostics if d.rule == "translation-authoritative-absent"]
+    assert warning.message == (
+        "Heading 'Definitions' has no explicit identifier, and authoritative is not declared, so the primary "
+        "cannot be told from its translations: declare authoritative, and write the primary's "
+        "identifier, {#id} (§14.2)."
+    )
+
+
+def test_explicit_identifiers_and_no_translations_draw_no_warning():
+    front = "language: en\ntranslations:\n  fr: doc-fr.lgd\n"
+    assert _identifiers(front, "# Definitions {#definitions}\n\n" + _DEF) == []
+    assert _identifiers("language: en\n", "# Definitions\n\n" + _DEF.replace("{{def: services}}", "{{def:}}")) == []
+    assert _identifiers("language: en\ntranslations: {}\n", "# Definitions\n") == []
+
+
+def test_an_authoritative_that_is_no_code_ends_neither_rule():
+    # Declared, so not absent; no language, so no translation: language-code-invalid alone.
+    front = "language: en\nauthoritative: English\ntranslations:\n  fr: doc-fr.lgd\n"
+    assert _identifiers(front, "# Definitions\n") == []
 
 
 # ── The documents the specification gives as right ────────────────

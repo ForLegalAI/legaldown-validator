@@ -15,7 +15,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import cache, partial
 from types import MappingProxyType
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from .._deprecation import LegaldownDeprecationWarning
 from ..directives import (
@@ -93,6 +93,9 @@ from .templates import (
     question_type,
 )
 from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
+
+if TYPE_CHECKING:
+    from ..definitions import DefinitionRef
 
 # Type aliases for the definitions-import callbacks: deprecated since 0.4.0,
 # removed in 0.5.0, with the callbacks (``validate(resolve=)`` replaces them).
@@ -247,6 +250,49 @@ def _check_date_field(
         else ""
     )
     result.error(rule, f"{label} '{value}' must be a valid ISO 8601 date (YYYY-MM-DD).{hint}")
+
+
+def _check_implicit_identifiers(
+    document: Document,
+    refs: Sequence[DefinitionRef],
+    declared_language: str,
+    where: Locator,
+    definition_line: Callable[[DefinitionRef], Line],
+    result: _Recorder,
+) -> None:
+    """The headings and ``{{def:}}`` without an explicit identifier of a document that links
+    translations (§14.2, §16.7), as far as the document alone shows: the Core rows (§17.2).
+
+    A translation (its ``language`` differs from its ``authoritative``, both declared and valid
+    codes, and it links the other files) draws an Error for each, since identifiers originate in the
+    primary and a translation mirrors them explicitly. Without ``authoritative`` the primary cannot
+    be told from its translations, and the document draws a Warning for each, as any linked file
+    does. The linked files' own identifiers are Full (§17.4, §17.5)."""
+    meta = document.metadata
+    if not meta.translations:
+        return
+    if not meta.authoritative:
+        rule, report = "translation-authoritative-absent", result.warning
+        why = "and authoritative is not declared, so the primary cannot be told from its translations"
+        fix = "declare authoritative, and write the primary's identifier"
+    elif declared_language != meta.authoritative and {declared_language, meta.authoritative} <= ISO_639_1_CODES:
+        rule, report = "translation-implicit-id", result.error
+        why = f"and the document is a translation ({declared_language}, of the authoritative {meta.authoritative})"
+        fix = "write the primary's identifier"
+    else:
+        return
+    for index, section in enumerate(document.sections):
+        if not section.identifier.strip():
+            report(
+                rule, f"Heading '{section.title}' has no explicit identifier, {why}: {fix}, {{#id}} (§14.2).",
+                line=where.heading(index),
+            )
+    for ref in refs:
+        if ref.auto_id:
+            report(
+                rule, f"Definition '{ref.term}' has no explicit identifier ('{ref.id}' is generated from the "
+                f"term), {why}: {fix}, {{{{def: id}}}} (§14.2).", line=definition_line(ref),
+            )
 
 
 def _check_duration_unit(unit: str, result: _Recorder) -> None:
@@ -1298,7 +1344,6 @@ def _validate(
     # Imported here to avoid a module-level import cycle (definitions ->
     # validator.helpers -> validator/__init__ -> core).
     from ..definitions import (
-        DefinitionRef,
         block_fragments,
         collect_definitions,
         find_definition_anchors,
@@ -1856,6 +1901,7 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
+    _check_implicit_identifiers(document, definition_refs, declared_language, where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():

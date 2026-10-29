@@ -85,6 +85,7 @@ IMPLEMENTED_RULES = {
     "side-name-duplicate", "side-name-malformed", "side-party-name-format",
     "side-unknown", "sides-absent", "sides-minimum", "supersedes-title-empty",
     "template-construct-present", "template-fragment-invalid", "term-undefined", "title-missing",
+    "translation-authoritative-absent", "translation-implicit-id",
 }
 
 
@@ -104,7 +105,26 @@ _DISPUTED_LINES = {
     # Line 10 is the second side; the duplicate party is its entry at line 12,
     # as side-name-duplicate and representative-name-empty point at theirs.
     ("basic.lgd", "party-name-duplicate", "error"),
+    # Line 8 is the second attachment's title; the duplicate id is written at line 7, on the
+    # entry's own `- id:`, as attachment-id-collision's is.
+    ("attachment-id-duplicate", "attachment-id-duplicate", "error"),
 }
+
+
+# Cases whose entry this implementation disputes, by case (directory) name: the file to validate
+# instead. translation-implicit-id expects its finding in doc-fr.lgd, but its entry is doc-en.lgd,
+# the primary, and the row is Core (§17.2): "every heading and `{{def:}}` carries an explicit
+# identifier when the document itself is a translation". A Core validator is "not required to
+# open any file other than the document itself" and reports translation rows only when the
+# validated document is itself a translation, so the primary draws nothing and the translation is
+# the entry to validate (CONFORMANCE.md).
+_DISPUTED_ENTRY = {
+    "translation-implicit-id": "doc-fr.lgd",
+}
+
+
+# The Core rules whose cases name the file too, asserted besides the line.
+_FILE_ASSERTED = {"include-not-legaldown", "translation-authoritative-absent", "translation-implicit-id"}
 
 
 def _load_expectation(case_dir_or_file: Path) -> tuple[Path, dict]:
@@ -119,7 +139,7 @@ def _load_expectation(case_dir_or_file: Path) -> tuple[Path, dict]:
         return case_dir_or_file, expected
     expected_path = case_dir_or_file / "expected.json"
     expected = json.loads(expected_path.read_text(encoding="utf-8"))
-    entry = case_dir_or_file / expected.get("entry", "main.lgd")
+    entry = case_dir_or_file / _DISPUTED_ENTRY.get(case_dir_or_file.name, expected.get("entry", "main.lgd"))
     return entry, expected
 
 
@@ -245,7 +265,12 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
     config = expected.get("requires_config") or {}
     if not set(config) <= _SUPPORTED_CONFIG:
         pytest.skip("requires runner configuration")
-    if case.is_dir() and len(list(case.glob("*.lgd"))) > 1 and not with_a_loader:
+    if (
+        case.is_dir()
+        and len(list(case.glob("*.lgd"))) > 1
+        and not with_a_loader
+        and any(diag.get("file", entry.name) != entry.name for diag in expected.get("diagnostics", []))
+    ):
         pytest.skip("multi-file case (single-document harness)")
 
     result = _validate_with_a_loader(entry) if with_a_loader else _validate_file(entry, config)
@@ -270,7 +295,7 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         # The file too (§16.9) for the cases that name a fragment's: the entry's own name for
         # what is in the entry, else the fragment's.
         file = diag.get("file")
-        if file is not None and line is not None and (with_a_loader or rule_id == "include-not-legaldown"):
+        if file is not None and line is not None and (with_a_loader or rule_id in _FILE_ASSERTED):
             assert (*want, line, file) in {(d.rule, d.level, d.line, d.file) for d in result.diagnostics}, (
                 f"expected {want} at {file}:{line}; got "
                 f"{sorted((d.file, d.line or 0) for d in result.diagnostics if (d.rule, d.level) == want)}"
