@@ -129,6 +129,13 @@ def test_a_note_and_code_are_no_use():
         assert _infos(text + "\n\n" + '"A" {{def: a}} means x.') == [], text
 
 
+def test_a_definition_in_a_drafting_note_is_no_declaration():
+    # Assembly removes the note (and drafting-note-def reports the definition): it declares nothing.
+    note = '> [!DRAFTING]\n> "A" {{def: a}} means x.'
+    assert _infos(f"See {{{{term: a}}}}.\n\n{note}") == []  # a use before it is not a use before a declaration
+    assert _infos(f"{note}\n\nSee {{{{term: a}}}}.") == []
+
+
 def test_an_id_no_definition_declares_is_term_undefined_alone():
     result = validate(parse(_source("The {{term: nothing}} apply."), filename="t.lgd"))
     rules = {d.rule for d in result.diagnostics}
@@ -185,6 +192,34 @@ def test_a_lifted_target_is_judged_by_its_offset_in_its_paragraph():
     # With some, after the definition that text holds.
     assert _infos('Text "B" {{def: b}} means x, {{term: b}} and then.') == []
     assert _infos('Text "B" {{def: b}} means x, {{term: b}} and "C" {{def: c}} means {{term: c}}.') == []
+
+
+def _lifted(text: str, prefix: str, suffix: str):
+    """The Infos of a document built with one term block, which has *text* too (the parser gives a
+    lifted block none; a model built in code may): fragments text, prefix, suffix."""
+    from legaldown import Document
+
+    document = Document.from_dict({
+        "metadata": {"title": "T"},
+        "sections": [{
+            "title": "S", "identifier": "s",
+            "blocks": [{"kind": "term", "text": text, "prefix": prefix, "target": "a", "suffix": suffix}],
+        }],
+    })
+    return [d.message for d in validate(document).diagnostics if d.rule == _RULE]
+
+
+def test_a_lifted_target_is_between_its_text_prefix_and_suffix_whatever_they_are():
+    defined = '"A" {{def: a}} means x.'
+    # Text, then prefix, then the target, then the suffix: a definition in the text or the prefix is before it.
+    assert _lifted(defined, "Then ", " end.") == []
+    assert _lifted("Text.", defined + " Then ", " end.") == []
+    assert _lifted("", defined + " Then ", " end.") == []
+    # ... one in the suffix is after it, with or without text and prefix.
+    assert len(_lifted("Text.", "Then ", " " + defined)) == 1
+    assert len(_lifted("Text.", "", " " + defined)) == 1
+    assert len(_lifted("", "", " " + defined)) == 1
+    assert len(_lifted("", "Then ", " " + defined)) == 1
 
 
 def test_own_term_of_is_the_one_self_reference_the_circle_has():

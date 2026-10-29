@@ -191,7 +191,7 @@ otherwise draw one for every use of every term. The fixture has it at the use, l
 `{{term:}}` in a drafting note (assembly removes it), in code or in a comment; one in a heading (§4.2 has no
 directive there); a use in the definition's own quoted term (`"Self {{term: s}}" {{def: s}}`), which is
 `definition-circular`'s; an id the document does not declare (`term-undefined`); an id the amended original
-declares, which is in force before the document (§7.5). A use is judged against the first declaration of its id that can appear with it (in a
+declares, which is in force before the document (§7.5). A `{{def:}}` in a drafting note is no declaration either (assembly removes it, and `drafting-note-def` reports it); nor is it a missing identifier for the translation rules. A use is judged against the first declaration of its id that can appear with it (in a
 template, one that can appear and is not excluded from the use's presence, §15.4): a use between two alternatives
 is judged against the one it resolves to, a declaration that can never appear is no declaration, and a use that can
 never appear is no use. The files the document includes and

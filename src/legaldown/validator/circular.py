@@ -62,10 +62,11 @@ class TermUse(NamedTuple):
     #: this use (``"Self {{term: s}}" {{def: s}}``), or None.
     owner: int | None = None
     #: Its offset in its fragment, and its line (§16.9, found only if asked): for
-    #: ``used_before_declaration``. For the target the parser lifted (no fragment) the offset is
-    #: where it was read in its paragraph: the length of the text before it.
+    #: ``used_before_declaration``. The target the parser lifted has no fragment: it is read
+    #: before the fragment ``before``, at offset -1 (``definitions.fragments_before_target``).
     offset: int = 0
     line: Line = None
+    before: int = 0
 
 
 def term_owners(
@@ -173,8 +174,7 @@ def used_before_declaration(
         declaration = first_declaration(use.target, use.presence)
         if declaration is None:
             continue
-        # A lifted target is in the first fragment, where the parser read it: at its offset in the paragraph.
-        written = place(use.section, use.block, 0 if use.fragment is None else use.fragment, use.offset)
+        written = place(use.section, use.block, use.before if use.fragment is None else use.fragment, use.offset)
         if written < declaration[0]:
             earlier.setdefault(declaration[1], []).append((written, use))
     for group in earlier.values():

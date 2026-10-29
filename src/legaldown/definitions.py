@@ -331,6 +331,13 @@ def _own_fragments(block: Block) -> list[tuple[str, bool]]:
     return [(text, position) for text, position, _scope in _scoped_fragments(block)]
 
 
+def fragments_before_target(block: Block) -> int:
+    """For a block the parser lifted a ``{{ref:}}`` or ``{{term:}}`` from: how many of its
+    ``block_fragments`` come before the target, so that it is read between that many and the
+    rest: its text and the text before it (``_scoped_fragments`` lists them, then the text after)."""
+    return bool(block.text) + bool(block.prefix)
+
+
 def _scoped_fragments(block: Block) -> list[tuple[str, bool, int]]:
     """``_own_fragments``, each with its scope within the block
     (``fragment_scopes``): 0 for the text, prefix and suffix, 1 for the
