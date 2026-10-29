@@ -42,17 +42,18 @@ def test_stripped_keys_of_translations_are_a_warning_at_each_ignored_entry():
     assert _found(front) == [(RULE, "warning", 4), (RULE, "warning", 5)]
 
 
-def test_stripped_keys_of_field_types_are_an_error_at_each_ignored_entry():
-    # `field-type-key-format` is an Error for the padded key (§3.2): so is the collision.
+def test_stripped_keys_of_field_types_are_a_warning_too():
+    # Nothing else sees a padded `field_types` key (`field-type-key-format` judges it stripped): the same level.
     front = "field_types:\n  a: x\n  ' a': y\n  'a ': z\n"
-    assert _found(front) == [(RULE, "error", 4), (RULE, "error", 5)]
+    assert _found(front) == [(RULE, "warning", 4), (RULE, "warning", 5)]
+    assert _found("field_types:\n  ' amount': date\n") == []
 
 
 def test_the_message_names_both_entries():
     result = validate(parse(_source("translations:\n  ' fr': a.lgd\n  fr: b.lgd\n")))
     (diagnostic,) = [d for d in result.diagnostics if d.rule == RULE]
     assert diagnostic.message == (
-        "The translations key \"' fr'\" is the same key as 'fr' once stripped: this entry is "
+        "The translations key `' fr'` is the same key as `fr` once stripped: this entry is "
         "ignored, and the entry at line 5 is the one read."
     )
 
@@ -70,7 +71,7 @@ def test_no_collision_no_finding():
 def test_a_blank_sibling_is_skipped_not_a_collision():
     assert _found("translations:\n  fr: a.lgd\n  ' fr': ''\n") == []  # #116: a blank entry is skipped
     assert _found("translations:\n  fr: a.lgd\n  ' fr':\n") == []
-    assert _found("field_types:\n  a: x\n  ' a': ' '\n") == [(RULE, "error", 4)]  # a blank description is kept
+    assert _found("field_types:\n  a: x\n  ' a': ' '\n") == [(RULE, "warning", 4)]  # a blank description is kept
 
 
 def test_the_mix_of_an_exact_repeat_and_a_padded_key():
@@ -100,9 +101,10 @@ def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
     assert parse(_source(front)).metadata.translations == {}
     messages = [d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
     assert messages == [
-        "The translations key '1' is written again: this entry is ignored, and the entry at line 6 is blank, so no entry is kept.",
-        "The translations key '1' is the same key as '\"1\"' once read as text: this entry is ignored, "
-        "and the entry at line 6 is blank, so no entry is kept.",
+        "The translations key `1` is written again: this entry is ignored, and the entry at line 6 is skipped "
+        "(its value is empty), so no entry is kept.",
+        "The translations key `1` is the same key as `\"1\"` once read as text: this entry is ignored, "
+        "and the entry at line 6 is skipped (its value is empty), so no entry is kept.",
     ]
     # a blank entry that is not the last of its key is no reason to say so
     front = "translations:\n  a: x\n  a: ''\n  ' a': z\n"
@@ -117,7 +119,7 @@ def test_a_value_that_refers_to_itself_is_read_as_before(name):
     front = f"{name}:\n  fr: &a [*a]\n  ' fr': &b [*b]\n  de: x\n  de: y\n"
     document = parse(_source(front))
     assert set(getattr(document.metadata, name)) == {"fr", "de"}
-    assert _found(front) == [(RULE, "warning" if name == "translations" else "error", 4), (RULE, "error", 6)]
+    assert _found(front) == [(RULE, "warning", 4), (RULE, "error", 6)]
 
 
 def test_a_key_merged_into_a_map_and_written_is_found_at_the_written_entry():
@@ -125,13 +127,13 @@ def test_a_key_merged_into_a_map_and_written_is_found_at_the_written_entry():
     assert document.source_map.key("field_types", "fr") == 6
 
 
-@pytest.mark.parametrize("name,level", [("translations", "warning"), ("field_types", "error")])
-def test_keys_that_are_different_yaml_keys_read_as_one_text_draw_the_level_of_a_stripped_key(name, level):
+@pytest.mark.parametrize("name", ["translations", "field_types"])
+def test_keys_that_are_different_yaml_keys_read_as_one_text_are_a_warning(name):
     front = f"{name}:\n  1: a\n  '1': b\n"
     assert getattr(parse(_source(front)).metadata, name) == {"1": "b"}
-    assert _found(front) == [(RULE, level, 4)]
+    assert _found(front) == [(RULE, "warning", 4)]
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert "is the same key as \"'1'\" once read as text:" in diagnostic.message  # no padding is involved
+    assert "is the same key as `'1'` once read as text:" in diagnostic.message  # no padding is involved
 
 
 @pytest.mark.parametrize("name", ["translations", "field_types"])
@@ -142,10 +144,20 @@ def test_the_same_yaml_key_written_twice_is_an_error(name, keys):
     assert _found(front) == [(RULE, "error", 4)]
 
 
-def test_a_key_is_shown_as_written_with_its_escapes():
-    front = 'translations:\n  "a\\nb": x\n  "a\\nb ": y\n'
+def test_a_key_is_shown_as_it_is_written_in_the_source():
+    front = 'translations:\n  "\\x66r": x\n  "fr ": y\n'
+    assert parse(_source(front)).metadata.translations == {"fr": "y"}
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert diagnostic.message.startswith("The translations key '\"a\\nb\"' is the same key as '\"a\\nb \"' once stripped")
+    assert diagnostic.message.startswith('The translations key `"\\x66r"` is the same key as `"fr "` once stripped')
+
+
+def test_keys_the_model_reads_as_one_through_their_text_are_grouped_by_what_it_holds():
+    # `!!binary Zm8=` is the bytes b'fo', which the model holds as the text "b'fo'", the other key's text.
+    front = "translations:\n  !!binary Zm8=: a.lgd\n  \"b'fo'\": b.lgd\n"
+    document = parse(_source(front))
+    assert document.metadata.translations == {"b'fo'": "b.lgd"}
+    assert set(document.source_map.maps["translations"].stays) == {"b'fo'"}
+    assert _found(front) == [(RULE, "warning", 4)]
 
 
 def test_a_repeat_whose_last_entry_is_blank_says_that_no_entry_is_kept():
@@ -154,9 +166,29 @@ def test_a_repeat_whose_last_entry_is_blank_says_that_no_entry_is_kept():
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
     assert (diagnostic.level, diagnostic.line) == ("error", 4)
     assert diagnostic.message == (
-        "The translations key 'fr' is written again: this entry is ignored, and the entry at line 5 is blank, "
-        "so no entry is kept."
+        "The translations key `fr` is written again: this entry is ignored, and the entry at line 5 is skipped "
+        "(its value is empty), so no entry is kept."
     )
+
+
+@pytest.mark.parametrize("front,reason", [
+    ("translations:\n  fr: a.lgd\n  fr: ~\n", "its value is null"),
+    ("translations:\n  fr: a.lgd\n  fr: '  '\n", "its value is blank"),
+    ("translations:\n  '': a.lgd\n  '': b.lgd\n", "its key is empty"),
+    ("translations:\n  ' ': a.lgd\n  ' ': b.lgd\n", "its key is blank"),
+])
+def test_the_message_says_why_the_model_keeps_none(front, reason):
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert diagnostic.level == "error" and diagnostic.line == 4
+    assert diagnostic.message.endswith(f"the entry at line 5 is skipped ({reason}), so no entry is kept.")
+
+
+def test_an_aliased_key_written_again_is_at_its_anchor_and_does_not_cite_itself():
+    # The YAML reader gives the alias its anchor's node, and so its line: the position is not recovered.
+    front = "translations:\n  &k fr: a.lgd\n  *k : b.lgd\n"
+    assert _found(front) == [(RULE, "error", 4)]
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert diagnostic.message == "The translations key `&k fr` is written again: this entry is ignored."
 
 
 def test_a_repeat_whose_last_entry_is_blank_is_still_judged_after_an_unrelated_edit():
@@ -226,13 +258,13 @@ def test_fragments_are_not_checked():
     ("translations:\n  fr: a\n  fr: b\n", "error"),  # invalid YAML to a strict reader
     ("translations:\n  fr: a\n  ' fr': b\n", "warning"),  # `language-code-invalid` is a Warning
     ("field_types:\n  a: a\n  a: b\n", "error"),
-    ("field_types:\n  a: a\n  ' a': b\n", "error"),  # `field-type-key-format` is an Error
+    ("field_types:\n  a: a\n  ' a': b\n", "warning"),  # as in `translations`
 ])
 def test_the_level_depends_on_the_case(front, level):
     assert [lvl for _rule, lvl, _line in _found(front)] == [level]
 
 
-# ── the line of a padded key, for every rule that reports on one ──
+# ── the line of a padded key, for the rules that report on one ──
 
 def test_a_padded_translations_key_is_found_at_its_own_line():
     front = "language: en\nauthoritative: en\ntranslations:\n  cs: ok.lgd\n  ' xx ': /abs.lgd\n"
@@ -240,7 +272,8 @@ def test_a_padded_translations_key_is_found_at_its_own_line():
     assert _found(front, rules) == [("language-code-invalid", "warning", 7), ("path-not-relative", "error", 7)]
 
 
-def test_a_padded_field_types_key_is_found_at_its_own_line():
+def test_a_field_types_key_is_judged_stripped_and_found_at_its_own_line():
+    # (A padded key that is valid once stripped draws nothing from these rules: only a bad one has a finding.)
     front = "field_types:\n  ok: x\n  ' Bad ': y\n  ' date ': z\n"
     assert _found(front, ("field-type-key-format", "field-type-key-reserved")) == [
         ("field-type-key-format", "error", 5), ("field-type-key-reserved", "error", 6)]
@@ -261,7 +294,7 @@ def test_the_path_of_the_entry_that_stays_is_judged_at_its_line():
 
 # ── what read_maps makes of a map is what the model holds ──
 
-_KEYS = ["fr", "' fr'", "'fr '", "'fr'", "FR", "' '", "''", "~", "null", "' FR '", "0", "false", "a", "' a'", "'1'", "1"]
+_KEYS = ["fr", "' fr'", "'fr '", "'fr'", "FR", "' '", "''", "~", "null", "' FR '", "0", "false", "a", "' a'", "'1'", "1", "!!binary Zm8=", "\"b'fo'\""]
 _VALUES = ["V", "''", "' '", "~", "null", "'  '", "0", "false", "[]", "{}", "[1]", "x y", '!!null "x"', "!!str", "'~'"]
 
 
@@ -291,7 +324,7 @@ def test_read_maps_agrees_with_the_model_on_generated_maps(seed):
         ignored = {each.entry.line for each in found.ignored} if found else set()
         for each in found.ignored if found else ():
             assert each.entry.key == each.by.key and each.by.line not in ignored, front
-            assert not each.held or stays[each.by.key] is each.by, front
+            assert each.skipped or stays[each.by.key] is each.by, front
         for index, row in enumerate(rows):
             # Every row is accounted for: it stays, it is reported, or the model skips it.
             line = 4 + index
@@ -303,8 +336,8 @@ def test_read_maps_takes_the_model_s_value_for_the_entry_that_stays():
     document = parse(_source(front))
     stays = document.source_map.maps["translations"].stays
     assert {key: entry.line for key, entry in stays.items()} == {"fr": 5, "de": 6}
-    assert [(i.entry.written, i.by.written, i.why, i.held) for i in document.source_map.maps["translations"].ignored] == [
-        ("fr", "' fr'", "stripped", True)
+    assert [(i.entry.written, i.by.written, i.why, i.skipped) for i in document.source_map.maps["translations"].ignored] == [
+        ("fr", "' fr'", "stripped", "")
     ]
 
 
@@ -315,7 +348,7 @@ def test_written_maps_and_read_maps_are_the_parsers_pair():
     loader = yaml.SafeLoader(block)
     node = loader.get_single_node()
     breaks = line_breaks(block)
-    maps = read_maps(written_maps(node, breaks, 2), loader.construct_object, loader.construct_document(node))
+    maps = read_maps(written_maps(node, block, breaks, 2), loader.construct_object, loader.construct_document(node))
     assert [(i.entry.line, i.by.line) for i in maps["translations"].ignored] == [(3, 4)]
 
 

@@ -223,9 +223,11 @@ replaces, at its own line, so that it does not go silently. The id is this imple
 `legaldown.grammar.FRONTMATTER_KEY_DUPLICATE_RULE`): the specification has no rule for it. The model reads the keys
 of these two maps as text, stripped, and keeps the last of the keys it reads as one (in the order the model holds
 them: `fr: a`, `' fr': b`, `fr: c` keeps the entry at the second line, not the last written). Each entry that does
-not stay is reported at its own line, and the finding names the line of the one that does, and says that it is
-blank only if it is (then the model keeps no entry of the key, and the finding says so). The keys are shown as
-written, quotes included, so that `1` and `"1"` differ. Three cases:
+not stay is reported at its own line, and the finding names the line of the one that does; when the model keeps
+none, because the last entry written has an empty or blank key or a null, empty or blank value, the finding
+says which. The keys are shown as they are written in the source (quotes and escapes included, between backticks),
+so that `1` and `"1"` differ; an aliased key (`&k fr`, then `*k`) is one node for the YAML reader, which keeps
+no position for the alias, so it is at its anchor's line, and the finding does not name that line again. Three cases:
 
 - **The same YAML key written twice** (`fr` and `fr`, or `fr` and `"fr"`): invalid YAML, which a strict loader
   fails as `frontmatter-invalid-yaml`, and this implementation's YAML reader, like PyYAML, reads as the last.
@@ -235,20 +237,21 @@ written, quotes included, so that `1` and `"1"` differ. Three cases:
 - **Keys that strip alike** (`fr` and `' fr'`), "once stripped": the reader strips these keys
   ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)).
 
-The last two are an Error in `field_types`, where the padded key is `field-type-key-format`'s Error already, and a
-**Warning in `translations`**: the specification judges a padded language code a Warning (`language-code-invalid`),
-and a rule of this implementation's own does not fail a document that the specification only warns of. A
-`translations` entry that is blank once stripped is skipped before it can replace a sibling (#116), so it draws
-nothing; a blank `field_types` description is a declaration, and does. A key merged into a map (`<<`) is not an
-entry written there, and a mapping shared through an alias is judged under each map that holds it. An aliased key
-has the position of its anchor (the YAML reader keeps none for the alias).
+The last two are a **Warning**, in both maps: the specification does not forbid them (it judges a padded language
+code a Warning, `language-code-invalid`, and says nothing of a padded `field_types` key, which no other rule sees
+as the reader strips it), and a rule of this implementation's own does not fail a document that the specification
+accepts. The first is an Error. A `translations` entry that is blank once stripped is skipped before it can replace
+a sibling (#116), so it draws nothing; a blank `field_types` description is a declaration, and does. A key merged
+into a map (`<<`) is not an entry written there, and a mapping shared through an alias is judged under each map that
+holds it.
 
 **Other mappings are not checked yet:** a key written twice in any other frontmatter mapping (`title:` twice, a
 party's `name:` twice, `questions` keys that read alike) is still silent, as the YAML reader resolves it to the
 last ([#131](https://github.com/ForLegalAI/legaldown-validator/issues/131)).
 
-Every other check finds the padded key at its own line (`language-code-invalid`, `path-not-relative`,
-`field-type-key-format`, `placeholder-in-structural-field`), and the path of the entry that stays is the one judged.
+The keys of these maps are found at the line where they are written, padded or not, by the checks that report on
+one (`language-code-invalid`, `path-not-relative`, `placeholder-in-structural-field`, and the checks of a `field_types`
+key, which judge it stripped), and the path of the entry that stays is the one judged.
 A document built from a dict has no source map, so it draws no finding; neither does a document whose body
 was changed after it was parsed, nor an entry for a key that the model no longer holds (or holds again after it
 did not): the findings are judged against the model. A fragment (`fragment=True`) has no metadata to check.

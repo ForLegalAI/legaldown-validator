@@ -1426,34 +1426,36 @@ def _validate(
             )
 
     # ── Entries of `translations` and `field_types` that another replaces (#126) ──
-    # The model keeps the last of the keys of these maps that it reads as one: the same key written twice
-    # (`fr` and `"fr"` too), keys that read alike as text (`1` and `'1'`), keys that strip alike (`fr` and
-    # `' fr'`). The earlier entry is never checked, and nothing else says so: each is reported at its own line,
-    # naming the entry the model keeps. A rule of this implementation (§16.1). An Error when YAML itself
-    # rejects the key written twice (strict readers fail the document as `frontmatter-invalid-yaml`) and in
-    # `field_types`, where a padded key is `field-type-key-format`'s Error already; a Warning for different
-    # `translations` keys, as the specification judges a padded language code a Warning
-    # (`language-code-invalid`) and a rule of ours does not fail a document it accepts. Judged against the
-    # model, not for one edited since it was parsed. Other mappings are not checked (#131).
+    # The model reads the keys of these maps as text, stripped, and keeps the last of the keys it reads as
+    # one: the same key written twice (`fr` and `"fr"` too), keys that read alike as text (`1` and `'1'`),
+    # keys that strip alike (`fr` and `' fr'`). The earlier entry is never checked, and nothing else says so:
+    # each is reported at its own line, naming the entry the model keeps. A rule of this implementation
+    # (§16.1). An Error when YAML itself rejects the key written twice (strict readers fail the document as
+    # `frontmatter-invalid-yaml`); a Warning for different keys the model reads as one, as the specification
+    # judges a padded language code a Warning (`language-code-invalid`) and a rule of ours does not fail a
+    # document it accepts. Judged against the model, not for one edited since it was parsed. Other mappings
+    # are not checked (#131).
     if not mode.empty_metadata:
         for map_name, each in where.ignored():
-            if (each.by.key in getattr(document.metadata, map_name)) != each.held:
+            if (each.by.key in getattr(document.metadata, map_name)) == bool(each.skipped):
                 continue
+            entry, by = each.entry, each.by
             what = {
                 "repeated": "is written again",
-                "text": f"is the same key as {each.by.written!r} once read as text",
-                "stripped": f"is the same key as {each.by.written!r} once stripped",
+                "text": f"is the same key as `{by.written}` once read as text",
+                "stripped": f"is the same key as `{by.written}` once stripped",
             }[each.why]
-            stays = (
-                f"the entry at line {each.by.line} is the one read"
-                if each.held
-                else f"the entry at line {each.by.line} is blank, so no entry is kept"
-            )
-            report = result.warning if map_name == "translations" and each.why != "repeated" else result.error
+            if each.skipped:
+                stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"
+            elif by.line != entry.line:  # an aliased key is at its anchor's line, wherever it is written again
+                stays = f", and the entry at line {by.line} is the one read"
+            else:
+                stays = ""
+            report = result.error if each.why == "repeated" else result.warning
             report(
                 FRONTMATTER_KEY_DUPLICATE_RULE,
-                f"The {map_name} key {each.entry.written!r} {what}: this entry is ignored, and {stays}.",
-                line=each.entry.line,
+                f"The {map_name} key `{entry.written}` {what}: this entry is ignored{stays}.",
+                line=entry.line,
             )
 
     # ── Metadata dates (§16.6) ──

@@ -873,14 +873,14 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Includes** | An include of a file that is not LegalDown, a fragment that is missing, with frontmatter or a level-1 heading, or whose headings skip a level where it is spliced in; with a template, a fragment that holds what §15.3 forbids |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
-| **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2, a `language`, `authoritative` or `translations` key that is not an ISO 639-1 code, an `authoritative` language the document does not declare, a `translations` or `field_types` entry that another replaces, the same key written twice or keys the model reads as one (`ldv-frontmatter-key-duplicate`, this implementation's own id, §16.1; an Error, a Warning for different `translations` keys, as the specification only warns of a padded language code; other mappings are not checked yet, #131), and in a document that links translations the headings and definitions without an explicit identifier (an Error in a translation, a Warning when `authoritative` is absent) |
+| **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2, a `language`, `authoritative` or `translations` key that is not an ISO 639-1 code, an `authoritative` language the document does not declare, a `translations` or `field_types` entry that another replaces, the same key written twice or keys the model reads as one (`ldv-frontmatter-key-duplicate`, this implementation's own id, §16.1; an Error for the same key written twice, a Warning for different keys the model reads as one; other mappings are not checked yet, #131), and in a document that links translations the headings and definitions without an explicit identifier (an Error in a translation, a Warning when `authoritative` is absent) |
 | **Beyond Core** | `ldv-check-skipped` (Warning, this implementation's own id, §16.1): for each category of checks that a construct in the document calls for and the validation did not perform, as §17.5 requires, once and listing exactly what was not done ([below](#scope)) |
 
 Each check reports at the severity the specification assigns it — Error, Warning, or Info. The
 exceptions are the rules of this implementation's own (§16.1, the prefix `ldv-`): the Warning
 `ldv-check-skipped` ([Scope](#scope)), the Error `ldv-include-limit` of assembly, and
-`ldv-frontmatter-key-duplicate`, an Error but for different `translations` keys that the model reads as one, a
-Warning, since the specification only warns of a padded language code.
+`ldv-frontmatter-key-duplicate`, an Error for the same key written twice and a Warning for different keys that
+the model reads as one (the specification does not forbid a padded key).
 
 ## Assembly
 

@@ -244,9 +244,25 @@ def _check_frontmatter_option(on_frontmatter_error: str) -> None:
         raise ValueError(f"on_frontmatter_error must be 'raise' or 'keep', not {on_frontmatter_error!r}")
 
 
-def _split_frontmatter(
-    source: str, keep_error: bool = False
-) -> tuple[list[str], dict[str, Any], str, bool, dict[tuple[Any, ...], int], FrontmatterError | None, dict[str, StrippedMap]]:
+class _Frontmatter(NamedTuple):
+    """What ``_split_frontmatter`` makes of a source, in the order of its docstring."""
+
+    not_line_editable: list[str]
+    metadata: dict[str, Any]
+    body: str
+    absent: bool
+    keys: dict[tuple[Any, ...], int]
+    error: FrontmatterError | None
+    maps: dict[str, StrippedMap]
+
+
+def _no_fields(body: str, absent: bool = False, error: FrontmatterError | None = None) -> _Frontmatter:
+    """A source with no frontmatter fields: absent, or present and empty (only its opening ``---`` is in
+    *lines*), or unreadable (*error*)."""
+    return _Frontmatter([], {}, body, absent, {} if absent else {(): 1}, error, {})
+
+
+def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
     body, absent, lines, error, maps)``; the first is read from how the YAML
     is written, which the parsed data loses, and *lines* is where each
@@ -265,16 +281,16 @@ def _split_frontmatter(
     body, so that it can be validated (#43)."""
     match = FRONTMATTER_RE.match(source)
     if not match:
-        return [], {}, source, True, {}, None, {}
+        return _no_fields(source, absent=True)
     loader = None
     try:
         # Inside the try: a character YAML does not allow fails the reader here.
         loader = _StrDateSafeLoader(match.group(1) or "")
         node = loader.get_single_node()
         if node is None:
-            return [], {}, source[match.end():], False, {(): 1}, None, {}
+            return _no_fields(source[match.end():])
         if not isinstance(node, yaml.MappingNode):
-            return [], {}, source, True, {}, None, {}
+            return _no_fields(source, absent=True)
         if node.tag != "tag:yaml.org,2002:map":
             # A mapping tagged as something else (!!set, a flow !!omap) is
             # meant as frontmatter, but holds no fields. (A block !!omap is
@@ -288,7 +304,7 @@ def _split_frontmatter(
         # The YAML starts on the line after the opening `---` (line 1).
         breaks = line_breaks(match.group(1) or "")
         keys = {(): 1, **frontmatter_keys(node, breaks, 2)}
-        written = written_maps(node, breaks, 2)
+        written = written_maps(node, match.group(1) or "", breaks, 2)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
@@ -298,7 +314,7 @@ def _split_frontmatter(
         if not keep_error:
             raise
         _forget_frames(exc)
-        return [], {}, source[match.end():], False, {(): 1}, exc, {}
+        return _no_fields(source[match.end():], error=exc)
     except (yaml.YAMLError, ValueError, KeyError, RecursionError) as exc:
         # What the YAML says, not a fault of this parser: malformed YAML, a
         # value its tag cannot hold (an integer too long to convert; a
@@ -309,13 +325,13 @@ def _split_frontmatter(
             raise error from exc
         error.__cause__ = exc  # as `raise ... from` sets it
         _forget_frames(error)
-        return [], {}, source[match.end():], False, {(): 1}, error, {}
+        return _no_fields(source[match.end():], error=error)
     finally:
         if loader is not None:
             loader.dispose()
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
-    return not_line_editable, metadata, source[match.end():], False, keys, None, maps
+    return _Frontmatter(not_line_editable, metadata, source[match.end():], False, keys, None, maps)
 
 
 def _file_line(block: str, index: int) -> int:
