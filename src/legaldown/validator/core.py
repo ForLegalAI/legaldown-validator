@@ -61,6 +61,7 @@ from .helpers import (
     is_valid_iso_date,
     is_valid_money_amount,
     slugify_identifier,
+    translation_keys,
 )
 from .paths import FileReferences, ReferenceImages, check_fragment_images, check_frontmatter_paths, check_heading_images
 from .patterns import (
@@ -1440,27 +1441,24 @@ def _validate(
     # comparisons judge only the codes that pass (`authoritative_mismatch`, and the translation
     # rules below): one typo draws one Warning.
     language = meta.language
-    written_keys: dict[str, str] = {}  # each translations key as written (padded, blank), the first of those alike
-    for raw in where.children("translations"):
-        written_keys.setdefault(raw.strip(), raw)
-    # The language and the authoritative language when they are set; every translations key, a blank one too.
-    for label, code, shown, path in [
-        *[("language", c, c, ("language",)) for c in [language] if c],
-        *[("authoritative", c, c, ("authoritative",)) for c in [meta.authoritative] if c],
-        *[
-            ("translations key", key, written_keys.get(key, key), ("translations", written_keys.get(key, key)))
-            for key in meta.translations
-        ],
+    written_keys = {raw.strip(): raw for raw in where.children("translations")}  # as written, padded
+    # The language and the authoritative language when they are set, and each translations key that is
+    # not blank (a blank one is no language of the group, and draws no rule).
+    for label, code, path in [
+        *[("language", c, ("language",)) for c in [language] if c],
+        *[("authoritative", c, ("authoritative",)) for c in [meta.authoritative] if c],
+        *[("translations key", written_keys.get(key, key), ("translations", written_keys.get(key, key)))
+          for key in translation_keys(meta)],
     ]:
-        if code not in ISO_639_1_CODES and not named(code, "placeholder"):
+        if code.strip() not in ISO_639_1_CODES and not named(code, "placeholder"):
             result.warning(
                 "language-code-invalid",
-                f"The {label} '{shown}' must be an ISO 639-1 language code: two lowercase letters, "
+                f"The {label} '{code}' must be an ISO 639-1 language code: two lowercase letters, "
                 f"such as 'en' or 'cs'.", line=where.key(*path),
             )
     if authoritative_mismatch(meta):
         own_language = f"'{language}'" if language else "not declared"
-        keys = ", ".join(f"'{key}'" for key in meta.translations) or "none"
+        keys = ", ".join(f"'{key}'" for key in translation_keys(meta)) or "none"
         result.warning(
             "authoritative-not-declared",
             f"authoritative '{meta.authoritative}' is neither the document's language ({own_language}) "
@@ -1864,16 +1862,12 @@ def _validate(
             notes_of_block[section, index] = [quote for quote in block_quotes(block) if quote.is_drafting_note]
         return notes_of_block[section, index]
 
-    def outside_notes(refs: Sequence[DefinitionRef]) -> list[DefinitionRef]:
-        """The definitions of *refs* that are not in a drafting note: assembly removes those, and
-        ``drafting-note-def`` reports them, so they are no declaration of the document's text."""
-        return [
-            ref for ref in refs
-            if ref.fragment_index is None
-            or not in_drafting_note(drafting_notes(ref.section_index, ref.block_index), ref.fragment_index)
-        ]
-
-    outside = outside_notes(definition_refs)
+    def in_a_note(ref: DefinitionRef) -> bool:
+        """Whether a definition is in a drafting note: assembly removes it, and ``drafting-note-def``
+        reports it, so it is no declaration of the document's text."""
+        return ref.fragment_index is not None and in_drafting_note(
+            drafting_notes(ref.section_index, ref.block_index), ref.fragment_index
+        )
 
     def definition_line(ref: Any) -> int | None:
         if ref.fragment_index is None:  # a definition block's own anchor
@@ -1885,6 +1879,9 @@ def _validate(
     # The definitions that are registered, and the {{term:}} uses outside
     # drafting notes, for definition-circular (§16.3, #105).
     registered: list[tuple[DefinitionRef, Presence]] = []
+    #: Every definition with a valid id written outside a drafting note, a duplicate too, for
+    #: definition-used-before-declaration.
+    written: list[tuple[DefinitionRef, Presence]] = []
     term_uses: list[TermUse] = []
     for ref in definition_refs:
         def_id = ref.id
@@ -1903,6 +1900,8 @@ def _validate(
                 f"id (§5.3, §7.2).", line=definition_line(ref),
             )
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
+        if not in_a_note(ref):
+            written.append((ref, presence))
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.
         together = [
@@ -1926,14 +1925,7 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
-    _check_implicit_identifiers(document, outside, where, definition_line, result)
-    # Every definition written outside a drafting note, a duplicate too, with a valid id, for
-    # definition-used-before-declaration.
-    written = [
-        (ref, units.presence(ref.section_index, ref.block_index, ref.fragment_index))
-        for ref in outside
-        if IDENTIFIER_RE.fullmatch(ref.id)
-    ]
+    _check_implicit_identifiers(document, [ref for ref in definition_refs if not in_a_note(ref)], where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():

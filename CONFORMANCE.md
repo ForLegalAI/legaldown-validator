@@ -206,7 +206,7 @@ codes of the registry (`legaldown.grammar.ISO_639_1_CODES`, beside `KNOWN_CURREN
 registry has them: `EN`, `en-US` and `eng` draw the Warning once, at the line of the value, which says
 what to write (a `translations` key is also the path's lookup key, and `authoritative` is compared with the
 keys exactly). The check covers `language`, a non-empty `authoritative`, and each `translations` key (found by the
-key as stripped, if it is written padded; a blank key, `""` or `"  "`, is kept with its value and is no code; keys that are alike once stripped are one, the first staying); a value holding a `{{placeholder:}}` is
+key as stripped, if it is written padded; a key that is blank once stripped (`"  "`; the frontmatter reader drops `""`) is no language of the group, and draws none of these rules); a value holding a `{{placeholder:}}` is
 `placeholder-in-structural-field`'s alone. `authoritative` must equal the document's `language` or a
 `translations` key. §3.2 gives `language` no default, so the model holds none (`Metadata.language` is `""` for a
 document that says none, an empty `language:` included, and `empty_document()` says `"en"`), and
@@ -226,7 +226,7 @@ group: §16.7 is about linked files, so a document that links nothing is
 no translation (`authoritative-not-declared` is the finding for `language: fr` with `authoritative: en`
 and no `translations`), a code that is no code is not compared, and a typo in `authoritative`
 (`de` for `en`) is `authoritative-not-declared` alone, not an Error on every heading of what may be the primary.
-`authoritative-not-declared` judges only valid codes, so it is silent when a `translations` key is no code, a blank one included (the key may be
+`authoritative-not-declared` judges only valid codes, so it is silent when a `translations` key is no code (the key may be
 what was meant), and then the absence of `authoritative` from the keys is not held against the document: `language: de`,
 `authoritative: cs`, `translations: {Fr: …}` draws `language-code-invalid` for the key and, for each heading
 and `{{def:}}` without an identifier, `translation-implicit-id`; with every key valid it draws

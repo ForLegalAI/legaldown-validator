@@ -43,12 +43,16 @@ DELIMITER_PAIRS: list[tuple[str, str, str, bool]] = [
     ("‹", "›", "single-guillemets", True),      # < >
 ]
 
-# Per-language accepted delimiter names. Empty / missing -> all pairs accepted.
+# Per-language accepted delimiter names, by lowercase language code. A language with no entry
+# accepts all pairs, and so does every language today: the table is empty. ``accepted_delimiters``
+# reads a document that says no language (``""``) as English.
 DELIMITERS_BY_LANGUAGE: dict[str, list[str]] = {}
 
 
 def accepted_delimiters(language: str | None) -> list[tuple[str, str, str, bool]]:
-    """Return the delimiter pairs accepted for *language* (all by default)."""
+    """Return the delimiter pairs accepted for *language*: an empty or missing language is read
+    as ``"en"`` (§3.2 gives ``language`` no default), and a language with no entry in
+    ``DELIMITERS_BY_LANGUAGE`` accepts all pairs, which is every language while the table is empty."""
     names = DELIMITERS_BY_LANGUAGE.get((language or "en").lower())
     if not names:
         return list(DELIMITER_PAIRS)
