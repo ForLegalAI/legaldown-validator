@@ -892,12 +892,94 @@ def test_a_document_with_unreadable_frontmatter_is_checked_to_the_line():
         ("[Note]: {{placeholder: p}} shall pay.\n", False),
         ("[a]: u\n[label]: {{placeholder: p}}\n", True),
         ("- [label]: {{placeholder: p}}\n", True),
+        # Unchanged by #119: nothing of the definition's destination, and no title slot.
+        ("[a]: u {{placeholder: p}} v\n", False),
+        ("[a]: <x {{placeholder: p}} y\n", False),
+        ("[a]: <x\n{{placeholder: p}} y>\n", False),
+        ("Text [a]: <x {{placeholder: p}} y>\n", False),
+        ("[a]: <x {{placeholder: p}} y> shall pay.\n", False),
+        ("[a]: u\n[b]: v\n", False),
+        ("[a]: u {{ref: q}}\n", False),
+        ("[a]: u {{ref: q}} {{placeholder: p}}\n", False),  # only an insertion could be the title
+        ("[a]: u {{placeholder: p}} {{ref: q}}\n", False),
+        # An ATX heading or a table cell holds no definition: read as before #119 (a bare destination, a closed title).
+        ("# [a]: u {{placeholder: p}}\n", False),
+        ("# [a]: <x {{placeholder: p}} y>\n", False),
+        ("- # [a]: u {{placeholder: p}}\n", False),
+        ("> # [a]: u {{placeholder: p}}\n", False),
+        ("| x |\n|---|\n| [a]: u {{placeholder: p}} |\n", False),
+        ("| [a]: <x {{placeholder: p}} y> |\n|---|\n| z |\n", False),
+        ("# [a]: {{placeholder: p}}\n", True),
+        ("| x |\n|---|\n| [a]: {{placeholder: p}} |\n", True),
     ],
 )
 def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body, error):
     template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n---\n\n# A\n\n" + body
     rules = validate(parse(template)).rules()
     assert ("insertion-boundary" in rules) is error
+
+
+@pytest.mark.xfail(strict=True, reason="a title is not read as one an answer could make, nor a destination on the next line, nor a setext heading that spans lines (#129)")
+@pytest.mark.parametrize(
+    "body",
+    [
+        '[a]: u "t" {{choose: q}}\n',  # an empty {{choose:}} phrase makes it a definition
+        '[a]: u {{choose: q}} "t"\n',  # the same: it becomes the title's place
+        '[a]: u {{placeholder: p}}"\n',  # an answer that opens a quote makes it a title
+        "[a]:\n{{placeholder: p}}\n",  # an answer makes it a definition
+        # The parser joins the lines of a setext heading's text: an insertion in one that spans lines is not seen.
+        "[a]: u {{placeholder: p}}\nText\n===\n",
+        "Text\n[a]: u {{placeholder: p}}\n===\n",
+        "[b]: {{placeholder: p}}\n[a]: u\n===\n",
+        "- [a]: u {{placeholder: p}}\n  Text\n  ===\n",
+        "[a]: u\n[b]: <x {{placeholder: p}} y>\nmore\n===\n",
+    ],
+)
+def test_an_insertion_after_a_title_or_on_the_next_line_or_in_a_setext_heading_of_lines_is_off_limits(body):
+    template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n  q:\n    type: boolean\n    prompt: Q?\n---\n\n# A\n\n" + body
+    assert "insertion-boundary" in validate(parse(template)).rules()
+
+
+@pytest.mark.parametrize(
+    ("body", "lines"),
+    [
+        ("[a]: <x {{placeholder: p}} y>\n", [14]),  # #119: blanks in a <…> destination
+        ("[a]: u {{placeholder: p}}\n", [14]),  # #119: where an answer could be the title
+        ("[a]: <x y> {{placeholder: p}}\n", [14]),
+        ("[a]: <{{placeholder: p}} y>\n", [14]),
+        ('[a]: <x {{placeholder: p}} y> "t"\n', [14]),
+        ("[a]: <x \\> {{placeholder: p}} y>\n", [14]),
+        ("[a]: u {{placeholder: p}} {{placeholder: p}}\n", [14, 14]),
+        ("[a]: u \t{{choose: q}}  \n", [14]),
+        ("- [a]: u {{placeholder: p}}\n", [14]),
+        ("> [a]: <x {{placeholder: p}} y>\n", [14]),
+        ("[a]: <x y>\n[b]: <{{placeholder: p}} z>\n", [15]),
+        # A setext heading's text holds a definition: CommonMark takes it out of the paragraph before the underline.
+        ("[a]: u {{placeholder: p}}\n===\n", [14]),
+        ("[a]: u {{placeholder: p}}\n---\n", [14]),
+        ("- [a]: u {{placeholder: p}}\n  ===\n", [14]),
+        ("> [a]: u {{placeholder: p}}\n> ===\n", [14]),
+        # An over-approximation: a line that continues a paragraph is read like any other (§15.7.3 is per line).
+        ("Text\n[a]: u {{placeholder: p}}\n", [15]),
+        ("[b]: v\nText\n[a]: <x {{placeholder: p}} y>\n", [16]),
+        ("{{choose: q}}\n[a]: u {{placeholder: p}}\n", [15]),
+        ("[b]: v {{placeholder: p}}\n[a]: u {{placeholder: p}}\n", [14, 15]),
+    ],
+)
+def test_an_insertion_in_the_destination_of_a_definition_is_off_limits(body, lines):
+    template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n  q:\n    type: boolean\n    prompt: Q?\n---\n\n# A\n\n" + body
+    result = validate(parse(template))
+    assert [d.line for d in result.diagnostics if d.rule == "insertion-boundary"] == lines
+
+
+def test_a_heading_of_a_model_without_a_source_is_read_as_an_atx_one():
+    """Where it is not known how a heading is written (the document no longer fits its source), it is the ATX
+    form that a model is saved in: it holds no definition."""
+    template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n---\n\n# A\n\n- [a]: u {{placeholder: p}}\n  ===\n"
+    document = parse(template)
+    assert "insertion-boundary" in validate(document).rules()
+    document.source_map = None
+    assert "insertion-boundary" not in validate(document).rules()
 
 
 # ── Known differences from CommonMark (CONFORMANCE.md) ────────────

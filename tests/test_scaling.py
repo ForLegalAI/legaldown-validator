@@ -17,7 +17,7 @@ import time
 import pytest
 
 from legaldown import directives as directives_module
-from legaldown import markdown
+from legaldown import markdown, positions
 from legaldown.directives import lex, mask_directives
 from legaldown.parser import parse
 from legaldown.validator import circular, core, paths, templates, validate
@@ -214,6 +214,9 @@ _REFERENCE_LINES = {
     "unclosed quoted titles": '[a]: u "{{placeholder: a}}\n',
     "unclosed single-quoted titles": "[a]: u '{{placeholder: a}}\n",
     "empty labels": "[]: u {{placeholder: a}}\n",
+    "angle destinations with blanks": "[a]: <x {{placeholder: a}} y>\n",  # #119
+    "title slots": "[a]: u {{placeholder: a}}\n",  # #119
+    "unclosed angle destinations": "[a]: <x {{placeholder: a}} y\n",  # #119
 }
 
 
@@ -227,6 +230,64 @@ def test_a_label_or_title_with_no_closer_is_not_read_to_the_end_at_each_line(sha
     insertions = [directive for directive in lexed.directives if directive.name == "placeholder"]
     assert len(insertions) == 20000
     assert _seconds(lambda: [scan.problem(insertion) for insertion in insertions]) < 1.0  # 0.1 s now
+
+
+class _CountingPlaces(dict):
+    """The places of a leaf (``positions._Leaf.places``), counting each time one is read."""
+
+    def __init__(self, places, counts):
+        super().__init__(places)
+        self.counts = counts
+
+    def __contains__(self, key):
+        self.counts[0] += 1
+        return super().__contains__(key)
+
+    def __getitem__(self, key):
+        self.counts[0] += 1
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.counts[0] += 1
+        return super().get(key, default)
+
+    def __iter__(self):
+        self.counts[0] += 1
+        return super().__iter__()
+
+
+@pytest.mark.parametrize(
+    "item", ["- # T {{placeholder: a}}\n", "- [a]: u {{placeholder: a}}\n"], ids=["heading, no diagnostic", "definition, a diagnostic"]
+)
+def test_the_leaf_of_each_fragment_of_a_long_list_is_found_without_a_scan_of_its_items(monkeypatch, item):
+    """The form of a heading in a list item (ATX or setext, #119), and the line of a diagnostic in an item, looked
+    up the item's leaf among those of the list: 8 s for 16000 headings, 10 s for 16000 diagnostics. A map made
+    once for the list finds it now. Counted, so that the test does not depend on the speed of the machine: the
+    leaves read are the number of items, a few times, not its square."""
+    reads = [0]
+    read_leaves = positions.Locator._read_leaves
+
+    def counting(self, section, index):
+        leaves = read_leaves(self, section, index)
+        for leaf in leaves or ():
+            leaf.places = _CountingPlaces(leaf.places, reads)
+        return leaves
+
+    monkeypatch.setattr(positions.Locator, "_read_leaves", counting)
+    items = 4000
+    result = validate(_document(item * items, _QUESTIONS))
+    assert len(result.diagnostics) == (items if "[a]" in item else 0)
+    assert 0 < reads[0] <= 4 * items, reads[0]  # 1 or 2 per item now; the scan made 8,000,000
+    monkeypatch.undo()
+    document = _document(item * 16000, _QUESTIONS)
+    assert _seconds(validate, document) < 6.0  # 2.5 s now; the scan took 10 s
+
+
+def test_an_angle_destination_with_no_closer_is_read_once_to_the_end_of_its_line():
+    text = "[a]: <" + "x " * 200_000 + "{{placeholder: a}}\n"  # 400000 characters
+    lexed = lex(text)
+    scan = templates._InsertionScan(text, mask_directives(text, lexed.directives), lexed.directives)
+    assert _seconds(lambda: [scan.problem(directive) for directive in lexed.directives]) < 1.0  # 0.2 s now
 
 
 def test_a_definition_line_and_its_trailing_blanks_are_read_once_for_the_insertions_it_holds(monkeypatch):

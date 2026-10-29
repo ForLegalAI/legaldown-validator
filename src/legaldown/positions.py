@@ -7,6 +7,7 @@ a dict has none, and its diagnostics carry no line.
 from __future__ import annotations
 
 import bisect
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -379,7 +380,9 @@ class Locator:
         source_map = document.source_map
         self._map: SourceMap | None = source_map if source_map is not None and source_map.fits(document) else None
         self._document = document
-        self._leaves: dict[tuple[int | None, int], list[_Leaf] | None] = {}
+        # Per top-level block, its leaves (None when the layout and the model disagree) and, by the number of
+        # a fragment, the leaf that holds it.
+        self._leaves: dict[tuple[int | None, int], tuple[list[_Leaf] | None, dict[int, _Leaf]]] = {}
         self._definition_lines: dict[tuple[int | None, int], list[int]] = {}
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
 
@@ -422,6 +425,21 @@ class Locator:
     def heading(self, section: int) -> int | None:
         return self._map.heading(section) if self._map else None
 
+    def setext_section(self, section: int) -> bool:
+        """Whether the heading of section *section* is written in the setext form (§4.1): its first
+        line is not an ATX heading's. False when that is not known (no source map, or the document
+        no longer fits it): a model is written in the ATX form."""
+        return self._map is not None and not _is_atx(self._map.lines[self._map.heading(section) - 1])
+
+    def setext_fragment(self, section: int | None, index: int, fragment: int) -> bool:
+        """Whether fragment *fragment* of top-level block *index*, the text of a ``heading`` block
+        among its blocks (in a list item or a quote), is written in the setext form. False when
+        that is not known, as for ``setext_section``."""
+        if self._map is None:
+            return False
+        leaf = self._leaf_for(section, index, fragment)
+        return leaf is not None and not _is_atx(self._map.lines[leaf.start - 1])
+
     def block(self, section: int | None, index: int) -> int | None:
         return self._map.block(section, index) if self._map else None
 
@@ -445,13 +463,9 @@ class Locator:
         span = self._map.span(section, index)
         start = self._map.body_start + span.start + 1
         end = self._map.body_start + span.end + 1
-        if fragment is not None:
-            for leaf in self._leaves_of(section, index) or ():
-                if fragment in leaf.places:
-                    text, base = leaf.places[fragment]
-                    return self._map.find(
-                        leaf.start, leaf.end, needle, leaf.texts, text, base + offset, 0, self._cache
-                    )
+        if fragment is not None and (leaf := self._leaf_for(section, index, fragment)):
+            text, base = leaf.places[fragment]
+            return self._map.find(leaf.start, leaf.end, needle, leaf.texts, text, base + offset, 0, self._cache)
         return self._map.find(start, end, needle, [], None, 0, nth, self._cache)
 
     def definition(self, section: int | None, index: int, ordinal: int) -> int | None:
@@ -489,13 +503,26 @@ class Locator:
             return self._map.find(leaf.start, leaf.end, needle, leaf.texts, 0, leaf.lifted, 0, self._cache)
         return self.find(section, index, needle)
 
+    def _leaf_for(self, section: int | None, index: int, fragment: int) -> _Leaf | None:
+        """The leaf of top-level block *index* that holds fragment *fragment* of its ``block_fragments``,
+        found by a map made once for the block: a list of thousands of items is not scanned for each
+        fragment. None when the parsed layout and the model disagree."""
+        return self._block_leaves(section, index)[1].get(fragment)
+
     def _leaves_of(self, section: int | None, index: int) -> list[_Leaf] | None:
         """The blocks of a top-level block that hold its ``block_fragments``,
         in order, as ``definitions.block_fragments`` reads them; None when
         the parsed layout and the model disagree."""
+        return self._block_leaves(section, index)[0]
+
+    def _block_leaves(
+        self, section: int | None, index: int
+    ) -> tuple[list[_Leaf] | None, dict[int, _Leaf]]:
+        """``_leaves_of``, and the leaf of each fragment by its number, read once for the block."""
         key = (section, index)
         if key not in self._leaves:
-            self._leaves[key] = self._read_leaves(section, index)
+            leaves = self._read_leaves(section, index)
+            self._leaves[key] = (leaves, {number: leaf for leaf in leaves or () for number in leaf.places})
         return self._leaves[key]
 
     def _read_leaves(self, section: int | None, index: int) -> list[_Leaf] | None:
@@ -531,6 +558,14 @@ class Locator:
         if count != len(block_fragments(top)):
             return None
         return leaves
+
+
+# A line that opens an ATX heading (§4.1), after the block quote and list item markers it may be in.
+_ATX_LINE_RE = re.compile(r"(?:[ \t]*(?:>|(?:[-*+]|[0-9]{1,9}[.)])(?=[ \t])))*[ \t]*#{1,6}(?:[ \t]|$)")
+
+
+def _is_atx(line: str) -> bool:
+    return _ATX_LINE_RE.match(line) is not None
 
 
 def _walk_spans(spans: Any, blocks: Any, depth: int, base: int) -> Iterator[tuple[Any, Block, int, int]]:

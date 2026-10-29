@@ -39,6 +39,7 @@ from .validator.patterns import (
     FINAL_CHECK_RULES,
     IDENTIFIER_RE,
     IMPLEMENTATION_RULE_PREFIX,
+    INCLUDE_LIMIT_RULE,
     ISO_639_1_CODES,
     KNOWN_CURRENCIES,
     LEGALDOWN_EXTENSIONS,
@@ -91,6 +92,7 @@ __all__ = [
     # Rule ids of this implementation's own checks (§16.1, §17.5)
     "IMPLEMENTATION_RULE_PREFIX",
     "SKIPPED_RULE",
+    "INCLUDE_LIMIT_RULE",
     # Rules over them
     "slugify_identifier",
     "format_section_number",

@@ -21,7 +21,7 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from functools import cache, cached_property
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, Protocol
 
 from ..directives import Lexed, lex
 from ..files import LoadFile, Reach, is_absolute_reference, within
@@ -52,11 +52,13 @@ class Finding:
 class FragmentFile:
     """A file read as a fragment: its normalised relative *path* (the name the
     document refers to it by, ``relative_path``) and its *document*, parsed with
-    the frontmatter it should not have kept as an error, not raised (#43)."""
+    the frontmatter it should not have kept as an error, not raised (#43). *text* is the file as the
+    loader gave it, for a reader that edits it (assembly)."""
 
-    def __init__(self, path: str, document: Document) -> None:
+    def __init__(self, path: str, document: Document, text: str = "") -> None:
         self.path = path
         self.document = document
+        self.text = text
 
     @cached_property
     def where(self) -> Locator:
@@ -175,7 +177,7 @@ class Files:
 
             text = self._resolve(relative)
             self._read[key] = None if text is None else FragmentFile(
-                relative, parse(text, on_frontmatter_error="keep")
+                relative, parse(text, on_frontmatter_error="keep"), text
             )
         return self._read[key]
 
@@ -667,6 +669,8 @@ UnreadReason = Literal["no-resolver", "leads-out", "unreadable", "own", "rejecte
 #: coming back. Past either, nothing more is followed and the Warning of §17.5 says so.
 MAX_INCLUDE_DEPTH = 32
 MAX_INCLUDE_EXPANDED = 10_000
+#: What the Warning adds to the phrase of a cap, which assembly (where a cap is an Error) leaves out.
+NOT_CHECKED = " (not checked past that point)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,7 +695,18 @@ class IncludeOutcome:
     caps: list[str] = field(default_factory=list)
 
 
-def not_legaldown(include: IncludeDirective) -> str | None:
+class _NamedInclude(Protocol):
+    """What names a file to include: an ``IncludeDirective``, or assembly's own reading of one."""
+    path: str
+    written: str
+
+
+def no_file_message(source: str) -> str:
+    """The message of ``include-file-missing`` for the include paragraph *source* (as written), which names no file."""
+    return f"'{source}' names no file: an include paragraph names the LegalDown file it takes in (§12.2)."
+
+
+def not_legaldown(include: _NamedInclude) -> str | None:
     """The message of ``include-not-legaldown`` (§12.2) for *include*, whose path does not end in a LegalDown
     extension, or None when it does or names no file. It needs no file."""
     if not include.path or include.path.endswith(LEGALDOWN_EXTENSIONS):
@@ -702,11 +717,60 @@ def not_legaldown(include: IncludeDirective) -> str | None:
     )
 
 
-class _Chain(NamedTuple):
+class IncludeChain(NamedTuple):
     """The files being included, outermost first (*paths*, as they are named), and the same as ``Files.key``
     (*keys*, a set, to tell in one step that a file is among them)."""
     paths: tuple[str, ...] = ()
     keys: frozenset[str] = frozenset()
+
+
+#: The chain of the document itself, which has included nothing yet.
+EMPTY_CHAIN = IncludeChain()
+
+
+def extend(files: Files, chain: IncludeChain, path: str) -> IncludeChain:
+    """*chain* with the file at *path* (as ``Files.locate`` gives it) last."""
+    return IncludeChain((*chain.paths, path), chain.keys | {files.key(path)})
+
+
+def closes(files: Files, chain: IncludeChain, relative: str) -> bool:
+    """Whether following the include of *relative* (a path from the document's directory, as ``Files.locate``
+    gives it) closes a circular chain (§12.2): it is a file of *chain*, or the document itself. The one test of
+    ``include-cycle``, for the validator and for assembly."""
+    return files.key(relative) in chain.keys or files.is_own(relative)
+
+
+def cycle_message(files: Files, source: str, chain: IncludeChain, relative: str) -> str:
+    """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*."""
+    said = " -> ".join(["the document", *chain.paths, "the document" if files.is_own(relative) else relative])
+    return (
+        f"'{source}' closes a circular include chain ({said}); a file cannot include "
+        f"itself, directly or through others (§12.2)."
+    )
+
+
+def too_deep(chain: IncludeChain) -> str | None:
+    """The phrase that says the depth cap is reached, when *chain* is as long as the includes are followed
+    (``MAX_INCLUDE_DEPTH``), else None. The caps are read when asked, so that a test can lower them."""
+    if len(chain.paths) < MAX_INCLUDE_DEPTH:
+        return None
+    return f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels"
+
+
+class IncludeBudget:
+    """How many includes and headings of fragments one document has had followed (``MAX_INCLUDE_EXPANDED``):
+    the count is spent before an include is judged or a heading joined, and nothing is followed once it is reached."""
+
+    def __init__(self) -> None:
+        self.spent = 0
+
+    def spend(self) -> str | None:
+        """Count one more include or heading followed, or, when the count is reached, the phrase that says so
+        (and nothing is spent)."""
+        if self.spent >= MAX_INCLUDE_EXPANDED:
+            return f"following the includes of fragments past {MAX_INCLUDE_EXPANDED:,} includes and headings"
+        self.spent += 1
+        return None
 
 
 class _Walk:
@@ -732,7 +796,7 @@ class _Walk:
         #: The include paragraphs of each fragment by the section that holds them, with their number: once.
         self._includes: dict[str, dict[int | None, list[tuple[int, IncludeDirective]]]] = {}
         self._met: set[tuple[str, int]] = set()  # the includes of fragments (file, number) already judged
-        self._expanded = 0
+        self._budget = IncludeBudget()
         self.incomplete = False
 
     def shape(self, fragment: FragmentFile) -> None:
@@ -745,7 +809,7 @@ class _Walk:
                 self._result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
 
     def attempt(
-        self, include: IncludeDirective, owner: FragmentFile | None, chain: _Chain, first: bool = True
+        self, include: IncludeDirective, owner: FragmentFile | None, chain: IncludeChain, first: bool = True
     ) -> FragmentFile | None:
         """The fragment that *include* takes in, an include paragraph of the document (*owner* None) or of
         a fragment, *chain* being the files being included (outermost first, *owner* last), or None when
@@ -765,7 +829,7 @@ class _Walk:
         if not include.path:
             refuse(
                 "include-file-missing",
-                f"'{include.source}' names no file: an include paragraph names the LegalDown file it takes in (§12.2).",
+                no_file_message(include.source),
                 "unreadable",
             )
             return None
@@ -800,21 +864,12 @@ class _Walk:
                     "unreadable",
                 )
             return None
-        if self._files.key(relative) in chain.keys or self._files.is_own(relative):
-            said = " -> ".join(
-                ["the document", *chain.paths, "the document" if self._files.is_own(relative) else relative]
-            )
-            refuse(
-                "include-cycle",
-                f"'{include.source}' closes a circular include chain ({said}); a file cannot include "
-                f"itself, directly or through others (§12.2).",
-                None,
-            )
+        if closes(self._files, chain, relative):
+            refuse("include-cycle", cycle_message(self._files, include.source, chain, relative), None)
             return None
-        if len(chain.paths) >= MAX_INCLUDE_DEPTH:
-            cap = f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels (not checked past that point)"
-            if cap not in self._outcome.caps:
-                self._outcome.caps.append(cap)
+        if (cap := too_deep(chain)) is not None:
+            if cap + NOT_CHECKED not in self._outcome.caps:
+                self._outcome.caps.append(cap + NOT_CHECKED)
             return None
         target = self._files.read(relative)
         if target is None:
@@ -828,11 +883,11 @@ class _Walk:
         self.shape(target)
         return target if target.spliceable else None  # a file that is not a fragment is reported, not spliced
 
-    def extend(self, chain: _Chain, fragment: FragmentFile) -> _Chain:
+    def extend(self, chain: IncludeChain, fragment: FragmentFile) -> IncludeChain:
         """*chain* with *fragment* last."""
-        return _Chain((*chain.paths, fragment.path), chain.keys | {self._files.key(fragment.path)})
+        return extend(self._files, chain, fragment.path)
 
-    def expand(self, fragment: FragmentFile, chain: _Chain) -> list[Heading]:
+    def expand(self, fragment: FragmentFile, chain: IncludeChain) -> list[Heading]:
         """The headings *fragment* brings into the combined document: its own, each followed by those of the
         fragments its section includes (those of the preamble first). *chain* are the files being
         included, outermost first, *fragment* last."""
@@ -851,25 +906,24 @@ class _Walk:
 
         follow(None)
         for index in range(len(fragment.document.sections)):
-            if self._full():
+            if self._spend():
                 break
-            self._expanded += 1
             headings.append(Heading(fragment, index))
             follow(index)
         return headings
 
-    def _full(self) -> bool:
-        """Whether the count of includes and headings followed is reached: said once, and nothing is followed past it."""
-        if self._expanded < MAX_INCLUDE_EXPANDED:
+    def _spend(self) -> bool:
+        """Count one more include or heading followed (``IncludeBudget``), or, when the count is reached, say so
+        once and return True: nothing is followed past it."""
+        if (cap := self._budget.spend()) is None:
             return False
-        cap = f"following the includes of fragments past {MAX_INCLUDE_EXPANDED:,} includes and headings (not checked past that point)"
-        if cap not in self._outcome.caps:
-            self._outcome.caps.append(cap)
+        if cap + NOT_CHECKED not in self._outcome.caps:
+            self._outcome.caps.append(cap + NOT_CHECKED)
         self.incomplete = True
         return True
 
     def _follow(
-        self, fragment: FragmentFile, number: int, include: IncludeDirective, chain: _Chain
+        self, fragment: FragmentFile, number: int, include: IncludeDirective, chain: IncludeChain
     ) -> list[Heading]:
         """The headings of the fragment that *include*, the *number*th include paragraph of *fragment*,
         takes in. In a template there are none to follow: an include in a fragment is
@@ -883,9 +937,8 @@ class _Walk:
             if first:
                 self._outcome.unread.append(UnreadInclude(include, "in-template"))
             return []
-        if self._full():
+        if self._spend():
             return []
-        self._expanded += 1
         target = self.attempt(include, fragment, chain, first)
         if target is None:
             self.incomplete = True
@@ -968,14 +1021,14 @@ def check_includes(
             else:
                 outcome.unread.append(UnreadInclude(include, "no-resolver"))
             continue
-        fragment = walk.attempt(include, None, _Chain())
+        fragment = walk.attempt(include, None, EMPTY_CHAIN)
         if fragment is None:
             unread.add(include.section)
             continue
         walk.incomplete = False
         presence = units.presence(include.section, include.block, include.fragment)
         splices.setdefault(include.section, []).append(
-            Splice(include, presence, walk.expand(fragment, walk.extend(_Chain(), fragment)))
+            Splice(include, presence, walk.expand(fragment, walk.extend(EMPTY_CHAIN, fragment)))
         )
         if walk.incomplete:
             unread.add(include.section)  # something it includes is not known: it fills nothing
