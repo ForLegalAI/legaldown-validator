@@ -52,11 +52,13 @@ class Finding:
 class FragmentFile:
     """A file read as a fragment: its normalised relative *path* (the name the
     document refers to it by, ``relative_path``) and its *document*, parsed with
-    the frontmatter it should not have kept as an error, not raised (#43)."""
+    the frontmatter it should not have kept as an error, not raised (#43). *text* is the file as the
+    loader gave it, for a reader that edits it (assembly)."""
 
-    def __init__(self, path: str, document: Document) -> None:
+    def __init__(self, path: str, document: Document, text: str = "") -> None:
         self.path = path
         self.document = document
+        self.text = text
 
     @cached_property
     def where(self) -> Locator:
@@ -175,7 +177,7 @@ class Files:
 
             text = self._resolve(relative)
             self._read[key] = None if text is None else FragmentFile(
-                relative, parse(text, on_frontmatter_error="keep")
+                relative, parse(text, on_frontmatter_error="keep"), text
             )
         return self._read[key]
 
@@ -667,6 +669,8 @@ UnreadReason = Literal["no-resolver", "leads-out", "unreadable", "own", "rejecte
 #: coming back. Past either, nothing more is followed and the Warning of §17.5 says so.
 MAX_INCLUDE_DEPTH = 32
 MAX_INCLUDE_EXPANDED = 10_000
+#: What the Warning adds to the phrase of a cap, which assembly (where a cap is an Error) leaves out.
+NOT_CHECKED = " (not checked past that point)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,13 +695,13 @@ class IncludeOutcome:
     caps: list[str] = field(default_factory=list)
 
 
-def not_legaldown(include: IncludeDirective) -> str | None:
-    """The message of ``include-not-legaldown`` (§12.2) for *include*, whose path does not end in a LegalDown
-    extension, or None when it does or names no file. It needs no file."""
-    if not include.path or include.path.endswith(LEGALDOWN_EXTENSIONS):
+def not_legaldown(path: str, written: str) -> str | None:
+    """The message of ``include-not-legaldown`` (§12.2) for an include of *path* (normalised) as it was *written*,
+    whose path does not end in a LegalDown extension, or None when it does or names no file. It needs no file."""
+    if not path or path.endswith(LEGALDOWN_EXTENSIONS):
         return None
     return (
-        f"'{include.written}' is not a LegalDown file: an include target is a "
+        f"'{written}' is not a LegalDown file: an include target is a "
         f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read."
     )
 
@@ -709,16 +713,23 @@ class _Chain(NamedTuple):
     keys: frozenset[str] = frozenset()
 
 
-def closes(files: Files, chain: _Chain, relative: str) -> bool:
+def extend(files: Files, chain: _Chain | None, path: str) -> _Chain:
+    """*chain* (None: the document's, which has included nothing yet) with the file at *path* (as ``Files.locate``
+    gives it) last."""
+    chain = chain or _Chain()
+    return _Chain((*chain.paths, path), chain.keys | {files.key(path)})
+
+
+def closes(files: Files, chain: _Chain | None, relative: str) -> bool:
     """Whether following the include of *relative* (a path from the document's directory, as ``Files.locate``
     gives it) closes a circular chain (§12.2): it is a file of *chain*, or the document itself. The one test of
     ``include-cycle``, for the validator and for assembly."""
-    return files.key(relative) in chain.keys or files.is_own(relative)
+    return files.key(relative) in (chain or _Chain()).keys or files.is_own(relative)
 
 
-def cycle_message(files: Files, source: str, chain: _Chain, relative: str) -> str:
+def cycle_message(files: Files, source: str, chain: _Chain | None, relative: str) -> str:
     """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*."""
-    said = " -> ".join(["the document", *chain.paths, "the document" if files.is_own(relative) else relative])
+    said = " -> ".join(["the document", *(chain or _Chain()).paths, "the document" if files.is_own(relative) else relative])
     return (
         f"'{source}' closes a circular include chain ({said}); a file cannot include "
         f"itself, directly or through others (§12.2)."
@@ -730,7 +741,7 @@ def too_deep(chain: _Chain) -> str | None:
     (``MAX_INCLUDE_DEPTH``), else None. The caps are read when asked, so that a test can lower them."""
     if len(chain.paths) < MAX_INCLUDE_DEPTH:
         return None
-    return f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels (not checked past that point)"
+    return f"following includes of fragments deeper than {MAX_INCLUDE_DEPTH} levels"
 
 
 class IncludeBudget:
@@ -744,7 +755,7 @@ class IncludeBudget:
         """Count one more include or heading followed, or, when the count is reached, the phrase that says so
         (and nothing is spent)."""
         if self.spent >= MAX_INCLUDE_EXPANDED:
-            return f"following the includes of fragments past {MAX_INCLUDE_EXPANDED:,} includes and headings (not checked past that point)"
+            return f"following the includes of fragments past {MAX_INCLUDE_EXPANDED:,} includes and headings"
         self.spent += 1
         return None
 
@@ -809,7 +820,7 @@ class _Walk:
                 "unreadable",
             )
             return None
-        if (message := not_legaldown(include)) is not None:
+        if (message := not_legaldown(include.path, include.written)) is not None:
             refuse("include-not-legaldown", message, None)
             return None
         relative, problem = self._files.locate("" if owner is None else posixpath.dirname(owner.path), include.written)
@@ -844,8 +855,8 @@ class _Walk:
             refuse("include-cycle", cycle_message(self._files, include.source, chain, relative), None)
             return None
         if (cap := too_deep(chain)) is not None:
-            if cap not in self._outcome.caps:
-                self._outcome.caps.append(cap)
+            if cap + NOT_CHECKED not in self._outcome.caps:
+                self._outcome.caps.append(cap + NOT_CHECKED)
             return None
         target = self._files.read(relative)
         if target is None:
@@ -861,7 +872,7 @@ class _Walk:
 
     def extend(self, chain: _Chain, fragment: FragmentFile) -> _Chain:
         """*chain* with *fragment* last."""
-        return _Chain((*chain.paths, fragment.path), chain.keys | {self._files.key(fragment.path)})
+        return extend(self._files, chain, fragment.path)
 
     def expand(self, fragment: FragmentFile, chain: _Chain) -> list[Heading]:
         """The headings *fragment* brings into the combined document: its own, each followed by those of the
@@ -893,8 +904,8 @@ class _Walk:
         once and return True: nothing is followed past it."""
         if (cap := self._budget.spend()) is None:
             return False
-        if cap not in self._outcome.caps:
-            self._outcome.caps.append(cap)
+        if cap + NOT_CHECKED not in self._outcome.caps:
+            self._outcome.caps.append(cap + NOT_CHECKED)
         self.incomplete = True
         return True
 
@@ -992,7 +1003,7 @@ def check_includes(
             continue
         if walk is None:
             # No file can be read: only the extension is judged (Core), and the rest is unread.
-            if (message := not_legaldown(include)) is not None:
+            if (message := not_legaldown(include.path, include.written)) is not None:
                 result.error("include-not-legaldown", message, line=include.line)
             else:
                 outcome.unread.append(UnreadInclude(include, "no-resolver"))
