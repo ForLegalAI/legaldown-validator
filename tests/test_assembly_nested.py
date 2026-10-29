@@ -11,10 +11,18 @@ from __future__ import annotations
 import pytest
 
 from legaldown import Template, assemble, load_template
+from legaldown.assembly import _last_includes, _template_identifiers
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.grammar import SKIPPED_RULE
 from legaldown.validator import fragments
-from legaldown.validator.fragments import MAX_INCLUDE_DEPTH, MAX_INCLUDE_EXPANDED, fragment_includes
+from legaldown.validator.fragments import (
+    MAX_INCLUDE_DEPTH,
+    MAX_INCLUDE_EXPANDED,
+    Files,
+    closes,
+    extend,
+    fragment_includes,
+)
 from legaldown.validator.patterns import INCLUDE_LIMIT_RULE
 
 pytestmark = pytest.mark.filterwarnings(r"ignore:legaldown\.assemble\(\) is deprecated:DeprecationWarning")
@@ -145,6 +153,48 @@ def test_the_questions_of_a_nested_fragment_are_asked_where_they_are_reached():
     assert [question.id for question in form.questions] == ["first", "deep", "middle", "last"]
 
 
+def test_a_fragment_included_directly_and_through_another_is_asked_at_its_last_include():
+    # c is included by a, and by the document after "Mid": the last include in the combined document reads it.
+    main = "# Doc\n\n{{include: a.lgd}}\n\nMid {{placeholder: pmid, type=text}}.\n\n{{include: c.lgd}}\n"
+    c = "## C\n\nC {{placeholder: pc, type=text}}.\n"
+    nested = {"a.lgd": "## A\n\nA {{placeholder: pa, type=text}}.\n\n{{include: c.lgd}}\n", "c.lgd": c}
+    flat = {"a.lgd": "## A\n\nA {{placeholder: pa, type=text}}.\n", "c.lgd": c}
+    asked = [question.id for question in Template(_FRONT + main, resolve=nested.get).form({}).questions]
+    assert asked == [question.id for question in Template(_FRONT + main, resolve=flat.get).form({}).questions]
+    assert asked == ["pa", "pmid", "pc"]
+    # ... the same in the order the files are read (not inline), and the file is written once.
+    result = _assembled(main, nested, {"pa": "1", "pmid": "2", "pc": "3"})
+    assert result.ok and result.files["c.lgd"] == "## C\n\nC 3.\n"
+
+
+def test_the_last_include_of_a_file_is_told_without_walking_the_tree_it_is_included_in():
+    levels = 40  # 2**40 paths
+    files = {f"p{i}.lgd": f"{{{{include: p{i + 1}.lgd}}}}\n\n{{{{include: p{i + 1}.lgd}}}}\n" for i in range(levels)}
+    files[f"p{levels}.lgd"] = "## Leaf\n"
+    template = Template(_FRONT + "# Doc\n\n{{include: p0.lgd}}\n", resolve=files.get)
+    template.form({})  # the walk that was cut short left targets, and this must end
+    last = _last_includes(template._t)
+    assert last["p1.lgd"] is template._t.subs["p0.lgd"].includes[0]  # (the walk stopped before the second)
+
+
+def test_each_fragment_is_parsed_once_when_the_template_has_a_path(monkeypatch, tmp_path):
+    import legaldown.assembly
+    import legaldown.parser
+
+    seen: list[str] = []
+    real = legaldown.parser.parse
+
+    def counting(text, *args, **kwargs):
+        seen.append(text)
+        return real(text, *args, **kwargs)
+
+    monkeypatch.setattr(legaldown.parser, "parse", counting)
+    monkeypatch.setattr(legaldown.assembly, "parse", counting)
+    files = {"sub/a.lgd": "### A\n\n{{include: b.lgd}}\n", "sub/b.lgd": "#### B\n\nText.\n"}
+    Template(_FRONT + _MAIN, resolve=files.get, path=tmp_path / "main.lgd")
+    assert all(seen.count(text) == 1 for text in files.values())
+
+
 def test_nested_lines_keep_their_line_endings_and_a_nested_byte_order_mark_goes_as_a_flat_one_does():
     nested = "#### B\r\n\r\nCRLF {{placeholder: name, type=text}}.\r\n"
     files = {"sub/a.lgd": "### A\n\n{{include: b.lgd}}\n", "sub/b.lgd": "\ufeff" + nested}
@@ -230,6 +280,49 @@ def test_assembly_does_not_judge_the_heading_levels_of_the_combined_document():
     assert template.problems == ()
 
 
+# ── What is not a LegalDown file ──────────────────────────────────────────────
+
+def test_a_nested_include_of_a_file_that_is_not_legaldown_is_refused_and_not_asked_for():
+    loader = _Loader({"sub/a.lgd": "### A\n\n{{include: b.txt}}\n", "sub/b.txt": "Text.\n"})
+    result = Template(_FRONT + _MAIN, resolve=loader).form({}).assemble()
+    assert _found(result) == [("include-not-legaldown", "sub/a.lgd", 3)]
+    assert "'b.txt' is not a LegalDown file" in result.diagnostics[0].message
+    assert loader.asked == ["sub/a.lgd"]
+    _refused(result)
+
+
+@pytest.mark.parametrize("front", [_FRONT, _TEMPLATE_FRONT])
+def test_an_include_of_the_documents_own_of_a_file_that_is_not_legaldown_is_refused_and_not_asked_for(front):
+    loader = _Loader({"x.txt": "Text.\n"})
+    result = Template(front + "# Doc\n\n{{include: x.txt}}\n", resolve=loader).form({"x": True}).assemble()
+    assert [(d.rule, d.file) for d in result.diagnostics] == [("include-not-legaldown", "")]
+    assert loader.asked == []
+    # ... with no loader too: the extension is judged before anything is read.
+    result = Template(front + "# Doc\n\n{{include: x.txt}}\n").form({"x": True}).assemble()
+    assert [d.rule for d in result.diagnostics] == ["include-not-legaldown"]
+
+
+def test_an_absolute_path_of_the_document_is_a_path_the_validator_judges_alone_and_assembly_cannot_read():
+    result = _assembled("# Doc\n\n{{include: /etc/x.txt}}\n", {})
+    assert [d.rule for d in result.diagnostics] == ["include-file-missing"]
+
+
+def test_a_nested_path_that_only_leads_out_of_the_directory_is_an_error_where_the_validator_leaves_it_unread():
+    # (A deliberate difference: the validator warns and goes on; output cannot be made without the file.)
+    files = {"sub/a.lgd": "### A\n\n{{include: ../../x.lgd}}\n"}
+    template = Template(_FRONT + _MAIN, resolve=files.get)
+    assert [d.rule for d in template.problems] == ["include-file-missing"]
+    assert "include-file-missing" not in {d.rule for d in template.validation.diagnostics}
+
+
+def test_the_chain_helpers_are_the_validators(tmp_path):
+    template = Template(_FRONT + _MAIN, resolve=lambda path: None, path=tmp_path / "main.lgd")
+    files = Files(lambda path: None, template._t.document, None)
+    chain = extend(files, extend(files, None, "sub/a.lgd"), "sub/b.lgd")
+    assert chain.paths == ("sub/a.lgd", "sub/b.lgd")
+    assert closes(files, chain, "sub/a.lgd") and not closes(files, chain, "sub/c.lgd") and not closes(files, None, "sub/a.lgd")
+
+
 # ── Cycles ────────────────────────────────────────────────────────────────────
 
 def test_a_chain_that_comes_back_is_a_cycle_at_the_include_that_closes_it():
@@ -250,6 +343,22 @@ def test_a_cycle_is_one_diagnostic_however_often_it_is_reached():
     main = "# Doc\n\n{{include: a.lgd}}\n\n{{include: a.lgd}}\n"
     files = {"a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "### B\n\n{{include: a.lgd}}\n"}
     assert _found(_assembled(main, files)) == [("include-cycle", "b.lgd", 3)]
+
+
+def test_a_cycle_reached_from_two_places_leaves_no_loop_in_what_assembly_reads(tmp_path):
+    # b is included by the document and by a, and a by the document and by b: the cycle is refused in the
+    # chain it is met in, and a target left by another chain must not lead round.
+    main = "# Doc\n\n{{include: a.lgd}}\n\n{{include: b.lgd}}\n"
+    files = {"a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "## B\n\n{{include: a.lgd}}\n"}
+    template = Template(_FRONT + main, resolve=files.get, path=tmp_path / "main.lgd")
+    assert {d.rule for d in template.problems} == {"include-cycle"}
+    # (Once, as the validator says it: at the include that closed it where it was first met.)
+    assert [(d.file, d.line) for d in template.problems] == [("b.lgd", 3)]
+    # The identifiers of the template are worked out over the combined document, which must end.
+    assert _template_identifiers(template._t)
+    assert template.form({}).ready is False
+    assert _found(template.form({}).assemble()) == _found(template.form({}).assemble())
+    _refused(template.form({}).assemble())
 
 
 def test_a_fragment_that_includes_the_document_is_a_cycle_when_the_template_has_a_path(tmp_path):
@@ -320,18 +429,33 @@ _GRAPHS = {
     "to-the-document": {"a.lgd": "## A\n\n{{include: main.lgd}}\n", "main.lgd": _FRONT + "# Doc\n\n{{include: a.lgd}}\n"},
     "in-a-section": {"a.lgd": "## A\n\n{{include: b.lgd}}\n\n## A2\n\n{{include: b.lgd}}\n", "b.lgd": "### B\n\n{{include: a.lgd}}\n"},
     "missing": {"a.lgd": "## A\n\n{{include: gone.lgd}}\n\n{{include: b.lgd}}\n", "b.lgd": "### B\n\n{{include: b.lgd}}\n"},
+    # the order of the checks of an include: a file that is not LegalDown is not looked for, nested or not
+    "txt-nested": {"a.lgd": "## A\n\n{{include: b.txt}}\n\n{{include: ../gone.txt}}\n\n{{include: c.lgd}}\n", "b.txt": "x\n", "c.lgd": "### C\n"},
+    "txt-top-level": {
+        "<main>": "# Doc\n\n{{include: b.txt}}\n\n{{include: ../x.txt}}\n\n{{include: a.lgd}}\n",
+        "a.lgd": "## A\n", "b.txt": "x\n",
+    },
+    "two-entries": {
+        "<main>": "# Doc\n\n{{include: a.lgd}}\n\n{{include: b.lgd}}\n",
+        "a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "## B\n\n{{include: a.lgd}}\n",
+    },
+    "txt-and-cycle": {"a.lgd": "## A\n\n{{include: a.txt}}\n\n{{include: a.lgd}}\n", "a.txt": "x\n"},
 }
 
 
 @pytest.mark.parametrize("graph", sorted(_GRAPHS))
-def test_assembly_finds_the_cycles_the_validator_finds(tmp_path, graph):
-    """Drift guard: the same ``include-cycle``, in the same file at the same line."""
-    files = _GRAPHS[graph]
+def test_assembly_finds_what_the_validator_finds_of_the_includes_it_judges_before_reading(tmp_path, graph):
+    """Drift guard: the same ``include-cycle``, ``include-not-legaldown`` and ``include-file-missing``, in the
+    same file at the same line, whatever the order of the checks of an include."""
+    files = dict(_GRAPHS[graph])
+    main = files.pop("<main>", "# Doc\n\n{{include: a.lgd}}\n")
     path = tmp_path / "main.lgd"
-    template = Template(_FRONT + "# Doc\n\n{{include: a.lgd}}\n", resolve=files.get, path=path)
-    validated = sorted((d.file, d.line) for d in template.validation.diagnostics if d.rule == "include-cycle")
-    assembled = sorted((d.file, d.line) for d in template.problems if d.rule == "include-cycle")
+    template = Template(_FRONT + main, resolve=files.get, path=path)
+    rules = {"include-cycle", "include-not-legaldown", "include-file-missing"}
+    validated = sorted((d.rule, d.file, d.line) for d in template.validation.diagnostics if d.rule in rules)
+    assembled = sorted((d.rule, d.file, d.line) for d in template.problems if d.rule in rules)
     assert assembled == validated and assembled == sorted(set(assembled))
+    assert bool(assembled) == (graph != "diamond")
 
 
 # ── The limits ────────────────────────────────────────────────────────────────
@@ -351,6 +475,8 @@ def test_a_chain_of_the_depth_cap_is_assembled_and_one_more_is_refused():
     assert _found(result) == [(INCLUDE_LIMIT_RULE, f"p{MAX_INCLUDE_DEPTH - 1}.lgd", 3)]
     _refused(result)
     assert f"deeper than {MAX_INCLUDE_DEPTH} levels" in result.diagnostics[0].message
+    # It says assembly stopped, as an Error does; "not checked" is the Warning of the validator's.
+    assert result.diagnostics[0].message.startswith("Assembly stopped at its limit") and "not checked" not in result.diagnostics[0].message
 
 
 def test_a_tree_of_more_includes_than_the_cap_is_refused_not_expanded():
@@ -484,6 +610,21 @@ def test_an_include_in_an_attachment_file_of_an_ordinary_document_is_still_refus
     assert _found(result) == [("include-file-missing", "s.lgd", 3)]
     assert "attached file" in result.diagnostics[0].message
     _refused(result)
+
+
+def test_an_attachment_file_that_is_also_an_include_fragment_is_still_an_attachment_file():
+    front = _FRONT.replace("---\n\n", "attachments:\n  - id: s\n    title: S\n    file: s.lgd\n---\n\n")
+    files = {"s.lgd": "## B\n\n{{include: g.lgd}}\n", "g.lgd": "### G\n"}
+    # As a fragment alone its include is followed ...
+    assert _assembled("# A\n\n{{include: s.lgd}}\n", files).ok
+    # ... but it is attached too, and an attachment file holds no include for assembly.
+    result = _assembled("# A\n\nSee {{attach: s}}.\n\n{{include: s.lgd}}\n", files, front=front)
+    assert _found(result) == [("include-file-missing", "s.lgd", 3)]
+    assert "attached file" in result.diagnostics[0].message
+    _refused(result)
+    # Attached twice, or by two items, it is said once.
+    twice = front.replace("file: s.lgd\n", "file: s.lgd\n  - id: t\n    title: T\n    file: s.lgd\n")
+    assert len(_assembled("# A\n\n{{include: s.lgd}}\n", files, front=twice).diagnostics) == 1
 
 
 def test_template_problems_hold_the_cycle_once(tmp_path):
