@@ -146,6 +146,13 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
     )
 
 
+def _shown(key: str) -> str:
+    """A key as it is written in the source, for a message: on one line, between backticks (doubled, with
+    spaces, if it holds one, as Markdown does)."""
+    text = re.sub(r"\s+", " ", key)
+    return f"`` {text} ``" if "`" in text else f"`{text}`"
+
+
 def _frontmatter_fields(
     meta: Any, where: Locator | None = None
 ) -> tuple[list[tuple[str, str, tuple[Any, ...]]], list[tuple[str, tuple[Any, ...]]]]:
@@ -1442,19 +1449,19 @@ def _validate(
             entry, by = each.entry, each.by
             what = {
                 "repeated": "is written again",
-                "text": f"is the same key as `{by.written}` once read as text",
-                "stripped": f"is the same key as `{by.written}` once stripped",
+                "text": f"is the same key as {_shown(by.written)} once read as text",
+                "stripped": f"is the same key as {_shown(by.written)} once stripped",
             }[each.why]
             if each.skipped:
                 stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"
-            elif by.line != entry.line:  # an aliased key is at its anchor's line, wherever it is written again
+            elif by.start != entry.start:  # an aliased key is one node, wherever it is written again
                 stays = f", and the entry at line {by.line} is the one read"
             else:
                 stays = ""
             report = result.error if each.why == "repeated" else result.warning
             report(
                 FRONTMATTER_KEY_DUPLICATE_RULE,
-                f"The {map_name} key `{entry.written}` {what}: this entry is ignored{stays}.",
+                f"The {map_name} key {_shown(entry.written)} {what}: this entry is ignored{stays}.",
                 line=entry.line,
             )
 

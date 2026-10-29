@@ -245,7 +245,7 @@ def _check_frontmatter_option(on_frontmatter_error: str) -> None:
 
 
 class _Frontmatter(NamedTuple):
-    """What ``_split_frontmatter`` makes of a source, in the order of its docstring."""
+    """What ``_split_frontmatter`` makes of a source: the fields of its docstring, in its order."""
 
     not_line_editable: list[str]
     metadata: dict[str, Any]
@@ -257,8 +257,8 @@ class _Frontmatter(NamedTuple):
 
 
 def _no_fields(body: str, absent: bool = False, error: FrontmatterError | None = None) -> _Frontmatter:
-    """A source with no frontmatter fields: absent, or present and empty (only its opening ``---`` is in
-    *lines*), or unreadable (*error*)."""
+    """A source whose frontmatter holds no fields: *absent*, or present but empty, or unreadable (*error*). Its
+    ``keys`` are then empty, or only the opening ``---``."""
     return _Frontmatter([], {}, body, absent, {} if absent else {(): 1}, error, {})
 
 
@@ -282,10 +282,11 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
     match = FRONTMATTER_RE.match(source)
     if not match:
         return _no_fields(source, absent=True)
+    block = match.group(1) or ""
     loader = None
     try:
         # Inside the try: a character YAML does not allow fails the reader here.
-        loader = _StrDateSafeLoader(match.group(1) or "")
+        loader = _StrDateSafeLoader(block)
         node = loader.get_single_node()
         if node is None:
             return _no_fields(source[match.end():])
@@ -296,15 +297,15 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
             # meant as frontmatter, but holds no fields. (A block !!omap is
             # a sequence: not frontmatter.)
             raise FrontmatterError(
-                "Frontmatter must be a YAML mapping of fields.", _file_line(match.group(1) or "", node.start_mark.index)
+                "Frontmatter must be a YAML mapping of fields.", _file_line(block, node.start_mark.index)
             )
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
         loader.flatten_mapping(node)
         # The YAML starts on the line after the opening `---` (line 1).
-        breaks = line_breaks(match.group(1) or "")
+        breaks = line_breaks(block)
         keys = {(): 1, **frontmatter_keys(node, breaks, 2)}
-        written = written_maps(node, match.group(1) or "", breaks, 2)
+        written = written_maps(node, block, breaks, 2)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
@@ -320,7 +321,7 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
         # value its tag cannot hold (an integer too long to convert; a
         # `!!bool maybe`, which PyYAML looks up as a key), or nesting deeper
         # than the YAML reader goes.
-        error = FrontmatterError(_error_message(exc), _error_line(exc, match.group(1) or "", loader))
+        error = FrontmatterError(_error_message(exc), _error_line(exc, block, loader))
         if not keep_error:
             raise error from exc
         error.__cause__ = exc  # as `raise ... from` sets it
@@ -2052,10 +2053,8 @@ def parse(
     # LF, CR, or CRLF (CommonMark), and nowhere else.
     source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
     _check_frontmatter_option(on_frontmatter_error)
-    not_line_editable, metadata, body, absent, keys, frontmatter_error, maps = _split_frontmatter(
-        source, keep_error=on_frontmatter_error == "keep"
-    )
-    lines = body.split("\n")
+    front = _split_frontmatter(source, keep_error=on_frontmatter_error == "keep")
+    lines = front.body.split("\n")
     if lines[-1] == "":
         lines.pop()  # the last line's ending, not a line
     layout = _Layout()
@@ -2063,7 +2062,7 @@ def parse(
     # The blocks are built as they stand (``normalise_text``, ``normalise_field``): the same
     # normalisation as ``document_from_dict``, without building them twice (#110).
     document = Document(
-        metadata=metadata_from_dict(metadata or {}),
+        metadata=metadata_from_dict(front.metadata or {}),
         sections=[
             Section(
                 title=normalise_title(title),
@@ -2079,14 +2078,14 @@ def parse(
         filename=normalise_field(filename),
         preamble=preamble,
     )
-    document.metadata.not_line_editable = not_line_editable
-    document.metadata.frontmatter_absent = absent
-    document.frontmatter_error = frontmatter_error
+    document.metadata.not_line_editable = front.not_line_editable
+    document.metadata.frontmatter_absent = front.absent
+    document.frontmatter_error = front.error
     document.source_map = SourceMap(
         lines=source.split("\n"),
-        body_start=source.count("\n", 0, len(source) - len(body)),
-        keys=keys,
-        maps=maps,
+        body_start=source.count("\n", 0, len(source) - len(front.body)),
+        keys=front.keys,
+        maps=front.maps,
         layout=layout,
         shape=document_shape(document),
     )

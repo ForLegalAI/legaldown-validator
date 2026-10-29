@@ -114,12 +114,14 @@ STRIPPED_MAPS = {"translations": True, "field_types": False}
 class WrittenEntry:
     """An entry of a ``STRIPPED_MAPS`` map as written: its key's source text *written* (quotes, escapes and
     padding as they are in the file), the *key* the model holds it under (read as text and stripped), its
-    *line*, and what YAML *resolves* the key to (its tag and text, before the keys are read as text): two
+    *line* and *start* (the index of its text, which two entries share if they are one node), and what YAML
+    *resolves* the key to (its tag and text, before the keys are read as text): two
     entries written alike resolve alike, and so do ``fr`` and ``"fr"``, but not ``1`` and ``'1'``."""
 
     written: str
     key: str
     line: int
+    start: int
     resolved: tuple[str, str]
 
 
@@ -168,6 +170,7 @@ def written_maps(
                         block[key.start_mark.index : key.end_mark.index],
                         "",
                         line_at(breaks, key.start_mark.index, first_line),
+                        key.start_mark.index,
                         (key.tag, key.value),
                     ),
                 )
@@ -178,24 +181,27 @@ def written_maps(
 
 
 def _skipped(key: Any, value: Any, skip_blank: bool) -> str:
-    """Why ``models.str_dict_entry`` skips an entry, in words."""
-    if not key:
-        return "its key is empty"
-    if skip_blank and not str(key).strip():
-        return "its key is blank"
-    if value is None:
-        return "its value is null"
-    return "its value is empty" if not value else "its value is blank"
+    """Why ``models.str_dict_entry`` skips an entry, in words: what its key or value is."""
+    for what, each in (("key", key), ("value", value)):
+        if each is None:
+            return f"its {what} is null"
+        if isinstance(each, str):
+            if not each or (skip_blank and not each.strip()):
+                return f"its {what} is {'empty' if not each else 'blank'}"
+        elif not each:  # false, 0, an empty list or mapping
+            return f"its {what} is empty" if isinstance(each, (list, dict, tuple, set)) else f"its {what} is `{each}`"
+    return "it is skipped"
 
 
 def read_maps(
     entries: dict[str, list[tuple[yaml.Node, WrittenEntry]]], construct: Callable[[yaml.Node], Any], metadata: dict[str, Any]
 ) -> dict[str, StrippedMap]:
     """What the model makes of the maps ``written_maps`` found, replayed as the model reads them: a dict
-    keyed by the key as read (keys that read alike take the last value, in the first's place), then
-    ``models.str_dict_entry``, so that the entry that stays under each key the model holds is the one it
-    holds. *construct* builds the Python value of a key node, as the YAML reader did, and *metadata* is what
-    it made of the frontmatter, whose values are not built again (they may refer to themselves)."""
+    keyed by the key as read (keys that read alike, as ``True`` and ``1`` do, take the last value, in the
+    first's place), then ``models.str_dict_entry``, so that the entry that stays under each key the model
+    holds is the one it holds. *construct* builds the Python value of a key node, as the YAML reader did,
+    and *metadata* is what it made of the frontmatter, whose values are not built again (they may refer to
+    themselves)."""
     from .models import str_dict_entry
 
     maps: dict[str, StrippedMap] = {}
@@ -206,27 +212,27 @@ def read_maps(
         skip_blank = STRIPPED_MAPS[name]
         slots: dict[Any, list[WrittenEntry]] = {}
         for node, entry in written:
-            slot = construct(node)
-            slots.setdefault(slot, []).append(replace(entry, key=str(slot).strip()))
-        # The last entry of each key as read; of those the model keeps, the last by key it holds them under.
-        stays: dict[str, WrittenEntry] = {}
-        texts: dict[str, str] = {}  # the key as read of each entry that stays
-        replaced: list[tuple[WrittenEntry, str]] = []
+            slots.setdefault(construct(node), []).append(entry)
+        # The model holds a slot under the first key written for it, as text, stripped.
+        slots = {slot: [replace(entry, key=str(slot).strip()) for entry in found] for slot, found in slots.items()}
+        kept: dict[str, list[tuple[Any, WrittenEntry]]] = {}  # the slots the model keeps, by the key it holds them under
         for slot, found in slots.items():
             if str_dict_entry(slot, held.get(slot), skip_blank=skip_blank):
-                key = found[-1].key
-                if key in stays:
-                    replaced.append((stays[key], texts[key]))
-                stays[key], texts[key] = found[-1], str(slot)
-        ignored = [Ignored(entry, stays[entry.key], "text" if text == texts[entry.key] else "stripped", "") for entry, text in replaced]
-        for slot, found in slots.items():
+                kept.setdefault(found[-1].key, []).append((slot, found[-1]))
+        stays = {key: found[-1][1] for key, found in kept.items()}
+        ignored = []
+        for key, found in kept.items():  # a slot replaced by a later one that strips alike
+            ignored += [
+                Ignored(entry, stays[key], "text" if str(slot) == str(found[-1][0]) else "stripped", "") for slot, entry in found[:-1]
+            ]
+        for slot, found in slots.items():  # the entries of a slot replaced by its last
             last = found[-1]
             by = stays.get(last.key, last)  # the entry the model keeps for the key, else the last written
             skipped = "" if last.key in stays else _skipped(slot, held.get(slot), skip_blank)
             for place, entry in enumerate(found[:-1]):
                 again = any(each.resolved == entry.resolved for each in found[place + 1:])
                 ignored.append(Ignored(entry, by, "repeated" if again else "text", skipped))
-        maps[name] = StrippedMap(stays, tuple(ignored))
+        maps[name] = StrippedMap(stays, tuple(sorted(ignored, key=lambda each: each.entry.line)))
     return maps
 
 

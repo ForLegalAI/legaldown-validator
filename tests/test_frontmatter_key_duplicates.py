@@ -160,6 +160,49 @@ def test_keys_the_model_reads_as_one_through_their_text_are_grouped_by_what_it_h
     assert _found(front) == [(RULE, "warning", 4)]
 
 
+def test_keys_python_holds_as_one_are_held_under_the_first_written_as_text():
+    # `True` and `1` are one dict key: the model holds `"True"`, with the value of the second.
+    front = 'translations:\n  !!bool "true": a.lgd\n  !!int "1": b.lgd\n'
+    document = parse(_source(front))
+    assert document.metadata.translations == {"True": "b.lgd"}
+    assert {key: entry.line for key, entry in document.source_map.maps["translations"].stays.items()} == {"True": 5}
+    assert document.source_map.key("translations", "True") == 5
+    (diagnostic,) = [d for d in validate(document).diagnostics if d.rule == RULE]
+    assert (diagnostic.level, diagnostic.line) == ("warning", 4)
+    assert diagnostic.message.endswith("once read as text: this entry is ignored, and the entry at line 5 is the one read.")
+
+
+@pytest.mark.parametrize("front", ["translations: {fr: a.lgd, fr: b.lgd}\n", "translations: {fr: a.lgd, ' fr': b.lgd}\n"])
+def test_two_entries_on_one_line_still_name_the_entry_that_stays(front):
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert diagnostic.line == 3 and diagnostic.message.endswith("and the entry at line 3 is the one read.")
+
+
+@pytest.mark.parametrize("front,reason", [
+    ("translations:\n  fr: a.lgd\n  fr: !!bool \"false\"\n", "its value is `False`"),
+    ("translations:\n  fr: a.lgd\n  fr: !!int \"0\"\n", "its value is `0`"),
+    ("translations:\n  !!bool \"false\": a.lgd\n  !!bool \"false\": b.lgd\n", "its key is `False`"),
+    ("translations:\n  !!null \"x\": a.lgd\n  !!null \"x\": b.lgd\n", "its key is null"),
+    ("translations:\n  fr: a.lgd\n  fr: []\n", "its value is empty"),
+])
+def test_the_message_says_what_the_skipped_key_or_value_is(front, reason):
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert diagnostic.message.endswith(f"is skipped ({reason}), so no entry is kept.")
+
+
+def test_a_key_over_several_lines_is_shown_on_one():
+    front = 'translations:\n  ? "fr\n    "\n  : a.lgd\n  fr: b.lgd\n'
+    assert parse(_source(front)).metadata.translations == {"fr": "b.lgd"}
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert diagnostic.message.startswith('The translations key `"fr "` is the same key as `fr` once stripped')
+
+
+def test_a_key_with_a_backtick_is_shown_between_double_backticks():
+    front = 'translations:\n  "a`b": x\n  "a`b ": y\n'
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert diagnostic.message.startswith('The translations key `` "a`b" `` is the same key as `` "a`b " `` once stripped')
+
+
 def test_a_repeat_whose_last_entry_is_blank_says_that_no_entry_is_kept():
     front = 'translations:\n  fr: a.lgd\n  fr: ""\n'
     assert parse(_source(front)).metadata.translations == {}
