@@ -445,6 +445,20 @@ def test_a_generated_identifier_that_anchor_format_rejects_is_not_also_implicit(
     assert [d.message[:21] for d in result.diagnostics] == ["Definition 'Services'"]
 
 
+def test_a_blank_translations_key_is_no_code_and_gates_like_any_invalid_one():
+    # `"  "` strips to nothing: it is no code, so language-code-invalid says so, at its line, and
+    # authoritative-not-declared is silent (the key may be what was meant), as the identifier rule counts.
+    front = 'language: de\nauthoritative: cs\ntranslations:\n  "  ": y.lgd\n'
+    assert _found(front) == [("language-code-invalid", "warning", 6)]
+    assert _identifiers(front, "# Definitions\n") == [("translation-implicit-id", "error", 9)]
+    # ... as with `Fr`; and a valid key beside it that is the authoritative changes nothing.
+    assert _found(front + "  cs: z.lgd\n") == [("language-code-invalid", "warning", 6)]
+    # With only valid keys the authoritative that is none of them is the finding, and no translation.
+    front = "language: de\nauthoritative: cs\ntranslations:\n  fr: y.lgd\n"
+    assert _found(front) == [("authoritative-not-declared", "warning", 4)]
+    assert _identifiers(front, "# Definitions\n") == []
+
+
 # ── The language a document says ──
 
 

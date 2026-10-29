@@ -334,14 +334,20 @@ def _own_fragments(block: Block) -> list[tuple[str, bool]]:
 def fragments_before_target(block: Block) -> int:
     """For a block the parser lifted a ``{{ref:}}`` or ``{{term:}}`` from: how many of its
     ``block_fragments`` come before the target, so that it is read between that many and the
-    rest: its text and the text before it (``_scoped_fragments`` lists them, then the text after)."""
-    return bool(block.text) + bool(block.prefix)
+    rest: its text and the text before it, as ``_scoped_fragments`` lists them."""
+    return _fragments_and_target(block)[1]
 
 
 def _scoped_fragments(block: Block) -> list[tuple[str, bool, int]]:
     """``_own_fragments``, each with its scope within the block
     (``fragment_scopes``): 0 for the text, prefix and suffix, 1 for the
     header row of a table and 2 on for its rows."""
+    return _fragments_and_target(block)[0]
+
+
+def _fragments_and_target(block: Block) -> tuple[list[tuple[str, bool, int]], int]:
+    """``_scoped_fragments``, and where a lifted target sits among them: how many come before it
+    (the text, then the text before the target; the text after it is the rest)."""
     if block.kind in ("html", "source", "link_definition") or (
         block.kind == "code" and (
             is_indented_code(block.text)
@@ -358,7 +364,7 @@ def _scoped_fragments(block: Block) -> list[tuple[str, bool, int]]:
         # closing fence is checked -- which needs
         # at least the fence's own line and one more, so a fence with nothing
         # after it (unclosed at EOF, one line) is code through and through.
-        return []
+        return [], 0
     paragraph = block.kind in ("paragraph", "definition")
     lifted = block.kind in ("ref", "term")
     fragments: list[tuple[str, bool, int]] = []
@@ -368,11 +374,14 @@ def _scoped_fragments(block: Block) -> list[tuple[str, bool, int]]:
         fragments.append((block.text, paragraph, 0))
     if block.prefix:
         fragments.append((block.prefix, False, 0))
+    before = len(fragments)
     if block.suffix:
         fragments.append((block.suffix, lifted, 0))
     fragments.extend((cell, False, 1) for cell in block.headers if cell)
     fragments.extend((cell, False, 2 + number) for number, row in enumerate(block.rows) for cell in row if cell)
-    return fragments
+    return fragments, before
+
+
 def text_fragments(block: Block) -> list[str]:
     """All free-text fragments of a block that may contain inline directives."""
     return [fragment for fragment, _anchor_position in block_fragments(block)]

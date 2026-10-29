@@ -19,7 +19,7 @@ from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, 
 from ..markdown import find_all
 from ..models import Block, Document
 from ..positions import Locator
-from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
+from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount, reading_language
 from .patterns import (
     DURATION_UNITS,
     IDENTIFIER_RE,
@@ -746,7 +746,7 @@ def check_template_body(
             insertions = [d for d in lexed.directives if d.name in _INSERTIONS]
             starts = [d.start for d in insertions]
             for anchor in (
-                find_definition_anchors(fragment, language=document.metadata.language, lexed=lexed)
+                find_definition_anchors(fragment, language=reading_language(document.metadata), lexed=lexed)
                 if insertions
                 else ()
             ):

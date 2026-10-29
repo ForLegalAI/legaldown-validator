@@ -134,6 +134,11 @@ def test_a_definition_in_a_drafting_note_is_no_declaration():
     note = '> [!DRAFTING]\n> "A" {{def: a}} means x.'
     assert _infos(f"See {{{{term: a}}}}.\n\n{note}") == []  # a use before it is not a use before a declaration
     assert _infos(f"{note}\n\nSee {{{{term: a}}}}.") == []
+    # The definition written after the note is the declaration, though it is def-duplicate-id with the
+    # note's (which registers first: pre-existing), so it is not in `registered`.
+    body = f'See {{{{term: a}}}}.\n\n{note}\n\n"A" {{{{def: a}}}} means y.'
+    ((line, message),) = _infos(body)
+    assert line == _AT and message == "Definition 'a' is used once before its declaration at line 21 (§7.2)."
 
 
 def test_an_id_no_definition_declares_is_term_undefined_alone():

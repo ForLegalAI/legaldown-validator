@@ -181,7 +181,7 @@ lowercase ISO 639-1 code (`EN`, `en-US`, `english`) is a Warning (`language-code
 says none** (it was `"en"`): §3.2 gives `language` no default, so the model holds none, as it holds no `authoritative`;
 `empty_document()` says `"en"`, and `serialize` writes `language` only when the model holds one, so writing a document back
 does not say a language it never did. Code that read `document.metadata.language` as "en" for such a document should
-treat `""` so. The text of `ldv-check-skipped` for
+treat `""` so. Dicts that 0.4's `to_dict` wrote always carry `"language": "en"`, so they now load as declaring English. The text of `ldv-check-skipped` for
 `translations` changed: it now names the identifier rules for the linked files, and says whether this
 document's own were checked.
 

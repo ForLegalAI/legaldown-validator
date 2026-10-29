@@ -116,6 +116,27 @@ def is_positive_numeric(value: str) -> bool:
     return bool(_DECIMAL_RE.fullmatch(value or "")) and float(value) > 0
 
 
+def reading_language(meta: Metadata) -> str:
+    """The language the definition readers (delimiters, quoted terms) read the document in: its
+    ``language``, else English. §3.2 gives ``language`` no default, so ``Metadata.language`` is ``""``
+    for a document that says none; reading it as English is the reader's, as it always was."""
+    return meta.language or "en"
+
+
+def authoritative_mismatch(meta: Metadata) -> bool:
+    """Whether ``authoritative-not-declared`` is the finding (§16.6): ``authoritative`` is a valid
+    code that is neither the document's ``language`` nor a ``translations`` key. Only valid codes
+    are judged, so it is not when ``language`` or a key is no code (a blank key included): that one
+    may be what was meant, and ``language-code-invalid`` is the finding."""
+    languages = [meta.language] if meta.language else []
+    languages += meta.translations
+    return (
+        meta.authoritative in ISO_639_1_CODES
+        and meta.authoritative not in languages
+        and all(code in ISO_639_1_CODES for code in languages)
+    )
+
+
 def identifier_rule(meta: Metadata) -> tuple[str | None, str]:
     """The rule that asks the document's own headings and ``{{def:}}`` for explicit identifiers
     (§14.2, §16.7; Core, §17.2), or None, and then why not.
@@ -139,6 +160,6 @@ def identifier_rule(meta: Metadata) -> tuple[str | None, str]:
         return None, "its language or authoritative is not an ISO 639-1 code"
     if language == meta.authoritative:
         return None, "it is the primary: its language is its authoritative"
-    if meta.authoritative not in meta.translations and all(key in ISO_639_1_CODES for key in meta.translations):
+    if authoritative_mismatch(meta):
         return None, "its authoritative is not one of its translations"
     return "translation-implicit-id", ""
