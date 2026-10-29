@@ -988,10 +988,11 @@ class _Fragments:
         self._capped: set[str] = set()
         self._stopped = False
 
-    def refuse(self, path: str, kind: FragmentKind, file: str = "", line: int | None = None) -> None:
-        """*path*, named by *file* at *line*, cannot be asked for or is not there."""
+    def refuse(self, named: str, kind: FragmentKind, file: str = "", line: int | None = None) -> None:
+        """The file *named* (as the message shows it: the path as *file* writes it at *line*) cannot be asked
+        for or is not there."""
         reason = "cannot be read" if self._load_file else "needs the Full level (§17.6)"
-        message = f"'{path}' {reason}; the template is not assembled."
+        message = f"'{named}' {reason}; the template is not assembled."
         self.problems.append(Diagnostic(f"{kind}-file-missing", "error", message, line=line, file=file))
 
     def read(
@@ -2480,6 +2481,31 @@ def _compute_template_identifiers(t: _Template) -> dict[_Key, tuple[str, bool]]:
     return _identifiers(front.text() if front else "", rows)
 
 
+def _spans(lines: list[_Line], includes: list[_Include], present: Mapping[str, Any]) -> dict[int, tuple[int, str]]:
+    """Where the include paragraphs of a file that take in a file in *present* are in its output *lines*: the
+    first line of each, with the line it ends before and the file. An include is found by the lines of the
+    template it covers, so each output line is looked at once, however many includes there are."""
+    targeted = [include for include in includes if include.target in present]
+    if not targeted:
+        return {}
+    first: dict[int, int] = {}  # the first and the last output line each template line became
+    last: dict[int, int] = {}
+    for k, line in enumerate(lines):
+        origin = line.origin
+        first.setdefault(origin, k)
+        last[origin] = k
+    spans: dict[int, tuple[int, str]] = {}
+    for include in targeted:
+        low = high = -1
+        for origin in range(include.start, include.end):
+            if origin in first:
+                low = first[origin] if low < 0 else min(low, first[origin])
+                high = max(high, last[origin])
+        if low >= 0:
+            spans[low] = (high + 1, include.target)
+    return spans
+
+
 def _preserve_identifiers(t: _Template, head: str, main: list[_Line],
                           subs: dict[str, list[_Line]], decision: _Decision) -> None:
     """Step 7: a heading without an explicit identifier whose generated one
@@ -2489,19 +2515,8 @@ def _preserve_identifiers(t: _Template, head: str, main: list[_Line],
     texts = {path: [line.text for line in lines] for path, lines in outputs.items()}
     includes: dict[str, dict[int, tuple[int, str]]] = {}
     for path, lines in outputs.items():
-        # The first and the last output line each template line became, so that an include is found by the
-        # lines it covers and not by a look at every line of the file.
-        first: dict[int, int] = {}
-        last: dict[int, int] = {}
-        for k, line in enumerate(lines):
-            first.setdefault(line.origin, k)
-            last[line.origin] = k
-        for include in (t.main if path == "" else t.subs[path]).includes:
-            if include.target in subs:
-                kept = [origin for origin in range(include.start, include.end) if origin in first]
-                if kept:
-                    start = min(first[origin] for origin in kept)
-                    includes.setdefault(path, {})[start] = (max(last[origin] for origin in kept) + 1, include.target)
+        if spans := _spans(lines, (t.main if path == "" else t.subs[path]).includes, subs):
+            includes[path] = spans
     files = [(item.file, texts[item.file], "")
              for item, kept in zip(t.front.items if t.front else [], decision.attachments, strict=True)
              if kept and item.file in subs]

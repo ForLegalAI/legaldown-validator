@@ -333,11 +333,14 @@ def test_a_missing_nested_file_is_named_as_the_fragment_wrote_it_as_the_validato
     assert [(d.rule, d.file, d.line) for d in template.problems] == [
         ("include-file-missing", "sub/a.lgd", 3), ("include-file-missing", "sub/a.lgd", 5),
     ]
-    assert "'./b.lgd' cannot be read" in template.problems[0].message
-    assert "'../gone/../c.lgd' cannot be read" in template.problems[1].message
-    # The validator names it the same way.
-    validated = [d for d in template.validation.diagnostics if d.rule == "include-file-missing" and d.file == "sub/a.lgd"]
-    assert "'./b.lgd'" in validated[0].message
+    validated = {
+        d.line: d.message for d in template.validation.diagnostics
+        if d.rule == "include-file-missing" and d.file == "sub/a.lgd"
+    }
+    assert sorted(validated) == [3, 5]
+    for problem, written in zip(template.problems, ("./b.lgd", "../gone/../c.lgd"), strict=True):
+        assert f"'{written}' cannot be read" in problem.message
+        assert f"'{written}'" in validated[problem.line]
 
 
 def test_an_include_that_names_no_file_says_so_as_a_documents_does():
@@ -422,16 +425,35 @@ def test_the_chain_helpers_are_the_validators(tmp_path):
 
 # ── Scale ─────────────────────────────────────────────────────────────────────
 
-def test_a_fragment_of_ten_thousand_include_paragraphs_is_assembled_in_linear_time():
-    import time
+def test_step_7_looks_at_each_output_line_once_however_many_includes_the_file_has():
+    from legaldown.assembly import _Include, _spans
 
-    count = MAX_INCLUDE_EXPANDED - 1  # the most the walk follows: each include costs one, and the heading of f
-    files = {"f.lgd": "## F\n\n" + "{{include: x.lgd}}\n\n" * count, "x.lgd": "X.\n"}
-    start = time.perf_counter()
+    class Line:
+        reads = 0
+
+        def __init__(self, origin: int) -> None:
+            self._origin = origin
+
+        @property
+        def origin(self) -> int:
+            Line.reads += 1
+            return self._origin
+
+    count = 600
+    lines = [Line(origin) for origin in range(2 * count)]  # an include paragraph and a blank line, again and again
+    includes = [_Include(2 * i, 2 * i + 1, "x.lgd", "{{include: x.lgd}}", "x.lgd", target="x.lgd") for i in range(count)]
+    spans = _spans(lines, includes, {"x.lgd": None})
+    assert spans == {2 * i: (2 * i + 1, "x.lgd") for i in range(count)}
+    assert Line.reads == len(lines)  # (before: one look at every line for each include, 720,000 here)
+    # A file with no include of a file that is kept is not looked at at all.
+    Line.reads = 0
+    assert _spans(lines, includes, {}) == {} and Line.reads == 0
+
+
+def test_a_fragment_of_many_include_paragraphs_keeps_its_identifiers():
+    files = {"f.lgd": "## F\n\n" + "{{include: x.lgd}}\n\n" * 299 + "{{include: x.lgd}}\n", "x.lgd": "X.\n"}
     result = _assembled("# Doc\n\n{{include: f.lgd}}\n", files)
-    elapsed = time.perf_counter() - start
-    assert result.ok and set(result.files) == {"f.lgd", "x.lgd"}
-    assert elapsed < 12.0  # about 5 s now (the parse of the combined document); over 20 s when step 7 looked at every line of the file for each include
+    assert result.ok and result.files == files
 
 
 # ── Cycles ────────────────────────────────────────────────────────────────────
