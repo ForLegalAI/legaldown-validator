@@ -489,12 +489,14 @@ Where this differs from CommonMark, or is read more simply:
     that existed before #119, kept as they were. (A setext heading's text can hold one: CommonMark takes the
     definitions out of a paragraph before it reads the underline.) The rule is an over-approximation, per line
     as §15.7.3 is: a line that continues a paragraph, which is no definition (`Text`, then
-    `[a]: u {{placeholder: p}}`), is read like any other and is flagged. It still does not flag an insertion
+    `[a]: u {{placeholder: p}}`), is read like any other and is flagged. The one place it is not per line is
+    a setext heading's text, whose lines the parser joins with spaces: an insertion on any line before the last
+    is not seen (`[a]: u {{placeholder: p}}`, `Text`, `===`; `- [a]: u {{placeholder: p}}`, `  Text`, `  ===`;
+    `[a]: u`, `[b]: <x {{placeholder: p}} y>`, `more`, `===`). It still does not flag an insertion
     after a closed title (`[a]: u "t" {{choose: q}}`, a `{{choose:}}` phrase that is empty) or before one
     (`[a]: u {{choose: q}} "t"`), one that an answer could turn into a title with the quote after it
-    (`[a]: u {{placeholder: p}}"`), one in a destination on the next line, one on a line of a setext heading's
-    text that is not its first (the parser joins them with spaces: `[b]: {{placeholder: p}}`, then
-    `[a]: u`, then `===`), or one on a line with text after the definition (`[Note]: {{placeholder: p}} shall
+    (`[a]: u {{placeholder: p}}"`), one in a destination on the next line, one on a line before the last of a
+    setext heading's text (above), or one on a line with text after the definition (`[Note]: {{placeholder: p}} shall
     pay.`), the last being pinned
     as it was ([#129](https://github.com/ForLegalAI/legaldown-validator/issues/129)).
 - The differential test (`tests/test_link_definitions_differential.py`) compares the definitions and the blocks

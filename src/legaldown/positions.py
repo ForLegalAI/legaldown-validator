@@ -382,7 +382,7 @@ class Locator:
         self._document = document
         self._leaves: dict[tuple[int | None, int], list[_Leaf] | None] = {}
         self._definition_lines: dict[tuple[int | None, int], list[int]] = {}
-        self._fragment_lines: dict[tuple[int | None, int], dict[int, int]] = {}
+        self._leaf_of: dict[tuple[int | None, int], dict[int, _Leaf]] = {}  # per block, its leaf by fragment
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
 
     def start(self) -> int | None:
@@ -436,13 +436,8 @@ class Locator:
         that is not known, as for ``setext_section``."""
         if self._map is None:
             return False
-        key = (section, index)
-        if key not in self._fragment_lines:  # found once for the block: a list of thousands of items is not scanned for each
-            self._fragment_lines[key] = {
-                number: leaf.start for leaf in self._leaves_of(section, index) or () for number in leaf.places
-            }
-        start = self._fragment_lines[key].get(fragment)
-        return start is not None and not _is_atx(self._map.lines[start - 1])
+        leaf = self._leaf_for(section, index, fragment)
+        return leaf is not None and not _is_atx(self._map.lines[leaf.start - 1])
 
     def block(self, section: int | None, index: int) -> int | None:
         return self._map.block(section, index) if self._map else None
@@ -467,13 +462,9 @@ class Locator:
         span = self._map.span(section, index)
         start = self._map.body_start + span.start + 1
         end = self._map.body_start + span.end + 1
-        if fragment is not None:
-            for leaf in self._leaves_of(section, index) or ():
-                if fragment in leaf.places:
-                    text, base = leaf.places[fragment]
-                    return self._map.find(
-                        leaf.start, leaf.end, needle, leaf.texts, text, base + offset, 0, self._cache
-                    )
+        if fragment is not None and (leaf := self._leaf_for(section, index, fragment)):
+            text, base = leaf.places[fragment]
+            return self._map.find(leaf.start, leaf.end, needle, leaf.texts, text, base + offset, 0, self._cache)
         return self._map.find(start, end, needle, [], None, 0, nth, self._cache)
 
     def definition(self, section: int | None, index: int, ordinal: int) -> int | None:
@@ -511,6 +502,13 @@ class Locator:
             return self._map.find(leaf.start, leaf.end, needle, leaf.texts, 0, leaf.lifted, 0, self._cache)
         return self.find(section, index, needle)
 
+    def _leaf_for(self, section: int | None, index: int, fragment: int) -> _Leaf | None:
+        """The leaf of top-level block *index* that holds fragment *fragment* of its ``block_fragments``,
+        found by a map made once for the block: a list of thousands of items is not scanned for each
+        fragment. None when the parsed layout and the model disagree."""
+        self._leaves_of(section, index)
+        return self._leaf_of[(section, index)].get(fragment)
+
     def _leaves_of(self, section: int | None, index: int) -> list[_Leaf] | None:
         """The blocks of a top-level block that hold its ``block_fragments``,
         in order, as ``definitions.block_fragments`` reads them; None when
@@ -518,6 +516,7 @@ class Locator:
         key = (section, index)
         if key not in self._leaves:
             self._leaves[key] = self._read_leaves(section, index)
+            self._leaf_of[key] = {number: leaf for leaf in self._leaves[key] or () for number in leaf.places}
         return self._leaves[key]
 
     def _read_leaves(self, section: int | None, index: int) -> list[_Leaf] | None:
