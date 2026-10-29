@@ -206,6 +206,7 @@ def test_the_walk_that_was_cut_short_records_the_last_include_it_met_before_the_
     assert INCLUDE_LIMIT_RULE in {d.rule for d in template.problems}
     template.form({})  # ends
     assert set(template._t.last) <= set(template._t.subs) and "p0.lgd" in template._t.last
+    assert template._t.last["p1.lgd"] is template._t.subs["p0.lgd"].includes[0]  # (the walk stopped before the second)
 
 
 _ATTACHED = _FRONT.replace("---\n\n", "attachments:\n  - id: d\n    title: D\n    file: d.lgd\n---\n\n")
@@ -255,9 +256,9 @@ def test_no_graph_of_includes_and_attachments_makes_a_template_raise(tmp_path, s
     last = template._t.last
     assert all(include.target == relative for relative, include in last.items())
     if "include-cycle" not in {d.rule for d in template.problems}:
-        # (With a cycle the template is refused, and an include met only through an edge that closed a
-        # cycle in another chain may be the walk's last without being the combined document's.)
         assert last == _last_in_the_combined_document(template._t)
+    # (With a cycle the template is refused, and an include met only through an edge that closed a
+    # cycle in another chain may be the walk's last without being the combined document's.)
 
 
 def test_each_fragment_is_parsed_once_when_the_template_has_a_path(monkeypatch, tmp_path):
@@ -545,7 +546,11 @@ def test_assembly_finds_what_the_validator_finds_of_the_includes_it_judges_befor
 def test_the_last_include_the_walk_records_is_the_last_of_the_combined_document(tmp_path, graph):
     files = dict(_GRAPHS[graph])
     main = files.pop("<main>", "# Doc\n\n{{include: a.lgd}}\n")
-    t = Template(_FRONT + main, resolve=files.get, path=tmp_path / "main.lgd")._t
+    template = Template(_FRONT + main, resolve=files.get, path=tmp_path / "main.lgd")
+    t = template._t
+    assert all(include.target == relative for relative, include in t.last.items())
+    if "include-cycle" in {d.rule for d in template.problems}:
+        return  # refused before any output: `last` is the walk's, which need not be the combined document's
     assert t.last == _last_in_the_combined_document(t)
 
 

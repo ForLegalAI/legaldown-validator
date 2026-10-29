@@ -695,13 +695,13 @@ class IncludeOutcome:
     caps: list[str] = field(default_factory=list)
 
 
-class NamedInclude(Protocol):
+class _NamedInclude(Protocol):
     """What names a file to include: an ``IncludeDirective``, or assembly's own reading of one."""
     path: str
     written: str
 
 
-def not_legaldown(include: NamedInclude) -> str | None:
+def not_legaldown(include: _NamedInclude) -> str | None:
     """The message of ``include-not-legaldown`` (§12.2) for *include*, whose path does not end in a LegalDown
     extension, or None when it does or names no file. It needs no file."""
     if not include.path or include.path.endswith(LEGALDOWN_EXTENSIONS):
@@ -712,32 +712,30 @@ def not_legaldown(include: NamedInclude) -> str | None:
     )
 
 
-class _Chain(NamedTuple):
+class IncludeChain(NamedTuple):
     """The files being included, outermost first (*paths*, as they are named), and the same as ``Files.key``
     (*keys*, a set, to tell in one step that a file is among them)."""
     paths: tuple[str, ...] = ()
     keys: frozenset[str] = frozenset()
 
 
-#: The chain type, for a reader of the includes that holds one (assembly), and the chain of the document itself,
-#: which has included nothing yet.
-IncludeChain = _Chain
+#: The chain of the document itself, which has included nothing yet.
 EMPTY_CHAIN = IncludeChain()
 
 
-def extend(files: Files, chain: _Chain, path: str) -> _Chain:
+def extend(files: Files, chain: IncludeChain, path: str) -> IncludeChain:
     """*chain* with the file at *path* (as ``Files.locate`` gives it) last."""
-    return _Chain((*chain.paths, path), chain.keys | {files.key(path)})
+    return IncludeChain((*chain.paths, path), chain.keys | {files.key(path)})
 
 
-def closes(files: Files, chain: _Chain, relative: str) -> bool:
+def closes(files: Files, chain: IncludeChain, relative: str) -> bool:
     """Whether following the include of *relative* (a path from the document's directory, as ``Files.locate``
     gives it) closes a circular chain (§12.2): it is a file of *chain*, or the document itself. The one test of
     ``include-cycle``, for the validator and for assembly."""
     return files.key(relative) in chain.keys or files.is_own(relative)
 
 
-def cycle_message(files: Files, source: str, chain: _Chain, relative: str) -> str:
+def cycle_message(files: Files, source: str, chain: IncludeChain, relative: str) -> str:
     """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*."""
     said = " -> ".join(["the document", *chain.paths, "the document" if files.is_own(relative) else relative])
     return (
@@ -746,7 +744,7 @@ def cycle_message(files: Files, source: str, chain: _Chain, relative: str) -> st
     )
 
 
-def too_deep(chain: _Chain) -> str | None:
+def too_deep(chain: IncludeChain) -> str | None:
     """The phrase that says the depth cap is reached, when *chain* is as long as the includes are followed
     (``MAX_INCLUDE_DEPTH``), else None. The caps are read when asked, so that a test can lower them."""
     if len(chain.paths) < MAX_INCLUDE_DEPTH:
@@ -806,7 +804,7 @@ class _Walk:
                 self._result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
 
     def attempt(
-        self, include: IncludeDirective, owner: FragmentFile | None, chain: _Chain, first: bool = True
+        self, include: IncludeDirective, owner: FragmentFile | None, chain: IncludeChain, first: bool = True
     ) -> FragmentFile | None:
         """The fragment that *include* takes in, an include paragraph of the document (*owner* None) or of
         a fragment, *chain* being the files being included (outermost first, *owner* last), or None when
@@ -880,11 +878,11 @@ class _Walk:
         self.shape(target)
         return target if target.spliceable else None  # a file that is not a fragment is reported, not spliced
 
-    def extend(self, chain: _Chain, fragment: FragmentFile) -> _Chain:
+    def extend(self, chain: IncludeChain, fragment: FragmentFile) -> IncludeChain:
         """*chain* with *fragment* last."""
         return extend(self._files, chain, fragment.path)
 
-    def expand(self, fragment: FragmentFile, chain: _Chain) -> list[Heading]:
+    def expand(self, fragment: FragmentFile, chain: IncludeChain) -> list[Heading]:
         """The headings *fragment* brings into the combined document: its own, each followed by those of the
         fragments its section includes (those of the preamble first). *chain* are the files being
         included, outermost first, *fragment* last."""
@@ -920,7 +918,7 @@ class _Walk:
         return True
 
     def _follow(
-        self, fragment: FragmentFile, number: int, include: IncludeDirective, chain: _Chain
+        self, fragment: FragmentFile, number: int, include: IncludeDirective, chain: IncludeChain
     ) -> list[Heading]:
         """The headings of the fragment that *include*, the *number*th include paragraph of *fragment*,
         takes in. In a template there are none to follow: an include in a fragment is

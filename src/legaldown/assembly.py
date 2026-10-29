@@ -1039,7 +1039,8 @@ class _Fragments:
         """The checks of an attachment file on the file at *path*, which is also an include fragment, and was
         read as one: an include in it is not assembled (``_attachment_includes``), once however often it is
         attached. (The rest of what is checked of a file is the same for both, or was found by the first.)"""
-        if path in self._read and path not in self._attached and not self._template:
+        assert path in self._read, path
+        if path not in self._attached and not self._template:
             self._attached.add(path)
             self.problems += _attachment_includes(self._read[path][1], cache(lex))
 
@@ -1067,7 +1068,9 @@ class _Fragments:
     def finish(self) -> None:
         """End the reading: take the target from each include that closed a cycle (an include is shared by
         every place its file is included, and a cycle is refused only in the chain it was met in, so the
-        targets could lead round, and the template is refused for it anyway), and settle ``subs`` and ``last``."""
+        targets could lead round, and the template is refused for it anyway), and settle ``subs`` and ``last``.
+        ``last`` follows the combined document only when the graph of includes has no cycle: a template with
+        one is refused before any output, and what it decides is not looked at."""
         for include in self._cyclic.values():
             include.target = ""
         self.subs = {path: source for path, (source, _fragment) in self._read.items()}
