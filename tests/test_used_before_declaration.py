@@ -150,6 +150,53 @@ def test_alternatives_count_when_every_one_comes_later():
     assert _infos(between, questions) == []
 
 
+def test_a_use_is_judged_against_the_declaration_it_can_appear_with():
+    questions = "questions:\n  q:\n    type: boolean\n"
+    # The first declaration is under `q`, the use under `not q`: it resolves to the second, below it
+    # (the reviewer's case: the earliest declaration cannot appear with the use).
+    body = '"A" {{def: a}} means x. {when=q}\n\nSee {{term: a}}. {when=!q}\n\n"A" {{def: a}} means y. {when=!q}'
+    ((line, message),) = _infos(body, questions)
+    assert line == _AT + 3 + 2 and message == "Definition 'a' is used once before its declaration at line 23 (§7.2)."
+    # ... and the other way round, the use under `q` is after the declaration under `q`.
+    assert _infos('"A" {{def: a}} means x. {when=q}\n\nSee {{term: a}}. {when=q}\n\n"A" {{def: a}} means y. {when=!q}', questions) == []
+    # An unconditional use can appear with either: it is after the first.
+    assert _infos('"A" {{def: a}} means x. {when=q}\n\nSee {{term: a}}.\n\n"A" {{def: a}} means y. {when=!q}', questions) == []
+
+
+def test_a_declaration_that_can_never_appear_is_no_declaration():
+    questions = "questions:\n  q:\n    type: boolean\n"
+    body = (
+        "# Never {#never when=q}\n\n"
+        '- "A" {{def: a}} means x. {when=!q}\n\n'
+        "# Use {#use}\n\nSee {{term: a}}.\n\n"
+        "# Real {#real}\n\n"
+        '"A" {{def: a}} means y.'
+    )
+    ((line, message),) = _infos(body, questions)
+    assert line == _AT + 3 + 6 and message.endswith("at line 29 (§7.2).")
+    # ... nor is a use that can never appear a use.
+    never_use = body.replace("# Use {#use}\n\nSee {{term: a}}.", "# Use {#use when=q}\n\nSee {{term: a}}. {when=!q}")
+    assert _infos(never_use, questions) == []
+
+
+def test_a_lifted_target_is_judged_by_its_offset_in_its_paragraph():
+    # Without text before it, the target is before everything the text after it holds.
+    assert _lines('{{term: b}} and then "B" {{def: b}} means y.') == [_AT]
+    # With some, after the definition that text holds.
+    assert _infos('Text "B" {{def: b}} means x, {{term: b}} and then.') == []
+    assert _infos('Text "B" {{def: b}} means x, {{term: b}} and "C" {{def: c}} means {{term: c}}.') == []
+
+
+def test_own_term_of_is_the_one_self_reference_the_circle_has():
+    from legaldown.validator.circular import own_term_of
+
+    registered = [(_ref("s", 0, 0, 0, offset=30), ALWAYS), (_ref("t", 0, 0, 0, offset=60), ALWAYS)]
+    owner = own_term_of(registered)
+    assert owner(TermUse(0, 0, 0, "s", ALWAYS, 30)) == 0  # in the quoted term of the definition it names
+    assert owner(TermUse(0, 0, 0, "s", ALWAYS, 60)) is None  # in another's
+    assert owner(TermUse(0, 0, 0, "s", ALWAYS)) is None  # in none
+
+
 def test_a_term_in_the_definitions_own_quoted_term_is_the_circles_alone():
     body = '"Self {{term: s}}" {{def: s}} means x.'
     result = validate(parse(_source(body), filename="t.lgd"))

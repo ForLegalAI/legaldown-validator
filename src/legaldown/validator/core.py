@@ -2069,7 +2069,7 @@ def _validate(
                 term_uses.append(
                     TermUse(
                         section_index, block_index, None, block.target.strip(), block_presence,
-                        line=lifted_line, after_prefix=bool(block.prefix),
+                        offset=len(block.prefix), line=lifted_line,
                     )
                 )
         notes = [quote for quote in block_quotes(block) if quote.is_drafting_note]
@@ -2349,7 +2349,9 @@ def _validate(
 
     # Definitions used before declaration (§16.3, Info): one for each definition, at its first
     # earlier use. The original an amendment amends is in force before the document (§7.5).
-    for number, earlier in used_before_declaration(registered, term_uses, _imported_definitions):
+    for number, earlier in used_before_declaration(
+        registered, term_uses, _imported_definitions, exclusivity if template else None
+    ):
         ref = registered[number][0]
         declared = definition_line(ref)
         times = "once" if len(earlier) == 1 else f"{len(earlier)} times"

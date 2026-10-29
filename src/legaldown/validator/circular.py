@@ -62,12 +62,10 @@ class TermUse(NamedTuple):
     #: this use (``"Self {{term: s}}" {{def: s}}``), or None.
     owner: int | None = None
     #: Its offset in its fragment, and its line (§16.9, found only if asked): for
-    #: ``used_before_declaration``.
+    #: ``used_before_declaration``. For the target the parser lifted (no fragment) the offset is
+    #: where it was read in its paragraph: the length of the text before it.
     offset: int = 0
     line: Line = None
-    #: For the target the parser lifted: whether the block has text before it. The block's
-    #: fragments are that text, then the text after, and the target is between them.
-    after_prefix: bool = False
 
 
 def term_owners(
@@ -93,53 +91,89 @@ def term_owners(
     return owner
 
 
+def own_term_of(registered: Sequence[tuple[DefinitionRef, Presence]]) -> Callable[[TermUse], int | None]:
+    """For a use, the index in *registered* of the definition whose own quoted term holds it, when
+    the use names that definition (``"Self {{term: s}}" {{def: s}}``), else None: the one
+    self-reference ``definition-circular`` reports, and no ordering one."""
+    defined_at = {
+        (ref.section_index, ref.block_index, ref.fragment_index, ref.offset): number
+        for number, (ref, _presence) in enumerate(registered)
+    }
+
+    def owner(use: TermUse) -> int | None:
+        if use.owner is None:
+            return None
+        number = defined_at.get((use.section, use.block, use.fragment, use.owner))
+        return number if number is not None and registered[number][0].id == use.target else None
+
+    return owner
+
+
 def used_before_declaration(
     registered: Sequence[tuple[DefinitionRef, Presence]],
     uses: Iterable[TermUse],
     imported: Collection[str] = (),
+    exclusivity: Exclusivity | None = None,
 ) -> list[tuple[int, list[TermUse]]]:
     """The definitions that *uses* name before their declaration, in the order the document is
     written, preamble first (``definition-used-before-declaration``, §16.3, #116).
 
     Each is an index into *registered* (the definitions that count, as for
     ``find_circular_definitions``), with its uses before the declaration in document order,
-    ordered by the first of them. A definition declared more than once, under alternatives (§15.4),
-    is declared at the first: a use between them resolves to the alternative that is there. A
-    definition of an id in *imported* is in force before the document's text (§7.5), and an id none of
+    ordered by the first of them. A use is judged against the first declaration of its id that
+    can appear with it: given an *exclusivity* (a template's, §15.4), one that can appear and is
+    not excluded from the use's presence, so a use between two alternatives is judged against the
+    one it resolves to, and a declaration that can never appear is no declaration. A definition
+    of an id in *imported* is in force before the document's text (§7.5), and an id none of
     *registered* declares is no definition of the document (an imported one is a target only, as
-    there); a ``{{term:}}`` in the definition's own quoted term (``"Self {{term: s}}" {{def: s}}``) is
-    the circle's, not an ordering one. A use in a drafting note is not in *uses*."""
+    there); a ``{{term:}}`` in the definition's own quoted term is the circle's
+    (``own_term_of``). A use in a drafting note is not in *uses*."""
+    own_term = own_term_of(registered)
 
-    def place(section: int | None, block: int, rank: int, offset: int) -> tuple[int, int, int, int]:
-        # The preamble before the first section; within a block, its fragments (rank 2n + 1) and,
-        # between them, the target the parser lifted (rank 0, or 2 after the text before it) and
-        # the anchor a definition block holds in its own fields (rank -1).
-        return (-1 if section is None else section, block, rank, offset)
+    def place(section: int | None, block: int, fragment: int, offset: int) -> tuple[int, int, int, int]:
+        # The preamble before the first section; within a block, the fragments in order.
+        return (-1 if section is None else section, block, fragment, offset)
 
-    first: dict[str, tuple[tuple[int, int, int, int], int]] = {}  # per id: where it is declared, and its index
-    defined_at: dict[tuple[int | None, int, int | None, int], str] = {}
+    declared: dict[str, list[tuple[tuple[int, int, int, int], int]]] = {}  # per id: where, and the index
     for number, (ref, _presence) in enumerate(registered):
-        rank = -1 if ref.fragment_index is None else 2 * ref.fragment_index + 1
-        declared = place(ref.section_index, ref.block_index, rank, ref.offset)
-        if ref.id not in first or declared < first[ref.id][0]:
-            first[ref.id] = (declared, number)
-        defined_at[ref.section_index, ref.block_index, ref.fragment_index, ref.offset] = ref.id
+        # The anchor a definition block holds in its own fields comes before its text.
+        fragment = -1 if ref.fragment_index is None else ref.fragment_index
+        declared.setdefault(ref.id, []).append((place(ref.section_index, ref.block_index, fragment, ref.offset), number))
+    for group in declared.values():
+        group.sort()
 
-    earlier: dict[str, list[tuple[tuple[int, int, int, int], TermUse]]] = {}
+    first: dict[tuple[str, Presence], tuple[tuple[int, int, int, int], int] | None] = {}
+
+    def first_declaration(target: str, presence: Presence) -> tuple[tuple[int, int, int, int], int] | None:
+        if (target, presence) not in first:
+            first[target, presence] = next(
+                (
+                    each for each in declared[target]
+                    if exclusivity is None
+                    or (exclusivity.appears(registered[each[1]][1]) and not exclusivity.excluded(presence, registered[each[1]][1]))
+                ),
+                None,
+            )
+        return first[target, presence]
+
+    earlier: dict[int, list[tuple[tuple[int, int, int, int], TermUse]]] = {}
     for use in uses:
-        if use.target not in first or use.target in imported:
+        if use.target not in declared or use.target in imported or own_term(use) is not None:
             continue
-        if use.owner is not None and defined_at.get((use.section, use.block, use.fragment, use.owner)) == use.target:
+        if exclusivity is not None and not exclusivity.appears(use.presence):
             continue
-        rank = (2 if use.after_prefix else 0) if use.fragment is None else 2 * use.fragment + 1
-        written = place(use.section, use.block, rank, use.offset)
-        if written < first[use.target][0]:
-            earlier.setdefault(use.target, []).append((written, use))
+        declaration = first_declaration(use.target, use.presence)
+        if declaration is None:
+            continue
+        # A lifted target is in the first fragment, where the parser read it: at its offset in the paragraph.
+        written = place(use.section, use.block, 0 if use.fragment is None else use.fragment, use.offset)
+        if written < declaration[0]:
+            earlier.setdefault(declaration[1], []).append((written, use))
     for group in earlier.values():
         group.sort(key=lambda each: each[0])
     return [
-        (first[target][1], [use for _written, use in group])
-        for target, group in sorted(earlier.items(), key=lambda each: each[1][0][0])
+        (number, [use for _written, use in group])
+        for number, group in sorted(earlier.items(), key=lambda each: each[1][0][0])
     ]
 
 
@@ -278,18 +312,14 @@ def find_circular_definitions(
 
     # The distinct (target, presence) each paragraph with a definition names.
     references: dict[int, dict[tuple[str, Presence], None]] = {}  # in order
-    defined_at = {
-        (ref.section_index, ref.block_index, ref.fragment_index, ref.offset): number
-        for number, (ref, _presence) in enumerate(registered)
-    }
+    owner_of = own_term_of(registered)
     own_term: set[int] = set()  # the definitions whose quoted term holds a {{term:}} to their id
     for use in uses:
         if use.target not in declarations or (use.section, use.block) not in scopes:
             continue
-        if use.owner is not None:
-            owner = defined_at.get((use.section, use.block, use.fragment, use.owner))
-            if owner is not None and registered[owner][0].id == use.target:
-                own_term.add(owner)
+        owner = owner_of(use)
+        if owner is not None:
+            own_term.add(owner)
         scope = scope_of(use.section, use.block, use.fragment)
         if scope in scope_node:
             references.setdefault(scope_node[scope], {})[use.target, use.presence] = None
