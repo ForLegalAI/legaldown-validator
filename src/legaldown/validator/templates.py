@@ -16,7 +16,7 @@ from functools import partial
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
-from ..markdown import find_all
+from ..markdown import find_all, scan_destination
 from ..models import Block, Document
 from ..positions import Locator
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
@@ -363,8 +363,10 @@ _CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]{1,9}[.)])
 _NON_BLANK_RE = re.compile(r"\S")
 # A link reference definition's destination, after its ``]:`` (``_InsertionScan._reference_end``), and
 # the blanks that set a title off from it.
-_REFERENCE_DESTINATION_RE = re.compile(r"[ \t]*\S*")
+_REFERENCE_DESTINATION_RE = re.compile(r"[ \t]*(\S*)")
 _REFERENCE_BLANKS_RE = re.compile(r"[ \t]+")
+# What may follow the blanks after a destination, where an answer could be its title: directives (masked) and blanks.
+_TITLE_SLOT_RE = re.compile(r"[ \t\x00]*")
 # What closes a title by what opens it.
 _TITLE_CLOSERS = {'"': '"', "'": "'", "(": ")"}
 
@@ -391,6 +393,7 @@ class _InsertionScan:
         self.template = template
         self._newlines = find_all(text, "\n")
         self._directive_ends = {directive.end for directive in directives}
+        self._directive_starts = {directive.start for directive in directives}
         self._blanks = _merged(template, " ", "\t")
         self._combining = _merged(template, *_COMBINING)
         self._destination_starts = find_all(template, "](")  # it cannot overlap itself
@@ -439,13 +442,27 @@ class _InsertionScan:
         found = bisect_left(brackets, bracket + 1)
         if found == len(brackets) or brackets[found] < bracket + 2 or not template.startswith(":", brackets[found] + 1):
             return -1
-        end = _REFERENCE_DESTINATION_RE.match(template, brackets[found] + 2).end()
+        destination = _REFERENCE_DESTINATION_RE.match(template, brackets[found] + 2)
+        end = self._after_title(destination.end())
+        # A ``<…>`` destination may hold blanks (§6.3). (The longer reading wins: no verdict that the definition
+        # drew before is lost.)
+        if template.startswith("<", destination.start(1)) and (angle := scan_destination(template, destination.start(1))):
+            end = max(end, self._after_title(angle[2]))
+        return end
+
+    def _after_title(self, end: int) -> int:
+        """Where the definition whose destination ends at *end* ends: past its title, which the blanks before it
+        set off and the next ``"``, ``'`` or ``)`` closes, on a later line too; past the directives and blanks
+        where an answer could be a title; else *end*."""
+        template = self.template
         blanks = _REFERENCE_BLANKS_RE.match(template, end)
         if blanks and (delimiter := _TITLE_CLOSERS.get(template[blanks.end():blanks.end() + 1])):
             closers = self._closers(delimiter)
             found = bisect_left(closers, blanks.end() + 1)
             if found < len(closers):
                 return closers[found] + 1
+        elif blanks and blanks.end() in self._directive_starts:
+            return _TITLE_SLOT_RE.match(template, blanks.end()).end()
         return end
 
     def _blank_from(self, reference_end: int, line_end: int) -> bool:

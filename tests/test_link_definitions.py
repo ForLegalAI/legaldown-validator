@@ -892,12 +892,58 @@ def test_a_document_with_unreadable_frontmatter_is_checked_to_the_line():
         ("[Note]: {{placeholder: p}} shall pay.\n", False),
         ("[a]: u\n[label]: {{placeholder: p}}\n", True),
         ("- [label]: {{placeholder: p}}\n", True),
+        # Unchanged by #119: nothing of the definition's destination, and no title slot.
+        ("[a]: u {{placeholder: p}} v\n", False),
+        ("[a]: <x {{placeholder: p}} y\n", False),
+        ("[a]: <x\n{{placeholder: p}} y>\n", False),
+        ("Text [a]: <x {{placeholder: p}} y>\n", False),
+        ("[a]: <x {{placeholder: p}} y> shall pay.\n", False),
+        ("[a]: u\n[b]: v\n", False),
+        ("[a]: u {{ref: q}}\n", False),
     ],
 )
 def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body, error):
     template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n---\n\n# A\n\n" + body
     rules = validate(parse(template)).rules()
     assert ("insertion-boundary" in rules) is error
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="a title after the destination and the destination on the next line are not read as one (#129)",
+)
+@pytest.mark.parametrize(
+    "body",
+    [
+        '[a]: u "t" {{placeholder: p}}\n',  # an empty {{choose:}} phrase makes it a definition
+        "[a]:\n{{placeholder: p}}\n",  # an answer makes it a definition
+    ],
+)
+def test_an_insertion_after_a_title_or_in_a_destination_on_the_next_line_is_off_limits(body):
+    template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n---\n\n# A\n\n" + body
+    assert "insertion-boundary" in validate(parse(template)).rules()
+
+
+@pytest.mark.parametrize(
+    ("body", "lines"),
+    [
+        ("[a]: <x {{placeholder: p}} y>\n", [14]),  # #119: blanks in a <…> destination
+        ("[a]: u {{placeholder: p}}\n", [14]),  # #119: where an answer could be the title
+        ("[a]: <x y> {{placeholder: p}}\n", [14]),
+        ("[a]: <{{placeholder: p}} y>\n", [14]),
+        ('[a]: <x {{placeholder: p}} y> "t"\n', [14]),
+        ("[a]: <x \\> {{placeholder: p}} y>\n", [14]),
+        ("[a]: u {{placeholder: p}} {{placeholder: p}}\n", [14, 14]),
+        ("[a]: u \t{{choose: q}}  \n", [14]),
+        ("- [a]: u {{placeholder: p}}\n", [14]),
+        ("> [a]: <x {{placeholder: p}} y>\n", [14]),
+        ("[a]: <x y>\n[b]: <{{placeholder: p}} z>\n", [15]),
+    ],
+)
+def test_an_insertion_in_the_destination_of_a_definition_is_off_limits(body, lines):
+    template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n  q:\n    type: boolean\n    prompt: Q?\n---\n\n# A\n\n" + body
+    result = validate(parse(template))
+    assert [d.line for d in result.diagnostics if d.rule == "insertion-boundary"] == lines
 
 
 # ── Known differences from CommonMark (CONFORMANCE.md) ────────────

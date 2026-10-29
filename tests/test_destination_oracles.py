@@ -20,7 +20,8 @@ list stays exact:
   (a gap holds up to one line break);
 * raw HTML: ``glued-title``, ``line-break-around`` (a line break may precede ``<`` and ``)``),
   ``escaped-delimiter`` (a backslash escapes a ``>``, ``"`` or ``)`` in a destination or a title);
-* the insertion boundary has none: ``_InsertionScan._reference_end`` is the old pattern, at every offset.
+* the insertion boundary has two (#119), ``angle`` and ``title-slot``: ``_InsertionScan._reference_end`` is the old
+  pattern's end, or the longer end of the two readings, at every offset.
 """
 from __future__ import annotations
 
@@ -636,19 +637,62 @@ _REFERENCE_TOKENS = [
 ]
 
 
-def test_the_link_reference_of_the_insertion_boundary_is_the_old_pattern_at_every_offset():
-    """No class: ``_InsertionScan._reference_end`` is where the old pattern, run at that offset of the template (its
-    directives masked), ended, or -1. A pinned over-approximation, not CommonMark's rule."""
-    matches = 0
-    for text in _random_texts(_REFERENCE_TOKENS + ["[a]: ", "u ", '"t"', "'t'", "(t)"] * 2, 20_000, 14, seed=1135):
+_OLD_LABEL_RE = re.compile(r" {0,3}\[[^\]]+\]:[ \t]*")
+_ANGLE_DESTINATION_RE = re.compile(r"<(?:\\[!-/:-@\[-`{-~]|[^<>\n])*+>")
+_OLD_TITLE_RE = re.compile(r"[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\))")
+
+
+def _reference_end_by_the_regular_expressions(template, offset, directive_starts):
+    """What ``_InsertionScan._reference_end`` is, by regular expressions: the old pattern's end, or the end of the
+    longer reading of the definition, after a ``<…>`` destination that holds blanks or where an answer could be
+    the title (the blanks after the destination, then directives and blanks). Returns ``(end, class)``."""
+    label = _OLD_LABEL_RE.match(template, offset)
+    if not label:
+        return -1, None
+    bare = label.end() + len(re.match(r"\S*", template[label.end():]).group())
+    ends = [bare]
+    if angle := _ANGLE_DESTINATION_RE.match(template, label.end()):
+        ends.append(angle.end())
+    best, kind = _OLD_LINK_REFERENCE_RE.match(template, offset).end(), None
+    for after in ends:
+        if title := _OLD_TITLE_RE.match(template, after):
+            end = title.end()
+        else:
+            blanks = re.compile(r"[ \t]+").match(template, after)
+            end = after
+            if blanks and blanks.end() in directive_starts:
+                end = re.compile(r"[ \t\x00]*").match(template, blanks.end()).end()
+        if end > best:
+            best, kind = end, ("angle" if after == ends[-1] != ends[0] else "title-slot")
+    return best, kind
+
+
+def test_the_link_reference_of_the_insertion_boundary_is_the_old_pattern_but_for_two_classes_at_every_offset():
+    """Two classes (#119), each a value-level oracle: ``_InsertionScan._reference_end`` is where the old pattern, run
+    at that offset of the template (its directives masked), ended, or -1 — except that the definition's end is the
+    longer of two readings. ``angle``: the destination is a ``<…>`` that holds blanks (§6.3), so its title, if any,
+    follows its ``>``. ``title-slot``: blanks after the destination, then a directive (an answer could be its title)
+    — and the directives and blanks after it. Every offset is checked against the end by regular expressions, and
+    the old pattern's end is never lost. A pinned over-approximation, not CommonMark's rule. (The 60000 texts, 3 s,
+    are what reaches each class a hundred times: 30000 reached ``angle`` 91 times.)"""
+    matches, classes = 0, Counter()
+    for text in _random_texts(
+        _REFERENCE_TOKENS + ["[a]: ", "u ", '"t"', "'t'", "(t)", "<x ", ">", "<", "\\>"] * 3, 60_000, 14, seed=1135
+    ):
         lexed = lex(text)
         template = mask_directives(text, lexed.directives)
+        starts = {directive.start for directive in lexed.directives}
         scan = templates._InsertionScan(text, template, lexed.directives)
         for offset in range(len(template) + 1):
             old = _OLD_LINK_REFERENCE_RE.match(template, offset)
-            assert scan._reference_end(offset) == (old.end() if old else -1), (text, offset)
+            expected, kind = _reference_end_by_the_regular_expressions(template, offset, starts)
+            found = scan._reference_end(offset)
+            assert found == expected, (text, offset)
+            assert found >= (old.end() if old else -1), (text, offset)  # no verdict of the old pattern is lost
+            classes[kind] += 1
             matches += bool(old)
     assert matches > 10_000, matches
+    assert classes["angle"] > 100 and classes["title-slot"] > 100, classes
 
 
 @pytest.mark.parametrize(("template", "end"), [
@@ -667,6 +711,10 @@ def test_the_link_reference_of_the_insertion_boundary_is_the_old_pattern_at_ever
     ("[a]: u\t\"t\"", 10),
     ("[a]: u\t\"t", 6),
     ("[a]: u\r\"t\"", 6),
+    ("[a]: <x y>", 10),  # #119: a <…> destination may hold blanks
+    ("[a]: <x y> 't", 10),
+    ("[a]: <x y> 't'", 14),
+    ("[a]: <x y", 7),
 ])
 def test_the_link_reference_end_of_the_cases_that_differ_from_commonmark(template, end):
     scan = templates._InsertionScan(template, template, [])

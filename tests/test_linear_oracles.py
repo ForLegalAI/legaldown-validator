@@ -416,6 +416,54 @@ def fresh_problem(text, template, insertion, directives):
     return templates._InsertionScan(text, template, directives).problem(insertion)
 
 
+_REFERENCE = "it is in a link reference definition"
+_DESTINATION = "it is inside a link or image destination"
+_ANGLE_RE = re.compile(r"<(?:\\[!-/:-@\[-`{-~]|[^<>\n])*+>")
+_PINNED_LABEL_RE = re.compile(r" {0,3}\[[^\]]+\]:[ \t]*")
+_PINNED_TITLE_RE = re.compile(r"[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\))")
+_PINNED_TITLE_SLOT_RE = re.compile(r"[ \t]+\0[ \t\0]*")
+
+
+def in_definition_destination(text, template, insertion):
+    """Whether *insertion* is on a link reference definition line that #119 reads as one with a destination it could
+    change: exactly (the scan's verdict, both ways). For one of two readings of the destination (its bare run of
+    non-blanks, or its ``<…>``, which may hold blanks, §6.3), the definition ends past a closed title or, where an
+    answer could be the title, past the blanks, the directive and what blanks and directives follow; the insertion
+    lies before that end, and nothing but blanks follows it to the end of the line. Read from the template by
+    regular expressions, apart from the scan's index."""
+    start = insertion.start
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", insertion.end)
+    line_end = len(text) if line_end < 0 else line_end
+    content = min(templates._CONTAINER_RE.match(text, line_start).end(), start)
+    label = _PINNED_LABEL_RE.match(template, content)
+    if not label:
+        return False
+    ends = [label.end() + len(re.match(r"\S*", template[label.end():]).group())]
+    if angle := _ANGLE_RE.match(template, label.end()):
+        ends.append(angle.end())
+    for after in ends:
+        if closed := _PINNED_TITLE_RE.match(template, after) or _PINNED_TITLE_SLOT_RE.match(template, after):
+            after = closed.end()
+        if start < after and not re.search(r"\S", template[after:line_end]):
+            return True
+    return False
+
+
+def assert_the_old_verdict_but_for_destinations(text, template, insertion, directives, classes):
+    """The verdict of ``_InsertionScan`` is the old one (a copy of the code that preceded #119), except in one value
+    class, which it is exactly: a definition's destination (``in_definition_destination``), where it is "in a link
+    reference definition" though the old one drew none (or the one of a link destination, whose line this is as
+    well). Both ways: the class is flagged whatever the old verdict was, and nothing else changes."""
+    old = old_insertion_boundary_problem(text, template, insertion, directives)
+    new = fresh_problem(text, template, insertion, directives)
+    if old in (None, _DESTINATION) and in_definition_destination(text, template, insertion):
+        assert new == _REFERENCE, (text, insertion.start, old, new)
+    else:
+        assert new == old, (text, insertion.start, old, new)
+    classes[old if new == old else "destination"] += 1
+    return old
+
 
 _BOUNDARY_TOKENS = [
     "{{placeholder: a}}", "{{placeholder: a}}", "{{choose: q, x=y}}", "{{placeholder: \"a b\"}}", "{{def: t}}",
@@ -435,11 +483,9 @@ def _boundary_cases(count, max_tokens, seed, tokens=_BOUNDARY_TOKENS):
 
 def test_the_boundary_verdict_equals_the_old_one():
     checked = problems = 0
+    classes = Counter()
     for text, template, directive, directives in _boundary_cases(7000, 14, seed=943):
-        expected = old_insertion_boundary_problem(text, template, directive, directives)
-        assert fresh_problem(text, template, directive, directives) == expected, (
-            text, directive.start,
-        )
+        expected = assert_the_old_verdict_but_for_destinations(text, template, directive, directives, classes)
         checked += 1
         problems += expected is not None
     assert checked > 4000 and problems > 1000  # both verdicts are reached
@@ -449,14 +495,13 @@ def test_the_boundary_verdict_equals_the_old_one_around_links():
     tokens = ["[a]: ", "[a]:", "[b] ", "{{placeholder: a}}", "{{placeholder: a}}", " ", "\n", "x", "> ", "- ",
               "](", ")", "\"t\"", "(", "<"]
     reference = destination = 0
-    for text, template, directive, directives in _boundary_cases(9000, 10, seed=945, tokens=tokens):
-        expected = old_insertion_boundary_problem(text, template, directive, directives)
-        assert fresh_problem(text, template, directive, directives) == expected, (
-            text, directive.start,
-        )
-        reference += expected == "it is in a link reference definition"
-        destination += expected == "it is inside a link or image destination"
+    classes = Counter()
+    for text, template, directive, directives in _boundary_cases(40000, 10, seed=945, tokens=tokens + [">", "<x "]):
+        expected = assert_the_old_verdict_but_for_destinations(text, template, directive, directives, classes)
+        reference += expected == _REFERENCE
+        destination += expected == _DESTINATION
     assert reference > 50 and destination > 100  # both verdicts are reached
+    assert classes["destination"] > 100, classes  # and the class that #119 added
 
 
 def test_an_insertion_scan_serves_every_directive_of_a_text():
@@ -467,8 +512,10 @@ def test_an_insertion_scan_serves_every_directive_of_a_text():
         scan = templates._InsertionScan(text, template, lexed.directives)
         for directive in lexed.directives:
             if directive.name in ("placeholder", "choose") and not directive.malformed:
-                expected = old_insertion_boundary_problem(text, template, directive, lexed.directives)
-                assert scan.problem(directive) == expected, (text, directive.start)
+                assert scan.problem(directive) == fresh_problem(text, template, directive, lexed.directives), (
+                    text, directive.start,
+                )
+                assert_the_old_verdict_but_for_destinations(text, template, directive, lexed.directives, Counter())
 
 
 # ── free_identifier ───────────────────────────────────────────────
