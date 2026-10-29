@@ -328,14 +328,52 @@ def test_translations_draw_one_warning_that_names_the_bilingual_checks():
     for rule in ("translation-file-missing", "translation-hierarchy-mismatch", "translation-anchor-mismatch",
                  "translation-def-mismatch", "translation-language-set-mismatch", "translation-template-mismatch"):
         assert rule in warning.message
-    # The identifier rules are Core (§17.2) for the document itself, and checked: only the
-    # linked files' identifiers were not read, and the message says so, and that this document's were.
-    assert warning.message.endswith(
-        "; translation-implicit-id and translation-authoritative-absent for the linked files, whose "
-        "identifiers were not read (this document's own were checked) "
-        "(§14, §16.7; bilingual validation is Full, §17.4; §17.5)."
-    )
     assert "translation-file-missing, translation-hierarchy-mismatch" in warning.message
+
+
+_LINKED = (
+    "translation-implicit-id and translation-authoritative-absent for the linked files, whose identifiers "
+    "were not read ("
+)
+
+
+def _bilingual_ending(front: str) -> str:
+    """What the Warning says of the document's own identifiers, for *front*."""
+    (warning,) = _warnings(_with(front))
+    assert warning.message.endswith(") (§14, §16.7; bilingual validation is Full, §17.4; §17.5).")
+    return warning.message[warning.message.index(_LINKED) + len(_LINKED):].removesuffix(
+        ") (§14, §16.7; bilingual validation is Full, §17.4; §17.5)."
+    )
+
+
+@pytest.mark.parametrize(
+    "front",
+    [
+        "language: cs\nauthoritative: en\ntranslations:\n  en: x.en.lgd\n",  # a translation
+        "language: en\ntranslations:\n  cs: x.cs.lgd\n",  # no authoritative: the rule for the warning
+        "translations:\n  cs: x.cs.lgd\n",
+    ],
+)
+def test_the_documents_own_identifiers_are_said_checked_when_the_rules_ran(front):
+    # Core (§17.2) for the document itself, and checked: only the linked files' identifiers were not read.
+    assert _bilingual_ending(front) == "this document's own were checked"
+
+
+@pytest.mark.parametrize(
+    ("front", "because"),
+    [
+        ("language: en\nauthoritative: en\ntranslations:\n  cs: x.cs.lgd\n", "it is the primary: its language is its authoritative"),
+        ("language: en\nauthoritative: de\ntranslations:\n  fr: x.fr.lgd\n", "its authoritative is not one of its translations"),
+        ("authoritative: en\ntranslations:\n  en: x.en.lgd\n", "its language is not declared"),
+        ("language:\nauthoritative: en\ntranslations:\n  en: x.en.lgd\n", "its language is not declared"),
+        ("language: english\nauthoritative: en\ntranslations:\n  en: x.en.lgd\n", "its language or authoritative is not an ISO 639-1 code"),
+        ("language: cs\nauthoritative: EN\ntranslations:\n  EN: x.en.lgd\n", "its language or authoritative is not an ISO 639-1 code"),
+    ],
+)
+def test_the_documents_own_identifiers_are_not_said_checked_when_the_rules_did_not_run(front, because):
+    assert _bilingual_ending(front) == (
+        f"this document's own were not checked: it is not a translation (§17.2), because {because}"
+    )
 
 
 def test_a_superseded_file_and_an_image_path_are_declared_paths_not_checked_for_existence():
