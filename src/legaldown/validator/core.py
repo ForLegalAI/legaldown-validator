@@ -1442,7 +1442,8 @@ def _validate(
     language = meta.language
     written_keys: dict[str, list[str]] = {}  # each translations key as written (padded), every spelling
     for raw in where.children("translations"):
-        written_keys.setdefault(raw.strip(), []).append(raw)
+        if raw.strip() and not where.blank("translations", raw):  # the entries the reader kept
+            written_keys.setdefault(raw.strip(), []).append(raw)
 
     def check_code(label: str, code: str, shown: str, path: tuple[str, ...]) -> None:
         if code not in ISO_639_1_CODES and not named(code, "placeholder"):
@@ -1886,7 +1887,6 @@ def _validate(
     #: Every definition with a valid id written outside a drafting note, a duplicate too, for
     #: definition-used-before-declaration.
     written: list[tuple[DefinitionRef, Presence]] = []
-    outside: list[DefinitionRef] = []  # the same, for the identifier rules
     term_uses: list[TermUse] = []
     for ref in definition_refs:
         def_id = ref.id
@@ -1907,7 +1907,6 @@ def _validate(
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
         if not in_a_note(ref):
             written.append((ref, presence))
-            outside.append(ref)
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.
         together = [
@@ -1931,7 +1930,7 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
-    _check_implicit_identifiers(document, outside, where, definition_line, result)
+    _check_implicit_identifiers(document, [ref for ref, _presence in written], where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():

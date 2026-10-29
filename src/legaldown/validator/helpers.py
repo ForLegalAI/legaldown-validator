@@ -122,7 +122,7 @@ def authoritative_mismatch(meta: Metadata) -> bool:
     are judged, so it is not when ``language`` or a key is no code: that one may be what was meant,
     and ``language-code-invalid`` is the finding."""
     languages = [meta.language] if meta.language else []
-    languages += meta.translations
+    languages += list(meta.translations)
     return (
         meta.authoritative in ISO_639_1_CODES
         and meta.authoritative not in languages

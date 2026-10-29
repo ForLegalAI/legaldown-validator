@@ -454,7 +454,8 @@ def test_an_entry_whose_key_or_value_is_blank_is_ignored():
         assert _found(front) == [("authoritative-not-declared", "warning", 4)], key
         assert _identifiers(front, "# Definitions\n") == [], key
     assert parse(_source("translations:\n  fr:\n  de: ' '\n  cs: c.lgd\n")).metadata.translations == {"cs": "c.lgd"}
-    assert parse(_source("field_types:\n  '  ': d\n  a: ' '\n  b: d\n")).metadata.field_types == {"b": "d"}
+    # ... which `field_types` does not do: a field type with a blank description is a declaration.
+    assert parse(_source("field_types:\n  a: ' '\n  b: d\n")).metadata.field_types == {"a": "", "b": "d"}
     # ... a blank entry beside a valid one changes nothing about that one.
     front = "language: de\nauthoritative: cs\ntranslations:\n  '  ': y.lgd\n  cs: z.lgd\n"
     assert _found(front) == []
@@ -467,6 +468,10 @@ def test_keys_that_are_alike_once_stripped_are_one_and_the_last_stays():
     front = "language: de\nauthoritative: fr\ntranslations:\n  fr: a.lgd\n  ' fr': b.lgd\n"
     assert parse(_source(front)).metadata.translations == {"fr": "b.lgd"}
     assert _found(front) == []
+    # A blank sibling is skipped before it can overwrite: `fr: a.lgd` stays.
+    for blank in ("' '", "", "~", "null"):
+        front = f"translations:\n  fr: a.lgd\n  ' fr': {blank}\n"
+        assert parse(_source(front)).metadata.translations == {"fr": "a.lgd"}, blank
 
 
 def test_each_spelling_of_a_bad_key_is_reported_at_its_own_line():
@@ -474,6 +479,10 @@ def test_each_spelling_of_a_bad_key_is_reported_at_its_own_line():
     result = validate(parse(_source(front), filename="t.lgd"))
     found = [(d.line, d.message.split(" must")[0]) for d in result.diagnostics if d.rule == "language-code-invalid"]
     assert found == [(6, "The translations key ' Fr '"), (7, "The translations key 'Fr'")]
+    # An ignored entry draws nothing: a spelling written with no value is not reported.
+    for blank in ("", "~", "' '"):
+        front = f"language: de\nauthoritative: cs\ntranslations:\n  ' Fr ': {blank}\n  Fr: b.lgd\n"
+        assert _found(front) == [("language-code-invalid", "warning", 7)], blank
     # The model keeps the last; a bad spelling of a good key is no finding.
     assert _found("language: de\nauthoritative: cs\ntranslations:\n  ' cs ': a.lgd\n  cs: b.lgd\n") == []
 

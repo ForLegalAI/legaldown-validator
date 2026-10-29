@@ -392,13 +392,27 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
 
 
 def _parse_str_dict(raw: Any) -> dict[str, str]:
-    """Parse a dict with string keys and values: both stripped, and an entry whose key or value is
-    empty or blank skipped, as it names nothing. Of keys that are the same once stripped, the last
-    stays."""
+    """Parse a dict with string keys and values, skipping empty entries."""
     if not isinstance(raw, dict):
         return {}
-    parsed = {str(k).strip(): str(v).strip() for k, v in raw.items() if k and v}
-    return {k: v for k, v in parsed.items() if k and v}
+    return {str(k).strip(): str(v).strip() for k, v in raw.items() if k and v}
+
+
+def _parse_translations(raw: Any) -> dict[str, str]:
+    """Parse ``translations`` (language code to file) in one pass: key and value stripped, an entry
+    whose key or value is null or blank once stripped skipped, as it names no file or no language.
+    Of keys that are the same once stripped, the last entry that is kept stays (a blank sibling
+    never overwrites it). ``field_types`` does not: a blank description is a declaration."""
+    if not isinstance(raw, dict):
+        return {}
+    parsed: dict[str, str] = {}
+    for key, value in raw.items():
+        if key is None or value is None:
+            continue
+        key, value = str(key).strip(), str(value).strip()
+        if key and value:
+            parsed[key] = value
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -649,7 +663,7 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         include_signatures=_to_bool(payload.get("include_signatures"), default=True),
         tags=_clean_list(list(tags)),
         sides=sides,
-        translations=_parse_str_dict(payload.get("translations")),
+        translations=_parse_translations(payload.get("translations")),
         authoritative=normalise_field(payload.get("authoritative")),
         adopted_by=normalise_field(payload.get("adopted_by")),
         adoption_date=normalise_field(payload.get("adoption_date")),
