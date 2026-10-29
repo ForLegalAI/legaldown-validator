@@ -61,7 +61,6 @@ from .helpers import (
     is_valid_iso_date,
     is_valid_money_amount,
     slugify_identifier,
-    translation_keys,
 )
 from .paths import FileReferences, ReferenceImages, check_fragment_images, check_frontmatter_paths, check_heading_images
 from .patterns import (
@@ -1441,24 +1440,29 @@ def _validate(
     # comparisons judge only the codes that pass (`authoritative_mismatch`, and the translation
     # rules below): one typo draws one Warning.
     language = meta.language
-    written_keys = {raw.strip(): raw for raw in where.children("translations")}  # as written, padded
-    # The language and the authoritative language when they are set, and each translations key that is
-    # not blank (a blank one is no language of the group, and draws no rule).
-    for label, code, path in [
-        *[("language", c, ("language",)) for c in [language] if c],
-        *[("authoritative", c, ("authoritative",)) for c in [meta.authoritative] if c],
-        *[("translations key", written_keys.get(key, key), ("translations", written_keys.get(key, key)))
-          for key in translation_keys(meta)],
-    ]:
-        if code.strip() not in ISO_639_1_CODES and not named(code, "placeholder"):
+    written_keys: dict[str, list[str]] = {}  # each translations key as written (padded), every spelling
+    for raw in where.children("translations"):
+        written_keys.setdefault(raw.strip(), []).append(raw)
+
+    def check_code(label: str, code: str, shown: str, path: tuple[str, ...]) -> None:
+        if code not in ISO_639_1_CODES and not named(code, "placeholder"):
             result.warning(
                 "language-code-invalid",
-                f"The {label} '{code}' must be an ISO 639-1 language code: two lowercase letters, "
+                f"The {label} '{shown}' must be an ISO 639-1 language code: two lowercase letters, "
                 f"such as 'en' or 'cs'.", line=where.key(*path),
             )
+
+    # `language` and `authoritative` are stripped when they are read, a key is judged stripped, and each
+    # spelling of a key that is the same once stripped is reported at its own line.
+    for label, code in (("language", language), ("authoritative", meta.authoritative)):
+        if code:
+            check_code(label, code, code, (label,))
+    for key in meta.translations:
+        for spelling in written_keys.get(key, [key]):
+            check_code("translations key", key, spelling, ("translations", spelling))
     if authoritative_mismatch(meta):
         own_language = f"'{language}'" if language else "not declared"
-        keys = ", ".join(f"'{key}'" for key in translation_keys(meta)) or "none"
+        keys = ", ".join(f"'{key}'" for key in meta.translations) or "none"
         result.warning(
             "authoritative-not-declared",
             f"authoritative '{meta.authoritative}' is neither the document's language ({own_language}) "
@@ -1882,6 +1886,7 @@ def _validate(
     #: Every definition with a valid id written outside a drafting note, a duplicate too, for
     #: definition-used-before-declaration.
     written: list[tuple[DefinitionRef, Presence]] = []
+    outside: list[DefinitionRef] = []  # the same, for the identifier rules
     term_uses: list[TermUse] = []
     for ref in definition_refs:
         def_id = ref.id
@@ -1902,6 +1907,7 @@ def _validate(
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
         if not in_a_note(ref):
             written.append((ref, presence))
+            outside.append(ref)
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.
         together = [
@@ -1925,7 +1931,7 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
-    _check_implicit_identifiers(document, [ref for ref in definition_refs if not in_a_note(ref)], where, definition_line, result)
+    _check_implicit_identifiers(document, outside, where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():

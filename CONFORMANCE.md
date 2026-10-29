@@ -206,7 +206,7 @@ codes of the registry (`legaldown.grammar.ISO_639_1_CODES`, beside `KNOWN_CURREN
 registry has them: `EN`, `en-US` and `eng` draw the Warning once, at the line of the value, which says
 what to write (a `translations` key is also the path's lookup key, and `authoritative` is compared with the
 keys exactly). The check covers `language`, a non-empty `authoritative`, and each `translations` key (found by the
-key as stripped, if it is written padded; a key that is blank once stripped (`"  "`; the frontmatter reader drops `""`) is no language of the group, and draws none of these rules); a value holding a `{{placeholder:}}` is
+key as stripped, if it is written padded; a `translations` (or `field_types`) entry whose key or value is blank once stripped is ignored when the frontmatter is read; each spelling of a key that is the same once stripped is judged at its own line, and the last entry stays); a value holding a `{{placeholder:}}` is
 `placeholder-in-structural-field`'s alone. `authoritative` must equal the document's `language` or a
 `translations` key. §3.2 gives `language` no default, so the model holds none (`Metadata.language` is `""` for a
 document that says none, an empty `language:` included, and `empty_document()` says `"en"`), and

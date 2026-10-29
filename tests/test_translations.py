@@ -445,21 +445,37 @@ def test_a_generated_identifier_that_anchor_format_rejects_is_not_also_implicit(
     assert [d.message[:21] for d in result.diagnostics] == ["Definition 'Services'"]
 
 
-def test_a_translations_key_that_is_blank_is_no_language_of_the_group():
-    # `""` is dropped when the frontmatter is read and `"  "` is kept, stripped to nothing: the rules
-    # ignore the blank key, so the two behave alike, and the document is as if it linked nothing.
+def test_an_entry_whose_key_or_value_is_blank_is_ignored():
+    # The frontmatter reader drops an entry that names nothing: `""`, `"  "` and `' '` keys alike (so the
+    # rules see none), and a value that is blank once stripped (`de: ' '`), as an empty one.
     for key in ('""', '"  "', "' '"):
         front = f"language: de\nauthoritative: cs\ntranslations:\n  {key}: y.lgd\n"
+        assert parse(_source(front), filename="t.lgd").metadata.translations == {}, key
         assert _found(front) == [("authoritative-not-declared", "warning", 4)], key
         assert _identifiers(front, "# Definitions\n") == [], key
-    # ... a blank key beside a valid one changes nothing about that one.
+    assert parse(_source("translations:\n  fr:\n  de: ' '\n  cs: c.lgd\n")).metadata.translations == {"cs": "c.lgd"}
+    assert parse(_source("field_types:\n  '  ': d\n  a: ' '\n  b: d\n")).metadata.field_types == {"b": "d"}
+    # ... a blank entry beside a valid one changes nothing about that one.
     front = "language: de\nauthoritative: cs\ntranslations:\n  '  ': y.lgd\n  cs: z.lgd\n"
     assert _found(front) == []
     assert _identifiers(front, "# Definitions\n") == [("translation-implicit-id", "error", 10)]
-    # With a key that is no code (not blank) the gate is the invalid key's.
-    front = "language: de\nauthoritative: cs\ntranslations:\n  ' Fr ': y.lgd\n"
-    (warning,) = [d for d in validate(parse(_source(front), filename="t.lgd")).diagnostics if d.rule == "language-code-invalid"]
-    assert warning.message.startswith("The translations key ' Fr ' must be") and warning.line == 6
+    # A blank value does not make the document link anything.
+    assert _identifiers("language: de\nauthoritative: cs\ntranslations:\n  cs: ' '\n", "# Definitions\n") == []
+
+
+def test_keys_that_are_alike_once_stripped_are_one_and_the_last_stays():
+    front = "language: de\nauthoritative: fr\ntranslations:\n  fr: a.lgd\n  ' fr': b.lgd\n"
+    assert parse(_source(front)).metadata.translations == {"fr": "b.lgd"}
+    assert _found(front) == []
+
+
+def test_each_spelling_of_a_bad_key_is_reported_at_its_own_line():
+    front = "language: de\nauthoritative: cs\ntranslations:\n  ' Fr ': a.lgd\n  Fr: b.lgd\n"
+    result = validate(parse(_source(front), filename="t.lgd"))
+    found = [(d.line, d.message.split(" must")[0]) for d in result.diagnostics if d.rule == "language-code-invalid"]
+    assert found == [(6, "The translations key ' Fr '"), (7, "The translations key 'Fr'")]
+    # The model keeps the last; a bad spelling of a good key is no finding.
+    assert _found("language: de\nauthoritative: cs\ntranslations:\n  ' cs ': a.lgd\n  cs: b.lgd\n") == []
 
 
 # ── The language a document says ──

@@ -116,20 +116,13 @@ def is_positive_numeric(value: str) -> bool:
     return bool(_DECIMAL_RE.fullmatch(value or "")) and float(value) > 0
 
 
-def translation_keys(meta: Metadata) -> list[str]:
-    """The ``translations`` keys that are languages of the group: those not blank once stripped (the
-    parser strips a key, and keeps one written ``"  "``). A blank key is none, and draws none of the
-    language and translation rules."""
-    return [key for key in meta.translations if key]
-
-
 def authoritative_mismatch(meta: Metadata) -> bool:
     """Whether ``authoritative-not-declared`` is the finding (§16.6): ``authoritative`` is a valid
     code that is neither the document's ``language`` nor a ``translations`` key. Only valid codes
     are judged, so it is not when ``language`` or a key is no code: that one may be what was meant,
     and ``language-code-invalid`` is the finding."""
     languages = [meta.language] if meta.language else []
-    languages += translation_keys(meta)
+    languages += meta.translations
     return (
         meta.authoritative in ISO_639_1_CODES
         and meta.authoritative not in languages
@@ -149,7 +142,7 @@ def identifier_rule(meta: Metadata) -> tuple[str | None, str]:
     and a typo in ``authoritative`` is not the primary. That rule judges only valid codes, so it is
     silent when a ``translations`` key is no code (the key may be what was meant); then the absence of
     ``authoritative`` from the keys is not held against the document, which is a translation all the same."""
-    if not translation_keys(meta):
+    if not meta.translations:
         return None, "it links no translations"
     if not meta.authoritative:
         return "translation-authoritative-absent", ""
