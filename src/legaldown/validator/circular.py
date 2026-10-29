@@ -143,16 +143,24 @@ def used_before_declaration(
         group.sort()
 
     first: dict[tuple[str, Presence], tuple[tuple[int, int, int, int], int] | None] = {}
+    tests = 0  # the pairs of presences tested: past MAX_EXCLUSION_TESTS they are no longer told apart
+
+    def compatible(use: Presence, declaration: Presence) -> bool:
+        nonlocal tests
+        if exclusivity is None:
+            return True
+        if not exclusivity.appears(declaration):
+            return False
+        # Presences that name no question in common can appear together (as for find_circular_definitions).
+        if tests >= MAX_EXCLUSION_TESTS or set(exclusivity.questions(use)).isdisjoint(exclusivity.questions(declaration)):
+            return True
+        tests += 1
+        return not exclusivity.excluded(use, declaration)
 
     def first_declaration(target: str, presence: Presence) -> tuple[tuple[int, int, int, int], int] | None:
         if (target, presence) not in first:
             first[target, presence] = next(
-                (
-                    each for each in declared[target]
-                    if exclusivity is None
-                    or (exclusivity.appears(registered[each[1]][1]) and not exclusivity.excluded(presence, registered[each[1]][1]))
-                ),
-                None,
+                (each for each in declared[target] if compatible(presence, registered[each[1]][1])), None
             )
         return first[target, presence]
 
