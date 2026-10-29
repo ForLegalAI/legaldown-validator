@@ -722,6 +722,7 @@ def test_a_definition_that_never_appears_is_no_part_of_a_circle():
     assert [(d.rule, d.line) for d in result.diagnostics] == [
         ("sides-absent", 2),
         ("condition-never-true", 12),
+        ("definition-used-before-declaration", 12),  # `b`, which `a` uses, is declared below
         ("condition-reference-unsafe", 16),
     ]
 

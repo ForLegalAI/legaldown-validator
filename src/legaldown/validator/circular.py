@@ -31,13 +31,14 @@ a ring of any length (#94).
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from typing import NamedTuple
 
 from ..definitions import DefinitionRef, find_definition_anchors, fragment_scopes
 from ..directives import Directive, Lexed
 from ..models import Document
 from .conditions import Exclusivity, Presence
+from .result import Line
 
 #: The most pairs of presences ``find_circular_definitions`` tests, given an
 #: ``Exclusivity``. Past it alternatives are no longer told apart: a reference
@@ -60,6 +61,13 @@ class TermUse(NamedTuple):
     #: The offset in its fragment of the ``{{def:}}`` whose quoted term holds
     #: this use (``"Self {{term: s}}" {{def: s}}``), or None.
     owner: int | None = None
+    #: Its offset in its fragment, and its line (§16.9, found only if asked): for
+    #: ``used_before_declaration``.
+    offset: int = 0
+    line: Line = None
+    #: For the target the parser lifted: whether the block has text before it. The block's
+    #: fragments are that text, then the text after, and the target is between them.
+    after_prefix: bool = False
 
 
 def term_owners(
@@ -83,6 +91,56 @@ def term_owners(
         return spans[at][1] if at >= 0 and directive.end <= spans[at][1] else None
 
     return owner
+
+
+def used_before_declaration(
+    registered: Sequence[tuple[DefinitionRef, Presence]],
+    uses: Iterable[TermUse],
+    imported: Collection[str] = (),
+) -> list[tuple[int, list[TermUse]]]:
+    """The definitions that *uses* name before their declaration, in the order the document is
+    written, preamble first (``definition-used-before-declaration``, §16.3, #116).
+
+    Each is an index into *registered* (the definitions that count, as for
+    ``find_circular_definitions``), with its uses before the declaration in document order,
+    ordered by the first of them. A definition declared more than once, under alternatives (§15.4),
+    is declared at the first: a use between them resolves to the alternative that is there. A
+    definition of an id in *imported* is in force before the document's text (§7.5), and an id none of
+    *registered* declares is no definition of the document (an imported one is a target only, as
+    there); a ``{{term:}}`` in the definition's own quoted term (``"Self {{term: s}}" {{def: s}}``) is
+    the circle's, not an ordering one. A use in a drafting note is not in *uses*."""
+
+    def place(section: int | None, block: int, rank: int, offset: int) -> tuple[int, int, int, int]:
+        # The preamble before the first section; within a block, its fragments (rank 2n + 1) and,
+        # between them, the target the parser lifted (rank 0, or 2 after the text before it) and
+        # the anchor a definition block holds in its own fields (rank -1).
+        return (-1 if section is None else section, block, rank, offset)
+
+    first: dict[str, tuple[tuple[int, int, int, int], int]] = {}  # per id: where it is declared, and its index
+    defined_at: dict[tuple[int | None, int, int | None, int], str] = {}
+    for number, (ref, _presence) in enumerate(registered):
+        rank = -1 if ref.fragment_index is None else 2 * ref.fragment_index + 1
+        declared = place(ref.section_index, ref.block_index, rank, ref.offset)
+        if ref.id not in first or declared < first[ref.id][0]:
+            first[ref.id] = (declared, number)
+        defined_at[ref.section_index, ref.block_index, ref.fragment_index, ref.offset] = ref.id
+
+    earlier: dict[str, list[tuple[tuple[int, int, int, int], TermUse]]] = {}
+    for use in uses:
+        if use.target not in first or use.target in imported:
+            continue
+        if use.owner is not None and defined_at.get((use.section, use.block, use.fragment, use.owner)) == use.target:
+            continue
+        rank = (2 if use.after_prefix else 0) if use.fragment is None else 2 * use.fragment + 1
+        written = place(use.section, use.block, rank, use.offset)
+        if written < first[use.target][0]:
+            earlier.setdefault(use.target, []).append((written, use))
+    for group in earlier.values():
+        group.sort(key=lambda each: each[0])
+    return [
+        (first[target][1], [use for _written, use in group])
+        for target, group in sorted(earlier.items(), key=lambda each: each[1][0][0])
+    ]
 
 
 def strongly_connected_components(

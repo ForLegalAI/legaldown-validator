@@ -61,7 +61,7 @@ IMPLEMENTED_RULES = {
     "def-autogen-collision", "def-duplicate-id", "def-emphasis", "def-lossy-slug",
     "def-term-variable",
     "def-no-quoted-span", "def-single-quote-ambiguous", "def-unreferenced",
-    "definition-circular",
+    "definition-circular", "definition-used-before-declaration",
     "directive-duplicate-param", "directive-malformed", "directive-unknown",
     "directive-unknown-param", "document-type-invalid", "drafting-note-def",
     "drafting-note-unrecognized",

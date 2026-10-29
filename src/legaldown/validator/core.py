@@ -1350,7 +1350,7 @@ def _validate(
         id_term,
         text_fragments,
     )
-    from .circular import TermUse, circular_message, find_circular_definitions, term_owners
+    from .circular import TermUse, circular_message, find_circular_definitions, term_owners, used_before_declaration
 
     # Each text is lexed once per validation and shared by the passes below.
     lex_fragment = cache(lex)
@@ -2056,7 +2056,12 @@ def _validate(
             (ref_targets if block.kind == "ref" else term_targets).append((block.target.strip(), lifted_line))
             references[block.kind].append((block.target.strip(), block_presence, False, lifted_line))
             if block.kind == "term":
-                term_uses.append(TermUse(section_index, block_index, None, block.target.strip(), block_presence))
+                term_uses.append(
+                    TermUse(
+                        section_index, block_index, None, block.target.strip(), block_presence,
+                        line=lifted_line, after_prefix=bool(block.prefix),
+                    )
+                )
         notes = [quote for quote in block_quotes(block) if quote.is_drafting_note]
         for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
             lexed = lex_fragment(fragment)
@@ -2112,7 +2117,10 @@ def _validate(
                     if name == "term" and not in_note:
                         owner_of = owner_of or term_owners(fragment, lexed, document.metadata.language)
                         term_uses.append(
-                            TermUse(section_index, block_index, fragment_index, value, presence, owner_of(directive))
+                            TermUse(
+                                section_index, block_index, fragment_index, value, presence, owner_of(directive),
+                                directive.start, line,
+                            )
                         )
                 if name in ("ref", "term") and not value:
                     # Whatever the host holds, a reference with no target is wrong.
@@ -2327,6 +2335,19 @@ def _validate(
             "definition-circular",
             circular_message(registered[number][0].id for number in circle),
             line=definition_line(registered[circle[-1]][0]),
+        )
+
+    # Definitions used before declaration (§16.3, Info): one for each definition, at its first
+    # earlier use. The original an amendment amends is in force before the document (§7.5).
+    for number, earlier in used_before_declaration(registered, term_uses, _imported_definitions):
+        ref = registered[number][0]
+        declared = definition_line(ref)
+        times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
+        at = f" at line {declared}" if declared else ""
+        result.info(
+            "definition-used-before-declaration",
+            f"Definition '{ref.id}' is used {times} before its declaration{at} (§7.2).",
+            line=earlier[0].line,
         )
 
     # Reference safety (§15.4): a reference resolves in every assembled
