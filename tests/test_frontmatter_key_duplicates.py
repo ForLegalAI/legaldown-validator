@@ -169,7 +169,18 @@ def test_keys_python_holds_as_one_are_held_under_the_first_written_as_text():
     assert document.source_map.key("translations", "True") == 5
     (diagnostic,) = [d for d in validate(document).diagnostics if d.rule == RULE]
     assert (diagnostic.level, diagnostic.line) == ("warning", 4)
-    assert diagnostic.message.endswith("once read as text: this entry is ignored, and the entry at line 5 is the one read.")
+    assert diagnostic.message.endswith(
+        "once read as a YAML value (Python treats them as equal): this entry is ignored, and the entry at line 5 is the one read."
+    )
+
+
+def test_keys_python_holds_as_equal_numbers_are_a_warning_too():
+    front = "translations:\n  !!int \"1\": a.lgd\n  !!float \"1.0\": b.lgd\n"
+    document = parse(_source(front))
+    assert document.metadata.translations == {"1": "b.lgd"}
+    assert _found(front) == [(RULE, "warning", 4)]
+    (diagnostic,) = [d for d in validate(document).diagnostics if d.rule == RULE]
+    assert "once read as a YAML value" in diagnostic.message
 
 
 @pytest.mark.parametrize("front", ["translations: {fr: a.lgd, fr: b.lgd}\n", "translations: {fr: a.lgd, ' fr': b.lgd}\n"])
@@ -184,10 +195,27 @@ def test_two_entries_on_one_line_still_name_the_entry_that_stays(front):
     ("translations:\n  !!bool \"false\": a.lgd\n  !!bool \"false\": b.lgd\n", "its key is `False`"),
     ("translations:\n  !!null \"x\": a.lgd\n  !!null \"x\": b.lgd\n", "its key is null"),
     ("translations:\n  fr: a.lgd\n  fr: []\n", "its value is empty"),
+    ("translations:\n  fr: a.lgd\n  fr: !!binary \"\"\n", "its value is empty"),
 ])
 def test_the_message_says_what_the_skipped_key_or_value_is(front, reason):
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
     assert diagnostic.message.endswith(f"is skipped ({reason}), so no entry is kept.")
+
+
+def test_internal_spaces_of_a_key_are_kept_when_it_is_shown():
+    front = 'translations:\n  "fr  ": x\n  "fr ": y\n'
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert diagnostic.message.startswith('The translations key `"fr  "` is the same key as `"fr "` once stripped')
+
+
+def test_ignored_entries_are_in_source_order_on_one_line():
+    front = "translations: {fr: a.lgd, fr: b.lgd, ' fr': c.lgd}\n"
+    document = parse(_source(front))
+    assert [each.entry.start for each in document.source_map.maps["translations"].ignored] == sorted(
+        each.entry.start for each in document.source_map.maps["translations"].ignored
+    )
+    messages = [d.message for d in validate(document).diagnostics if d.rule == RULE]
+    assert "is written again" in messages[0] and "once stripped" in messages[1]
 
 
 def test_a_key_over_several_lines_is_shown_on_one():
@@ -200,7 +228,14 @@ def test_a_key_over_several_lines_is_shown_on_one():
 def test_a_key_with_a_backtick_is_shown_between_double_backticks():
     front = 'translations:\n  "a`b": x\n  "a`b ": y\n'
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert diagnostic.message.startswith('The translations key `` "a`b" `` is the same key as `` "a`b " `` once stripped')
+    assert diagnostic.message.startswith('The translations key ``"a`b"`` is the same key as ``"a`b "`` once stripped')
+
+
+def test_a_fence_is_one_longer_than_the_longest_run_of_backticks_and_padded_at_the_edges():
+    front = 'translations:\n  "a``b": x\n  "a``b ": y\n  "`": a\n  "` ": b\n'
+    messages = [d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert messages[0].startswith('The translations key ```"a``b"``` is the same key as ```"a``b "``` once stripped')
+    assert messages[1].startswith('The translations key ``"`"`` is the same key as ``"` "`` once stripped')
 
 
 def test_a_repeat_whose_last_entry_is_blank_says_that_no_entry_is_kept():

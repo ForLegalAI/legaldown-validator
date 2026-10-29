@@ -264,8 +264,8 @@ def _no_fields(body: str, absent: bool = False, error: FrontmatterError | None =
 
 def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
-    body, absent, lines, error, maps)``; the first is read from how the YAML
-    is written, which the parsed data loses, and *lines* is where each
+    body, absent, keys, error, maps)``; the first is read from how the YAML
+    is written, which the parsed data loses, and *keys* is where each
     frontmatter node is (``positions.frontmatter_keys``, the opening ``---``
     at the empty path), empty without frontmatter. *maps* is what the model made of
     the entries of ``translations`` and ``field_types`` (``positions.read_maps``, #126).
@@ -277,7 +277,7 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
     whose YAML cannot be read (frontmatter-invalid-yaml, §16.6) raises
     ``FrontmatterError``, or, with *keep_error*, is returned as *error*
     (None otherwise): the block is still the frontmatter, empty and not
-    absent, with only its opening ``---`` in *lines*, and the rest is the
+    absent, with only its opening ``---`` in *keys*, and the rest is the
     body, so that it can be validated (#43)."""
     match = FRONTMATTER_RE.match(source)
     if not match:

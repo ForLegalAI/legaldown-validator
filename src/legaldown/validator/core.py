@@ -147,10 +147,12 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
 
 
 def _shown(key: str) -> str:
-    """A key as it is written in the source, for a message: on one line, between backticks (doubled, with
-    spaces, if it holds one, as Markdown does)."""
-    text = re.sub(r"\s+", " ", key)
-    return f"`` {text} ``" if "`" in text else f"`{text}`"
+    """A key as it is written in the source, for a message: its line breaks (and the indentation after them)
+    folded to a space, between backticks (a longer fence if it holds backticks, padded, as CommonMark does)."""
+    text = re.sub(r"\s*\n\s*", " ", key)
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{pad}{text}{pad}{fence}"
 
 
 def _frontmatter_fields(
@@ -1451,6 +1453,7 @@ def _validate(
                 "repeated": "is written again",
                 "text": f"is the same key as {_shown(by.written)} once read as text",
                 "stripped": f"is the same key as {_shown(by.written)} once stripped",
+                "value": f"is the same key as {_shown(by.written)} once read as a YAML value (Python treats them as equal)",
             }[each.why]
             if each.skipped:
                 stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"
