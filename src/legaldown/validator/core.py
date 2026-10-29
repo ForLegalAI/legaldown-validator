@@ -33,6 +33,8 @@ from ..files import LoadFile, file_loader
 from ..markdown import (
     INLINE_HTML_RE,
     back_line_space,
+    drafting_note_spans,
+    in_note_spans,
     inline_html_unclosed,
     is_comment_only,
     scan_inline_link,
@@ -91,7 +93,6 @@ from .templates import (
     check_choose,
     check_questions,
     check_template_body,
-    in_drafting_note,
     question_type,
 )
 from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
@@ -1852,12 +1853,14 @@ def _validate(
         document, language=meta.language, lex_fragment=lex_fragment
     )
     # The drafting notes of each top-level block (§15.6), worked out once for the validation.
-    notes_of_block: dict[tuple[int | None, int], list[Quote]] = {}
+    notes_of_block: dict[tuple[int | None, int], list[range]] = {}
 
-    def drafting_notes(section: int | None, index: int) -> list[Quote]:
+    def drafting_notes(section: int | None, index: int) -> list[range]:
         if (section, index) not in notes_of_block:
             block = document.preamble[index] if section is None else document.sections[section].blocks[index]
-            notes_of_block[section, index] = [quote for quote in block_quotes(block) if quote.is_drafting_note]
+            notes_of_block[section, index] = drafting_note_spans(
+                (quote.first_line, quote.fragments) for quote in block_quotes(block)
+            )
         return notes_of_block[section, index]
 
     def definition_line(ref: Any) -> int | None:
@@ -2082,7 +2085,7 @@ def _validate(
             owner_of = None  # for definition-circular, once a {{term:}} asks
             has_image = "![" in fragment
             # Only an image or a directive asks, and only a block with a drafting note has one.
-            noted = bool(notes) and (has_image or bool(lexed.directives)) and in_drafting_note(notes, fragment_index)
+            noted = bool(notes) and (has_image or bool(lexed.directives)) and in_note_spans(notes, fragment_index)
             if has_image:
                 check_fragment_images(
                     fragment, lexed, file_references, where, section_index, block_index, fragment_index,

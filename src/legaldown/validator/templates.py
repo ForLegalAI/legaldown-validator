@@ -16,7 +16,14 @@ from functools import partial
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
-from ..markdown import find_all, scan_destination
+from ..markdown import (
+    DRAFTING_MARKER,
+    drafting_note_spans,
+    find_all,
+    in_note_spans,
+    is_drafting_marker,
+    scan_destination,
+)
 from ..models import Block, Document
 from ..positions import Locator
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
@@ -275,10 +282,6 @@ def check_questions(
 
 #: The first line of a quote that looks like a GitHub-flavoured alert.
 _ALERT_RE = re.compile(r"\[![A-Za-z]+\]")
-#: The first line that makes a quote a drafting note, letters in any case (§15.6).
-DRAFTING_MARKER = "[!DRAFTING]"
-
-
 @dataclass(frozen=True, slots=True)
 class Quote:
     """A block quote in a block: its first line without the ``>`` marker,
@@ -291,7 +294,7 @@ class Quote:
     def is_drafting_note(self) -> bool:
         """True if the quote is a drafting note: its first line is exactly
         ``[!DRAFTING]``, letters in any case (§15.6)."""
-        return self.first_line.upper() == DRAFTING_MARKER
+        return is_drafting_marker(self.first_line)
 
     @property
     def is_unrecognized_alert(self) -> bool:
@@ -299,13 +302,6 @@ class Quote:
         ``]``) but is not a drafting note's: an ordinary quote, whose
         guidance would reach the finished document (§15.6)."""
         return _ALERT_RE.match(self.first_line) is not None and not self.is_drafting_note
-
-
-def in_drafting_note(notes: list[Quote], fragment: int) -> bool:
-    """True if fragment *fragment* of a block's ``block_fragments`` is in one of
-    its drafting *notes*: assembly removes it before anything is inserted
-    (§15.7.2)."""
-    return any(fragment in note.fragments for note in notes)
 
 
 def is_drafting_note(quote: Block) -> bool:
@@ -744,10 +740,11 @@ def check_template_body(
             elif quote.is_drafting_note:
                 notes.append(quote)
                 all_notes.append((quote, line))
+        spans = drafting_note_spans((note.first_line, note.fragments) for note in notes)
         for index, (fragment, kind) in enumerate(fragment_kinds(block)):
             lexed = lex_fragment(fragment)
             scan = None  # the fragment's, for its first insertion
-            in_note = in_drafting_note(notes, index)
+            in_note = in_note_spans(spans, index)
             # The include of a paragraph that holds only it (§12.2): only a top-level
             # paragraph's first fragment is one, an include in a quote, a list or a table is text.
             only = paragraph_include(block, fragment, lexed) if index == 0 else None

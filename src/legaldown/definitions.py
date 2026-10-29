@@ -18,11 +18,10 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from .directives import Directive, Lexed, blank_fenced_code, lex, mask_directives
-from .markdown import FENCE_OPEN_RE, is_indented_code, normalize_label
+from .markdown import FENCE_OPEN_RE, in_note_spans, is_drafting_marker, is_indented_code, normalize_label
 from .models import LIST_KINDS, Block, Document, list_items
 from .validator.helpers import generate_identifier
 from .validator.patterns import IDENTIFIER_RE
-from .validator.templates import Quote  # templates reads this module lazily (see block_quotes), so no cycle
 
 # ---------------------------------------------------------------------------
 # Accepted quotation-mark delimiters (spec 7.2)
@@ -416,7 +415,7 @@ def collect_definitions(
     refs: list[DefinitionRef] = []
     for section_index, block_index, block in document.iter_indexed_blocks():
         quotes: list[tuple[str, range]] = []
-        noted: set[int] | None = None  # the fragments in the block's drafting notes, once a definition asks (§15.6)
+        notes: list[range] | None = None  # the fragments of the block's drafting notes, once a definition asks (§15.6)
         if block.kind == "definition":
             term = (block.term or "").strip()
             raw_id = (block.definition_id or "").strip()
@@ -442,9 +441,9 @@ def collect_definitions(
                 # reports it as directive-malformed.
                 if anchor.term is None or anchor.directive.malformed:
                     continue
-                if noted is None:
-                    noted = {i for first, span in quotes if Quote(first, span).is_drafting_note for i in span}
-                if fragment_index in noted:
+                if notes is None:
+                    notes = [span for first, span in quotes if is_drafting_marker(first)]
+                if in_note_spans(notes, fragment_index):
                     continue
                 term = anchor.term
                 raw_id = anchor.directive.positional or ""

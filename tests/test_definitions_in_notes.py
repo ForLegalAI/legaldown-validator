@@ -110,6 +110,16 @@ def test_the_form_checks_of_a_directive_still_run_on_a_note_definition(anchor, r
     assert "drafting-note-def" in rules
 
 
+def test_only_the_definitions_in_the_notes_of_a_list_are_left_out():
+    # notes and definitions alternate in one list (and a note holds a quote, which holds a note): each is placed by its own fragment
+    items = "\n".join(
+        f'- Item {n}\n  > [!DRAFTING]\n  > "N{n}" {{{{def: n{n}}}}} in a note.\n\n  "R{n}" {{{{def: r{n}}}}} means x.' for n in range(3)
+    )
+    body = f"{items}\n- Last\n  > [!DRAFTING]\n  > > [!DRAFTING]\n  > > \"In\" {{{{def: inner}}}} x.\n\n  \"Out\" {{{{def: out}}}} y."
+    document = parse(_source(body))
+    assert [ref.id for ref in collect_definitions(document)] == ["r0", "r1", "r2", "out"]
+
+
 def test_an_ordinary_quote_is_no_note():
     assert "def-duplicate-id" in _rules('> "Fee" {{def: fee}} means x.\n\n' + _REAL)
 

@@ -10,13 +10,42 @@ from __future__ import annotations
 
 import re
 import string
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from .models import Block
+
+#: The first line that makes a quote a drafting note, letters in any case (§15.6).
+DRAFTING_MARKER = "[!DRAFTING]"
+
+
+def is_drafting_marker(first_line: str) -> bool:
+    """True if a quote's *first_line* (without the ``>`` marker) makes it a drafting note: exactly
+    ``[!DRAFTING]``, letters in any case (§15.6)."""
+    return first_line.upper() == DRAFTING_MARKER
+
+
+def drafting_note_spans(quotes: Iterable[tuple[str, range]]) -> list[range]:
+    """The fragments of the drafting notes among a block's *quotes* (each one's first line and the
+    indices of its fragments in ``block_fragments``, outermost first, as ``quote_ranges`` lists them),
+    as ordered, disjoint ranges: a note in a note adds nothing, and one without a fragment is no range."""
+    spans: list[range] = []
+    for first_line, span in quotes:
+        if span and is_drafting_marker(first_line) and (not spans or span.start >= spans[-1].stop):
+            spans.append(span)
+    return spans
+
+
+def in_note_spans(spans: list[range], fragment: int) -> bool:
+    """True if fragment *fragment* of a block's ``block_fragments`` is in one of its drafting notes
+    (*spans*, as ``drafting_note_spans`` gives them): assembly removes it before anything is inserted
+    (§15.7.2)."""
+    at = bisect_right(spans, fragment, key=lambda span: span.start) - 1
+    return at >= 0 and fragment in spans[at]
+
 
 # A fenced code block opens with three or more backticks or tildes, indented
 # at most three columns; a backtick fence's info string cannot contain a
