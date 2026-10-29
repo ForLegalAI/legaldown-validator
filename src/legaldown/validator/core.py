@@ -147,9 +147,12 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
 
 
 def _frontmatter_path(path: tuple[Any, ...]) -> str:
-    """A frontmatter mapping's name for a message: ``frontmatter`` for the root, else its path as
-    ``sides[0].parties[1]``."""
-    named = "".join(f"[{part}]" if isinstance(part, int) else f".{part}" for part in path)
+    """A frontmatter mapping's name for a message: ``frontmatter`` for the root, else its path, as
+    ``sides[0].parties[1]``; a key that is no plain name is quoted (``sides[0]['a.b']``)."""
+    named = "".join(
+        f"[{part}]" if isinstance(part, int) else f".{part}" if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", part) else f"[{part!r}]"
+        for part in path
+    )
     return named.removeprefix(".") or "frontmatter"
 
 
@@ -1434,29 +1437,39 @@ def _validate(
 
     # ── Frontmatter entries that another replaces (#126) ──
     # YAML's reader keeps the last of a key written twice in a mapping, and the model keeps the last of
-    # the `translations` or `field_types` keys that are one once stripped (`fr` and `' fr'`): the earlier
-    # entry is never checked, and nothing else says so. Each is reported at its own line. A rule of this
-    # implementation (§16.1). An Error: strict YAML readers reject the first as invalid YAML
+    # the `translations` or `field_types` keys that are one once read (`fr` and `' fr'`, `1` and `'1'`): the
+    # earlier entry is never checked, and nothing else says so. Each is reported at its own line. A rule of
+    # this implementation (§16.1). An Error: strict YAML readers reject the first as invalid YAML
     # (`frontmatter-invalid-yaml`), and a `field_types` key that is padded is `field-type-key-format`'s.
-    # But for two `translations` keys that strip alike: the specification judges the padded key a
-    # Warning (`language-code-invalid`), and a rule of ours does not fail a document it accepts.
+    # But for two `translations` keys that read alike without being the same key: the specification judges
+    # the padded key a Warning (`language-code-invalid`), and a rule of ours does not fail a document it
+    # accepts. The entries of those two maps are not reported when the model was edited since it was parsed
+    # and no longer holds what they were judged against.
     if not mode.empty_metadata:
         for repeat in where.repeated():
             result.error(
                 FRONTMATTER_KEY_DUPLICATE_RULE,
-                f"The {_frontmatter_path(repeat.path)} key '{repeat.key}' is written again at line "
+                f"The {_frontmatter_path(repeat.path)} key {repeat.key!r} is written again at line "
                 f"{repeat.stays}, and the last is the one read: this entry is ignored.",
                 line=repeat.line,
             )
-        for map_name, ignored, stays in where.ignored():
-            if stays.key in getattr(document.metadata, map_name):  # not for a model edited since it was parsed
-                report = result.warning if map_name == "translations" else result.error
-                report(
-                    FRONTMATTER_KEY_DUPLICATE_RULE,
-                    f"The {map_name} key {ignored.written!r} is the same key as {stays.written!r} once "
-                    f"stripped: the entry at line {stays.line} stays, and this one is ignored.",
-                    line=ignored.line,
-                )
+        for map_name, each in where.ignored():
+            if (each.by.key in getattr(document.metadata, map_name)) != each.held:
+                continue
+            entry, by = each.entry, each.by
+            if each.why == "repeated":
+                how = f"is written again at line {by.line}, and "
+                how += "the last is the one read" if each.held else "the last is blank, so no entry is kept"
+            else:
+                same = "stripped" if each.why == "stripped" else "read as written"
+                how = f"is the same key as {by.written!r} once {same}, and "
+                how += f"the entry at line {by.line} stays" if each.held else f"the last, at line {by.line}, is blank, so no entry is kept"
+            report = result.warning if each.why != "repeated" and map_name == "translations" else result.error
+            report(
+                FRONTMATTER_KEY_DUPLICATE_RULE,
+                f"The {map_name} key {entry.written!r} {how}: this entry is ignored.",
+                line=entry.line,
+            )
 
     # ── Metadata dates (§16.6) ──
     for field_name, field_value in (

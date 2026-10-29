@@ -226,26 +226,35 @@ line, so that it does not go silently. The id is this implementation's own (§16
   `translations`; a party's `name:` twice). YAML does not allow it, and a strict loader fails the document
   as `frontmatter-invalid-yaml`; this implementation's YAML reader keeps the last, as PyYAML does. The earlier
   entry, which the model never holds, is the one reported, and the finding says at which line the last is. An
-  Error. Only the keys a mapping writes count: a key that a `<<` merge brings in and the mapping also writes is
-  not a repeat (the written one is read), and two `<<` keys are not either. Where the repeated key is looked up (the
-  line of any other finding about it), it is the last one's.
-- **Two keys of `translations` or `field_types` that are one once stripped** (`fr` and `' fr'`): the reader
-  strips these keys ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)), so they would be one
-  entry, and the model keeps the last of them in the order the model holds them (`fr: a`, `' fr': b`, `fr: c`
-  keeps the entry at the second line, not the last written). Each one that does not stay is reported at its
-  own line, and the finding names the line of the one that does. An Error for `field_types`, where the padded
-  key is `field-type-key-format`'s Error already, but a **Warning for `translations`**: the specification judges
-  a padded language code a Warning (`language-code-invalid`), and a rule of this implementation's own does not
-  fail a document that the specification only warns of. Only these two maps are keyed by the stripped key
-  (a party's custom fields are a list, and `questions` keys are kept as written), so the second case is
-  complete. A `translations` entry that is blank once stripped is skipped before it can replace a sibling
-  (#116), so it draws nothing; a blank `field_types` description is a declaration, and does.
+  Error. Two keys are the same when YAML resolves them to the same key: `fr` and `"fr"` are, `1` and `'1'` are
+  not. Only the keys a mapping writes itself count: a key that a `<<` merge brings in (into the mapping, or
+  into a mapping that is itself merged in) and the mapping also writes is not a repeat, the written one is read,
+  and the line of any other finding about the key is the written one's (for a repeated key, the last's); two `<<` keys
+  are not a repeat either.
+  A key
+  written once but by an alias (`&k a: 1` then `*k : 2`) is one node, at its anchor's line, so that repeat is
+  reported at that line and cites it.
+- **Two keys of `translations` or `field_types` that are one once stripped** (`fr` and `' fr'`), or once read
+  as written (`1` and `'1'`, which the model reads as the same text though YAML does not): the reader strips
+  and reads these keys ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)), so they would be
+  one entry, and the model keeps the last of them in the order the model holds them (`fr: a`, `' fr': b`,
+  `fr: c` keeps the entry at the second line, not the last written). Each one that does not stay is reported
+  at its own line, and the finding names the line of the one that does. An Error for `field_types`, where
+  the padded key is `field-type-key-format`'s Error already, but a **Warning for `translations`**: the
+  specification judges a padded language code a Warning (`language-code-invalid`), and a rule of this
+  implementation's own does not fail a document that the specification only warns of. Only these two maps
+  are keyed by the stripped key (a party's custom fields are a list, and `questions` keys are kept as
+  written), so this case is complete. A `translations` entry that is blank once stripped is skipped before
+  it can replace a sibling (#116), so it draws nothing; a blank `field_types` description is a
+  declaration, and does. An exact repeat in these two maps is reported by the same rule, as an Error; when
+  its last entry is blank and the model keeps none, the message says that no entry is kept.
 
 Every other check finds the padded key at its own line (`language-code-invalid`, `path-not-relative`,
 `field-type-key-format`, `placeholder-in-structural-field`), and the path of the entry that stays is the one judged.
 A document built from a dict has no source map, so it draws no finding; neither does a document whose body
-was changed after it was parsed, nor an entry the model no longer holds. A fragment (`fragment=True`) has no
-metadata to check.
+was changed after it was parsed, nor an entry of `translations` or `field_types` for a key that the model
+no longer holds (or holds again after it did not): those findings are judged against the model, the others
+are facts about the source. A fragment (`fragment=True`) has no metadata to check.
 
 `translation-implicit-id` (§16.7, Error) and `translation-authoritative-absent` (§16.7, Warning) are the
 single-file translation rows that §17.2 makes Core: the identifiers of the document itself. **A file is a

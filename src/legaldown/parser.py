@@ -60,7 +60,17 @@ from .models import (
     normalise_text,
     normalise_title,
 )
-from .positions import RepeatedKey, SourceMap, StrippedMap, document_shape, frontmatter_keys, read_maps, written_maps
+from .positions import (
+    RepeatedKey,
+    SourceMap,
+    StrippedMap,
+    document_shape,
+    frontmatter_keys,
+    line_breaks,
+    read_maps,
+    written_keys,
+    written_maps,
+)
 
 # ── YAML loader ───────────────────────────────────────────────────
 # PyYAML's implicit timestamp resolution constructs datetime objects — and
@@ -282,17 +292,18 @@ def _split_frontmatter(
             )
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
-        written = frozenset(id(key) for key, _value in node.value)  # before the merged ones are brought in
+        written = written_keys(node)  # before the merged keys are brought in
         loader.flatten_mapping(node)
         # The YAML starts on the line after the opening `---` (line 1).
-        found, repeated = frontmatter_keys(node, match.group(1) or "", 2, written)
+        breaks = line_breaks(match.group(1) or "")
+        found, repeated = frontmatter_keys(node, breaks, 2, written)
         keys = {(): 1, **found}
-        maps = written_maps(node, match.group(1) or "", 2)
+        maps = written_maps(node, breaks, 2, written)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
         # After the nodes are read as written: the maps are judged as the model reads them.
-        repeats = (repeated, read_maps(maps, lambda each: loader.construct_object(each, deep=True)))
+        repeats = (repeated, read_maps(maps, loader.construct_object, metadata))
     except FrontmatterError as exc:
         if not keep_error:
             raise
