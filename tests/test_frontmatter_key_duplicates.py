@@ -82,17 +82,22 @@ def test_the_mix_of_an_exact_repeat_and_a_padded_key():
     assert _found(front) == [(RULE, "error", 4), (RULE, "warning", 6)]
     result = validate(parse(_source(front)))
     messages = sorted((d.line, d.message) for d in result.diagnostics if d.rule == RULE)
-    # Both name the entry the model keeps, the padded one at line 5.
-    assert all("the entry at line 5 is the one read" in message for _line, message in messages)
-    assert "is written again" in messages[0][1] and "is the same key as" in messages[1][1]
+    # The repeat names the entry that repeats it (line 6); the padded one is the entry the model keeps (line 5).
+    assert messages[0][1] == "The translations key `fr` is written again at line 6: this entry is ignored."
+    assert messages[1][1].endswith("once stripped: this entry is ignored, and the entry at line 5 is the one read.")
 
 
-def test_a_repeat_names_the_entry_the_model_keeps_not_the_next_one():
-    front = "translations:\n  a: x\n  a: y\n  ' a': z\n"
-    assert parse(_source(front)).metadata.translations == {"a": "z"}
+def test_a_repeat_names_the_entry_that_repeats_it_not_the_one_the_model_keeps():
+    front = "translations:\n  fr: a.lgd\n  fr: b.lgd\n  'fr ': c.lgd\n"
+    assert parse(_source(front)).metadata.translations == {"fr": "c.lgd"}
     assert _found(front) == [(RULE, "error", 4), (RULE, "warning", 5)]
     messages = [d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert all(m.endswith("and the entry at line 6 is the one read.") for m in messages)
+    assert messages == [
+        "The translations key `fr` is written again at line 5: this entry is ignored.",
+        "The translations key `fr` is the same key as `'fr '` once stripped: this entry is ignored, and the entry at line 6 is the one read.",
+    ]
+    (diagnostic,) = [d for d in validate(parse(_source("translations:\n  fr: a.lgd\n  fr: b.lgd\n"))).diagnostics if d.rule == RULE]
+    assert diagnostic.message == "The translations key `fr` is written again at line 5: this entry is ignored."
 
 
 def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
@@ -108,7 +113,7 @@ def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
     ]
     # a blank entry that is not the last of its key is no reason to say so
     front = "translations:\n  a: x\n  a: ''\n  ' a': z\n"
-    assert all("is the one read" in d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE)
+    assert not any("skipped" in d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE)
 
 
 # ── the same key written twice, or read as one ──
@@ -183,10 +188,13 @@ def test_keys_python_holds_as_equal_numbers_are_a_warning_too():
     assert "once read as a YAML value" in diagnostic.message
 
 
-@pytest.mark.parametrize("front", ["translations: {fr: a.lgd, fr: b.lgd}\n", "translations: {fr: a.lgd, ' fr': b.lgd}\n"])
-def test_two_entries_on_one_line_still_name_the_entry_that_stays(front):
+@pytest.mark.parametrize("front,tail", [
+    ("translations: {fr: a.lgd, fr: b.lgd}\n", "is written again at line 3: this entry is ignored."),
+    ("translations: {fr: a.lgd, ' fr': b.lgd}\n", "once stripped: this entry is ignored, and the entry at line 3 is the one read."),
+])
+def test_two_entries_on_one_line_still_name_the_other_entry(front, tail):
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert diagnostic.line == 3 and diagnostic.message.endswith("and the entry at line 3 is the one read.")
+    assert diagnostic.line == 3 and diagnostic.message.endswith(tail)
 
 
 @pytest.mark.parametrize("front,reason", [
@@ -216,6 +224,13 @@ def test_ignored_entries_are_in_source_order_on_one_line():
     )
     messages = [d.message for d in validate(document).diagnostics if d.rule == RULE]
     assert "is written again" in messages[0] and "once stripped" in messages[1]
+
+
+def test_a_block_scalar_key_is_shown_without_its_ends():
+    front = "translations:\n  ? |\n    fr\n  : a.lgd\n  ' fr': b.lgd\n"
+    assert parse(_source(front)).metadata.translations == {"fr": "b.lgd"}
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert diagnostic.message.startswith("The translations key `| fr` is the same key as `' fr'` once stripped")
 
 
 def test_a_key_over_several_lines_is_shown_on_one():
@@ -401,8 +416,9 @@ def test_read_maps_agrees_with_the_model_on_generated_maps(seed):
             assert alone(name, *rows[entry.line - 4]) == {key: held[key]}, (front, key)
         ignored = {each.entry.line for each in found.ignored} if found else set()
         for each in found.ignored if found else ():
-            assert each.entry.key == each.by.key and each.by.line not in ignored, front
-            assert each.skipped or stays[each.by.key] is each.by, front
+            assert each.entry.key == each.by.key, front
+            if each.why != "repeated":  # a repeat is named by the entry that repeats it, which may be ignored too
+                assert each.by.line not in ignored and (each.skipped or stays[each.by.key] is each.by), front
         for index, row in enumerate(rows):
             # Every row is accounted for: it stays, it is reported, or the model skips it.
             line = 4 + index

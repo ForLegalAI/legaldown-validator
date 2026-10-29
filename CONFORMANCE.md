@@ -223,7 +223,8 @@ replaces, at its own line, so that it does not go silently. The id is this imple
 `legaldown.grammar.FRONTMATTER_KEY_DUPLICATE_RULE`): the specification has no rule for it. The model reads the keys
 of these two maps as text, stripped, and keeps the last of the keys it reads as one (in the order the model holds
 them: `fr: a`, `' fr': b`, `fr: c` keeps the entry at the second line, not the last written). Each entry that does
-not stay is reported at its own line, and the finding names the line of the one that does; when the model keeps
+not stay is reported at its own line, and the finding names the line of the one that does (for a key written again,
+the entry that repeats it, in the same key as read); when the model keeps
 none, because the last entry written has an empty or blank key or a null, empty or blank value, the finding
 says which. The keys are shown as they are written in the source (quotes and escapes included, between backticks),
 so that `1` and `"1"` differ; an aliased key (`&k fr`, then `*k`) is one node for the YAML reader, which keeps

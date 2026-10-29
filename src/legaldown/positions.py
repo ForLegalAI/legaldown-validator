@@ -10,7 +10,7 @@ import bisect
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import yaml
 
@@ -149,9 +149,15 @@ class StrippedMap:
     ignored: tuple[Ignored, ...]
 
 
-#: An entry written in a ``STRIPPED_MAPS`` map: its key node, the key's source text, its line and start, and
-#: what YAML resolves the key to.
-_Written = tuple[yaml.Node, str, int, int, tuple[str, str]]
+class _Written(NamedTuple):
+    """An entry written in a ``STRIPPED_MAPS`` map: its key node, the key's source text, its line and start,
+    and what YAML resolves the key to."""
+
+    node: yaml.Node
+    text: str
+    line: int
+    start: int
+    resolved: tuple[str, str]
 
 
 def written_maps(root: yaml.Node, block: str, breaks: list[int], first_line: int) -> dict[str, list[_Written]]:
@@ -166,7 +172,7 @@ def written_maps(root: yaml.Node, block: str, breaks: list[int], first_line: int
             found[name.value] = value
     return {
         name: [
-            (
+            _Written(
                 key,
                 block[key.start_mark.index : key.end_mark.index],
                 line_at(breaks, key.start_mark.index, first_line),
@@ -206,16 +212,17 @@ def read_maps(
         skip_blank = STRIPPED_MAPS[name]
         raw: dict[Any, list[tuple[_Written, str]]] = {}  # the entries of each key as read, with their own text
         for each in written:
-            slot = construct(each[0])
+            slot = construct(each.node)
             raw.setdefault(slot, []).append((each, str(slot)))
         # The model holds a slot under the first key written for it (the one the dict keeps), as text, stripped.
         slots = {
-            slot: [(WrittenEntry(w, str(slot).strip(), line, start, res), text) for (_n, w, line, start, res), text in found]
+            slot: [(WrittenEntry(each.text, str(slot).strip(), each.line, each.start, each.resolved), text) for each, text in found]
             for slot, found in raw.items()
         }
+        reasons = {slot: str_dict_skip(slot, held.get(slot), skip_blank=skip_blank) for slot in slots}  # "": kept
         kept: dict[str, list[tuple[Any, WrittenEntry]]] = {}  # the slots the model keeps, by the key it holds them under
         for slot, found in slots.items():
-            if not str_dict_skip(slot, held.get(slot), skip_blank=skip_blank):
+            if not reasons[slot]:
                 kept.setdefault(found[-1][0].key, []).append((slot, found[-1][0]))
         stays = {key: found[-1][1] for key, found in kept.items()}
         ignored = []
@@ -224,10 +231,13 @@ def read_maps(
         for slot, found in slots.items():  # the entries of a slot replaced by its last
             last, last_text = found[-1]
             by = stays.get(last.key, last)  # the entry the model keeps for the key, else the last written
-            skipped = "" if last.key in stays else str_dict_skip(slot, held.get(slot), skip_blank=skip_blank)
+            skipped = "" if last.key in stays else reasons[slot]
             for place, (entry, text) in enumerate(found[:-1]):
-                again = any(each.resolved == entry.resolved for each, _text in found[place + 1:])
-                ignored.append(Ignored(entry, by, "repeated" if again else _why(text, last_text), skipped))
+                # A key written again is named by the entry that repeats it, unless the model keeps none.
+                again = next((each for each, _text in found[place + 1:] if each.resolved == entry.resolved), None)
+                ignored.append(
+                    Ignored(entry, again if again and not skipped else by, "repeated" if again else _why(text, last_text), skipped)
+                )
         maps[name] = StrippedMap(stays, tuple(sorted(ignored, key=lambda each: (each.entry.line, each.entry.start))))
     return maps
 

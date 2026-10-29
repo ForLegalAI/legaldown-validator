@@ -149,7 +149,7 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
 def _shown(key: str) -> str:
     """A key as it is written in the source, for a message: its line breaks (and the indentation after them)
     folded to a space, between backticks (a longer fence if it holds backticks, padded, as CommonMark does)."""
-    text = re.sub(r"\s*\n\s*", " ", key)
+    text = re.sub(r"\s*\n\s*", " ", key).strip()
     fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{pad}{text}{pad}{fence}"
@@ -1438,7 +1438,8 @@ def _validate(
     # The model reads the keys of these maps as text, stripped, and keeps the last of the keys it reads as
     # one: the same key written twice (`fr` and `"fr"` too), keys that read alike as text (`1` and `'1'`),
     # keys that strip alike (`fr` and `' fr'`). The earlier entry is never checked, and nothing else says so:
-    # each is reported at its own line, naming the entry the model keeps. A rule of this implementation
+    # each is reported at its own line, naming the entry that repeats it (the one written again) or the entry
+    # the model keeps. A rule of this implementation
     # (§16.1). An Error when YAML itself rejects the key written twice (strict readers fail the document as
     # `frontmatter-invalid-yaml`); a Warning for different keys the model reads as one, as the specification
     # judges a padded language code a Warning (`language-code-invalid`) and a rule of ours does not fail a
@@ -1449,15 +1450,16 @@ def _validate(
             if (each.by.key in getattr(document.metadata, map_name)) == bool(each.skipped):
                 continue
             entry, by = each.entry, each.by
+            again = f" at line {by.line}" if by.start != entry.start else ""  # an aliased key is one node
             what = {
-                "repeated": "is written again",
+                "repeated": f"is written again{again}" if not each.skipped else "is written again",
                 "text": f"is the same key as {_shown(by.written)} once read as text",
                 "stripped": f"is the same key as {_shown(by.written)} once stripped",
                 "value": f"is the same key as {_shown(by.written)} once read as a YAML value (Python treats them as equal)",
             }[each.why]
             if each.skipped:
                 stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"
-            elif by.start != entry.start:  # an aliased key is one node, wherever it is written again
+            elif each.why != "repeated" and again:
                 stays = f", and the entry at line {by.line} is the one read"
             else:
                 stays = ""

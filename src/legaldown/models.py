@@ -391,26 +391,32 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _keeps(each: Any, skip_blank: bool) -> bool:
+    """Whether ``_parse_str_dict`` keeps an entry whose key or value is *each*: not if it is falsy (null,
+    empty, ``0``, ``false``), as on main, and with *skip_blank* not if it is blank once stripped either."""
+    return bool(each) and not (skip_blank and not str(each).strip())
+
+
 def str_dict_skip(key: Any, value: Any, *, skip_blank: bool = False) -> str:
     """Why ``_parse_str_dict`` skips an entry, in words, or ``""`` if it keeps it: an entry whose raw key or
     value is falsy (null, empty, ``0``, ``false``) is skipped, as on main, and a whitespace-only one is kept as
     ``""``. With *skip_blank*, one that is blank once stripped is skipped too. The one place that judges it,
     for the model and for ``positions.read_maps``."""
     for what, each in (("key", key), ("value", value)):
-        if not each:
+        if not _keeps(each, skip_blank):
             if each is None:
                 return f"its {what} is null"
+            if each:  # truthy, so blank once stripped
+                return f"its {what} is blank"
             empty = isinstance(each, (str, bytes, list, dict, tuple, set, frozenset))
             return f"its {what} is empty" if empty else f"its {what} is `{each}`"
-        if skip_blank and not str(each).strip():
-            return f"its {what} is blank"
     return ""
 
 
 def str_dict_entry(key: Any, value: Any, *, skip_blank: bool = False) -> tuple[str, str] | None:
     """What ``_parse_str_dict`` makes of one raw entry, or None when it skips it (``str_dict_skip``): the key
     and the value, stripped."""
-    if str_dict_skip(key, value, skip_blank=skip_blank):
+    if not (_keeps(key, skip_blank) and _keeps(value, skip_blank)):
         return None
     return str(key).strip(), str(value).strip()
 
