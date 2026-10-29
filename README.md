@@ -225,7 +225,13 @@ wrong are put right for the template's questions (`5000 EUR`, `yes`, a number as
 LegalDown attachment files are read relative to the template, never from outside its directory
 unless `--document-root DIR` (on `assemble` and `questions`) holds them: a path such as `../shared/part.lgd`
 that stays within `DIR` is then read, and nothing outside `DIR` is, nor anything a template outside it names.
-The ones assembly keeps are written under `-o` at their relative paths; `-o` refuses an output
+The ones assembly keeps are written under `-o` at their relative paths — an ordinary document's fragments
+that include fragments of their own too (each is read from the directory of the fragment that holds the
+include, as `validate` reads it, and written at its own path; the `{{include:}}` lines stay as written). A
+circular chain is `include-cycle`, and a chain deeper than 32 fragments, or a walk of more than
+10,000 includes and headings, is `ldv-include-limit`: both are Errors, and nothing is assembled. A
+template's fragments may not include any (`template-fragment-invalid`), nor may an attachment file;
+`include-heading-skip` is the validator's to report, and assembly does not enforce it. `-o` refuses an output
 that leads out of its directory, so a file read from `../` is assembled but cannot be written
 by the command line (use the library, or keep the fragments below the template). Answer problems are
 reported as `answer-invalid`, `answer-missing` and `answer-unknown` (§16.12) on stderr, and
@@ -508,7 +514,9 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   (`parts/b.lgd:3` for a document that includes `a`, which includes `b`, which includes `a`); a document that
   includes itself is one. The includes of a fragment are followed (outside a template, where §12.2 allows
   them) and judged as the document's are, from the fragment's directory and at their line in it; the walk stops
-  at a depth of 32 fragments and 10,000 includes and headings, and `ldv-check-skipped` says so;
+  at a depth of 32 fragments and 10,000 includes and headings, and `ldv-check-skipped` says so (assembly
+  of an ordinary document follows them too and, instead of saying so, refuses with the Error
+  `ldv-include-limit`: a fragment of more than 10,000 headings is refused by it as well);
 - `include-has-frontmatter` and `include-has-h1` (§16.11), `include-has-frontmatter` also for a block
   whose YAML cannot be read;
 - `include-heading-skip`: the headings of every fragment are placed where its include paragraph is,
@@ -997,7 +1005,8 @@ or LegalDown attachment files reads them from beside the file (`load_template`) 
 `parse_template(text, resolve=...)`, a function from a relative path to the file's text; without
 one such a template is refused rather than assembled partially (§17.6). The files it
 reads are checked as the Full level checks them — no frontmatter, no level 1 heading, and in a
-template no includes, and no conditions or drafting notes in a fragment — one diagnostic for each
+template no includes (outside a template a fragment's includes are followed and assembled, each file at its
+own path), and no conditions or drafting notes in a fragment — one diagnostic for each
 offender, with its `file` and `line`, and a template whose
 files fail is refused. [CONFORMANCE.md](CONFORMANCE.md#assembly-157-176) lists what assembly
 checks and what it does not.
@@ -1042,7 +1051,7 @@ checks are named depends on the validation: a fragment that was read (a document
 `include-anchor-duplicate` checks made over what it includes; but the combined-document checks of
 §16.11 (a reference or a term into a fragment, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117))
 are never performed, so a document with an include always draws it. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
-(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`). It is a Warning: the exit status is
+(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`). It is a Warning: the exit status is
 unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
 `--ignore ldv-check-skipped` once it has read what it says.
 

@@ -690,8 +690,8 @@ Decisions the specification leaves open:
   short long before it is expanded). Past either nothing more is followed, what lies after the include is
   not known (a `heading-skip` that a fragment would have filled stands), and the Warning of §17.5 says which cap was
   reached and that the rest was not checked. The caps are this implementation's own (the specification has none).
-  Assembly of a document that is not a template still **refuses** an include in a fragment (it is not
-  assembled); following it there is tracked as [#118](https://github.com/ForLegalAI/legaldown-validator/issues/118).
+  Assembly of a document that is not a template follows the same includes, with the same caps
+  ([Assembly](#assembly-157-176), [#118](https://github.com/ForLegalAI/legaldown-validator/issues/118)).
   A fragment validated on its own (`validate(fragment=True)`) reads no file, so its includes are judged by their
   path only (`include-not-legaldown`, `path-not-relative`); the document that includes it follows them.
 - **The identifiers and the combined document.** `include-heading-skip` is judged on the combined document
@@ -758,11 +758,11 @@ Decisions the specification leaves open:
   `d.file` is one of the files it read, or one it could not parse, which is in `problems` by its
   path with the error that stopped it); `Template.validation` keeps both, as advice. The
   other `include-*` ids are not template rules. Assembly and the validator read an include paragraph
-  with the same function (`include_paragraph`). Assembly's own refusal of an `{{include:}}` in a
-  fragment or attachment file of a document that is not a template (§12.2 allows it; it is not
-  assembled) is an `include-file-missing` at the include's line, in the fragment's file, one for
-  each include paragraph (an `{{include:}}` in a sentence, a list item or a quote is text, §12.2),
-  quoting the directive as written.
+  with the same function (`include_paragraph`). Assembly's own refusal of an `{{include:}}` in an
+  attachment file of a document that is not a template (§12.2 allows it; it is not assembled) is an
+  `include-file-missing` at the include's line, in the attachment's file, one for each include
+  paragraph (an `{{include:}}` in a sentence, a list item or a quote is text, §12.2), quoting the
+  directive as written. In an include fragment it is followed ([Assembly](#assembly-157-176)).
 - **Several documents, one fragment.** `legaldown validate a.lgd b.lgd`, where both include `part.lgd`,
   reports a finding in `part.lgd` once, in the output and in the counts: findings in a file other than
   the target's, with the same file (the same device and inode when it is there, so a link or a spelling in another case on a
@@ -778,7 +778,7 @@ Decisions the specification leaves open:
   ("names no file") at its line when the validation can read files, and assembly refuses the template
   for it at the same line. In a template's fragment any `{{include:}}` is `template-fragment-invalid`,
   as one that names a file; in a plain fragment it is allowed (§12.2) and is `include-file-missing` there
-  too, at its line in the fragment, and assembly refuses it as it does any nested include.
+  too, at its line in the fragment, and assembly refuses it for the same reason, at the same line.
 - **Silence.** An attachment file that is not there is not reported (`attachment-file-missing` is
   not implemented); the Warning of §17.5 says that the existence of attachment files is not checked
   ([below](#constructs-beyond-the-level-175)).
@@ -795,6 +795,7 @@ for a check of its own, namespaced with a prefix that ends in a hyphen (`ldv-`,
 assigns later can collide with it. It is not in the fixtures corpus (`coverage.json`) and no fixture
 expects or forbids it. It is a Warning for every output, so `is_valid` and the exit status are
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
+Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)).
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct
@@ -935,11 +936,49 @@ template with Errors in the validator's template rules (`Template.problems`); th
   attachment file may hold conditions of its own (§15.3). These are the validator's own findings
   ([Include fragments](#include-fragments-122-1611-1612)), one for each offender, each with the file
   and the line in it (`Diagnostic.file`, `legaldown assemble` prints `part.lgd:3`). An
-  `{{include:}}` in a fragment or attachment file of a document that is not a template is not
-  assembled: it is refused with `include-file-missing` (following it is tracked as
-  [#118](https://github.com/ForLegalAI/legaldown-validator/issues/118)). The other Full checks —
-  `include-cycle`, `include-anchor-duplicate` and `include-heading-skip` (which the validator reports),
-  `attachment-anchor-duplicate` and the path rules — are not made by assembly.
+  `{{include:}}` in an attachment file of a document that is not a template is not assembled: it is
+  refused with `include-file-missing`. One in an include fragment of such a document is followed, below.
+  The other Full checks — `include-anchor-duplicate` and `include-heading-skip` (which the validator
+  reports), `attachment-anchor-duplicate` and the path rules — are not made by assembly. (A document
+  that fails `include-heading-skip` is assembled; the validator is where to find it.)
+- **Nested includes of a document that is not a template**
+  ([#118](https://github.com/ForLegalAI/legaldown-validator/issues/118)). §15.7 gives a draft, and so
+  an ordinary document, the same procedure, with every step that has nothing to act on changing
+  nothing; §12.2 allows a fragment to include fragments. Assembly therefore **follows** the include
+  paragraphs of a fragment, as `validate` does, and **writes each file it reads at its own path**
+  (§15.7.2: "each fragment ... is written to an output file at the same relative path"): the
+  `{{include:}}` lines are not replaced by the text, so the output tree is a document that `validate`
+  reads the way it read the template's. Step 7 splices every fragment, nested ones too, to tell which
+  identifier each heading gets. §12.2 says only that an include path is relative "to the including
+  document"; this implementation reads a nested one **from the directory of the fragment that holds it**,
+  the way `validate` does (above), so that the output validates as the input did (§15.7.4). The
+  specification and its fixtures do not decide this. A nested path that leads out of the document's
+  directory is read only under a `document_root` that holds it (#109), and its key in `files` keeps the
+  `../`, as a flat one does ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123) is not
+  fixed: a file reached by two spellings is read and written under both).
+  - **A cycle** is `include-cycle`, an Error, at the include that closes it, in the file that holds it,
+    with the validator's message (a `Template`'s `problems` hold it once, not once for the assembly and
+    once for the validation). It is the validator's own test, so that a chain through
+    another spelling of a file, or back to the template (when the template has a `path`; without one
+    nothing says which file it is, and it is read as a fragment and refused for its frontmatter), is
+    caught the same way. A template that includes *itself* is now `include-cycle` too, at its
+    line, where assembly said `include-has-frontmatter` of it.
+  - **The caps are Errors.** Assembly shares the validator's walk limits (32 fragments deep, 10,000 includes
+    and headings) and spends them in the walk's order: an include costs one before it is judged, a fragment's
+    headings cost one each in section order, and the document's own includes cost none; so
+    both stop at the same place (a test lowers the caps and compares them). Where the validator warns that it
+    did not check past a cap (`ldv-check-skipped`), assembly would be leaving a part of the document out, which §17.6
+    forbids; it refuses with **`ldv-include-limit`**, an Error, at the include or heading where the cap was
+    reached, and assembles nothing. The id is the implementation's own (§16.1, `ldv-`; `INCLUDE_LIMIT_RULE`).
+    **Changed:** a fragment of more than 10,000 headings, which was assembled when it included nothing, is now
+    refused for the same reason (so is one of 32 or more levels of includes, which was refused anyway).
+  - Everything else is as for a flat include: a file that is not there or cannot be read is
+    `include-file-missing` (with its file and line, now); `include-has-frontmatter`, `include-has-h1`
+    and unreadable frontmatter are reported for a nested file, which is then not followed; an include that is not an
+    include paragraph (in a sentence, a list item, a quote, a drafting note) is text and is not read.
+    **Not changed:** a template's nested include and any in an attachment file stay refused, and an include
+    of `a.txt` (`include-not-legaldown`, which the validator reports and does not read) is read by assembly if the
+    loader has it, nested or not: tracked apart.
 - A `{{placeholder:}}` or `{{choose:}}` written across two lines is refused with
   `directive-malformed`, which the validator reports too (see above): it could not be filled.
 - A template with `translations` is refused with `translation-file-missing`: its linked templates
