@@ -927,6 +927,7 @@ def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body
         '[a]: u {{choose: q}} "t"\n',  # the same: it becomes the title's place
         '[a]: u {{placeholder: p}}"\n',  # an answer that opens a quote makes it a title
         "[a]:\n{{placeholder: p}}\n",  # an answer makes it a definition
+        "[b]: {{placeholder: p}}\n[a]: u\n===\n",  # the parser joins the lines of a setext heading: one line
     ],
 )
 def test_an_insertion_after_a_title_or_in_a_destination_on_the_next_line_is_off_limits(body):
@@ -953,6 +954,11 @@ def test_an_insertion_after_a_title_or_in_a_destination_on_the_next_line_is_off_
         ("[a]: u {{placeholder: p}}\n---\n", [14]),
         ("- [a]: u {{placeholder: p}}\n  ===\n", [14]),
         ("> [a]: u {{placeholder: p}}\n> ===\n", [14]),
+        # An over-approximation: a line that continues a paragraph is read like any other (§15.7.3 is per line).
+        ("Text\n[a]: u {{placeholder: p}}\n", [15]),
+        ("[b]: v\nText\n[a]: <x {{placeholder: p}} y>\n", [16]),
+        ("{{choose: q}}\n[a]: u {{placeholder: p}}\n", [15]),
+        ("[b]: v {{placeholder: p}}\n[a]: u {{placeholder: p}}\n", [14, 15]),
     ],
 )
 def test_an_insertion_in_the_destination_of_a_definition_is_off_limits(body, lines):

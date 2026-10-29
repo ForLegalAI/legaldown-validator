@@ -382,6 +382,7 @@ class Locator:
         self._document = document
         self._leaves: dict[tuple[int | None, int], list[_Leaf] | None] = {}
         self._definition_lines: dict[tuple[int | None, int], list[int]] = {}
+        self._fragment_lines: dict[tuple[int | None, int], dict[int, int]] = {}
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
 
     def start(self) -> int | None:
@@ -435,10 +436,13 @@ class Locator:
         that is not known, as for ``setext_section``."""
         if self._map is None:
             return False
-        for leaf in self._leaves_of(section, index) or ():
-            if fragment in leaf.places:
-                return not _is_atx(self._map.lines[leaf.start - 1])
-        return False
+        key = (section, index)
+        if key not in self._fragment_lines:  # found once for the block: a list of thousands of items is not scanned for each
+            self._fragment_lines[key] = {
+                number: leaf.start for leaf in self._leaves_of(section, index) or () for number in leaf.places
+            }
+        start = self._fragment_lines[key].get(fragment)
+        return start is not None and not _is_atx(self._map.lines[start - 1])
 
     def block(self, section: int | None, index: int) -> int | None:
         return self._map.block(section, index) if self._map else None

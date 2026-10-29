@@ -232,6 +232,16 @@ def test_a_label_or_title_with_no_closer_is_not_read_to_the_end_at_each_line(sha
     assert _seconds(lambda: [scan.problem(insertion) for insertion in insertions]) < 1.0  # 0.1 s now
 
 
+def test_the_form_of_each_heading_of_a_long_list_is_found_without_a_scan_of_its_items():
+    """A heading in a list item is ATX or setext; the line of its fragment was looked up among the leaves of the
+    list, 8 s for 16000 items, and is found by a map, once for the list, now."""
+    document = _document("- # T {{placeholder: a}}\n" * 16000, _QUESTIONS)
+    start = time.perf_counter()
+    result = validate(document)
+    assert time.perf_counter() - start < 5.0  # 2 s now
+    assert result.diagnostics == []
+
+
 def test_an_angle_destination_with_no_closer_is_read_once_to_the_end_of_its_line():
     text = "[a]: <" + "x " * 200_000 + "{{placeholder: a}}\n"  # 400000 characters
     lexed = lex(text)
