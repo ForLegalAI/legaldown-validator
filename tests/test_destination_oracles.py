@@ -33,6 +33,7 @@ import subprocess
 from collections import Counter
 
 import pytest
+from helpers_definitions import LABEL_RE, definition_ends, insertion_template
 from helpers_renderers import BACKSLASH_PAIR_RE, PARAGRAPH_END_RE, markdown_it, needs_markdown_it, needs_pandoc
 
 from legaldown import markdown
@@ -637,33 +638,18 @@ _REFERENCE_TOKENS = [
 ]
 
 
-_OLD_LABEL_RE = re.compile(r" {0,3}\[[^\]]+\]:[ \t]*")
-_ANGLE_DESTINATION_RE = re.compile(r"<(?:\\[!-/:-@\[-`{-~]|[^<>\n])*+>")
-_OLD_TITLE_RE = re.compile(r"[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\))")
-
-
-def _reference_end_by_the_regular_expressions(template, offset, directive_starts):
-    """What ``_InsertionScan._reference_end`` is, by regular expressions: the old pattern's end, or the end of the
-    longer reading of the definition, after a ``<…>`` destination that holds blanks or where an answer could be
-    the title (the blanks after the destination, then directives and blanks). Returns ``(end, class)``."""
-    label = _OLD_LABEL_RE.match(template, offset)
+def _reference_end_by_the_regular_expressions(template, slots, offset, definitions):
+    """What ``_InsertionScan._reference_end`` is, by regular expressions (``helpers_definitions``): the old pattern's
+    end, or the end of the longer reading of the definition, after a ``<…>`` destination that holds blanks or where
+    an answer could be the title (the blanks after the destination, then insertions and blanks). Returns
+    ``(end, class)``."""
+    label = LABEL_RE.match(template, offset)
     if not label:
         return -1, None
-    bare = label.end() + len(re.match(r"\S*", template[label.end():]).group())
-    ends = [bare]
-    if angle := _ANGLE_DESTINATION_RE.match(template, label.end()):
-        ends.append(angle.end())
     best, kind = _OLD_LINK_REFERENCE_RE.match(template, offset).end(), None
-    for after in ends:
-        if title := _OLD_TITLE_RE.match(template, after):
-            end = title.end()
-        else:
-            blanks = re.compile(r"[ \t]+").match(template, after)
-            end = after
-            if blanks and blanks.end() in directive_starts:
-                end = re.compile(r"[ \t\x00]*").match(template, blanks.end()).end()
+    for _angle, end, slot in definition_ends(template, slots, label.end(), definitions):
         if end > best:
-            best, kind = end, ("angle" if after == ends[-1] != ends[0] else "title-slot")
+            best, kind = end, ("title-slot" if slot else "angle")
     return best, kind
 
 
@@ -671,24 +657,28 @@ def test_the_link_reference_of_the_insertion_boundary_is_the_old_pattern_but_for
     """Two classes (#119), each a value-level oracle: ``_InsertionScan._reference_end`` is where the old pattern, run
     at that offset of the template (its directives masked), ended, or -1 — except that the definition's end is the
     longer of two readings. ``angle``: the destination is a ``<…>`` that holds blanks (§6.3), so its title, if any,
-    follows its ``>``. ``title-slot``: blanks after the destination, then a directive (an answer could be its title)
-    — and the directives and blanks after it. Every offset is checked against the end by regular expressions, and
-    the old pattern's end is never lost. A pinned over-approximation, not CommonMark's rule. (The 60000 texts, 3 s,
-    are what reaches each class a hundred times: 30000 reached ``angle`` 91 times.)"""
+    follows its ``>``. ``title-slot``: blanks after the destination, then an insertion (an answer could be its
+    title) — and the blanks and insertions after it; another directive is no title. Every offset is checked against
+    the end by regular expressions, and the old pattern's end is never lost. For text that cannot hold a definition
+    (a heading, a table cell) it is the old pattern's end exactly. A pinned over-approximation, not CommonMark's
+    rule. (The 30000 texts, 2 s, reach each class about 200 times; the floor is a hundred.)"""
     matches, classes = 0, Counter()
     for text in _random_texts(
-        _REFERENCE_TOKENS + ["[a]: ", "u ", '"t"', "'t'", "(t)", "<x ", ">", "<", "\\>"] * 3, 60_000, 14, seed=1135
+        _REFERENCE_TOKENS + ["[a]: ", "u ", '"t"', "'t'", "(t)", "<x ", ">", "<", "\\>", "{{ref: q}}"] * 3, 30_000, 14, seed=1135
     ):
         lexed = lex(text)
         template = mask_directives(text, lexed.directives)
-        starts = {directive.start for directive in lexed.directives}
+        slots = insertion_template(text, lexed.directives)
         scan = templates._InsertionScan(text, template, lexed.directives)
+        plain = templates._InsertionScan(text, template, lexed.directives, False)
         for offset in range(len(template) + 1):
             old = _OLD_LINK_REFERENCE_RE.match(template, offset)
-            expected, kind = _reference_end_by_the_regular_expressions(template, offset, starts)
+            old_end = old.end() if old else -1
+            expected, kind = _reference_end_by_the_regular_expressions(template, slots, offset, True)
             found = scan._reference_end(offset)
             assert found == expected, (text, offset)
-            assert found >= (old.end() if old else -1), (text, offset)  # no verdict of the old pattern is lost
+            assert found >= old_end, (text, offset)  # no verdict of the old pattern is lost
+            assert plain._reference_end(offset) == old_end, (text, offset)  # and none is added where there is no definition
             classes[kind] += 1
             matches += bool(old)
     assert matches > 10_000, matches

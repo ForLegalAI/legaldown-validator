@@ -13,6 +13,7 @@ from collections import Counter
 from dataclasses import replace
 
 import pytest
+from helpers_definitions import LABEL_RE, definition_ends, insertion_template
 
 from legaldown import directives as directives_module
 from legaldown import markdown
@@ -411,56 +412,50 @@ def test_find_markers_reads_the_lexer_it_is_given():
 # ── Insertion boundaries ──────────────────────────────────────────
 
 
-def fresh_problem(text, template, insertion, directives):
-    """The verdict of a scan made for this insertion alone."""
-    return templates._InsertionScan(text, template, directives).problem(insertion)
+def fresh_problem(text, template, insertion, directives, definitions=True):
+    """The verdict of a scan made for this insertion alone, of text that can hold a definition or not."""
+    return templates._InsertionScan(text, template, directives, definitions).problem(insertion)
 
 
 _REFERENCE = "it is in a link reference definition"
 _DESTINATION = "it is inside a link or image destination"
-_ANGLE_RE = re.compile(r"<(?:\\[!-/:-@\[-`{-~]|[^<>\n])*+>")
-_PINNED_LABEL_RE = re.compile(r" {0,3}\[[^\]]+\]:[ \t]*")
-_PINNED_TITLE_RE = re.compile(r"[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\))")
-_PINNED_TITLE_SLOT_RE = re.compile(r"[ \t]+\0[ \t\0]*")
 
 
-def in_definition_destination(text, template, insertion):
+def in_definition_destination(text, template, insertion, directives):
     """Whether *insertion* is on a link reference definition line that #119 reads as one with a destination it could
     change: exactly (the scan's verdict, both ways). For one of two readings of the destination (its bare run of
     non-blanks, or its ``<…>``, which may hold blanks, §6.3), the definition ends past a closed title or, where an
-    answer could be the title, past the blanks, the directive and what blanks and directives follow; the insertion
-    lies before that end, and nothing but blanks follows it to the end of the line. Read from the template by
-    regular expressions, apart from the scan's index."""
+    answer could be the title, past the blanks, the insertion and what blanks and insertions follow (another
+    directive is no title); the insertion lies before that end, and nothing but blanks follows it to the end of the
+    line. Read from the template by regular expressions (``helpers_definitions``), apart from the scan's index."""
     start = insertion.start
     line_start = text.rfind("\n", 0, start) + 1
     line_end = text.find("\n", insertion.end)
     line_end = len(text) if line_end < 0 else line_end
     content = min(templates._CONTAINER_RE.match(text, line_start).end(), start)
-    label = _PINNED_LABEL_RE.match(template, content)
+    label = LABEL_RE.match(template, content)
     if not label:
         return False
-    ends = [label.end() + len(re.match(r"\S*", template[label.end():]).group())]
-    if angle := _ANGLE_RE.match(template, label.end()):
-        ends.append(angle.end())
-    for after in ends:
-        if closed := _PINNED_TITLE_RE.match(template, after) or _PINNED_TITLE_SLOT_RE.match(template, after):
-            after = closed.end()
-        if start < after and not re.search(r"\S", template[after:line_end]):
-            return True
-    return False
+    slots = insertion_template(text, directives)
+    return any(
+        start < end and not re.search(r"\S", template[end:line_end])
+        for _angle, end, _slot in definition_ends(template, slots, label.end())
+    )
 
 
 def assert_the_old_verdict_but_for_destinations(text, template, insertion, directives, classes):
     """The verdict of ``_InsertionScan`` is the old one (a copy of the code that preceded #119), except in one value
     class, which it is exactly: a definition's destination (``in_definition_destination``), where it is "in a link
     reference definition" though the old one drew none (or the one of a link destination, whose line this is as
-    well). Both ways: the class is flagged whatever the old verdict was, and nothing else changes."""
+    well). Both ways: the class is flagged whatever the old verdict was, and nothing else changes. In text that cannot
+    hold a definition (a heading, a table cell) the verdict is the old one, whatever the class."""
     old = old_insertion_boundary_problem(text, template, insertion, directives)
     new = fresh_problem(text, template, insertion, directives)
-    if old in (None, _DESTINATION) and in_definition_destination(text, template, insertion):
+    if old in (None, _DESTINATION) and in_definition_destination(text, template, insertion, directives):
         assert new == _REFERENCE, (text, insertion.start, old, new)
     else:
         assert new == old, (text, insertion.start, old, new)
+    assert fresh_problem(text, template, insertion, directives, definitions=False) == old, (text, insertion.start, old)
     classes[old if new == old else "destination"] += 1
     return old
 
@@ -492,8 +487,8 @@ def test_the_boundary_verdict_equals_the_old_one():
 
 
 def test_the_boundary_verdict_equals_the_old_one_around_links():
-    tokens = ["[a]: ", "[a]:", "[b] ", "{{placeholder: a}}", "{{placeholder: a}}", " ", "\n", "x", "> ", "- ",
-              "](", ")", "\"t\"", "(", "<"]
+    tokens = ["[a]: ", "[a]:", "[b] ", "{{placeholder: a}}", "{{placeholder: a}}", "{{ref: q}}", " ", "\n", "x", "> ",
+              "- ", "](", ")", "\"t\"", "(", "<"]
     reference = destination = 0
     classes = Counter()
     for text, template, directive, directives in _boundary_cases(40000, 10, seed=945, tokens=tokens + [">", "<x "]):

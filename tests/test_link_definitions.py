@@ -900,6 +900,16 @@ def test_a_document_with_unreadable_frontmatter_is_checked_to_the_line():
         ("[a]: <x {{placeholder: p}} y> shall pay.\n", False),
         ("[a]: u\n[b]: v\n", False),
         ("[a]: u {{ref: q}}\n", False),
+        ("[a]: u {{ref: q}} {{placeholder: p}}\n", False),  # only an insertion could be the title
+        ("[a]: u {{placeholder: p}} {{ref: q}}\n", False),
+        # A heading or a table cell holds no definition: read as before #119 (a bare destination, a closed title).
+        ("# [a]: u {{placeholder: p}}\n", False),
+        ("# [a]: <x {{placeholder: p}} y>\n", False),
+        ("- # [a]: u {{placeholder: p}}\n", False),
+        ("| x |\n|---|\n| [a]: u {{placeholder: p}} |\n", False),
+        ("| [a]: <x {{placeholder: p}} y> |\n|---|\n| z |\n", False),
+        ("# [a]: {{placeholder: p}}\n", True),
+        ("| x |\n|---|\n| [a]: {{placeholder: p}} |\n", True),
     ],
 )
 def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body, error):
@@ -908,19 +918,18 @@ def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body
     assert ("insertion-boundary" in rules) is error
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a title after the destination and the destination on the next line are not read as one (#129)",
-)
+@pytest.mark.xfail(strict=True, reason="a title is not read as one an answer could make, nor a destination on the next line (#129)")
 @pytest.mark.parametrize(
     "body",
     [
-        '[a]: u "t" {{placeholder: p}}\n',  # an empty {{choose:}} phrase makes it a definition
+        '[a]: u "t" {{choose: q}}\n',  # an empty {{choose:}} phrase makes it a definition
+        '[a]: u {{choose: q}} "t"\n',  # the same: it becomes the title's place
+        '[a]: u {{placeholder: p}}"\n',  # an answer that opens a quote makes it a title
         "[a]:\n{{placeholder: p}}\n",  # an answer makes it a definition
     ],
 )
 def test_an_insertion_after_a_title_or_in_a_destination_on_the_next_line_is_off_limits(body):
-    template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n---\n\n# A\n\n" + body
+    template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n  q:\n    type: boolean\n    prompt: Q?\n---\n\n# A\n\n" + body
     assert "insertion-boundary" in validate(parse(template)).rules()
 
 

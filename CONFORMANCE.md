@@ -479,13 +479,17 @@ Where this differs from CommonMark, or is read more simply:
   - The `insertion-boundary` rule for a link reference definition (§15.7.3) is not this reading: it flags an
     insertion where a label, a destination or a title *could* be once it is filled in, over a destination of any
     non-blank characters or a `<…>` (which may hold blanks) and a title with no escapes, and an unterminated
-    `](x {{p}}` still counts. It also flags an insertion in the title's place, after the destination and its
-    blanks (`[a]: u {{placeholder: p}}`, `[a]: <x y> {{placeholder: p}}`); the longer of the readings of the
-    definition wins, so no verdict that the bare reading drew is lost (`_InsertionScan._reference_end`, checked
-    against regular expressions at every offset), in linear time. It still does not flag an insertion after
-    a closed title (`[a]: u "t" {{placeholder: p}}`), in a destination on the next line, or on a line with
-    text after the definition (`[Note]: {{placeholder: p}} shall pay.`), the last being pinned as it was
-    ([#129](https://github.com/ForLegalAI/legaldown-validator/issues/129)).
+    `](x {{p}}` still counts. It also flags an insertion (`{{placeholder:}}`, `{{choose:}}`, no other directive)
+    in the title's place, after the destination and its blanks (`[a]: u {{placeholder: p}}`,
+    `[a]: <x y> {{placeholder: p}}`). The longer of the readings of the definition wins, so no verdict that the
+    bare reading drew is lost (`_InsertionScan._reference_end`, checked against regular expressions at every
+    offset), in linear time. A heading and a table cell hold no definition: there the rule reads a definition as
+    it did before #119 (a bare destination and a closed title). It still does not flag an insertion after a
+    closed title (`[a]: u "t" {{placeholder: p}}`) or before one (`[a]: u {{placeholder: p}} "t"`), one
+    that an answer could turn into a title with the quote after it (`[a]: u {{placeholder: p}}"`), one in a
+    destination on the next line, or one on a line with text after the definition
+    (`[Note]: {{placeholder: p}} shall pay.`), the last being pinned
+    as it was ([#129](https://github.com/ForLegalAI/legaldown-validator/issues/129)).
 - The differential test (`tests/test_link_definitions_differential.py`) compares the definitions and the blocks
   with pandoc (`commonmark`) and markdown-it-py over generated documents. They disagree with each other in a few
   places: pandoc leaves a title or destination on a lazy continuation line (`1. [a]: /u`, then `  "t"`) out of the
