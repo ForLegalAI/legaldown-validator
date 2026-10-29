@@ -17,7 +17,7 @@ import time
 import pytest
 
 from legaldown import directives as directives_module
-from legaldown import markdown
+from legaldown import markdown, positions
 from legaldown.directives import lex, mask_directives
 from legaldown.parser import parse
 from legaldown.validator import circular, core, paths, templates, validate
@@ -232,16 +232,55 @@ def test_a_label_or_title_with_no_closer_is_not_read_to_the_end_at_each_line(sha
     assert _seconds(lambda: [scan.problem(insertion) for insertion in insertions]) < 1.0  # 0.1 s now
 
 
-def test_the_leaf_of_each_fragment_of_a_long_list_is_found_without_a_scan_of_its_items():
+class _CountingPlaces(dict):
+    """The places of a leaf (``positions._Leaf.places``), counting each time one is read."""
+
+    def __init__(self, places, counts):
+        super().__init__(places)
+        self.counts = counts
+
+    def __contains__(self, key):
+        self.counts[0] += 1
+        return super().__contains__(key)
+
+    def __getitem__(self, key):
+        self.counts[0] += 1
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.counts[0] += 1
+        return super().get(key, default)
+
+    def __iter__(self):
+        self.counts[0] += 1
+        return super().__iter__()
+
+
+@pytest.mark.parametrize(
+    "item", ["- # T {{placeholder: a}}\n", "- [a]: u {{placeholder: a}}\n"], ids=["heading, no diagnostic", "definition, a diagnostic"]
+)
+def test_the_leaf_of_each_fragment_of_a_long_list_is_found_without_a_scan_of_its_items(monkeypatch, item):
     """The form of a heading in a list item (ATX or setext, #119), and the line of a diagnostic in an item, looked
     up the item's leaf among those of the list: 8 s for 16000 headings, 10 s for 16000 diagnostics. A map made
-    once for the list finds it now."""
-    document = _document("- # T {{placeholder: a}}\n" * 16000, _QUESTIONS)
-    assert _seconds(lambda: validate(document).diagnostics) < 20.0  # 2 s now; no diagnostic
-    document = _document("- [a]: u {{placeholder: a}}\n" * 16000, _QUESTIONS)
-    diagnostics = []
-    assert _seconds(lambda: diagnostics.extend(validate(document).diagnostics)) < 20.0  # 2.5 s now
-    assert len(diagnostics) == 16000 and diagnostics[-1].line is not None
+    once for the list finds it now. Counted, so that the test does not depend on the speed of the machine: the
+    leaves read are the number of items, a few times, not its square."""
+    reads = [0]
+    read_leaves = positions.Locator._read_leaves
+
+    def counting(self, section, index):
+        leaves = read_leaves(self, section, index)
+        for leaf in leaves or ():
+            leaf.places = _CountingPlaces(leaf.places, reads)
+        return leaves
+
+    monkeypatch.setattr(positions.Locator, "_read_leaves", counting)
+    items = 4000
+    result = validate(_document(item * items, _QUESTIONS))
+    assert len(result.diagnostics) == (items if "[a]" in item else 0)
+    assert 0 < reads[0] <= 4 * items, reads[0]  # 1 or 2 per item now; the scan made 8,000,000
+    monkeypatch.undo()
+    document = _document(item * 16000, _QUESTIONS)
+    assert _seconds(validate, document) < 6.0  # 2.5 s now; the scan took 10 s
 
 
 def test_an_angle_destination_with_no_closer_is_read_once_to_the_end_of_its_line():

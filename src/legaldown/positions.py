@@ -380,9 +380,10 @@ class Locator:
         source_map = document.source_map
         self._map: SourceMap | None = source_map if source_map is not None and source_map.fits(document) else None
         self._document = document
-        self._leaves: dict[tuple[int | None, int], list[_Leaf] | None] = {}
+        # Per top-level block, its leaves (None when the layout and the model disagree) and, by the number of
+        # a fragment, the leaf that holds it.
+        self._leaves: dict[tuple[int | None, int], tuple[list[_Leaf] | None, dict[int, _Leaf]]] = {}
         self._definition_lines: dict[tuple[int | None, int], list[int]] = {}
-        self._leaf_of: dict[tuple[int | None, int], dict[int, _Leaf]] = {}  # per block, its leaf by fragment
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
 
     def start(self) -> int | None:
@@ -506,17 +507,22 @@ class Locator:
         """The leaf of top-level block *index* that holds fragment *fragment* of its ``block_fragments``,
         found by a map made once for the block: a list of thousands of items is not scanned for each
         fragment. None when the parsed layout and the model disagree."""
-        self._leaves_of(section, index)
-        return self._leaf_of[(section, index)].get(fragment)
+        return self._block_leaves(section, index)[1].get(fragment)
 
     def _leaves_of(self, section: int | None, index: int) -> list[_Leaf] | None:
         """The blocks of a top-level block that hold its ``block_fragments``,
         in order, as ``definitions.block_fragments`` reads them; None when
         the parsed layout and the model disagree."""
+        return self._block_leaves(section, index)[0]
+
+    def _block_leaves(
+        self, section: int | None, index: int
+    ) -> tuple[list[_Leaf] | None, dict[int, _Leaf]]:
+        """``_leaves_of``, and the leaf of each fragment by its number, read once for the block."""
         key = (section, index)
         if key not in self._leaves:
-            self._leaves[key] = self._read_leaves(section, index)
-            self._leaf_of[key] = {number: leaf for leaf in self._leaves[key] or () for number in leaf.places}
+            leaves = self._read_leaves(section, index)
+            self._leaves[key] = (leaves, {number: leaf for leaf in leaves or () for number in leaf.places})
         return self._leaves[key]
 
     def _read_leaves(self, section: int | None, index: int) -> list[_Leaf] | None:

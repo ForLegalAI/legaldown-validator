@@ -919,7 +919,7 @@ def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body
     assert ("insertion-boundary" in rules) is error
 
 
-@pytest.mark.xfail(strict=True, reason="a title is not read as one an answer could make, nor a destination on the next line, nor a line before the last of a setext heading (#129)")
+@pytest.mark.xfail(strict=True, reason="a title is not read as one an answer could make, nor a destination on the next line, nor a setext heading that spans lines (#129)")
 @pytest.mark.parametrize(
     "body",
     [
@@ -927,11 +927,15 @@ def test_the_insertion_boundary_verdicts_of_a_definition_line_are_unchanged(body
         '[a]: u {{choose: q}} "t"\n',  # the same: it becomes the title's place
         '[a]: u {{placeholder: p}}"\n',  # an answer that opens a quote makes it a title
         "[a]:\n{{placeholder: p}}\n",  # an answer makes it a definition
-        "[a]: u {{placeholder: p}}\nText\n===\n",  # the parser joins the lines of a setext heading: one line
-        "[b]: {{placeholder: p}}\n[a]: u\n===\n",  # and an insertion before its last line is not seen
+        # The parser joins the lines of a setext heading's text: an insertion in one that spans lines is not seen.
+        "[a]: u {{placeholder: p}}\nText\n===\n",
+        "Text\n[a]: u {{placeholder: p}}\n===\n",
+        "[b]: {{placeholder: p}}\n[a]: u\n===\n",
+        "- [a]: u {{placeholder: p}}\n  Text\n  ===\n",
+        "[a]: u\n[b]: <x {{placeholder: p}} y>\nmore\n===\n",
     ],
 )
-def test_an_insertion_after_a_title_or_in_a_destination_on_the_next_line_is_off_limits(body):
+def test_an_insertion_after_a_title_or_on_the_next_line_or_in_a_setext_heading_of_lines_is_off_limits(body):
     template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n  q:\n    type: boolean\n    prompt: Q?\n---\n\n# A\n\n" + body
     assert "insertion-boundary" in validate(parse(template)).rules()
 
