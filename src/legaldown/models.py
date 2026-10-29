@@ -392,10 +392,17 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
 
 
 def _parse_str_dict(raw: Any) -> dict[str, str]:
-    """Parse a dict with string keys and values, skipping empty entries."""
+    """Parse a dict with string keys and values: both stripped, and an entry with no value skipped.
+    A blank key is kept (``fr`` written as ``""`` or ``"  "``), for the validator to report: the
+    entry's value is there, and the key is wrong. Keys that are the same once stripped (``fr`` and
+    `` fr``) are one: the first stays."""
     if not isinstance(raw, dict):
         return {}
-    return {str(k).strip(): str(v).strip() for k, v in raw.items() if k and v}
+    parsed: dict[str, str] = {}
+    for key, value in raw.items():
+        if value and (text := str(value).strip()):
+            parsed.setdefault("" if key is None else str(key).strip(), text)
+    return parsed
 
 
 # ---------------------------------------------------------------------------

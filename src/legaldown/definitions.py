@@ -49,7 +49,7 @@ DELIMITERS_BY_LANGUAGE: dict[str, list[str]] = {}
 
 def accepted_delimiters(language: str | None) -> list[tuple[str, str, str, bool]]:
     """Return the delimiter pairs accepted for *language* (all by default)."""
-    names = DELIMITERS_BY_LANGUAGE.get((language or "").lower())
+    names = DELIMITERS_BY_LANGUAGE.get((language or "en").lower())
     if not names:
         return list(DELIMITER_PAIRS)
     return [p for p in DELIMITER_PAIRS if p[2] in names]
@@ -399,7 +399,7 @@ def collect_definitions(
     definition anchor) and inline anchors inside any text fragment.
     *lex_fragment* lets a caller that lexes the same fragments share results.
     """
-    lang = language or document.metadata.language or "en"
+    lang = language or document.metadata.language
     refs: list[DefinitionRef] = []
     for section_index, block_index, block in document.iter_indexed_blocks():
         if block.kind == "definition":

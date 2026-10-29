@@ -445,6 +445,28 @@ def test_a_generated_identifier_that_anchor_format_rejects_is_not_also_implicit(
     assert [d.message[:21] for d in result.diagnostics] == ["Definition 'Services'"]
 
 
+def test_an_empty_and_a_blank_translations_key_are_alike():
+    # The model keeps a key with a value whatever the key is, for the validator to report.
+    for key in ('""', '"  "', "' '"):
+        front = f"language: de\nauthoritative: cs\ntranslations:\n  {key}: y.lgd\n"
+        document = parse(_source(front, "# Definitions\n"), filename="t.lgd")
+        assert document.metadata.translations == {"": "y.lgd"}, key
+        assert _found(front) == [("language-code-invalid", "warning", 6)], key
+        assert _identifiers(front, "# Definitions\n") == [("translation-implicit-id", "error", 9)], key
+    # The message prints the key as it was written.
+    front = 'language: de\nauthoritative: cs\ntranslations:\n  "  ": y.lgd\n'
+    (warning,) = [d for d in validate(parse(_source(front), filename="t.lgd")).diagnostics if d.rule == "language-code-invalid"]
+    assert warning.message.startswith("The translations key '  ' must be")
+    # An entry with no value is skipped, whatever its key (a padded value too).
+    assert parse(_source("translations:\n  fr:\n  de: ' '\n  cs: c.lgd\n")).metadata.translations == {"cs": "c.lgd"}
+
+
+def test_keys_that_are_alike_once_stripped_are_one_and_the_first_stays():
+    document = parse(_source("language: de\nauthoritative: fr\ntranslations:\n  fr: a.lgd\n  ' fr': b.lgd\n"))
+    assert document.metadata.translations == {"fr": "a.lgd"}
+    assert _found("language: de\nauthoritative: fr\ntranslations:\n  fr: a.lgd\n  ' fr': b.lgd\n") == []
+
+
 def test_a_blank_translations_key_is_no_code_and_gates_like_any_invalid_one():
     # `"  "` strips to nothing: it is no code, so language-code-invalid says so, at its line, and
     # authoritative-not-declared is silent (the key may be what was meant), as the identifier rule counts.

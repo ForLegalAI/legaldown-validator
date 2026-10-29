@@ -116,13 +116,6 @@ def is_positive_numeric(value: str) -> bool:
     return bool(_DECIMAL_RE.fullmatch(value or "")) and float(value) > 0
 
 
-def reading_language(meta: Metadata) -> str:
-    """The language the definition readers (delimiters, quoted terms) read the document in: its
-    ``language``, else English. §3.2 gives ``language`` no default, so ``Metadata.language`` is ``""``
-    for a document that says none; reading it as English is the reader's, as it always was."""
-    return meta.language or "en"
-
-
 def authoritative_mismatch(meta: Metadata) -> bool:
     """Whether ``authoritative-not-declared`` is the finding (§16.6): ``authoritative`` is a valid
     code that is neither the document's ``language`` nor a ``translations`` key. Only valid codes
