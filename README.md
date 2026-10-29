@@ -230,7 +230,7 @@ that include fragments of their own too (each is read from the directory of the 
 include, as `validate` reads it, and written at its own path; the `{{include:}}` lines stay as written). A
 file that is not LegalDown is `include-not-legaldown`, a
 circular chain is `include-cycle`, and a chain deeper than 32 fragments, or a walk of more than
-10,000 includes and headings, is `ldv-include-limit`: both are Errors, and nothing is assembled. A
+10,000 includes and headings, is `ldv-include-limit`: all are Errors, and nothing is assembled. A
 template's fragments may not include any (`template-fragment-invalid`), nor may an attachment file;
 `include-heading-skip` is the validator's to report, and assembly does not enforce it. `-o` refuses an output
 that leads out of its directory, so a file read from `../` is assembled but cannot be written

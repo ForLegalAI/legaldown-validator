@@ -11,11 +11,12 @@ from __future__ import annotations
 import pytest
 
 from legaldown import Template, assemble, load_template
-from legaldown.assembly import _last_includes, _template_identifiers
+from legaldown.assembly import _template_identifiers
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.grammar import SKIPPED_RULE
 from legaldown.validator import fragments
 from legaldown.validator.fragments import (
+    EMPTY_CHAIN,
     MAX_INCLUDE_DEPTH,
     MAX_INCLUDE_EXPANDED,
     Files,
@@ -167,14 +168,59 @@ def test_a_fragment_included_directly_and_through_another_is_asked_at_its_last_i
     assert result.ok and result.files["c.lgd"] == "## C\n\nC 3.\n"
 
 
-def test_the_last_include_of_a_file_is_told_without_walking_the_tree_it_is_included_in():
+def test_a_tree_the_walk_cut_short_is_not_walked_again_to_decide_what_is_kept():
     levels = 40  # 2**40 paths
     files = {f"p{i}.lgd": f"{{{{include: p{i + 1}.lgd}}}}\n\n{{{{include: p{i + 1}.lgd}}}}\n" for i in range(levels)}
     files[f"p{levels}.lgd"] = "## Leaf\n"
     template = Template(_FRONT + "# Doc\n\n{{include: p0.lgd}}\n", resolve=files.get)
     template.form({})  # the walk that was cut short left targets, and this must end
-    last = _last_includes(template._t)
-    assert last["p1.lgd"] is template._t.subs["p0.lgd"].includes[0]  # (the walk stopped before the second)
+    assert template._t.last["p1.lgd"] is template._t.subs["p0.lgd"].includes[0]  # (the walk stopped before the second)
+
+
+_ATTACHED = _FRONT.replace("---\n\n", "attachments:\n  - id: d\n    title: D\n    file: d.lgd\n---\n\n")
+
+
+def _survives(front: str, main: str, files: dict[str, str], tmp_path) -> Template:
+    """Everything a caller does with a template that may have problems must not raise."""
+    template = Template(front + main, resolve=files.get, path=tmp_path / "main.lgd")
+    assert template.problems is not None and template.validation is not None
+    form = template.form({})
+    form.as_dict()
+    form.assemble()
+    _template_identifiers(template._t)
+    return template
+
+
+def test_a_cycle_through_an_attachment_file_that_is_an_include_too_does_not_end_in_an_error(tmp_path):
+    # The cycles are cleared from what the walk of the includes left; the attachment file's own includes are
+    # not walked, and a file they take in must still be decided.
+    files = {
+        "a.lgd": "## A\n\n{{include: b.lgd}}\n\n{{include: d.lgd}}\n\n{{include: a.lgd}}\n",
+        "b.lgd": "## B\n\n{{include: d.lgd}}\n",
+        "c.lgd": "## C\n",
+        "d.lgd": "## D\n\n{{include: c.lgd}}\n\n{{include: a.lgd}}\n\n{{include: b.lgd}}\n",
+    }
+    template = _survives(_ATTACHED, "# Doc\n\n{{include: a.lgd}}\n\n{{include: b.lgd}}\n", files, tmp_path)
+    assert "include-cycle" in {d.rule for d in template.problems}
+    assert not template.form({}).ready
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_no_graph_of_includes_and_attachments_makes_a_template_raise(tmp_path, seed):
+    import random
+
+    rng = random.Random(seed)
+    names = ["a.lgd", "b.lgd", "c.lgd", "d.lgd", "e.lgd"]
+    files = {}
+    for name in names:
+        taken = rng.sample(names, rng.randint(0, 3))
+        files[name] = f"## {name[0].upper()}\n\n" + "".join(f"{{{{include: {other}}}}}\n\n" for other in taken)
+    main = "# Doc\n\n" + "".join(f"{{{{include: {other}}}}}\n\n" for other in rng.sample(names, rng.randint(1, 3)))
+    attached = rng.sample(names, rng.randint(0, 2))
+    front = _FRONT.replace("---\n\n", "".join(
+        ["attachments:\n"] + [f"  - id: {n[0]}\n    title: T\n    file: {n}\n" for n in attached] + ["---\n\n"]
+    )) if attached else _FRONT
+    _survives(front, main, files, tmp_path)
 
 
 def test_each_fragment_is_parsed_once_when_the_template_has_a_path(monkeypatch, tmp_path):
@@ -318,9 +364,9 @@ def test_a_nested_path_that_only_leads_out_of_the_directory_is_an_error_where_th
 def test_the_chain_helpers_are_the_validators(tmp_path):
     template = Template(_FRONT + _MAIN, resolve=lambda path: None, path=tmp_path / "main.lgd")
     files = Files(lambda path: None, template._t.document, None)
-    chain = extend(files, extend(files, None, "sub/a.lgd"), "sub/b.lgd")
+    chain = extend(files, extend(files, EMPTY_CHAIN, "sub/a.lgd"), "sub/b.lgd")
     assert chain.paths == ("sub/a.lgd", "sub/b.lgd")
-    assert closes(files, chain, "sub/a.lgd") and not closes(files, chain, "sub/c.lgd") and not closes(files, None, "sub/a.lgd")
+    assert closes(files, chain, "sub/a.lgd") and not closes(files, chain, "sub/c.lgd") and not closes(files, EMPTY_CHAIN, "sub/a.lgd")
 
 
 # ── Cycles ────────────────────────────────────────────────────────────────────

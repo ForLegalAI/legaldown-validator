@@ -47,7 +47,7 @@ from datetime import date
 from functools import cache
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import Any, NamedTuple
 
 from ._deprecation import LegaldownDeprecationWarning
 from .definitions import list_fragments
@@ -82,6 +82,7 @@ from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
 from .validator.fragments import (
+    EMPTY_CHAIN,
     Files,
     FragmentFile,
     FragmentKind,
@@ -113,9 +114,6 @@ from .validator.templates import (
 )
 from .validator.units import block_include, find_markers, include_key, own_presence
 
-if TYPE_CHECKING:
-    from .validator.fragments import _Chain
-
 __all__ = [
     "frontmatter_diagnostic",
     "AssemblyError",
@@ -126,6 +124,9 @@ __all__ = [
     "needed_questions",
     "template_questions",
 ]
+
+#: The files being included, outermost first, and the same as ``Files.key`` (``fragments._Chain``).
+_IncludeChain = tuple[tuple[str, ...], frozenset[str]]
 
 #: A question with neither an answer nor a default.
 _MISSING = object()
@@ -893,6 +894,9 @@ class _Template:
     #: The template's own heading identifiers (step 7), worked out when an
     #: assembly first needs them, then kept: they do not depend on the answers.
     identifiers: dict | None = None
+    #: The include of each file that is last in the combined document: the one that decides whether the
+    #: file is kept (a file included twice is kept or removed as its last include says).
+    last: dict[str, _Include] = field(default_factory=dict)
 
 
 def _read(
@@ -911,7 +915,7 @@ def _read(
     # The files the template names, as the validator reads them: *path* says which file the template is (an
     # include of it is a cycle), *root* which paths may be asked for (§2.3).
     files = Files(load_file or (lambda _path: None), replace(document, path=path) if path is not None else document, root)
-    subs, problems = _read_files(main, front, load_file, declared, template_like, files)
+    subs, last, problems = _read_files(main, front, load_file, declared, template_like, files)
     problems += _malformed(main, *subs.values(), front=front)
     for path in document.metadata.translations.values():
         # A translation group is assembled together (§15.7.2), which this
@@ -935,7 +939,7 @@ def _read(
     types = {qid: qtype for qid in declared if (qtype := question_type(declared, qid))}
     for pid, blank in blanks.items():
         types.setdefault(pid, blank.type or "text")
-    return _Template(front, main, subs, declared, blanks, types, bom, problems, document)
+    return _Template(front, main, subs, declared, blanks, types, bom, problems, document, last=last)
 
 
 def _no_file(include: _Include, file: str, line: int) -> Diagnostic:
@@ -968,13 +972,15 @@ class _Fragments:
         self._declared = declared
         self._template = template
         self.problems = problems
-        self.subs: dict[str, _Source] = {}
-        self._spliceable: dict[str, bool] = {}  # of the fragments read: no frontmatter, no level 1 heading
+        #: The files read, by their path from the template's directory: what is in each, and the file as the
+        #: validator reads it.
+        self._read: dict[str, tuple[_Source, FragmentFile]] = {}
+        #: The include of each file that is last, in the order the walk meets them, which is the combined document's.
+        self.last: dict[str, _Include] = {}
         self._unreadable: set[str] = set()  # reported once, however often it is referenced
         self._placed: dict[str, dict[int | None, list[tuple[int, _Include]]]] = {}
-        self._fragments: dict[str, FragmentFile] = {}  # of the files read, by the path they are known by here
         self._attached: set[str] = set()  # the attachment files already checked as such
-        self._cyclic: list[_Include] = []  # the includes that closed a cycle, in any chain they were met in
+        self._cyclic: dict[int, _Include] = {}  # the includes that closed a cycle, in any chain they were met in
         self._budget = IncludeBudget()
         self._met: set[tuple[str, int]] = set()  # the includes (file, number) already judged
         self._capped: set[str] = set()
@@ -991,8 +997,8 @@ class _Fragments:
     ) -> _Source | None:
         """The file at *path*, a path a loader may be asked for, read once. If there is none, it is *refused*
         (as named by *file* at *line*) when *report*; if its frontmatter cannot be read, once."""
-        if path in self.subs:
-            return self.subs[path]
+        if path in self._read:
+            return self._read[path][0]
         if path in self._unreadable:
             return None
         # The file is parsed once, by ``Files``, whoever asks for it first (a check of a cycle asks too).
@@ -1012,20 +1018,28 @@ class _Fragments:
             return None
         text, newline = _unix(read.text)
         _front, body = _split(text, document)
-        source = self.subs[path] = _read_body(path, body, document, self._declared, template=self._template)
+        source = _read_body(path, body, document, self._declared, template=self._template)
         source.newline = newline
-        fragment = self._fragments[path] = FragmentFile(path, document)
-        self._spliceable[path] = fragment.spliceable
+        fragment = FragmentFile(path, document)
+        self._read[path] = source, fragment
         self.problems += _file_problems(fragment, kind, self._template)
         return source
+
+    def __contains__(self, path: str) -> bool:
+        return path in self._read
+
+    @property
+    def subs(self) -> dict[str, _Source]:
+        """The sources of the files read, in the order they were met."""
+        return {path: source for path, (source, _fragment) in self._read.items()}
 
     def attach(self, path: str) -> None:
         """The checks of an attachment file on the file at *path*, which is also an include fragment, and was
         read as one: an include in it is not assembled (``_attachment_includes``), once however often it is
         attached. (The rest of what is checked of a file is the same for both, or was found by the first.)"""
-        if path in self._fragments and path not in self._attached and not self._template:
+        if path not in self._attached and not self._template:
             self._attached.add(path)
-            self.problems += _attachment_includes(self._fragments[path], cache(lex))
+            self.problems += _attachment_includes(self._read[path][1], cache(lex))
 
     def resolve(
         self, base: str, include: _Include, file: str, line: int, *, top: bool = False, report: bool = True
@@ -1039,7 +1053,7 @@ class _Fragments:
         (``path-not-relative``, ``path-outside-root``), and judges nothing else of it; assembly refuses it
         as unreadable."""
         relative, problem = self._files.locate(base, include.path)
-        message = not_legaldown(include.path, include.written)
+        message = not_legaldown(include)
         if message is not None and not (top and problem in ("not-relative", "outside-root")):
             if report:
                 self.problems.append(Diagnostic("include-not-legaldown", "error", message, line=line, file=file))
@@ -1052,15 +1066,15 @@ class _Fragments:
         """Take the target from each include that closed a cycle: an include is shared by every place its
         file is included, and a cycle is refused only in the chain it was met in, so the targets
         could lead round (and the template is refused for it anyway)."""
-        for include in self._cyclic:
+        for include in self._cyclic.values():
             include.target = ""
 
     def spliceable(self, path: str) -> bool:
         """Whether the file at *path*, which was read, is a fragment in the sense of §12.2 (``FragmentFile.spliceable``):
         one that is not is refused, and its includes are not followed."""
-        return self._spliceable.get(path, False)
+        return path in self._read and self._read[path][1].spliceable
 
-    def expand(self, owner: _Source, chain: _Chain) -> None:
+    def expand(self, owner: _Source, chain: _IncludeChain) -> None:
         """Follow the include paragraphs of the fragment *owner*, the last of *chain* (the files being
         included, outermost first): those before its first heading, then for each section its heading, which
         costs one, and the includes it holds."""
@@ -1105,7 +1119,7 @@ class _Fragments:
                 line=line, file=file,
             ))
 
-    def _follow(self, owner: _Source, number: int, include: _Include, chain: _Chain) -> None:
+    def _follow(self, owner: _Source, number: int, include: _Include, chain: _IncludeChain) -> None:
         """The *number*th include paragraph of *owner*, followed in the order ``_Walk.attempt`` judges it: it
         names a file, is a LegalDown file, a path that can be read from the directory of *owner*, no file of
         *chain* (or the template), not deeper than the cap, a file that is there. What is wrong is reported once,
@@ -1124,7 +1138,7 @@ class _Fragments:
         if relative is None:
             return
         if closes(self._files, chain, relative):
-            self._cyclic.append(include)
+            self._cyclic[id(include)] = include
             if first:
                 self.problems.append(Diagnostic(
                     "include-cycle", "error", cycle_message(self._files, include.source, chain, relative),
@@ -1135,13 +1149,15 @@ class _Fragments:
             self._limit(cap, file, line)
             return
         include.target = relative
+        self.last[relative] = include
         target = self.read(relative, "include", file, line, report=first)
         if target is not None and self.spliceable(relative):
             self.expand(target, extend(self._files, chain, relative))
 
 
 def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
-                declared: dict, template: bool, files: Files) -> tuple[dict[str, _Source], list[Diagnostic]]:
+                declared: dict, template: bool, files: Files
+                ) -> tuple[dict[str, _Source], dict[str, _Include], list[Diagnostic]]:
     """Read every include fragment and LegalDown attachment file — the absent
     ones too: their placeholders are the template's (answer-unknown) and their
     headings take part in identifier generation (step 7). *files* says which paths
@@ -1164,15 +1180,16 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
         relative = reading.resolve("", include, "", line, top=True)
         if relative is None:
             continue
-        if not template and closes(files, None, relative):  # the template itself
+        if not template and closes(files, EMPTY_CHAIN, relative):  # the template itself
             problems.append(Diagnostic(
-                "include-cycle", "error", cycle_message(files, include.source, None, relative), line=line,
+                "include-cycle", "error", cycle_message(files, include.source, EMPTY_CHAIN, relative), line=line,
             ))
             continue
         include.target = relative
+        reading.last[relative] = include
         source = reading.read(relative, "include", line=line)
         if source is not None and not template and reading.spliceable(relative):
-            reading.expand(source, extend(files, None, relative))
+            reading.expand(source, extend(files, EMPTY_CHAIN, relative))
     attached: set[str] = set()
     for item in items:
         if not item.file or item.file in attached:
@@ -1181,12 +1198,12 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
         relative, _problem = files.locate("", item.file)
         if relative is None:
             reading.refuse(item.file, "attachment")
-        elif relative in reading.subs:
+        elif relative in reading:
             reading.attach(relative)  # also an include fragment: read as one, and still an attachment file
         else:
             reading.read(relative, "attachment")
     reading.finish()
-    return reading.subs, problems
+    return reading.subs, reading.last, problems
 
 
 def _file_problems(fragment: FragmentFile, kind: FragmentKind, template: bool) -> list[Diagnostic]:
@@ -1443,9 +1460,6 @@ def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decisi
             use(occ)
     walked: set[str] = set()
 
-    # A file included twice is kept or removed as its last include says.
-    last = _last_includes(t)
-
     def visit(path: str, source: _Source) -> None:
         """Decide *source*, and with it which of the files it includes are present (those of a template's
         fragment are none: it holds no include)."""
@@ -1460,7 +1474,8 @@ def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decisi
 
     def enter(include: _Include) -> None:
         source = t.subs.get(include.target)
-        if source is not None and last[include.target] is include and include.target not in walked:
+        # A file included twice is kept or removed as its last include says.
+        if source is not None and t.last.get(include.target) is include and include.target not in walked:
             visit(include.target, source)
 
     visit("", t.main)
@@ -1471,28 +1486,6 @@ def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decisi
         if decision.files.get(path) and path not in walked:
             visit(path, source)
     return decision
-
-
-def _last_includes(t: _Template) -> dict[str, _Include]:
-    """The last include of each file in the order of the combined document (§15.7.2 step 7): the includes of
-    a file in the order they are written, each followed by those of the file it takes in. A fragment
-    included from two places is in both, so the include of it that is last is not told by the order the files
-    were read in. Worked out for each file once, from the last includes of the files it includes, so
-    that a tree that includes the same file many times is not walked as many times."""
-    done: dict[str, dict[str, _Include]] = {}
-
-    def last_in(path: str, source: _Source, walking: frozenset[str]) -> dict[str, _Include]:
-        if path not in done:
-            found: dict[str, _Include] = {}
-            for include in source.includes:
-                found[include.target] = include
-                nested = t.subs.get(include.target)
-                if nested is not None and include.target not in walking:
-                    found.update(last_in(include.target, nested, walking | {include.target}))
-            done[path] = found
-        return done[path]
-
-    return last_in("", t.main, frozenset({""}))
 
 
 def _walk(

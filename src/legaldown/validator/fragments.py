@@ -21,7 +21,7 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from functools import cache, cached_property
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, Protocol
 
 from ..directives import Lexed, lex
 from ..files import LoadFile, Reach, is_absolute_reference, within
@@ -695,13 +695,19 @@ class IncludeOutcome:
     caps: list[str] = field(default_factory=list)
 
 
-def not_legaldown(path: str, written: str) -> str | None:
-    """The message of ``include-not-legaldown`` (§12.2) for an include of *path* (normalised) as it was *written*,
-    whose path does not end in a LegalDown extension, or None when it does or names no file. It needs no file."""
-    if not path or path.endswith(LEGALDOWN_EXTENSIONS):
+class _Named(Protocol):
+    """What names a file to include: an ``IncludeDirective``, or assembly's own reading of one."""
+    path: str
+    written: str
+
+
+def not_legaldown(include: _Named) -> str | None:
+    """The message of ``include-not-legaldown`` (§12.2) for *include*, whose path does not end in a LegalDown
+    extension, or None when it does or names no file. It needs no file."""
+    if not include.path or include.path.endswith(LEGALDOWN_EXTENSIONS):
         return None
     return (
-        f"'{written}' is not a LegalDown file: an include target is a "
+        f"'{include.written}' is not a LegalDown file: an include target is a "
         f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read."
     )
 
@@ -713,23 +719,25 @@ class _Chain(NamedTuple):
     keys: frozenset[str] = frozenset()
 
 
-def extend(files: Files, chain: _Chain | None, path: str) -> _Chain:
-    """*chain* (None: the document's, which has included nothing yet) with the file at *path* (as ``Files.locate``
-    gives it) last."""
-    chain = chain or _Chain()
+#: The chain of the document itself, which has included nothing yet.
+EMPTY_CHAIN = _Chain()
+
+
+def extend(files: Files, chain: _Chain, path: str) -> _Chain:
+    """*chain* with the file at *path* (as ``Files.locate`` gives it) last."""
     return _Chain((*chain.paths, path), chain.keys | {files.key(path)})
 
 
-def closes(files: Files, chain: _Chain | None, relative: str) -> bool:
+def closes(files: Files, chain: _Chain, relative: str) -> bool:
     """Whether following the include of *relative* (a path from the document's directory, as ``Files.locate``
     gives it) closes a circular chain (§12.2): it is a file of *chain*, or the document itself. The one test of
     ``include-cycle``, for the validator and for assembly."""
-    return files.key(relative) in (chain or _Chain()).keys or files.is_own(relative)
+    return files.key(relative) in chain.keys or files.is_own(relative)
 
 
-def cycle_message(files: Files, source: str, chain: _Chain | None, relative: str) -> str:
+def cycle_message(files: Files, source: str, chain: _Chain, relative: str) -> str:
     """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*."""
-    said = " -> ".join(["the document", *(chain or _Chain()).paths, "the document" if files.is_own(relative) else relative])
+    said = " -> ".join(["the document", *chain.paths, "the document" if files.is_own(relative) else relative])
     return (
         f"'{source}' closes a circular include chain ({said}); a file cannot include "
         f"itself, directly or through others (§12.2)."
@@ -820,7 +828,7 @@ class _Walk:
                 "unreadable",
             )
             return None
-        if (message := not_legaldown(include.path, include.written)) is not None:
+        if (message := not_legaldown(include)) is not None:
             refuse("include-not-legaldown", message, None)
             return None
         relative, problem = self._files.locate("" if owner is None else posixpath.dirname(owner.path), include.written)
@@ -1003,19 +1011,19 @@ def check_includes(
             continue
         if walk is None:
             # No file can be read: only the extension is judged (Core), and the rest is unread.
-            if (message := not_legaldown(include.path, include.written)) is not None:
+            if (message := not_legaldown(include)) is not None:
                 result.error("include-not-legaldown", message, line=include.line)
             else:
                 outcome.unread.append(UnreadInclude(include, "no-resolver"))
             continue
-        fragment = walk.attempt(include, None, _Chain())
+        fragment = walk.attempt(include, None, EMPTY_CHAIN)
         if fragment is None:
             unread.add(include.section)
             continue
         walk.incomplete = False
         presence = units.presence(include.section, include.block, include.fragment)
         splices.setdefault(include.section, []).append(
-            Splice(include, presence, walk.expand(fragment, walk.extend(_Chain(), fragment)))
+            Splice(include, presence, walk.expand(fragment, walk.extend(EMPTY_CHAIN, fragment)))
         )
         if walk.incomplete:
             unread.add(include.section)  # something it includes is not known: it fills nothing
