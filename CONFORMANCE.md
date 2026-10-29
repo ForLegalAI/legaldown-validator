@@ -478,10 +478,14 @@ Where this differs from CommonMark, or is read more simply:
     are its own.
   - The `insertion-boundary` rule for a link reference definition (§15.7.3) is not this reading: it flags an
     insertion where a label, a destination or a title *could* be once it is filled in, over a destination of any
-    non-blank characters and a title with no escapes, and an unterminated `](x {{p}}` still counts. It keeps
-    its verdicts (`_InsertionScan._reference_end`, checked against the pattern it was at every offset) and now
-    reads them in linear time. It does not flag `[a]: <x {{placeholder: p}} y>` or `[a]: u {{placeholder: p}}`
-    ([#119](https://github.com/ForLegalAI/legaldown-validator/issues/119)).
+    non-blank characters or a `<…>` (which may hold blanks) and a title with no escapes, and an unterminated
+    `](x {{p}}` still counts. It also flags an insertion in the title's place, after the destination and its
+    blanks (`[a]: u {{placeholder: p}}`, `[a]: <x y> {{placeholder: p}}`); the longer of the readings of the
+    definition wins, so no verdict that the bare reading drew is lost (`_InsertionScan._reference_end`, checked
+    against regular expressions at every offset), in linear time. It still does not flag an insertion after
+    a closed title (`[a]: u "t" {{placeholder: p}}`), in a destination on the next line, or on a line with
+    text after the definition (`[Note]: {{placeholder: p}} shall pay.`), the last being pinned as it was
+    ([#129](https://github.com/ForLegalAI/legaldown-validator/issues/129)).
 - The differential test (`tests/test_link_definitions_differential.py`) compares the definitions and the blocks
   with pandoc (`commonmark`) and markdown-it-py over generated documents. They disagree with each other in a few
   places: pandoc leaves a title or destination on a lazy continuation line (`1. [a]: /u`, then `  "t"`) out of the
