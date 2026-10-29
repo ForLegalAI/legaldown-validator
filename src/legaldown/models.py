@@ -90,7 +90,9 @@ class Metadata:
     effective_date: str = ""
     field_types: dict[str, str] = field(default_factory=dict)
     governing_law: str = ""
-    language: str = "en"
+    #: The document's language (ISO 639-1), or ``""`` when it says none: §3.2 gives it no default,
+    #: so none is invented here (as for ``Party.type``). ``empty_document`` says ``"en"``.
+    language: str = ""
     include_signatures: bool = True
     tags: list[str] = field(default_factory=list)
     sides: list[Side] = field(default_factory=list)
@@ -119,12 +121,6 @@ class Metadata:
     #: which case the source is all body. Only ``parse`` and ``load`` set it,
     #: like ``not_line_editable``.
     frontmatter_absent: bool = False
-    #: True when the document says its language: ``language`` is written, and not empty (§3.2 has
-    #: no default; the ``"en"`` above is this model's own). ``metadata_from_dict`` sets it from the
-    #: mapping it reads, ``parse`` and ``Document.from_dict`` alike, and ``to_dict`` keeps it, so it
-    #: does not depend on a source map. A ``language`` other than ``"en"`` is a language said,
-    #: whatever this holds (``declared_language``).
-    language_declared: bool = False
 
 
 @dataclass(slots=True)
@@ -243,8 +239,7 @@ class Document:
         and the fields that describe a parsed source,
         ``Metadata.not_line_editable`` and ``Metadata.frontmatter_absent``,
         are left at their defaults: only ``parse`` and ``load`` set them (and
-        ``Document.frontmatter_error``, which is ``None``). ``Metadata.language_declared``
-        is read, or else set by a ``language`` that is not empty."""
+        ``Document.frontmatter_error``, which is ``None``)."""
         return document_from_dict(data)
 
     def to_dict(self) -> dict[str, Any]:
@@ -647,12 +642,7 @@ def metadata_from_dict(data: dict[str, Any] | None) -> Metadata:
         effective_date=normalise_field(payload.get("effective_date")),
         field_types=_parse_str_dict(payload.get("field_types")),
         governing_law=normalise_field(payload.get("governing_law")),
-        language=normalise_field(payload.get("language"), "en"),
-        language_declared=(
-            _to_bool(payload["language_declared"], default=False)
-            if "language_declared" in payload
-            else bool(normalise_field(payload.get("language")))
-        ),
+        language=normalise_field(payload.get("language")),
         include_signatures=_to_bool(payload.get("include_signatures"), default=True),
         tags=_clean_list(list(tags)),
         sides=sides,

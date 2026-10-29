@@ -201,10 +201,10 @@ def test_a_value_that_is_no_code_draws_language_code_invalid_alone(front):
 
 def test_a_translations_key_that_is_no_code_is_not_compared_with_the_authoritative():
     # `english` might have been `en`: authoritative-not-declared would say a second thing about
-    # the same value. Nor is the document a translation: `en` is not one of its keys.
+    # the same value. (The document is a translation all the same: `fr` of `en`, linking a file.)
     front = "language: fr\nauthoritative: en\ntranslations:\n  english: x.lgd\n"
     assert _found(front) == [("language-code-invalid", "warning", 6)]
-    assert _identifiers(front, "# Definitions\n") == []
+    assert _identifiers(front, "# Definitions\n") == [("translation-implicit-id", "error", 9)]
 
 
 # ── translation-implicit-id and translation-authoritative-absent ───
@@ -454,43 +454,65 @@ def test_an_empty_language_is_no_language_said():
         assert not _identifiers(front + "authoritative: en\ntranslations:\n  en: a.lgd\n", "# Definitions\n")
 
 
-def test_what_the_language_says_does_not_depend_on_a_source_map():
+def test_what_the_language_says_does_not_depend_on_a_source_map_or_on_writing_it_back():
+    from collections import Counter
     from dataclasses import replace
 
-    fronts = [
-        "authoritative: en\n",
-        "language:\nauthoritative: en\n",
-        "language: en\nauthoritative: en\n",
-        "language: fr\nauthoritative: en\ntranslations:\n  en: a.lgd\n",
-        "authoritative: fr\ntranslations:\n  fr: a.lgd\n",
-        "language: english\nauthoritative: en\n",
-    ]
-    for front in fronts:
-        document = parse(_source(front, "# Definitions\n"), filename="t.lgd")
-
-        def rules(each):
-            return sorted((d.rule, d.level) for d in validate(each).diagnostics if d.rule in _NEW_RULES)
-
-        assert rules(replace(document, source_map=None)) == rules(document), front
-        assert rules(Document.from_dict(document.to_dict())) == rules(document), front
-
-
-def test_the_language_said_is_kept_by_the_model_and_by_writing_it_back():
     from legaldown import serialize
 
-    said = parse(_source("language: en\n"), filename="t.lgd")
-    assert said.metadata.language_declared and said.metadata.language == "en"
+    def rules(each):
+        return Counter((d.rule, d.level) for d in validate(each).diagnostics)
+
+    for language in ("", "language:\n", "language: ''\n", "language: en\n", "language: fr\n", "language: english\n"):
+        for rest in ("", "authoritative: en\n", "authoritative: en\ntranslations:\n  en: a.lgd\n"):
+            document = parse(_source(language + rest, "# Definitions\n"), filename="t.lgd")
+            again = parse(serialize(document), filename="t.lgd")
+            assert rules(replace(document, source_map=None)) == rules(document), (language, rest)
+            assert rules(Document.from_dict(document.to_dict())) == rules(document), (language, rest)
+            assert rules(again) == rules(document), (language, rest)
+            assert again.metadata.language == document.metadata.language
+
+
+def test_a_language_is_the_models_only_when_the_document_says_one():
+    from legaldown import empty_document, serialize
+    from legaldown.models import Metadata
+
+    # §3.2 gives `language` no default: the model holds none, as it holds no `authoritative`.
+    assert Metadata().language == "" and Document().metadata.language == ""
     for front in ("", "language:\n", "language: ''\n"):
         unsaid = parse(_source(front), filename="t.lgd")
-        assert not unsaid.metadata.language_declared and unsaid.metadata.language == "en"
-        # ... and writing it back does not make it said.
-        assert "language" not in serialize(unsaid)
-        assert not parse(serialize(unsaid)).metadata.language_declared
-    assert "language: en" in serialize(said)
-    assert Document.from_dict(said.to_dict()).metadata.language_declared
-    assert not Document.from_dict(unsaid.to_dict()).metadata.language_declared
-    # A document built by hand with another language says it.
-    assert validate(Document.from_dict({"metadata": {"language": "fr", "authoritative": "en"}})).diagnostics
+        assert unsaid.metadata.language == ""
+        assert "language" not in serialize(unsaid)  # writing it back does not say one
+    said = parse(_source("language: en\n"), filename="t.lgd")
+    assert said.metadata.language == "en" and "language: en" in serialize(said)
+    # ... and one built by hand says what it holds, "en" or not: the starter document says it.
+    assert "language: en" in serialize(empty_document())
+    assert "language: en" in serialize(Document(metadata=Metadata(language="en")))
+    assert "language: fr" in serialize(Document(metadata=Metadata(language="fr")))
+    assert Document.from_dict({"metadata": {"language": "en"}}).metadata.language == "en"
+    assert Document.from_dict({}).metadata.language == ""
+
+
+def test_a_language_declared_key_is_an_unknown_key():
+    # An earlier build of #116 kept such a flag; frontmatter cannot set anything of the sort.
+    document = parse(_source("language_declared: true\nauthoritative: en\n"), filename="t.lgd")
+    assert document.metadata.language == "" and not hasattr(document.metadata, "language_declared")
+    assert _found("language_declared: true\nauthoritative: en\n") == [("authoritative-not-declared", "warning", 4)]
+    assert Document.from_dict({"metadata": {"language_declared": True}}).metadata.language == ""
+
+
+def test_a_translations_key_that_is_no_code_does_not_silence_the_identifier_rule():
+    # authoritative-not-declared judges only valid codes, and is silent here (`Fr` might be `cs`);
+    # the document is a translation all the same, as `de` of `cs`, and its headings are Errors.
+    front = "language: de\nauthoritative: cs\ntranslations:\n  Fr: y.lgd\n"
+    assert _found(front) == [("language-code-invalid", "warning", 6)]
+    assert _identifiers(front, "# Definitions\n") == [("translation-implicit-id", "error", 9)]
+    # With every key valid, the authoritative that is none of them is a mistake, and the document no translation.
+    front = "language: de\nauthoritative: cs\ntranslations:\n  fr: y.lgd\n"
+    assert _found(front) == [("authoritative-not-declared", "warning", 4)]
+    assert _identifiers(front, "# Definitions\n") == []
+    # A valid key that is the authoritative makes it a translation, an invalid one beside it or not.
+    assert _identifiers("language: de\nauthoritative: cs\ntranslations:\n  Fr: y.lgd\n  cs: z.lgd\n", "# Definitions\n") != []
 
 
 # ── The documents the specification gives as right ────────────────

@@ -208,12 +208,12 @@ what to write (a `translations` key is also the path's lookup key, and `authorit
 keys exactly). The check covers `language`, a non-empty `authoritative`, and each `translations` key (found by the
 key as stripped, if it is written padded); a value holding a `{{placeholder:}}` is
 `placeholder-in-structural-field`'s alone. `authoritative` must equal the document's `language` or a
-`translations` key. Only a `language` that is said counts: §3.2 gives it no default, and the "en" the model holds
-for a document that does not say is its own, so `authoritative: en` and `authoritative: fr` without a
-`language` (or with an empty one) are treated alike, and the message says the language is not declared. Whether a
-language is said is recorded when the frontmatter is read (`Metadata.language_declared`, kept by
-`to_dict` and `dataclasses.replace`, so it does not depend on a source map), and `serialize` writes `language`
-only when it is said, so writing a document back does not say it. **A value that is no code is
+`translations` key. §3.2 gives `language` no default, so the model holds none (`Metadata.language` is `""` for a
+document that says none, an empty `language:` included, and `empty_document()` says `"en"`), and
+`authoritative: en` and `authoritative: fr` without a `language` are treated alike: the message says the language is not
+declared. `serialize` writes `language` only when the model holds one, so writing a document back does not say a
+language it never did, and the diagnostics are the same with or without a source map, after `to_dict`/`from_dict`, and after
+writing it back. **A value that is no code is
 no language**, so the checks that compare languages judge only the codes that passed (the rule of §16.6, that a value that fails one
 format check is exempt from the checks that assume it): `language: english` with `authoritative: en` draws
 `language-code-invalid` alone, and so does a `translations` key that might have been the authoritative.
@@ -225,7 +225,12 @@ both valid codes, and different, and `authoritative` is one of the `translations
 group: §16.7 is about linked files, so a document that links nothing is
 no translation (`authoritative-not-declared` is the finding for `language: fr` with `authoritative: en`
 and no `translations`), a code that is no code is not compared, and a typo in `authoritative`
-(`de` for `en`) is `authoritative-not-declared` alone, not an Error on every heading of what may be the primary. For each heading and each `{{def:}}`
+(`de` for `en`) is `authoritative-not-declared` alone, not an Error on every heading of what may be the primary.
+`authoritative-not-declared` judges only valid codes, so it is silent when a `translations` key is no code (the key may be
+what was meant), and then the absence of `authoritative` from the keys is not held against the document: `language: de`,
+`authoritative: cs`, `translations: {Fr: …}` draws `language-code-invalid` for the key and, for each heading
+and `{{def:}}` without an identifier, `translation-implicit-id`; with every key valid it draws
+`authoritative-not-declared` alone. For each heading and each `{{def:}}`
 without an explicit identifier a translation draws an Error (identifiers originate in the primary and are mirrored
 explicitly, §14.2), and a document that declares `translations` without `authoritative` a Warning (the primary
 cannot be told from its translations, so the linked files are checked symmetrically): **one for each

@@ -177,7 +177,11 @@ first earlier use, and `--strict` counts an Info; to keep that layout, `--ignore
 definition-used-before-declaration`. A `language`, `authoritative` or `translations` key that is not a
 lowercase ISO 639-1 code (`EN`, `en-US`, `english`) is a Warning (`language-code-invalid`), and so is an
 `authoritative` language that is neither the document's `language` nor a `translations` key
-(`authoritative-not-declared`), which `--warnings-as-errors` counts. The text of `ldv-check-skipped` for
+(`authoritative-not-declared`), which `--warnings-as-errors` counts. **`Metadata.language` is now `""` for a document that
+says none** (it was `"en"`): §3.2 gives `language` no default, so the model holds none, as it holds no `authoritative`;
+`empty_document()` says `"en"`, and `serialize` writes `language` only when the model holds one, so writing a document back
+does not say a language it never did. Code that read `document.metadata.language` as "en" for such a document should
+treat `""` so. The text of `ldv-check-skipped` for
 `translations` changed: it now names the identifier rules for the linked files, and says whether this
 document's own were checked.
 
@@ -606,8 +610,7 @@ model: read them from `result.index.sections`.
 `document.to_dict()` and `Document.from_dict(data)` round-trip the model through JSON-friendly
 structures (missing fields take their defaults), except the fields that describe the parsed source
 rather than the document, `Metadata.not_line_editable`, `Metadata.frontmatter_absent`,
-`Document.source_map`, `Document.path` and `Document.frontmatter_error`. `Metadata.language_declared`, whether the
-document says its `language` (which is `"en"` when it does not, but is no language said), is kept. `to_dict()` raises that
+`Document.source_map`, `Document.path` and `Document.frontmatter_error`. `to_dict()` raises that
 error, when there is one: the empty metadata of such a document would not say what its source says. A blank document is `Document()`; `empty_document()`,
 still importable from `legaldown`, is not one but a starter contract with two sides and two sections.
 

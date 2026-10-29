@@ -53,7 +53,6 @@ from .conditions import (
 )
 from .fragments import Files, FragmentKind, UnreadReason, check_includes, content_findings, shape_findings
 from .helpers import (
-    declared_language,
     format_section_number,
     generate_identifier,
     identifier_rule,
@@ -280,7 +279,7 @@ def _check_implicit_identifiers(
         fix = "declare authoritative, and write the primary's identifier"
     else:
         report = result.error
-        why = f"and the document is a translation ({declared_language(meta)}, of the authoritative {meta.authoritative})"
+        why = f"and the document is a translation ({meta.language}, of the authoritative {meta.authoritative})"
         fix = "write the primary's identifier"
     for index, section in enumerate(document.sections):
         if not section.identifier.strip():
@@ -1445,7 +1444,7 @@ def _validate(
     # A placeholder is the placeholder rule's. A value that is no code is no language, so the
     # comparisons judge only the codes that pass (the translation rules below too): one typo
     # draws one Warning.
-    language = declared_language(meta)
+    language = meta.language
     written_keys = {raw.strip(): raw for raw in where.children("translations")}
     for label, code, path in [
         ("language", language, ("language",)),
