@@ -292,13 +292,13 @@ def _split_frontmatter(
             )
         # Keys merged into the root count, but each entry is judged as
         # written, before merges inside it reorder its keys.
-        written = written_keys(node)  # before the merged keys are brought in
+        owners = written_keys(node)  # before the merged keys are brought in
         loader.flatten_mapping(node)
         # The YAML starts on the line after the opening `---` (line 1).
         breaks = line_breaks(match.group(1) or "")
-        found, repeated = frontmatter_keys(node, breaks, 2, written)
+        found, repeated = frontmatter_keys(node, breaks, 2, owners)
         keys = {(): 1, **found}
-        maps = written_maps(node, breaks, 2, written)
+        maps = written_maps(node, breaks, 2, owners)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)

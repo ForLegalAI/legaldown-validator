@@ -225,29 +225,30 @@ line, so that it does not go silently. The id is this implementation's own (§16
 - **A key written twice in a mapping**, in any mapping of the frontmatter (`title:` twice; `fr:` twice in
   `translations`; a party's `name:` twice). YAML does not allow it, and a strict loader fails the document
   as `frontmatter-invalid-yaml`; this implementation's YAML reader keeps the last, as PyYAML does. The earlier
-  entry, which the model never holds, is the one reported, and the finding says at which line the last is. An
-  Error. Two keys are the same when YAML resolves them to the same key: `fr` and `"fr"` are, `1` and `'1'` are
-  not. Only the keys a mapping writes itself count: a key that a `<<` merge brings in (into the mapping, or
-  into a mapping that is itself merged in) and the mapping also writes is not a repeat, the written one is read,
-  and the line of any other finding about the key is the written one's (for a repeated key, the last's); two `<<` keys
-  are not a repeat either.
-  A key
-  written once but by an alias (`&k a: 1` then `*k : 2`) is one node, at its anchor's line, so that repeat is
-  reported at that line and cites it.
-- **Two keys of `translations` or `field_types` that are one once stripped** (`fr` and `' fr'`), or once read
-  as written (`1` and `'1'`, which the model reads as the same text though YAML does not): the reader strips
-  and reads these keys ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)), so they would be
-  one entry, and the model keeps the last of them in the order the model holds them (`fr: a`, `' fr': b`,
-  `fr: c` keeps the entry at the second line, not the last written). Each one that does not stay is reported
-  at its own line, and the finding names the line of the one that does. An Error for `field_types`, where
-  the padded key is `field-type-key-format`'s Error already, but a **Warning for `translations`**: the
-  specification judges a padded language code a Warning (`language-code-invalid`), and a rule of this
-  implementation's own does not fail a document that the specification only warns of. Only these two maps
-  are keyed by the stripped key (a party's custom fields are a list, and `questions` keys are kept as
-  written), so this case is complete. A `translations` entry that is blank once stripped is skipped before
-  it can replace a sibling (#116), so it draws nothing; a blank `field_types` description is a
-  declaration, and does. An exact repeat in these two maps is reported by the same rule, as an Error; when
-  its last entry is blank and the model keeps none, the message says that no entry is kept.
+  entry, which the model never holds, is the one reported, and the finding names the line of the entry the
+  model reads. An Error. **Keys are the same as the model reads them**, which is as their text: `1` and `'1'`,
+  `null` and `'null'`, and `fr` and `"fr"` are one key to the model (it reads every plain scalar as written),
+  so one of each pair is lost and is reported, though YAML itself resolves some of them to different keys. A
+  key that a mapping writes over one it merges in (`<<`) is not a repeat: the written one is read, and is where
+  the line of any other finding about the key is. A mapping that is merged into another counts its own keys,
+  inline or not: `<<: {name: a, name: b}` repeats `name`, once, wherever the mapping is also written. The
+  keys of a mapping shared through an alias are reported once. An aliased key (`&k a: 1` then `*k : 2`) is
+  one node, whose position is its anchor's: the YAML reader keeps no position for the alias, so that
+  repeat is reported at the anchor's line and cites it.
+- **Two keys of `translations` or `field_types` that the model reads as one**: the reader strips these keys
+  ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)), so `fr` and `' fr'` would be one
+  entry, as `fr` and `"fr"` or `1` and `'1'` already are, and the model keeps the last of them in the order
+  the model holds them (`fr: a`, `' fr': b`, `fr: c` keeps the entry at the second line, not the last
+  written). Each one that does not stay is reported at its own line, and the finding names the line of the one
+  that does, and says that it is blank only if it is (then the model keeps no entry of the key, and the
+  finding says so). An Error if the key is written the same (a repeat, as above) or in `field_types`, where
+  the padded key is `field-type-key-format`'s Error already; a **Warning for `translations` keys written
+  differently**: the specification judges a padded language code a Warning (`language-code-invalid`), and a
+  rule of this implementation's own does not fail a document that the specification only warns of. The keys
+  are shown as written, quotes included, so that `1` and `"1"` differ. Only these two maps are keyed by the
+  stripped key (a party's custom fields are a list, and `questions` keys are kept as written), so this case is
+  complete. A `translations` entry that is blank once stripped is skipped before it can replace a sibling
+  (#116), so it draws nothing; a blank `field_types` description is a declaration, and does.
 
 Every other check finds the padded key at its own line (`language-code-invalid`, `path-not-relative`,
 `field-type-key-format`, `placeholder-in-structural-field`), and the path of the entry that stays is the one judged.
