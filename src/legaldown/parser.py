@@ -2107,7 +2107,7 @@ def iter_document_directives(document: Document) -> Iterator[DirectiveLocation]:
         if block.kind == "definition":
             yield from _lifted_directive(section, index, block)
         lifted = block.kind in ("ref", "term") and bool(block.target)
-        before = fragments_before_target(block)  # the fragments before the lifted directive
+        before = fragments_before_target(block) if lifted else 0  # the fragments before the lifted directive
         for fragment, (text, _anchor) in enumerate(block_fragments(block)):
             if lifted and fragment == before:
                 yield from _lifted_directive(section, index, block)

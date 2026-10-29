@@ -268,8 +268,9 @@ def _check_implicit_identifiers(
     primary and a translation mirrors them explicitly. Without ``authoritative`` the primary cannot
     be told from its translations, and the document draws a Warning for each, as any linked file
     does. *refs* are the definitions outside drafting notes (assembly removes the others, §15.6, and
-    ``drafting-note-def`` reports them), with a valid id. The linked files'
-    own identifiers are Full (§17.4, §17.5)."""
+    ``drafting-note-def`` reports them); one whose generated identifier ``anchor-format`` rejects is
+    not counted either (the validator passes none: a generated identifier is always valid, §5.3). The
+    linked files' own identifiers are Full (§17.4, §17.5)."""
     meta = document.metadata
     rule, _why_not = identifier_rule(meta)
     if rule is None:
@@ -289,7 +290,7 @@ def _check_implicit_identifiers(
                 line=where.heading(index),
             )
     for ref in refs:
-        if not ref.auto_id:
+        if not ref.auto_id or not IDENTIFIER_RE.fullmatch(ref.id):
             continue
         report(
             rule, f"Definition '{ref.term}' has no explicit identifier ('{ref.id}' is generated from the "

@@ -195,6 +195,40 @@ def test_past_the_cap_of_the_tests_a_use_is_not_judged(monkeypatch):
     assert len(_infos(body, questions)) == 1
 
 
+def test_past_the_cap_a_use_before_every_declaration_is_judged_by_one_known_to_fit(monkeypatch):
+    from legaldown.validator import circular as circular_module
+
+    questions = "questions:\n  q:\n    type: boolean\n  r:\n    type: boolean\n"
+    first = '"A" {{def: a}} means x. {when=!q}'
+    last = '"A" {{def: a}} means y. {when=r}'  # names no question the use does: told apart with no test
+    before = f"See {{{{term: a}}}}. {{when=q}}\n\n{first}\n\n{last}"
+    between = f"{first}\n\nSee {{{{term: a}}}}. {{when=q}}\n\n{last}"
+    assert len(_infos(before, questions)) == 1 and len(_infos(between, questions)) == 1
+    monkeypatch.setattr(circular_module, "MAX_EXCLUSION_TESTS", 0)
+    # The first declaration could not be told (it names `q`, as the use does): the use before every
+    # declaration is before the one known to fit; one between them might be after the one it resolves to.
+    assert len(_infos(before, questions)) == 1
+    assert _infos(between, questions) == []
+
+
+def test_a_pair_of_presences_is_tested_once_whatever_the_ids(monkeypatch):
+    from legaldown.validator.circular import used_before_declaration
+    from legaldown.validator.conditions import Exclusivity
+    from legaldown.validator.units import own_presence
+
+    questions = {"q": {"type": "boolean"}}
+    declared, used = own_presence("q", questions), own_presence("!q", questions)
+    ids = 50
+    registered = [(_ref(f"a{k}", 0, 2 * k + 1, 0, offset=5), declared) for k in range(ids)]
+    uses = [TermUse(0, 2 * k, 0, f"a{k}", used) for k in range(ids)]
+    calls = []
+    wrapped = Exclusivity.excluded
+    monkeypatch.setattr(Exclusivity, "excluded", lambda self, a, b: calls.append(1) or wrapped(self, a, b))
+    # `q` and `not q` exclude each other: no declaration fits, and one test told it for the fifty ids.
+    assert used_before_declaration(registered, uses, exclusivity=Exclusivity(questions)) == []
+    assert len(calls) == 1
+
+
 def test_a_declaration_that_can_never_appear_is_no_declaration():
     questions = "questions:\n  q:\n    type: boolean\n"
     body = (
