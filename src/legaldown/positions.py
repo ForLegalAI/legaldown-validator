@@ -44,9 +44,6 @@ def document_shape(document: Document) -> tuple[Any, ...]:
 #: The last element of a mapping's path in ``frontmatter_keys`` when it
 #: merges keys in (``<<``): at the merge key's line.
 MERGE = object()
-#: Appended to the path of a mapping entry whose value is null or blank (``fr:``, ``fr: ' '``), which
-#: the model leaves out of what it reads (``(*path, BLANK)``).
-BLANK = object()
 
 
 def line_breaks(text: str) -> list[int]:
@@ -93,10 +90,6 @@ def frontmatter_keys(root: yaml.Node, block: str, first_line: int) -> dict[tuple
                 elif isinstance(key, yaml.ScalarNode):
                     inner = (*path, key.value)
                     keys.setdefault(inner, line_of(key.start_mark))
-                    if isinstance(value, yaml.ScalarNode) and (
-                        value.tag == "tag:yaml.org,2002:null" or not value.value.strip()
-                    ):
-                        keys.setdefault((*inner, BLANK), line_of(key.start_mark))
                     walk(value, inner, seen)
             for value in merged:
                 for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
@@ -401,10 +394,6 @@ class Locator:
     def has(self, *path: Any) -> bool:
         """True if the frontmatter node at *path* is written."""
         return self._map is not None and path in self._map.keys
-
-    def blank(self, *path: Any) -> bool:
-        """True if the frontmatter entry at *path* is written with a null or blank value."""
-        return self._map is not None and (*path, BLANK) in self._map.keys
 
     def merges(self, *path: Any) -> bool:
         """True if the frontmatter mapping at *path* merges keys in (``<<``)."""

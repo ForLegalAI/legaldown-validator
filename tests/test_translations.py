@@ -92,9 +92,11 @@ def test_each_bad_translations_key_is_reported_at_its_own_line():
     assert _found(front) == [("language-code-invalid", "warning", 7), ("language-code-invalid", "warning", 8)]
 
 
-def test_a_padded_translations_key_is_found_by_its_stripped_form():
+def test_a_padded_translations_key_is_judged_stripped():
+    # The key is the one the reader kept; the line of a padded or repeated key is #126's, and falls back
+    # to the `translations:` line (5) as the other rules' do.
     front = "language: en\nauthoritative: en\ntranslations:\n  ' fr ': x.fr.lgd\n  ' english ': x.en.lgd\n"
-    assert _found(front) == [("language-code-invalid", "warning", 7)]
+    assert _found(front) == [("language-code-invalid", "warning", 5)]
 
 
 def test_the_message_names_the_field_and_the_value():
@@ -474,17 +476,25 @@ def test_keys_that_are_alike_once_stripped_are_one_and_the_last_stays():
         assert parse(_source(front)).metadata.translations == {"fr": "a.lgd"}, blank
 
 
-def test_each_spelling_of_a_bad_key_is_reported_at_its_own_line():
-    front = "language: de\nauthoritative: cs\ntranslations:\n  ' Fr ': a.lgd\n  Fr: b.lgd\n"
-    result = validate(parse(_source(front), filename="t.lgd"))
-    found = [(d.line, d.message.split(" must")[0]) for d in result.diagnostics if d.rule == "language-code-invalid"]
-    assert found == [(6, "The translations key ' Fr '"), (7, "The translations key 'Fr'")]
-    # An ignored entry draws nothing: a spelling written with no value is not reported.
-    for blank in ("", "~", "' '"):
-        front = f"language: de\nauthoritative: cs\ntranslations:\n  ' Fr ': {blank}\n  Fr: b.lgd\n"
-        assert _found(front) == [("language-code-invalid", "warning", 7)], blank
-    # The model keeps the last; a bad spelling of a good key is no finding.
+def test_a_key_the_reader_kept_is_reported_once_whatever_it_was_written_as():
+    # The model keeps one entry for keys that are the same once stripped; where a padded or repeated
+    # key is written is #126's, and not asserted here.
+    for front in (
+        "translations:\n  ' Fr ': a.lgd\n  Fr: b.lgd\n",
+        "translations:\n  ' Fr ': ~\n  Fr: b.lgd\n",
+        "translations:\n  ' Fr ': ' '\n  Fr: b.lgd\n",
+        "translations:\n  Fr: b.lgd\n  ' Fr ':\n",
+    ):
+        result = validate(parse(_source("language: de\nauthoritative: cs\n" + front), filename="t.lgd"))
+        found = [d.message.split(" must")[0] for d in result.diagnostics if d.rule == "language-code-invalid"]
+        assert found == ["The translations key 'Fr'"], front
+    # A bad spelling of a good key is no finding.
     assert _found("language: de\nauthoritative: cs\ntranslations:\n  ' cs ': a.lgd\n  cs: b.lgd\n") == []
+    # A falsy value is skipped as `_parse_str_dict` does (the YAML reader gives strings, so a model built
+    # from a dict is where one occurs).
+    assert Document.from_dict({"metadata": {"translations": {"fr": False, "de": 0, 0: "x", "cs": "c.lgd"}}}).metadata.translations == {
+        "cs": "c.lgd"
+    }
 
 
 # ── The language a document says ──

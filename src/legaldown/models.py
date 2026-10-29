@@ -392,22 +392,25 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
 
 
 def _parse_str_dict(raw: Any) -> dict[str, str]:
-    """Parse a dict with string keys and values, skipping empty entries."""
+    """Parse a dict with string keys and values, stripped, skipping an entry whose key or value is
+    null or empty (a whitespace-only one is kept, stripped to ``""``)."""
     if not isinstance(raw, dict):
         return {}
     return {str(k).strip(): str(v).strip() for k, v in raw.items() if k and v}
 
 
 def _parse_translations(raw: Any) -> dict[str, str]:
-    """Parse ``translations`` (language code to file) in one pass: key and value stripped, an entry
-    whose key or value is null or blank once stripped skipped, as it names no file or no language.
-    Of keys that are the same once stripped, the last entry that is kept stays (a blank sibling
-    never overwrites it). ``field_types`` does not: a blank description is a declaration."""
+    """Parse ``translations`` (language code to file) in one pass: an entry whose key or value is
+    falsy (null, empty, ``false``, ``0``), as ``_parse_str_dict`` skips it, or blank once stripped,
+    is skipped, as it names no file or no language. Of keys that are the same once stripped, the last
+    entry kept stays: a blank sibling written differently (``fr`` and ``' fr'``) never overwrites it.
+    (An exact duplicate key is resolved by YAML before this reads it: #126.) ``field_types`` does not
+    skip a blank description: it is a declaration."""
     if not isinstance(raw, dict):
         return {}
     parsed: dict[str, str] = {}
     for key, value in raw.items():
-        if key is None or value is None:
+        if not key or not value:
             continue
         key, value = str(key).strip(), str(value).strip()
         if key and value:
