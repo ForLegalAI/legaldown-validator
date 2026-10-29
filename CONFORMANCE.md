@@ -15,7 +15,8 @@ the file is the document's, or the include fragment it was found in ([#35](https
 the line of the directive, marker, heading or block it is about, or of the frontmatter node — a
 mapping key, or a list entry's `-` line, at whatever depth — and for a missing key, the key that
 holds it (`amends:` for a missing `amends.title`) or the frontmatter's first key. Three cases are
-not asserted at their given line:
+not asserted at their given line (for the last two the harness asserts the line this implementation
+reports instead, `_DISPUTED_LINES`, so a regression is still caught):
 
 - The answer rules (`answer-invalid`, `answer-unknown`) point into the answers file, which
   assembly receives already parsed (`Template.form(answers)`), so its diagnostics name no line.
@@ -190,8 +191,10 @@ otherwise draw one for every use of every term. The fixture has it at the use, l
 `{{term:}}` in a drafting note (assembly removes it), in code or in a comment; one in a heading (§4.2 has no
 directive there); a use in the definition's own quoted term (`"Self {{term: s}}" {{def: s}}`), which is
 `definition-circular`'s; an id the document does not declare (`term-undefined`); an id the amended original
-declares, which is in force before the document (§7.5). A definition and its alternatives (§15.4) are
-declared at the first of them: a use between two is after the first. The files the document includes and
+declares, which is in force before the document (§7.5). A use is judged against the first declaration of its id that can appear with it (in a
+template, one that can appear and is not excluded from the use's presence, §15.4): a use between two alternatives
+is judged against the one it resolves to, a declaration that can never appear is no declaration, and a use that can
+never appear is no use. The files the document includes and
 attaches are not expanded, so a definition that only they declare is no declaration here (as
 `term-undefined` reads it). The auto-linking of §7.4 is not implemented, so a term written without
 `{{term:}}` is no use. `legaldown validate --strict` counts the Info, so a document that keeps its
@@ -205,9 +208,12 @@ what to write (a `translations` key is also the path's lookup key, and `authorit
 keys exactly). The check covers `language`, a non-empty `authoritative`, and each `translations` key (found by the
 key as stripped, if it is written padded); a value holding a `{{placeholder:}}` is
 `placeholder-in-structural-field`'s alone. `authoritative` must equal the document's `language` or a
-`translations` key. Only a `language` that is written counts: §3.2 gives it no default, and the "en" the model reads
+`translations` key. Only a `language` that is said counts: §3.2 gives it no default, and the "en" the model holds
 for a document that does not say is its own, so `authoritative: en` and `authoritative: fr` without a
-`language` are treated alike, and the message says the language is not declared. **A value that is no code is
+`language` (or with an empty one) are treated alike, and the message says the language is not declared. Whether a
+language is said is recorded when the frontmatter is read (`Metadata.language_declared`, kept by
+`to_dict` and `dataclasses.replace`, so it does not depend on a source map), and `serialize` writes `language`
+only when it is said, so writing a document back does not say it. **A value that is no code is
 no language**, so the checks that compare languages judge only the codes that passed (the rule of §16.6, that a value that fails one
 format check is exempt from the checks that assume it): `language: english` with `authoritative: en` draws
 `language-code-invalid` alone, and so does a `translations` key that might have been the authoritative.
@@ -215,16 +221,19 @@ format check is exempt from the checks that assume it): `language: english` with
 `translation-implicit-id` (§16.7, Error) and `translation-authoritative-absent` (§16.7, Warning) are the
 single-file translation rows that §17.2 makes Core: the identifiers of the document itself. **A file is a
 translation** when `translations` is non-empty and `language` and `authoritative` are both declared,
-both valid codes, and different: §16.7 is about linked files, so a document that links nothing is
+both valid codes, and different, and `authoritative` is one of the `translations` keys, a language of the
+group: §16.7 is about linked files, so a document that links nothing is
 no translation (`authoritative-not-declared` is the finding for `language: fr` with `authoritative: en`
-and no `translations`), and a code that is no code is not compared. For each heading and each `{{def:}}`
+and no `translations`), a code that is no code is not compared, and a typo in `authoritative`
+(`de` for `en`) is `authoritative-not-declared` alone, not an Error on every heading of what may be the primary. For each heading and each `{{def:}}`
 without an explicit identifier a translation draws an Error (identifiers originate in the primary and are mirrored
 explicitly, §14.2), and a document that declares `translations` without `authoritative` a Warning (the primary
 cannot be told from its translations, so the linked files are checked symmetrically): **one for each
 node**, at its own line, like `anchor-lossy-slug` and `def-lossy-slug`; the message of the Warning says that one line,
 `authoritative:`, ends all of them. The two are exclusive. An identifier that is written but invalid is `anchor-format`,
 not implicit; a duplicate generated identifier draws the Error at each declaration besides `def-duplicate-id`; a heading in a list
-item or a quote is a block, not a section. The identifiers of the *linked* files are Full (§17.4) and are
+item or a quote is a block, not a section; a `{{def:}}` in a drafting note is not counted (assembly removes it,
+and `drafting-note-def` reports it). The identifiers of the *linked* files are Full (§17.4) and are
 named in the Warning of §17.5 as not read ([below](#constructs-beyond-the-level-175)).
 
 `raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
@@ -835,8 +844,9 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
 - **Core rules are named only for what was not read.** `translation-implicit-id` and
   `translation-authoritative-absent` are Core for the document itself and are checked in it, so the
   Warning does not list them as skipped; it names them "for the linked files", which a Core validator
-  does not open, and says that this document's own identifiers were checked (§17.5: the document is not
-  reported as passing a check that was not run). The other Core rules of #116 (`language-code-invalid`,
+  does not open, and says that this document's own identifiers were checked only when the rules ran (the document is
+  a translation, or declares no `authoritative`); otherwise it says they were not, that the document is not a
+  translation (§17.2), and why (§17.5: the document is not reported as passing a check that was not run). The other Core rules of #116 (`language-code-invalid`,
   `authoritative-not-declared`, `definition-used-before-declaration`) read nothing else and are never named.
 - **Rendering** (§17.3) is a category of its own in §17.5's sense only for a `{{ref:}}` to an item
   or paragraph anchor (`ref-not-enumerated`); it draws no Warning, and is listed above.

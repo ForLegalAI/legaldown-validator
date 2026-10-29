@@ -168,8 +168,8 @@ document without reading its fragments, validate it without its path
 is missing). `parse(text)` has no path and reads nothing, as before.
 Five rules that §17.2 places at Core are now checked ([What gets checked](#what-gets-checked)), and a
 CI gate that was passing can fail for them. **A translation without explicit identifiers is now an
-Error** (`translation-implicit-id`): a document that links `translations` and whose `language` differs
-from its `authoritative` must give every heading and `{{def:}}` an explicit identifier (§14.2); without
+Error** (`translation-implicit-id`): a document that links `translations`, and whose `language` differs
+from its `authoritative`, one of the languages it links, must give every heading and `{{def:}}` an explicit identifier (§14.2); without
 `authoritative`, the same headings and definitions are a Warning (`translation-authoritative-absent`).
 **`--strict` now fails a document that keeps its Definitions at the end** (`definition-used-before-declaration`,
 an Info): a `{{term:}}` written before the `{{def:}}` it names draws one Info for each definition, at its
@@ -178,7 +178,7 @@ definition-used-before-declaration`. A `language`, `authoritative` or `translati
 lowercase ISO 639-1 code (`EN`, `en-US`, `english`) is a Warning (`language-code-invalid`), and so is an
 `authoritative` language that is neither the document's `language` nor a `translations` key
 (`authoritative-not-declared`), which `--warnings-as-errors` counts. The text of `ldv-check-skipped` for
-`translations` changed: it now names the identifier rules for the linked files, and says that this
+`translations` changed: it now names the identifier rules for the linked files, and says whether this
 document's own were checked.
 
 ### Assembling a template
@@ -606,7 +606,8 @@ model: read them from `result.index.sections`.
 `document.to_dict()` and `Document.from_dict(data)` round-trip the model through JSON-friendly
 structures (missing fields take their defaults), except the fields that describe the parsed source
 rather than the document, `Metadata.not_line_editable`, `Metadata.frontmatter_absent`,
-`Document.source_map`, `Document.path` and `Document.frontmatter_error`. `to_dict()` raises that
+`Document.source_map`, `Document.path` and `Document.frontmatter_error`. `Metadata.language_declared`, whether the
+document says its `language` (which is `"en"` when it does not, but is no language said), is kept. `to_dict()` raises that
 error, when there is one: the empty metadata of such a document would not say what its source says. A blank document is `Document()`; `empty_document()`,
 still importable from `legaldown`, is not one but a starter contract with two sides and two sections.
 

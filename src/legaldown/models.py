@@ -243,7 +243,8 @@ class Document:
         and the fields that describe a parsed source,
         ``Metadata.not_line_editable`` and ``Metadata.frontmatter_absent``,
         are left at their defaults: only ``parse`` and ``load`` set them (and
-        ``Document.frontmatter_error``, which is ``None``)."""
+        ``Document.frontmatter_error``, which is ``None``). ``Metadata.language_declared``
+        is read, or else set by a ``language`` that is not empty."""
         return document_from_dict(data)
 
     def to_dict(self) -> dict[str, Any]:
