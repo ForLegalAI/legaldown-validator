@@ -214,6 +214,9 @@ _REFERENCE_LINES = {
     "unclosed quoted titles": '[a]: u "{{placeholder: a}}\n',
     "unclosed single-quoted titles": "[a]: u '{{placeholder: a}}\n",
     "empty labels": "[]: u {{placeholder: a}}\n",
+    "angle destinations with blanks": "[a]: <x {{placeholder: a}} y>\n",  # #119
+    "title slots": "[a]: u {{placeholder: a}}\n",  # #119
+    "unclosed angle destinations": "[a]: <x {{placeholder: a}} y\n",  # #119
 }
 
 
@@ -227,6 +230,13 @@ def test_a_label_or_title_with_no_closer_is_not_read_to_the_end_at_each_line(sha
     insertions = [directive for directive in lexed.directives if directive.name == "placeholder"]
     assert len(insertions) == 20000
     assert _seconds(lambda: [scan.problem(insertion) for insertion in insertions]) < 1.0  # 0.1 s now
+
+
+def test_an_angle_destination_with_no_closer_is_read_once_to_the_end_of_its_line():
+    text = "[a]: <" + "x " * 200_000 + "{{placeholder: a}}\n"  # 400000 characters
+    lexed = lex(text)
+    scan = templates._InsertionScan(text, mask_directives(text, lexed.directives), lexed.directives)
+    assert _seconds(lambda: [scan.problem(directive) for directive in lexed.directives]) < 1.0  # 0.2 s now
 
 
 def test_a_definition_line_and_its_trailing_blanks_are_read_once_for_the_insertions_it_holds(monkeypatch):
