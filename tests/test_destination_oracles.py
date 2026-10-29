@@ -660,11 +660,11 @@ def test_the_link_reference_of_the_insertion_boundary_is_the_old_pattern_but_for
     follows its ``>``. ``title-slot``: blanks after the destination, then an insertion (an answer could be its
     title) — and the blanks and insertions after it; another directive is no title. Every offset is checked against
     the end by regular expressions, and the old pattern's end is never lost. For text that cannot hold a definition
-    (a heading, a table cell) it is the old pattern's end exactly. A pinned over-approximation, not CommonMark's
-    rule. (The 30000 texts, 2 s, reach each class about 200 times; the floor is a hundred.)"""
+    (an ATX heading, a table cell) it is the old pattern's end exactly. A pinned over-approximation, not CommonMark's
+    rule. (The 60000 texts, 4 s, reach each class about 400 times; the floor is a hundred.)"""
     matches, classes = 0, Counter()
     for text in _random_texts(
-        _REFERENCE_TOKENS + ["[a]: ", "u ", '"t"', "'t'", "(t)", "<x ", ">", "<", "\\>", "{{ref: q}}"] * 3, 30_000, 14, seed=1135
+        _REFERENCE_TOKENS + ["[a]: ", "u ", '"t"', "'t'", "(t)", "<x ", ">", "<", "\\>", "{{ref: q}}"] * 3, 60_000, 14, seed=1135
     ):
         lexed = lex(text)
         template = mask_directives(text, lexed.directives)

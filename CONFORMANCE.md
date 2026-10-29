@@ -483,12 +483,15 @@ Where this differs from CommonMark, or is read more simply:
     in the title's place, after the destination and its blanks (`[a]: u {{placeholder: p}}`,
     `[a]: <x y> {{placeholder: p}}`). The longer of the readings of the definition wins, so no verdict that the
     bare reading drew is lost (`_InsertionScan._reference_end`, checked against regular expressions at every
-    offset), in linear time. A heading and a table cell hold no definition: there the rule reads a definition as
-    it did before #119 (a bare destination and a closed title). It still does not flag an insertion after a
-    closed title (`[a]: u "t" {{placeholder: p}}`) or before one (`[a]: u {{placeholder: p}} "t"`), one
-    that an answer could turn into a title with the quote after it (`[a]: u {{placeholder: p}}"`), one in a
-    destination on the next line, or one on a line with text after the definition
-    (`[Note]: {{placeholder: p}} shall pay.`), the last being pinned
+    offset), in linear time. An ATX heading and a table cell hold no definition: there the rule reads a
+    definition as it did before #119 (a bare destination and a closed title), so `# [a]: {{placeholder: p}}`
+    and the same in a table cell are still flagged, and `# [a]: u {{placeholder: p}}` is not: verdicts
+    that existed before #119, kept as they were. (A setext heading's text can hold one: CommonMark takes the
+    definitions out of a paragraph before it reads the underline.) It still does not flag an insertion after
+    a closed title (`[a]: u "t" {{choose: q}}`, a `{{choose:}}` phrase that is empty) or before one
+    (`[a]: u {{choose: q}} "t"`), one that an answer could turn into a title with the quote after it
+    (`[a]: u {{placeholder: p}}"`), one in a destination on the next line, or one on a line with text after
+    the definition (`[Note]: {{placeholder: p}} shall pay.`), the last being pinned
     as it was ([#129](https://github.com/ForLegalAI/legaldown-validator/issues/129)).
 - The differential test (`tests/test_link_definitions_differential.py`) compares the definitions and the blocks
   with pandoc (`commonmark`) and markdown-it-py over generated documents. They disagree with each other in a few

@@ -213,7 +213,7 @@ def block_fragments(block: Block) -> list[Fragment]:
     code span or comment left open — runs into the next, and code and raw
     HTML in it hold none (§11.4).
     """
-    return [Fragment(text, position) for text, position, _items, _scope in _fragments(block)]
+    return [Fragment(text, position) for text, position, _items, _scope, _kind in _fragments(block)]
 
 
 def list_fragments(block: Block) -> list[ListFragment]:
@@ -224,7 +224,7 @@ def list_fragments(block: Block) -> list[ListFragment]:
     list's items: an item before the items nested in it, empty items
     included (§15.3). A list in a block quote is no unit: its fragments are
     in the items the quote is in."""
-    return [ListFragment(text, position, items) for text, position, items, _scope in _fragments(block)]
+    return [ListFragment(text, position, items) for text, position, items, _scope, _kind in _fragments(block)]
 
 
 def fragment_scopes(block: Block) -> list[int]:
@@ -238,16 +238,13 @@ def fragment_scopes(block: Block) -> list[int]:
     not its cells: a glossary row (``| "Foo" {{def: foo}} | means … |``) is
     one definition's paragraph. A quote too deep to read (``MAX_QUOTE_DEPTH``)
     is one fragment, hence one scope. Numbers are per block, from 0."""
-    return [scope for _text, _position, _items, scope in _fragments(block)]
+    return [scope for _text, _position, _items, scope, _kind in _fragments(block)]
 
 
-def definition_holders(block: Block) -> list[bool]:
-    """Whether each fragment of *block*, parallel to ``block_fragments(block)``, is text that
-    can hold a link reference definition: the text of a block, not a heading's or a table
-    cell's, whose line is no paragraph's (§4.7)."""
-    holders: list[bool] = []
-    _fragments(block, None, None, holders)
-    return holders
+def fragment_kinds(block: Block) -> list[tuple[str, str]]:
+    """The fragments of *block*, as ``block_fragments`` lists them, each as ``(text, kind)``: the text
+    and the kind of the block it is in (a quote too deep to read is one fragment, of kind ``quote``)."""
+    return [(text, kind) for text, _position, _items, _scope, kind in _fragments(block)]
 
 
 def quote_ranges(block: Block) -> list[tuple[str, range]]:
@@ -260,20 +257,16 @@ def quote_ranges(block: Block) -> list[tuple[str, range]]:
 
 
 def _fragments(
-    block: Block,
-    quotes: list[tuple[str, range]] | None = None,
-    definitions: list[int] | None = None,
-    holders: list[bool] | None = None,
-) -> list[tuple[str, bool, tuple[int, ...], int]]:
+    block: Block, quotes: list[tuple[str, range]] | None = None, definitions: list[int] | None = None
+) -> list[tuple[str, bool, tuple[int, ...], int, str]]:
     """``list_fragments`` of any block, each with its scope
-    (``fragment_scopes``): the one walk that numbers fragments, items and
+    (``fragment_scopes``) and the kind of block it is in (``fragment_kinds``): the one walk that numbers fragments, items and
     scopes, and finds the quotes (``quote_ranges``) when *quotes* is given, and,
     when *definitions* is, how many fragments come before each link reference
-    definition (#92), in the order of the definitions, and, when *holders* is, whether each
-    fragment can hold one (``definition_holders``)."""
+    definition (#92), in the order of the definitions."""
     from .parser import MAX_QUOTE_DEPTH, quote_content  # the parser builds on this module
 
-    fragments: list[tuple[str, bool, tuple[int, ...], int]] = []
+    fragments: list[tuple[str, bool, tuple[int, ...], int, str]] = []
     count = 0
     scope = 0  # the next scope number
 
@@ -306,9 +299,7 @@ def _fragments(
                     walk(child, depth + 1, path, False, False)
             elif block.text:
                 # Too deep to read: its text as one, its fenced code blanked.
-                fragments.append((blank_fenced_code(block.text), False, path, scope))
-                if holders is not None:
-                    holders.append(True)
+                fragments.append((blank_fenced_code(block.text), False, path, scope, block.kind))
                 scope += 1
             if quotes is not None:
                 quotes[slot] = (quotes[slot][0], range(at, len(fragments)))
@@ -316,9 +307,7 @@ def _fragments(
             if definitions is not None and block.kind == "link_definition":
                 definitions.append(len(fragments))
             own = _scoped_fragments(block)
-            fragments.extend((text, position and anchor, path, scope + number) for text, position, number in own)
-            if holders is not None:
-                holders.extend(block.kind not in ("heading", "table") for _fragment in own)
+            fragments.extend((text, position and anchor, path, scope + number, block.kind) for text, position, number in own)
             if own:
                 scope += max(number for _text, _position, number in own) + 1
 

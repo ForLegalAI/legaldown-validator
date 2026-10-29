@@ -33,7 +33,7 @@ def definition_ends(template, slots, label_end, definitions=True):
     """The readings of the definition whose label ends at *label_end* (``LABEL_RE``'s end), each as ``(angle, end,
     slot)``: its destination is a ``<…>``, where it ends (past a closed title or the title slot), and whether it
     ends in the title slot. *slots* is ``insertion_template(…)``. The bare reading only, and no title slot,
-    where *definitions* is False (the text cannot hold a definition: a heading, a table cell)."""
+    where *definitions* is False (the text cannot hold a definition: an ATX heading, a table cell)."""
     bare = BARE_DESTINATION_RE.match(template, label_end)
     readings = [(False, bare.end())]
     if definitions and (angle := ANGLE_DESTINATION_RE.match(template, label_end)):

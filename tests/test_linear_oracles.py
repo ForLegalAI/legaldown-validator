@@ -448,7 +448,7 @@ def assert_the_old_verdict_but_for_destinations(text, template, insertion, direc
     class, which it is exactly: a definition's destination (``in_definition_destination``), where it is "in a link
     reference definition" though the old one drew none (or the one of a link destination, whose line this is as
     well). Both ways: the class is flagged whatever the old verdict was, and nothing else changes. In text that cannot
-    hold a definition (a heading, a table cell) the verdict is the old one, whatever the class."""
+    hold a definition (an ATX heading, a table cell) the verdict is the old one, whatever the class."""
     old = old_insertion_boundary_problem(text, template, insertion, directives)
     new = fresh_problem(text, template, insertion, directives)
     if old in (None, _DESTINATION) and in_definition_destination(text, template, insertion, directives):

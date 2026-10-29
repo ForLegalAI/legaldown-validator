@@ -7,6 +7,7 @@ a dict has none, and its diagnostics carry no line.
 from __future__ import annotations
 
 import bisect
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -422,6 +423,23 @@ class Locator:
     def heading(self, section: int) -> int | None:
         return self._map.heading(section) if self._map else None
 
+    def setext_section(self, section: int) -> bool:
+        """Whether the heading of section *section* is written in the setext form (§4.1): its first
+        line is not an ATX heading's. False when that is not known (no source map, or the document
+        no longer fits it): a model is written in the ATX form."""
+        return self._map is not None and not _is_atx(self._map.lines[self._map.heading(section) - 1])
+
+    def setext_fragment(self, section: int | None, index: int, fragment: int) -> bool:
+        """Whether fragment *fragment* of top-level block *index*, the text of a ``heading`` block
+        among its blocks (in a list item or a quote), is written in the setext form. False when
+        that is not known, as for ``setext_section``."""
+        if self._map is None:
+            return False
+        for leaf in self._leaves_of(section, index) or ():
+            if fragment in leaf.places:
+                return not _is_atx(self._map.lines[leaf.start - 1])
+        return False
+
     def block(self, section: int | None, index: int) -> int | None:
         return self._map.block(section, index) if self._map else None
 
@@ -531,6 +549,14 @@ class Locator:
         if count != len(block_fragments(top)):
             return None
         return leaves
+
+
+# A line that opens an ATX heading (§4.1), after the block quote and list item markers it may be in.
+_ATX_LINE_RE = re.compile(r"(?:[ \t]*(?:>|(?:[-*+]|[0-9]{1,9}[.)])(?=[ \t])))*[ \t]*#{1,6}(?:[ \t]|$)")
+
+
+def _is_atx(line: str) -> bool:
+    return _ATX_LINE_RE.match(line) is not None
 
 
 def _walk_spans(spans: Any, blocks: Any, depth: int, base: int) -> Iterator[tuple[Any, Block, int, int]]:

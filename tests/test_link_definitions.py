@@ -902,10 +902,11 @@ def test_a_document_with_unreadable_frontmatter_is_checked_to_the_line():
         ("[a]: u {{ref: q}}\n", False),
         ("[a]: u {{ref: q}} {{placeholder: p}}\n", False),  # only an insertion could be the title
         ("[a]: u {{placeholder: p}} {{ref: q}}\n", False),
-        # A heading or a table cell holds no definition: read as before #119 (a bare destination, a closed title).
+        # An ATX heading or a table cell holds no definition: read as before #119 (a bare destination, a closed title).
         ("# [a]: u {{placeholder: p}}\n", False),
         ("# [a]: <x {{placeholder: p}} y>\n", False),
         ("- # [a]: u {{placeholder: p}}\n", False),
+        ("> # [a]: u {{placeholder: p}}\n", False),
         ("| x |\n|---|\n| [a]: u {{placeholder: p}} |\n", False),
         ("| [a]: <x {{placeholder: p}} y> |\n|---|\n| z |\n", False),
         ("# [a]: {{placeholder: p}}\n", True),
@@ -947,12 +948,27 @@ def test_an_insertion_after_a_title_or_in_a_destination_on_the_next_line_is_off_
         ("- [a]: u {{placeholder: p}}\n", [14]),
         ("> [a]: <x {{placeholder: p}} y>\n", [14]),
         ("[a]: <x y>\n[b]: <{{placeholder: p}} z>\n", [15]),
+        # A setext heading's text holds a definition: CommonMark takes it out of the paragraph before the underline.
+        ("[a]: u {{placeholder: p}}\n===\n", [14]),
+        ("[a]: u {{placeholder: p}}\n---\n", [14]),
+        ("- [a]: u {{placeholder: p}}\n  ===\n", [14]),
+        ("> [a]: u {{placeholder: p}}\n> ===\n", [14]),
     ],
 )
 def test_an_insertion_in_the_destination_of_a_definition_is_off_limits(body, lines):
     template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n  q:\n    type: boolean\n    prompt: Q?\n---\n\n# A\n\n" + body
     result = validate(parse(template))
     assert [d.line for d in result.diagnostics if d.rule == "insertion-boundary"] == lines
+
+
+def test_a_heading_of_a_model_without_a_source_is_read_as_an_atx_one():
+    """Where it is not known how a heading is written (the document no longer fits its source), it is the ATX
+    form that a model is saved in: it holds no definition."""
+    template = "---\ntitle: T\nquestions:\n  p:\n    type: text\n    prompt: P?\n---\n\n# A\n\n- [a]: u {{placeholder: p}}\n  ===\n"
+    document = parse(template)
+    assert "insertion-boundary" in validate(document).rules()
+    document.source_map = None
+    assert "insertion-boundary" not in validate(document).rules()
 
 
 # ── Known differences from CommonMark (CONFORMANCE.md) ────────────

@@ -387,9 +387,11 @@ class _InsertionScan:
 
     *directives* are all the directives lexed from *text*, and *template* is
     ``template_text(text, directives)``. *definitions* is whether *text* can hold a link
-    reference definition (``definitions.definition_holders``): a heading or a table cell
-    cannot, and a definition there is read as it was before #119 (a bare destination, a
-    closed title, no title slot)."""
+    reference definition: an ATX heading's or a table cell's cannot (a setext heading's can,
+    for CommonMark takes definitions out of a paragraph before it reads an underline), and a
+    definition there is read as it was before #119 (a bare destination, a closed title, no
+    title slot). The rule is per line (§15.7.3): a line that continues a paragraph, which is no
+    definition, is read as any other."""
 
     def __init__(self, text: str, template: str, directives: list[Directive], definitions: bool = True) -> None:
         self.text = text
@@ -698,7 +700,7 @@ def check_template_body(
     gives the lines."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
-    from ..definitions import definition_holders, find_definition_anchors, text_fragments
+    from ..definitions import find_definition_anchors, fragment_kinds
     from .units import include_key, paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
@@ -715,7 +717,10 @@ def check_template_body(
         for directive in lexed.directives:
             if directive.name in _INSERTIONS and not directive.malformed:
                 scan = scan or _InsertionScan(
-                    section.title, template_text(section.title, lexed.directives), lexed.directives, False
+                    section.title,
+                    template_text(section.title, lexed.directives),
+                    lexed.directives,
+                    definitions=where is not None and where.setext_section(heading),
                 )
                 line = where.heading(heading) if where is not None else None
                 _check_insertion(scan, directive, result, line)
@@ -723,7 +728,6 @@ def check_template_body(
     all_notes: list[tuple[Quote, Line]] = []
     for block_section, block_index, block in document.iter_indexed_blocks():
         notes: list[Quote] = []
-        holders: list[bool] | None = None  # which fragments can hold a definition, found for the first insertion
         firsts: list[str] = []  # the first lines of the quotes before
         for quote in block_quotes(block):
             first = quote.first_line.strip()
@@ -740,7 +744,7 @@ def check_template_body(
             elif quote.is_drafting_note:
                 notes.append(quote)
                 all_notes.append((quote, line))
-        for index, fragment in enumerate(text_fragments(block)):
+        for index, (fragment, kind) in enumerate(fragment_kinds(block)):
             lexed = lex_fragment(fragment)
             scan = None  # the fragment's, for its first insertion
             in_note = in_drafting_note(notes, index)
@@ -776,11 +780,12 @@ def check_template_body(
                 # A drafting note is removed before anything is inserted
                 # (§15.7.2 step 2), so a blank in one is never filled.
                 if directive.name in _INSERTIONS and not in_note:
-                    if scan is None:
-                        holders = holders if holders is not None else definition_holders(block)
-                        scan = _InsertionScan(
-                            fragment, template_text(fragment, lexed.directives), lexed.directives, holders[index]
-                        )
+                    scan = scan or _InsertionScan(
+                        fragment,
+                        template_text(fragment, lexed.directives),
+                        lexed.directives,
+                        definitions=_holds_definitions(kind, where, block_section, block_index, index),
+                    )
                     _check_insertion(scan, directive, result, line)
             # The insertions inside a term are those between its anchor and its directive. The
             # lexer emits directives in source order, so they are a slice of all, found by
@@ -807,6 +812,17 @@ def check_template_body(
     if template:
         _check_fragments(document, [(i.path, i.line) for i in includes if i.path and not i.in_note], result, where)
     return BodyScan(all_notes, includes)
+
+
+def _holds_definitions(kind: str, where: Locator | None, section: int | None, block: int, fragment: int) -> bool:
+    """Whether the text of a fragment, in a block of *kind*, can hold a link reference definition: not a
+    table cell, nor an ATX heading's text (a setext heading's can: the definition is taken out of the
+    paragraph before the underline is read, §4.7). A heading written in code is an ATX one."""
+    if kind == "table":
+        return False
+    if kind == "heading":
+        return where is not None and where.setext_fragment(section, block, fragment)
+    return True
 
 
 def _check_insertion(scan: _InsertionScan, insertion: Directive, result: _Recorder, line: Line = None) -> None:
