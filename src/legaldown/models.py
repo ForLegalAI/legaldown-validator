@@ -392,8 +392,9 @@ def _to_bool(value: Any, *, default: bool = False) -> bool:
 
 
 def _parse_str_dict(raw: Any, *, skip_blank: bool = False) -> dict[str, str]:
-    """Parse a dict with string keys and values, stripped; an entry whose key or value is null or empty
-    is skipped, and a whitespace-only one is kept as ``""``. With *skip_blank*, used for ``translations``
+    """Parse a dict with string keys and values, stripped; an entry whose raw key or value is falsy
+    (null, empty, ``0``, ``false``) is skipped, as on main, and a whitespace-only one is kept as ``""``.
+    With *skip_blank*, used for ``translations``
     only, one that is blank once stripped is skipped too, before it can overwrite a sibling written
     differently (``fr`` and ``' fr'``); ``field_types`` keeps a blank description, which is a declaration.
     The last of the entries kept stays; an exact duplicate key is YAML's to resolve (#126)."""

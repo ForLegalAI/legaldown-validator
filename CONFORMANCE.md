@@ -194,7 +194,7 @@ directive there); a use in the definition's own quoted term (`"Self {{term: s}}"
 declares, which is in force before the document (§7.5). A `{{def:}}` in a drafting note is no declaration either (assembly removes it, and `drafting-note-def` reports it); nor is it a missing identifier for the translation rules. A use is judged against the first declaration of its id that can appear with it (in a
 template, one that can appear and is not excluded from the use's presence, §15.4): a use between two alternatives
 is judged against the one it resolves to, a declaration that can never appear is no declaration, and a use that can
-never appear is no use. Each pair of presences is tested once, within a budget of its own of `MAX_EXCLUSION_TESTS` pair tests (see Limits). Past it a use is left unjudged, so fewer Infos are given, never a false one: a use that comes before every declaration of its id is still reported if one of them is known to fit. The files the document includes and
+never appear is no use. The pairs of presences tested are capped, within a budget of their own (`MAX_EXCLUSION_TESTS`, see Limits). Past it a use whose first compatible declaration cannot be told apart is left unjudged, so an Info can be missed but is never false. The files the document includes and
 attaches are not expanded, so a definition that only they declare is no declaration here (as
 `term-undefined` reads it). The auto-linking of §7.4 is not implemented, so a term written without
 `{{term:}}` is no use. `legaldown validate --strict` counts the Info, so a document that keeps its
@@ -880,9 +880,9 @@ time budget.)
 - **Circular definitions** test at most `MAX_EXCLUSION_TESTS` (4,000,000) pairs of conditions,
   about 5 s, past which alternatives are not told apart (see Alternatives above).
 - **`definition-used-before-declaration`** has its own budget of `MAX_EXCLUSION_TESTS` (4,000,000) pair
-  tests, each pair of presences tested once however many ids it concerns. Past it a use whose declaration
-  cannot be told apart is left unjudged (fewer Infos), the opposite lean to `definition-circular`, which
-  joins alternatives (more Warnings): an Info is better missed than given falsely.
+  tests, so its worst-case time adds to `definition-circular`'s. Past it a use whose declaration cannot be
+  told apart is left unjudged (fewer Infos), the opposite lean to `definition-circular`, which joins
+  alternatives (more Warnings): an Info is better missed than given falsely.
 - The walk of includes and the combinations of answers are capped as documented
   ([Include fragments](#include-fragments-122-1611-1612)).
 

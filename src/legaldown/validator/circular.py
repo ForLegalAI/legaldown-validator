@@ -143,9 +143,8 @@ def used_before_declaration(
     for group in declared.values():
         group.sort()
 
-    first: dict[tuple[str, Presence], tuple[tuple[tuple[int, int, int, int], int], bool] | None] = {}
+    first: dict[tuple[str, Presence], tuple[tuple[int, int, int, int], int] | None] = {}
     tests = 0  # the pairs of presences tested, at most MAX_EXCLUSION_TESTS
-    told: dict[tuple[Presence, Presence], bool] = {}  # each pair tested, once whatever the ids
 
     def compatible(use: Presence, declaration: Presence) -> bool | None:
         """Whether *declaration* can appear with a use of *use*; None when it cannot be told, the cap
@@ -156,31 +155,25 @@ def used_before_declaration(
         if not exclusivity.appears(declaration):
             return False
         # Presences that name no question in common can appear together (as for find_circular_definitions).
-        if set(exclusivity.questions(use)).isdisjoint(exclusivity.questions(declaration)):
+        if exclusivity.questions(use).isdisjoint(exclusivity.questions(declaration)):
             return True
-        if (use, declaration) not in told:
-            if tests >= MAX_EXCLUSION_TESTS:
-                return None
-            tests += 1
-            told[use, declaration] = not exclusivity.excluded(use, declaration)
-        return told[use, declaration]
+        if tests >= MAX_EXCLUSION_TESTS:
+            return None
+        tests += 1
+        return not exclusivity.excluded(use, declaration)
 
-    def first_declaration(
-        target: str, presence: Presence
-    ) -> tuple[tuple[tuple[int, int, int, int], int], bool] | None:
-        """The first declaration of *target* that can appear with *presence*, and whether it is
-        certain to be the first: None if there is none known. Past the cap a declaration may not be
-        told apart; the scan goes on, and the first one known to fit is not certain to be the first
-        (its caller judges the use against every declaration, then)."""
+    def first_declaration(target: str, presence: Presence) -> tuple[tuple[int, int, int, int], int] | None:
+        """The first declaration of *target* that can appear with *presence*; None if there is none, or
+        if one could not be told apart (past the cap): a use is then not judged, as an Info missed is
+        better than one given for a declaration it can never appear with."""
         if (target, presence) not in first:
             found = None
-            certain = True
             for each in declared[target]:
                 fits = compatible(presence, registered[each[1]][1])
                 if fits is None:
-                    certain = False
-                elif fits:
-                    found = (each, certain)
+                    break
+                if fits:
+                    found = each
                     break
             first[target, presence] = found
         return first[target, presence]
@@ -191,14 +184,11 @@ def used_before_declaration(
             continue
         if exclusivity is not None and not exclusivity.appears(use.presence):
             continue
-        found = first_declaration(use.target, use.presence)
-        if found is None:
+        declaration = first_declaration(use.target, use.presence)
+        if declaration is None:
             continue
-        declaration, certain = found
         written = place(use.section, use.block, use.before if use.fragment is None else use.fragment, use.offset)
-        # Not certain which declaration is the first that fits: the use is before it only if it is
-        # before every declaration of its id (an Info missed otherwise, not one that may be false).
-        if written < (declaration[0] if certain else declared[use.target][0][0]):
+        if written < declaration[0]:
             earlier.setdefault(declaration[1], []).append((written, use))
     for group in earlier.values():
         group.sort(key=lambda each: each[0])
