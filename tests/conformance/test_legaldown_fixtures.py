@@ -100,14 +100,15 @@ _FULL_WITH_A_LOADER = {
 
 # Expected lines this implementation disputes, by case (file or directory
 # name), rule and level: each points elsewhere than the node the diagnostic
-# is about, as the corpus's other cases do (ForLegalAI/LegalDown#42).
+# is about, as the corpus's other cases do (ForLegalAI/LegalDown#42). The value
+# is the line asserted instead, so that a regression is still caught.
 _DISPUTED_LINES = {
     # Line 10 is the second side; the duplicate party is its entry at line 12,
     # as side-name-duplicate and representative-name-empty point at theirs.
-    ("basic.lgd", "party-name-duplicate", "error"),
+    ("basic.lgd", "party-name-duplicate", "error"): 12,
     # Line 8 is the second attachment's title; the duplicate id is written at line 7, on the
     # entry's own `- id:`, as attachment-id-collision's is.
-    ("attachment-id-duplicate", "attachment-id-duplicate", "error"),
+    ("attachment-id-duplicate", "attachment-id-duplicate", "error"): 7,
 }
 
 
@@ -285,9 +286,12 @@ def test_invalid_fixture_reports_expected_rule(case: Path):
         )
         # The line, where the case gives one (§16.9) — but for the answer
         # rules, whose line is in the answers file, which assembly receives
-        # parsed — and where the corpus is not known to be wrong (below).
+        # parsed — and where the corpus is not known to be wrong (_DISPUTED_LINES: the line
+        # asserted instead).
         line = diag.get("line")
-        if line is not None and "answers" not in config and (case.name, *want) not in _DISPUTED_LINES:
+        if line is not None:
+            line = _DISPUTED_LINES.get((case.name, *want), line)
+        if line is not None and "answers" not in config:
             assert (*want, line) in located, (
                 f"expected {want} at line {line}; got it at "
                 f"{sorted(d.line or 0 for d in result.diagnostics if (d.rule, d.level) == want)}"
