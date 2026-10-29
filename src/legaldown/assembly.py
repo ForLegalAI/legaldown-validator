@@ -47,7 +47,7 @@ from datetime import date
 from functools import cache
 from itertools import islice
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ._deprecation import LegaldownDeprecationWarning
 from .definitions import list_fragments
@@ -86,11 +86,12 @@ from .validator.fragments import (
     FragmentFile,
     FragmentKind,
     IncludeBudget,
-    _Chain,
     closes,
     cycle_message,
+    extend,
     fragment_findings,
     nested_includes,
+    not_legaldown,
     noun,
     too_deep,
 )
@@ -111,6 +112,9 @@ from .validator.templates import (
     question_type,
 )
 from .validator.units import block_include, find_markers, include_key, own_presence
+
+if TYPE_CHECKING:
+    from .validator.fragments import _Chain
 
 __all__ = [
     "frontmatter_diagnostic",
@@ -492,6 +496,7 @@ class _Include:
     end: int
     path: str  # as written, normalised: from the directory of the file that holds it
     source: str  # the directive as written
+    written: str = ""  # its path as written
     section: int | None = None  # the section of its file that holds it (None: before the first)
     #: The file it takes in, by its path from the template's directory (the key of ``_Template.subs``):
     #: set when it is resolved, else "".
@@ -605,7 +610,7 @@ def _read_paragraph(
     # (#35). One that names no file (``{{include:}}``) has the path "", refused in ``_read_files``.
     include = block_include(block)
     if include is not None:
-        source.includes.append(_Include(span.start, span.end, include_key(include), include.source, section))
+        source.includes.append(_Include(span.start, span.end, include_key(include), include.source, include.positional or "", section))
 
 
 def _read_list(source: _Source, span: _BlockSpan, block: Block, markers: list, questions: Any) -> None:
@@ -967,6 +972,9 @@ class _Fragments:
         self._spliceable: dict[str, bool] = {}  # of the fragments read: no frontmatter, no level 1 heading
         self._unreadable: set[str] = set()  # reported once, however often it is referenced
         self._placed: dict[str, dict[int | None, list[tuple[int, _Include]]]] = {}
+        self._fragments: dict[str, FragmentFile] = {}  # of the files read, by the path they are known by here
+        self._attached: set[str] = set()  # the attachment files already checked as such
+        self._cyclic: list[_Include] = []  # the includes that closed a cycle, in any chain they were met in
         self._budget = IncludeBudget()
         self._met: set[tuple[str, int]] = set()  # the includes (file, number) already judged
         self._capped: set[str] = set()
@@ -987,29 +995,65 @@ class _Fragments:
             return self.subs[path]
         if path in self._unreadable:
             return None
-        text = self._load_file(path) if self._load_file is not None else None
-        if text is None:
+        # The file is parsed once, by ``Files``, whoever asks for it first (a check of a cycle asks too).
+        read = self._files.read(path)
+        if read is None:
             if report:
                 self.refuse(path, kind, file, line)
             return None
-        text, newline = _unix(text)
-        try:
-            document = parse(text)
-        except FrontmatterError as exc:
+        document = read.document
+        if document.frontmatter_error is not None:
             # What plain `validate` reports of a document with this frontmatter, with
             # its message and line, in the file it is in. (`validate(fragment=True)`
             # reports include-has-frontmatter instead, by design: a fragment must
             # have none.)
             self._unreadable.add(path)
-            self.problems.append(frontmatter_diagnostic(exc, file=path))
+            self.problems.append(frontmatter_diagnostic(document.frontmatter_error, file=path))
             return None
+        text, newline = _unix(read.text)
         _front, body = _split(text, document)
         source = self.subs[path] = _read_body(path, body, document, self._declared, template=self._template)
         source.newline = newline
-        fragment = FragmentFile(path, document)
+        fragment = self._fragments[path] = FragmentFile(path, document)
         self._spliceable[path] = fragment.spliceable
         self.problems += _file_problems(fragment, kind, self._template)
         return source
+
+    def attach(self, path: str) -> None:
+        """The checks of an attachment file on the file at *path*, which is also an include fragment, and was
+        read as one: an include in it is not assembled (``_attachment_includes``), once however often it is
+        attached. (The rest of what is checked of a file is the same for both, or was found by the first.)"""
+        if path in self._fragments and path not in self._attached and not self._template:
+            self._attached.add(path)
+            self.problems += _attachment_includes(self._fragments[path], cache(lex))
+
+    def resolve(
+        self, base: str, include: _Include, file: str, line: int, *, top: bool = False, report: bool = True
+    ) -> str | None:
+        """The path from the template's directory of the file that *include*, which lies in *file* at *line* (in
+        the directory *base*), names, or None when it is refused: it is not a LegalDown file
+        (``include-not-legaldown``), or is not a path that can be read (``include-file-missing``, which
+        includes one that leads out of the directory without a document root that holds it: the
+        validator leaves that unread and warns, but assembly cannot do without the file). The
+        validator judges the path of an include of the template (*top*) first, as a file reference
+        (``path-not-relative``, ``path-outside-root``), and judges nothing else of it; assembly refuses it
+        as unreadable."""
+        relative, problem = self._files.locate(base, include.path)
+        message = not_legaldown(include.path, include.written)
+        if message is not None and not (top and problem in ("not-relative", "outside-root")):
+            if report:
+                self.problems.append(Diagnostic("include-not-legaldown", "error", message, line=line, file=file))
+            return None
+        if relative is None and report:
+            self.refuse(include.path, "include", file, line)
+        return relative
+
+    def finish(self) -> None:
+        """Take the target from each include that closed a cycle: an include is shared by every place its
+        file is included, and a cycle is refused only in the chain it was met in, so the targets
+        could lead round (and the template is refused for it anyway)."""
+        for include in self._cyclic:
+            include.target = ""
 
     def spliceable(self, path: str) -> bool:
         """Whether the file at *path*, which was read, is a fragment in the sense of §12.2 (``FragmentFile.spliceable``):
@@ -1057,14 +1101,14 @@ class _Fragments:
             self._capped.add(cap)
             self.problems.append(Diagnostic(
                 INCLUDE_LIMIT_RULE, "error",
-                f"The include limit is reached: {cap}. The document is not assembled.",
+                f"Assembly stopped at its limit on {cap}; the document is not assembled.",
                 line=line, file=file,
             ))
 
     def _follow(self, owner: _Source, number: int, include: _Include, chain: _Chain) -> None:
         """The *number*th include paragraph of *owner*, followed in the order ``_Walk.attempt`` judges it: it
-        names a file, a path that can be read from the directory of *owner*, no file of *chain* (or the
-        template), not deeper than the cap, a file that is there. What is wrong is reported once,
+        names a file, is a LegalDown file, a path that can be read from the directory of *owner*, no file of
+        *chain* (or the template), not deeper than the cap, a file that is there. What is wrong is reported once,
         the first time the include is met (a fragment is followed at each place it is included)."""
         key = (owner.path, number)
         first = key not in self._met
@@ -1076,12 +1120,11 @@ class _Fragments:
             if first:
                 self.problems.append(_no_file(include, file, line))
             return
-        relative, _problem = self._files.locate(posixpath.dirname(owner.path), include.path)
+        relative = self.resolve(posixpath.dirname(owner.path), include, file, line, report=first)
         if relative is None:
-            if first:
-                self.refuse(include.path, "include", file, line)
             return
         if closes(self._files, chain, relative):
+            self._cyclic.append(include)
             if first:
                 self.problems.append(Diagnostic(
                     "include-cycle", "error", cycle_message(self._files, include.source, chain, relative),
@@ -1094,7 +1137,7 @@ class _Fragments:
         include.target = relative
         target = self.read(relative, "include", file, line, report=first)
         if target is not None and self.spliceable(relative):
-            self.expand(target, _Chain((*chain.paths, relative), chain.keys | {self._files.key(relative)}))
+            self.expand(target, extend(self._files, chain, relative))
 
 
 def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
@@ -1116,29 +1159,33 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
         if not include.path:
             continue
         line = include.start + 1 + rows
-        # Only a path within the template's directory, or its document root (§2.3), is asked
+        # Only a LegalDown file within the template's directory, or its document root (§2.3), is asked
         # for: a loader is not handed ``../x`` without one, an absolute path or a drive letter.
-        relative, _problem = files.locate("", include.path)
+        relative = reading.resolve("", include, "", line, top=True)
         if relative is None:
-            reading.refuse(include.path, "include", line=line)
             continue
-        if not template and closes(files, _Chain(), relative):  # the template itself
+        if not template and closes(files, None, relative):  # the template itself
             problems.append(Diagnostic(
-                "include-cycle", "error", cycle_message(files, include.source, _Chain(), relative), line=line,
+                "include-cycle", "error", cycle_message(files, include.source, None, relative), line=line,
             ))
             continue
         include.target = relative
         source = reading.read(relative, "include", line=line)
         if source is not None and not template and reading.spliceable(relative):
-            reading.expand(source, _Chain((relative,), frozenset({files.key(relative)})))
+            reading.expand(source, extend(files, None, relative))
+    attached: set[str] = set()
     for item in items:
-        if not item.file or item.file in reading.subs:
+        if not item.file or item.file in attached:
             continue
+        attached.add(item.file)
         relative, _problem = files.locate("", item.file)
         if relative is None:
             reading.refuse(item.file, "attachment")
+        elif relative in reading.subs:
+            reading.attach(relative)  # also an include fragment: read as one, and still an attachment file
         else:
             reading.read(relative, "attachment")
+    reading.finish()
     return reading.subs, problems
 
 
@@ -1162,20 +1209,25 @@ def _file_problems(fragment: FragmentFile, kind: FragmentKind, template: bool) -
         for finding in fragment_findings(fragment, kind=kind, template=template, lex_fragment=lexed)
     ]
     # Outside a template an include in an include fragment is followed (``_Fragments``, §12.2), but an
-    # attachment file is not one: assembly does not assemble an include in it, and refuses (an include in
-    # a drafting note is removed with it, unread, §15.6). In a template it is
-    # template-fragment-invalid (reported above).
+    # attachment file is not one: assembly does not assemble an include in it, and refuses. In a template
+    # it is template-fragment-invalid (reported above).
     if not template and kind == "attachment":
-        problems += [
-            Diagnostic(
-                "include-file-missing", "error",
-                f"{noun(kind, 'the').capitalize()} holds '{source}'; an include in an attached "
-                f"file is not assembled, so the template is not assembled.",
-                line=line, file=path,
-            )
-            for source, line in nested_includes(fragment, lexed)
-        ]
+        problems += _attachment_includes(fragment, lexed)
     return problems
+
+
+def _attachment_includes(fragment: FragmentFile, lexed: Callable[[str], Any]) -> list[Diagnostic]:
+    """An include in an attachment file of a document that is not a template, which assembly does not
+    assemble (an include in a drafting note is removed with it, unread, §15.6): one for each, at its line."""
+    return [
+        Diagnostic(
+            "include-file-missing", "error",
+            f"{noun('attachment', 'the').capitalize()} holds '{source}'; an include in an attached "
+            f"file is not assembled, so the template is not assembled.",
+            line=line, file=fragment.path,
+        )
+        for source, line in nested_includes(fragment, lexed)
+    ]
 
 
 def _malformed(*sources: _Source, front: _Frontmatter | None) -> list[Diagnostic]:
@@ -1391,9 +1443,8 @@ def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decisi
             use(occ)
     walked: set[str] = set()
 
-    # A file included twice is kept or removed as its last include says (in the order the files were
-    # read, which is the document's: a fragment's includes follow the fragment).
-    last = {include.target: include for source in (t.main, *t.subs.values()) for include in source.includes}
+    # A file included twice is kept or removed as its last include says.
+    last = _last_includes(t)
 
     def visit(path: str, source: _Source) -> None:
         """Decide *source*, and with it which of the files it includes are present (those of a template's
@@ -1420,6 +1471,28 @@ def _decide(t: _Template, answers: _Answers, *, inline: bool = False) -> _Decisi
         if decision.files.get(path) and path not in walked:
             visit(path, source)
     return decision
+
+
+def _last_includes(t: _Template) -> dict[str, _Include]:
+    """The last include of each file in the order of the combined document (§15.7.2 step 7): the includes of
+    a file in the order they are written, each followed by those of the file it takes in. A fragment
+    included from two places is in both, so the include of it that is last is not told by the order the files
+    were read in. Worked out for each file once, from the last includes of the files it includes, so
+    that a tree that includes the same file many times is not walked as many times."""
+    done: dict[str, dict[str, _Include]] = {}
+
+    def last_in(path: str, source: _Source, walking: frozenset[str]) -> dict[str, _Include]:
+        if path not in done:
+            found: dict[str, _Include] = {}
+            for include in source.includes:
+                found[include.target] = include
+                nested = t.subs.get(include.target)
+                if nested is not None and include.target not in walking:
+                    found.update(last_in(include.target, nested, walking | {include.target}))
+            done[path] = found
+        return done[path]
+
+    return last_in("", t.main, frozenset({""}))
 
 
 def _walk(
@@ -2349,21 +2422,23 @@ def _combined(texts: dict[str, list[str]], includes: dict[str, dict[int, tuple[i
     with the line it ends before, and the file. (A fragment included twice is
     spliced twice, and a heading of it is known by the last place it has.)"""
 
-    def splice(path: str) -> list[_Row]:
+    def splice(path: str, within: frozenset[str]) -> list[_Row]:
         rows: list[_Row] = []
         lines, at = texts[path], includes.get(path, {})
         index = 0
         while index < len(lines):
-            if index in at:
+            # (A file that is already being spliced is not spliced again: a cycle is refused, so none is
+            # met, but this must end whatever it is given.)
+            if index in at and at[index][1] not in within:
                 end, target = at[index]
-                rows += [("", None), *splice(target), ("", None)]
+                rows += [("", None), *splice(target, within | {target}), ("", None)]
                 index = end
                 continue
             rows.append((lines[index], (path, index)))
             index += 1
         return rows
 
-    return splice("") + attachments
+    return splice("", frozenset({""})) + attachments
 
 
 def _identifiers(head: str, rows: list[_Row]) -> dict[_Key, tuple[str, bool]]:

@@ -279,7 +279,7 @@ class Template:
         t = self._t
         problems = list(t.problems)
         if self._check:
-            includes = any(include.path in t.subs for include in t.main.includes)
+            includes = any(include.target in t.subs for include in t.main.includes)
             rules = TEMPLATE_RULES if includes else TEMPLATE_RULES | _ALONE_ONLY
             # The validator reads the fragments and attachment files as well, and says what
             # is wrong with them where it is (#35). Assembly has read the same files and
