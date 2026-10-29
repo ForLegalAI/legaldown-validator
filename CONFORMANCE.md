@@ -206,7 +206,7 @@ codes of the registry (`legaldown.grammar.ISO_639_1_CODES`, beside `KNOWN_CURREN
 registry has them: `EN`, `en-US` and `eng` draw the Warning once, at the line of the value, which says
 what to write (a `translations` key is also the path's lookup key, and `authoritative` is compared with the
 keys exactly). The check covers `language`, a non-empty `authoritative`, and each `translations` key (found by the
-key as stripped, if it is written padded; a `translations` entry whose key or value is null, empty or blank once stripped is ignored when the frontmatter is read, and of keys that are the same once stripped the last stays; where a padded or repeated key is found is [#126](https://github.com/ForLegalAI/legaldown-validator/issues/126)); a value holding a `{{placeholder:}}` is
+key as stripped, at the line where it is written, padded; a `translations` entry whose key or value is null, empty or blank once stripped is ignored when the frontmatter is read, and of keys that are the same once stripped the last stays, as `ldv-frontmatter-key-duplicate` below reports); a value holding a `{{placeholder:}}` is
 `placeholder-in-structural-field`'s alone. `authoritative` must equal the document's `language` or a
 `translations` key. §3.2 gives `language` no default, so the model holds none (`Metadata.language` is `""` for a
 document that says none, an empty `language:` included, and `empty_document()` says `"en"`), and
@@ -217,6 +217,35 @@ writing it back. **A value that is no code is
 no language**, so the checks that compare languages judge only the codes that passed (the rule of §16.6, that a value that fails one
 format check is exempt from the checks that assume it): `language: english` with `authoritative: en` draws
 `language-code-invalid` alone, and so does a `translations` key that might have been the authoritative.
+
+**`ldv-frontmatter-key-duplicate`** (#126) reports a frontmatter entry that another one replaces, at its own
+line, so that it does not go silently. The id is this implementation's own (§16.1, `ldv-`;
+`legaldown.grammar.FRONTMATTER_KEY_DUPLICATE_RULE`): the specification has no rule for it. Two cases, one id:
+
+- **A key written twice in a mapping**, in any mapping of the frontmatter (`title:` twice; `fr:` twice in
+  `translations`; a party's `name:` twice). YAML does not allow it, and a strict loader fails the document
+  as `frontmatter-invalid-yaml`; this implementation's YAML reader keeps the last, as PyYAML does. The earlier
+  entry, which the model never holds, is the one reported, and the finding says at which line the last is. An
+  Error. Only the keys a mapping writes count: a key that a `<<` merge brings in and the mapping also writes is
+  not a repeat (the written one is read), and two `<<` keys are not either. Where the repeated key is looked up (the
+  line of any other finding about it), it is the last one's.
+- **Two keys of `translations` or `field_types` that are one once stripped** (`fr` and `' fr'`): the reader
+  strips these keys ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)), so they would be one
+  entry, and the model keeps the last of them in the order the model holds them (`fr: a`, `' fr': b`, `fr: c`
+  keeps the entry at the second line, not the last written). Each one that does not stay is reported at its
+  own line, and the finding names the line of the one that does. An Error for `field_types`, where the padded
+  key is `field-type-key-format`'s Error already, but a **Warning for `translations`**: the specification judges
+  a padded language code a Warning (`language-code-invalid`), and a rule of this implementation's own does not
+  fail a document that the specification only warns of. Only these two maps are keyed by the stripped key
+  (a party's custom fields are a list, and `questions` keys are kept as written), so the second case is
+  complete. A `translations` entry that is blank once stripped is skipped before it can replace a sibling
+  (#116), so it draws nothing; a blank `field_types` description is a declaration, and does.
+
+Every other check finds the padded key at its own line (`language-code-invalid`, `path-not-relative`,
+`field-type-key-format`, `placeholder-in-structural-field`), and the path of the entry that stays is the one judged.
+A document built from a dict has no source map, so it draws no finding; neither does a document whose body
+was changed after it was parsed, nor an entry the model no longer holds. A fragment (`fragment=True`) has no
+metadata to check.
 
 `translation-implicit-id` (§16.7, Error) and `translation-authoritative-absent` (§16.7, Warning) are the
 single-file translation rows that §17.2 makes Core: the identifiers of the document itself. **A file is a
@@ -842,7 +871,9 @@ for a check of its own, namespaced with a prefix that ends in a hyphen (`ldv-`,
 assigns later can collide with it. It is not in the fixtures corpus (`coverage.json`) and no fixture
 expects or forbids it. It is a Warning for every output, so `is_valid` and the exit status are
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
-Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)).
+Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
+validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
+(`translations` and `field_types`, #126) and not a skipped one.
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct
