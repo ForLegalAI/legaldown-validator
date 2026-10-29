@@ -1,7 +1,8 @@
-"""Frontmatter entries that another replaces (#126): a key written twice in a mapping, which YAML's reader
-resolves to the last, and the keys of ``translations`` and ``field_types`` that are one once stripped
-(``fr`` and ``' fr'``). Each is reported at its own line as ``ldv-frontmatter-key-duplicate``, and a padded
-key is found at its own line by the rules that report on one."""
+"""Entries of ``translations`` and ``field_types`` that another replaces (#126): the model reads the keys of
+these maps as text, stripped, so the same key written twice, ``1`` and ``'1'``, and ``fr`` and ``' fr'`` are
+one entry. Each entry that does not stay is reported at its own line as ``ldv-frontmatter-key-duplicate``,
+and a padded key is found at its own line by the rules that report on one. Other mappings are not checked
+(#131)."""
 from __future__ import annotations
 
 import random
@@ -12,7 +13,7 @@ import pytest
 from legaldown import parse
 from legaldown.grammar import FRONTMATTER_KEY_DUPLICATE_RULE, IMPLEMENTATION_RULE_PREFIX
 from legaldown.models import Section
-from legaldown.positions import line_breaks, read_maps, written_keys, written_maps
+from legaldown.positions import line_breaks, read_maps, written_maps
 from legaldown.validator import validate
 
 RULE = "ldv-frontmatter-key-duplicate"
@@ -51,7 +52,7 @@ def test_the_message_names_both_entries():
     result = validate(parse(_source("translations:\n  ' fr': a.lgd\n  fr: b.lgd\n")))
     (diagnostic,) = [d for d in result.diagnostics if d.rule == RULE]
     assert diagnostic.message == (
-        "The translations key \"' fr'\" is the same key as 'fr' once read as text and stripped: this entry is "
+        "The translations key \"' fr'\" is the same key as 'fr' once stripped: this entry is "
         "ignored, and the entry at line 5 is the one read."
     )
 
@@ -100,7 +101,7 @@ def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
     messages = [d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
     assert messages == [
         "The translations key '1' is written again: this entry is ignored, and the entry at line 6 is blank, so no entry is kept.",
-        "The translations key '1' is the same key as '\"1\"' once read as text and stripped: this entry is ignored, "
+        "The translations key '1' is the same key as '\"1\"' once read as text: this entry is ignored, "
         "and the entry at line 6 is blank, so no entry is kept.",
     ]
     # a blank entry that is not the last of its key is no reason to say so
@@ -108,72 +109,7 @@ def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
     assert all("is the one read" in d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE)
 
 
-# ── a key written twice, in any mapping ──
-
-@pytest.mark.parametrize("front,lines", [
-    ("translations:\n  fr: x\n  other: y\n  fr: z\n", [4]),
-    ("field_types:\n  a: x\n  other: y\n  a: z\n", [4]),
-    ("title: Again\n", [2]),
-    ("governing_law: a\ngoverning_law: b\ngoverning_law: c\n", [3, 4]),
-    ("sides:\n  - name: a\n    name: b\n    parties:\n      - name: p\n        type: person\n", [4]),
-])
-def test_a_repeated_key_is_reported_at_each_earlier_entry(front, lines):
-    assert [line for rule, level, line in _found(front) if level == "error"] == lines
-    assert {rule for rule, *_ in _found(front)} == {RULE}
-
-
-def test_title_written_twice_is_reported_at_the_earlier_line_and_the_model_keeps_the_last():
-    document = parse("---\ntitle: First\nlegaldown: '0.1'\ntitle: Last\n---\n\n# S {#s}\n\nText.\n")
-    assert document.metadata.title == "Last"
-    assert document.source_map.key("title") == 4  # the line of the entry the model holds
-    result = validate(document)
-    (diagnostic,) = [d for d in result.diagnostics if d.rule == RULE]
-    assert (diagnostic.level, diagnostic.line) == ("error", 2)
-    assert diagnostic.message == (
-        "The frontmatter key 'title' is written again: this entry is ignored, and the entry at line 4 is the one read."
-    )
-
-
-def test_a_repeat_names_the_mapping_it_is_in():
-    result = validate(parse(_source("sides:\n  - name: a\n    name: b\n")))
-    (diagnostic,) = [d for d in result.diagnostics if d.rule == RULE]
-    assert diagnostic.message.startswith("The sides[0] key 'name' is written again")
-    assert diagnostic.message.endswith("the entry at line 5 is the one read.")
-
-
-def test_a_plain_name_is_not_bracketed_whatever_its_script():
-    result = validate(parse(_source("sides:\n  - název: a\n    název: b\n")))
-    (diagnostic,) = [d for d in result.diagnostics if d.rule == RULE]
-    assert diagnostic.message.startswith("The sides[0] key 'název' is written again")
-
-
-def test_a_key_merged_in_and_written_is_not_a_repeat():
-    front = "base: &base\n  fr: a.lgd\ntranslations:\n  <<: *base\n  fr: b.lgd\n"
-    document = parse(_source(front))
-    assert document.metadata.translations == {"fr": "b.lgd"}  # the written key wins over the merged one
-    assert _found(front) == []
-
-
-def test_a_root_key_merged_in_and_written_is_not_a_repeat():
-    front = "base: &base\n  governing_law: x\n<<: *base\ngoverning_law: y\n"
-    assert parse(_source(front)).metadata.governing_law == "y"
-    assert _found(front) == []
-
-
-def test_two_merge_keys_are_not_a_repeat():
-    front = "one: &one\n  a: 1\ntwo: &two\n  b: 2\ntranslations:\n  <<: *one\n  <<: *two\n"
-    assert _found(front) == []
-
-
-def test_a_repeat_inside_an_anchor_is_reported_once_though_merged_twice():
-    front = "base: &base\n  fr: a\n  fr: b\ntranslations:\n  <<: *base\nfield_types:\n  <<: *base\n"
-    assert _found(front) == [(RULE, "error", 4)]
-
-
-def test_an_aliased_key_is_at_the_line_of_its_anchor():
-    front = "a: &k fr\ntranslations:\n  *k : a.lgd\n  ' fr': b.lgd\n"
-    assert _found(front) == [(RULE, "warning", 3)]
-
+# ── the same key written twice, or read as one ──
 
 @pytest.mark.parametrize("name", ["translations", "field_types"])
 def test_a_value_that_refers_to_itself_is_read_as_before(name):
@@ -184,67 +120,32 @@ def test_a_value_that_refers_to_itself_is_read_as_before(name):
     assert _found(front) == [(RULE, "warning" if name == "translations" else "error", 4), (RULE, "error", 6)]
 
 
-def test_a_key_merged_into_a_mapping_that_is_merged_in_is_not_a_repeat():
-    # `base` writes `fr` itself and merges `other`'s `fr` in; the root then merges `base`, which brings
-    # both into the root's own list. Neither is a repeat.
-    front = "other: &other\n  fr: x\nbase: &base\n  <<: *other\n  fr: y\n<<: *base\n"
-    assert _found(front) == []
-    assert _found("other: &other\n  fr: x\nbase: &base\n  <<: *other\n  fr: y\n  fr: z\n<<: *base\n") == [
-        (RULE, "error", 7)
-    ]
-
-
-def test_a_key_merged_in_and_written_is_found_at_the_written_key():
-    document = parse("---\nbase: &base\n  governing_law: x\n<<: *base\ngoverning_law: y\n---\n\n# S {#s}\n")
-    assert document.metadata.governing_law == "y"
-    assert document.source_map.key("governing_law") == 5
+def test_a_key_merged_into_a_map_and_written_is_found_at_the_written_entry():
     document = parse("---\nbase: &base\n  fr: x\nfield_types:\n  <<: *base\n  fr: y\n---\n\n# S {#s}\n")
     assert document.source_map.key("field_types", "fr") == 6
 
 
-def test_one_key_node_written_twice_by_an_alias_is_one_repeat_at_its_anchor():
-    document = parse("---\n&k governing_law: A\n*k : B\n---\n\n# S {#s}\n")
-    assert document.metadata.governing_law == "B"
-    assert document.source_map.key("governing_law") == 2  # not the frontmatter's opening line
-    assert [(r.key, r.line, r.stays) for r in document.source_map.repeats] == [("governing_law", 2, 2)]
-    assert [d.line for d in validate(document).diagnostics if d.rule == RULE] == [2]
-
-
-@pytest.mark.parametrize("keys", [("1", "'1'"), ("null", "'null'"), ("fr", '"fr"')])
-def test_keys_that_the_model_reads_as_one_are_a_repeat_in_any_mapping(keys):
-    # The model reads `1` and `'1'`, `null` and `'null'` as the same text: one of them is lost.
-    first, second = keys
-    front = f"questions:\n  {first}:\n    type: text\n  {second}:\n    type: text\n"
-    assert len(parse(_source(front)).metadata.questions) == 1
-    assert _found(front) == [(RULE, "error", 4)]
-
-
 @pytest.mark.parametrize("name,level", [("translations", "warning"), ("field_types", "error")])
-def test_keys_written_differently_that_read_alike_draw_the_level_of_a_stripped_key(name, level):
+def test_keys_that_are_different_yaml_keys_read_as_one_text_draw_the_level_of_a_stripped_key(name, level):
     front = f"{name}:\n  1: a\n  '1': b\n"
     assert getattr(parse(_source(front)).metadata, name) == {"1": "b"}
     assert _found(front) == [(RULE, level, 4)]
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert "is the same key as \"'1'\" once read as text and stripped" in diagnostic.message
-    assert _found(f"{name}:\n  1: a\n  1: b\n") == [(RULE, "error", 4)]  # written the same: invalid YAML
+    assert "is the same key as \"'1'\" once read as text:" in diagnostic.message  # no padding is involved
 
 
-def test_a_key_repeated_in_a_merge_source_counts_its_own_keys():
-    assert _found("<<:\n  governing_law: a\n  governing_law: b\n") == [(RULE, "error", 4)]  # inline, at the root
-    front = "base: &base\n  name: a\n  name: b\nsides:\n  - <<: *base\n"
-    assert _found(front) == [(RULE, "error", 4)]  # once, though the source is walked as a merge source too
-    front = "sides:\n  - <<: {name: a, name: b}\n"
+@pytest.mark.parametrize("name", ["translations", "field_types"])
+@pytest.mark.parametrize("keys", [("fr", "fr"), ("fr", '"fr"'), ("'fr'", "fr"), ("1", "1"), ("null", "null")])
+def test_the_same_yaml_key_written_twice_is_an_error(name, keys):
+    # Invalid YAML (a strict reader fails the document), though the model reads it: an Error in both maps.
+    front = f"{name}:\n  {keys[0]}: a\n  {keys[1]}: b\n"
     assert _found(front) == [(RULE, "error", 4)]
-    document = parse("---\n<<:\n  governing_law: a\n  governing_law: b\n---\n\n# S\n")
-    assert document.metadata.governing_law == "b" and document.source_map.key("governing_law") == 4
 
 
-def test_a_mapping_shared_through_an_alias_is_reported_once():
-    front = "x: &t {fr: a, fr: b}\ntranslations: *t\n"
-    assert _found(front) == [(RULE, "error", 3)]
+def test_a_key_is_shown_as_written_with_its_escapes():
+    front = 'translations:\n  "a\\nb": x\n  "a\\nb ": y\n'
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert diagnostic.message.startswith("The translations key 'fr' ")  # by the reporter of the map
-    assert _found("x: &t {fr: a, fr: b}\ny: *t\n") == [(RULE, "error", 3)]
+    assert diagnostic.message.startswith("The translations key '\"a\\nb\"' is the same key as '\"a\\nb \"' once stripped")
 
 
 def test_a_repeat_whose_last_entry_is_blank_says_that_no_entry_is_kept():
@@ -262,13 +163,6 @@ def test_a_repeat_whose_last_entry_is_blank_is_still_judged_after_an_unrelated_e
     document = parse(_source('translations:\n  fr: a.lgd\n  fr: ""\n'))
     document.metadata.title = "Changed"
     assert [d.line for d in validate(document).diagnostics if d.rule == RULE] == [4]
-
-
-def test_messages_quote_every_key_and_name_a_path_unambiguously():
-    result = validate(parse(_source("sides:\n  - 'a.b':\n      x: 1\n      x: 2\n")))
-    assert [d.message for d in result.diagnostics if d.rule == RULE] == [
-        "The sides[0]['a.b'] key 'x' is written again: this entry is ignored, and the entry at line 6 is the one read."
-    ]
 
 
 def test_an_exact_repeat_is_not_reported_once_the_model_no_longer_holds_the_key():
@@ -333,7 +227,6 @@ def test_fragments_are_not_checked():
     ("translations:\n  fr: a\n  ' fr': b\n", "warning"),  # `language-code-invalid` is a Warning
     ("field_types:\n  a: a\n  a: b\n", "error"),
     ("field_types:\n  a: a\n  ' a': b\n", "error"),  # `field-type-key-format` is an Error
-    ("title: a\n", "error"),  # `title: T` is written above
 ])
 def test_the_level_depends_on_the_case(front, level):
     assert [lvl for _rule, lvl, _line in _found(front)] == [level]
@@ -410,8 +303,8 @@ def test_read_maps_takes_the_model_s_value_for_the_entry_that_stays():
     document = parse(_source(front))
     stays = document.source_map.maps["translations"].stays
     assert {key: entry.line for key, entry in stays.items()} == {"fr": 5, "de": 6}
-    assert [(i.entry.written, i.by.written, i.again, i.held) for i in document.source_map.maps["translations"].ignored] == [
-        ("fr", "' fr'", 0, True)
+    assert [(i.entry.written, i.by.written, i.why, i.held) for i in document.source_map.maps["translations"].ignored] == [
+        ("fr", "' fr'", "stripped", True)
     ]
 
 
@@ -422,8 +315,7 @@ def test_written_maps_and_read_maps_are_the_parsers_pair():
     loader = yaml.SafeLoader(block)
     node = loader.get_single_node()
     breaks = line_breaks(block)
-    owners = written_keys(node)
-    maps = read_maps(written_maps(node, breaks, 2, owners), loader.construct_object, loader.construct_document(node))
+    maps = read_maps(written_maps(node, breaks, 2), loader.construct_object, loader.construct_document(node))
     assert [(i.entry.line, i.by.line) for i in maps["translations"].ignored] == [(3, 4)]
 
 

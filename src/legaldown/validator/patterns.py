@@ -34,9 +34,9 @@ SKIPPED_RULE = "ldv-check-skipped"
 # And the Error of assembly, not of validation, for a document whose includes cannot all be
 # followed: they nest deeper, or run to more includes and headings, than it goes (#118).
 INCLUDE_LIMIT_RULE = IMPLEMENTATION_RULE_PREFIX + "include-limit"
-# And the one for a frontmatter entry that another replaces: a key written twice in a mapping, which
-# YAML's reader resolves to the last, or two keys of `translations` or `field_types` that are one once
-# stripped (#126). An Error, but for the second in `translations`, which the specification only warns of.
+# And the one for an entry of `translations` or `field_types` that another replaces: the same key written
+# twice, or keys that the model reads as one (`1` and `'1'`, `fr` and `' fr'`) (#126). An Error, but a Warning
+# for different `translations` keys, which the specification only warns of.
 FRONTMATTER_KEY_DUPLICATE_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-key-duplicate"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
