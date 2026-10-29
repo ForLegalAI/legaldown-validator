@@ -1198,8 +1198,14 @@ class TestLoadedFiles:
         note = "## B\n\n> [!DRAFTING]\n> See {{include: g.lgd}}\n\nText.\n"
         assert self._assemble(note, questions="").ok
 
-    def test_an_include_in_a_fragment_of_a_document_is_not_assembled(self):
-        result = self._assemble("## B\n\n{{include: g.lgd}}\n", questions="")
+    def test_an_include_in_a_fragment_of_a_document_is_assembled(self):
+        """Outside a template a fragment may include fragments (§12.2): each is written at its own path
+        (tests/test_assembly_nested.py)."""
+        files = {"f.lgd": "## B\n\n{{include: g.lgd}}\n", "g.lgd": "### C\n\nText.\n"}
+        result = assemble(_template("# A\n\n{{include: f.lgd}}\n"), {}, load_file=files.get)
+        assert result.ok and result.files == files
+        # One that is not there is refused, as a flat one is.
+        result = assemble(_template("# A\n\n{{include: f.lgd}}\n"), {}, load_file={"f.lgd": files["f.lgd"]}.get)
         assert _rules(result) == [("include-file-missing", "error")]
         assert (result.output, result.files) == ("", {})
 

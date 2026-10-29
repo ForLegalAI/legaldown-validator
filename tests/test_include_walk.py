@@ -230,10 +230,13 @@ def test_a_templates_nested_include_is_template_fragment_invalid_and_not_followe
     assert _found(result) == [("template-fragment-invalid", "part.lgd", 3)]
 
 
-def test_assembly_still_refuses_a_nested_include_of_a_plain_document():
-    template = Template(
-        _FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": "## P {#p}\n\n{{include: g.lgd}}\n", "g.lgd": "Text.\n"}.get
-    )
+def test_assembly_follows_a_nested_include_of_a_plain_document_as_the_walk_does():
+    files = {"part.lgd": "## P {#p}\n\n{{include: g.lgd}}\n", "g.lgd": "Text.\n"}
+    template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve=files.get)
+    assert template.problems == ()
+    assert template.form({}).assemble().files == files
+    # ... and refuses what the walk reports as an Error: the file that is not there.
+    template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": files["part.lgd"]}.get)
     assert [(d.rule, d.file, d.line) for d in template.problems] == [("include-file-missing", "part.lgd", 3)]
     assert "not assembled" in template.problems[0].message
 

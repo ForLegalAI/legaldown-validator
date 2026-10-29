@@ -740,13 +740,14 @@ def test_the_findings_of_one_document_are_never_collapsed(tmp_path, capsys):
     assert [d["rule"] for d in records].count("ref-broken") == 2 and [d["rule"] for d in records].count("include-file-missing") == 1
 
 
-def test_assembly_refuses_only_an_include_paragraph_of_a_plain_documents_fragment():
+def test_assembly_follows_only_an_include_paragraph_of_a_plain_documents_fragment():
     part = "## P {#p}\n\nSee {{include: a.lgd}} inline.\n\n- {{include: b.lgd}}\n\n> {{include: c.lgd}}\n\n{{include: d.lgd}} {when=x}\n"
     template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": part}.get)
+    # The one include paragraph is read, and is not there; the others are text.
     assert [(d.rule, d.file, d.line) for d in template.problems] == [("include-file-missing", "part.lgd", 9)]
-    # The directive is quoted as written, once.
-    message = template.problems[0].message
-    assert "'{{include: d.lgd}}'" in message and message.count("{{include:") == 1
+    assert "'d.lgd' cannot be read" in template.problems[0].message
+    template = Template(_FRONT + _SCOPE + "{{include: part.lgd}}\n", resolve={"part.lgd": part, "d.lgd": "Text.\n"}.get)
+    assert template.problems == ()
 
 
 def test_a_nested_include_is_quoted_as_written_in_a_templates_finding_too():
