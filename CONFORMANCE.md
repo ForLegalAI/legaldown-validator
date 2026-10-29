@@ -6,7 +6,7 @@ parse and validate a single document in memory. It also claims the **Assembly** 
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **96 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **101 of the
 corpus's 113 rules are implemented, and every case the harness runs passes**, at the line each
 case gives and, for a finding in a file the document includes, in that file.
 
@@ -14,26 +14,43 @@ Every diagnostic names its file and line (§16.9, [#27](https://github.com/ForLe
 the file is the document's, or the include fragment it was found in ([#35](https://github.com/ForLegalAI/legaldown-validator/issues/35));
 the line of the directive, marker, heading or block it is about, or of the frontmatter node — a
 mapping key, or a list entry's `-` line, at whatever depth — and for a missing key, the key that
-holds it (`amends:` for a missing `amends.title`) or the frontmatter's first key. Two cases are
+holds it (`amends:` for a missing `amends.title`) or the frontmatter's first key. Three cases are
 not asserted at their given line:
 
 - The answer rules (`answer-invalid`, `answer-unknown`) point into the answers file, which
   assembly receives already parsed (`Template.form(answers)`), so its diagnostics name no line.
 - `party-name-duplicate` gives line 10, the second side; this implementation reports line 12,
   the duplicate party's own entry, as `side-name-duplicate` and `representative-name-empty`
-  point at theirs ([ForLegalAI/LegalDown#42](https://github.com/ForLegalAI/LegalDown/issues/42),
-  which also covers `attachment-id-duplicate`, a multi-file case not run here).
+  point at theirs ([ForLegalAI/LegalDown#42](https://github.com/ForLegalAI/LegalDown/issues/42)).
+- `attachment-id-duplicate` gives line 8, the second attachment's `title`; this implementation
+  reports line 7, the entry's `- id:` where the duplicate id is written, as `attachment-id-collision`
+  gives its entry's (line 4; the same issue).
+
+One case is not run against its entry, for a reason of the specification's own (§17.2):
+`translation-implicit-id` names `doc-en.lgd`, the primary (`language: en`, `authoritative: en`), as
+its entry, and expects its finding in `doc-fr.lgd`. The row is Core, and Core is "not required to
+open any file other than the document itself" (§17.2); it asks every heading and `{{def:}}` to carry
+an explicit identifier "when the document itself is a translation". A Core validator reports the
+row only when the document it validates is itself a translation, so given the primary it correctly
+reports nothing (and the Warning of §17.5 for the linked file it did not open). The harness
+therefore validates `doc-fr.lgd` for this case (`_DISPUTED_ENTRY`), through the same assertions, file
+and line included: the entry should be `doc-fr.lgd`, which the primary does not need. Nothing is
+changed in the specification repository. The other bilingual case that is Core,
+`translation-authoritative-absent`, names its entry, `doc-en.lgd`, and runs as it is.
 
 The specification defines 116 rules. The corpus has no fixture for three of them, since a
 document alone cannot exercise them. This implementation covers two of the three,
 `anchor-autogen-collision` and `legaldown-version-newer`, with unit tests. The third,
 `ref-not-enumerated`, depends on the style template and is listed below.
 
-Seven implemented rules — `amend-def-override`, `amend-term-undefined`, `amend-term-unresolvable`,
-`attachment-id-collision`, `attachment-id-duplicate`, `attachment-title-empty` and
-`attachment-unreferenced` — have fixtures that span several files or are marked for the Full
-level, so this single-document harness skips them. They are covered by the unit tests in
-`tests/test_spec_alignment.py` and `tests/test_templates.py` instead.
+Three implemented rules — `amend-def-override`, `amend-term-undefined` and
+`amend-term-unresolvable` — have fixtures that are marked for the Full level and name the
+original they amend, so this single-document harness skips them. They are covered by the unit
+tests in `tests/test_spec_alignment.py` and `tests/test_templates.py` instead. A case with several
+files is run all the same when every diagnostic it expects is in its entry file, as the other files
+are only there (`attachment-id-collision`, `attachment-id-duplicate`, `attachment-title-empty`,
+`attachment-unreferenced`, `translation-authoritative-absent`); it is skipped as a `multi-file case`
+only when an expected diagnostic names another file.
 
 The fixtures of seven rules that read an include fragment — `include-anchor-duplicate`,
 `include-cycle`, `include-file-missing`, `include-has-frontmatter`, `include-has-h1`,
@@ -55,9 +72,8 @@ because they need to open files other than the document itself.
 | Group | Rules |
 |---|---|
 | Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`; of these, `attachment-has-frontmatter` and `attachment-has-h1` are reported for an attachment file validated on its own (`validate(fragment=True, fragment_kind="attachment")`, below), and by assembly, but not for an attachment file `validate(resolve=)` reads (see [Include fragments](#include-fragments-122-1611-1612)) |
-| Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-implicit-id`, `translation-authoritative-absent`, `translation-template-mismatch` |
+| Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch`; and `translation-implicit-id` and `translation-authoritative-absent` for the linked files (for the document itself they are Core, and implemented, below) |
 | Rendering (§17.3) | `ref-not-enumerated` |
-| Other | `definition-used-before-declaration`, `language-code-invalid`, `authoritative-not-declared` |
 
 In practice this means validating a set of files is out of scope: the validator does not
 cross-check attachment file contents or bilingual document sets, nor, beyond the section identifiers and the include chain (below), the combined
@@ -161,6 +177,55 @@ Two approximations, both towards giving a Warning (a Warning is better given tha
   a document that is no template. That can only join circles, so no circular definition goes
   unreported, but circles may merge into fewer Warnings, at other lines. The cap needs thousands of
   alternatives of one id under one question, named from as many places under it.
+
+`definition-used-before-declaration` (§16.3, Info, [#116](https://github.com/ForLegalAI/legaldown-validator/issues/116))
+is named by the specification and given no more: §7.2 lets a `{{def:}}` "appear anywhere", and a
+`{{term:}}` targets "the `{{def:}}` anchor" (§7.3). A use is *before* a declaration when it comes first in
+the document's own text, in the order it is written: the preamble, then the sections; within a block, its
+text in order (a table by rows, a list by items, the paragraph around a `{{def:}}` by offset). **One Info is
+given for each definition**, at its first earlier use, with the number of earlier uses and the line of the
+declaration in the message (`Definition 'services' is used 3 times before its declaration at line 25
+(§7.2).`), not one for each use: a document that keeps its Definitions article last (a common layout) would
+otherwise draw one for every use of every term. The fixture has it at the use, line 21. Not counted: a
+`{{term:}}` in a drafting note (assembly removes it), in code or in a comment; one in a heading (§4.2 has no
+directive there); a use in the definition's own quoted term (`"Self {{term: s}}" {{def: s}}`), which is
+`definition-circular`'s; an id the document does not declare (`term-undefined`); an id the amended original
+declares, which is in force before the document (§7.5). A definition and its alternatives (§15.4) are
+declared at the first of them: a use between two is after the first. The files the document includes and
+attaches are not expanded, so a definition that only they declare is no declaration here (as
+`term-undefined` reads it). The auto-linking of §7.4 is not implemented, so a term written without
+`{{term:}}` is no use. `legaldown validate --strict` counts the Info, so a document that keeps its
+definitions at the end fails it; `--ignore definition-used-before-declaration` removes it.
+
+`language-code-invalid` and `authoritative-not-declared` (§16.6, Warnings, #116) check the language
+fields. The specification asks for "valid ISO 639-1 codes" and gives no list; this implementation embeds the 184
+codes of the registry (`legaldown.grammar.ISO_639_1_CODES`, beside `KNOWN_CURRENCIES`), in lowercase as the
+registry has them: `EN`, `en-US` and `eng` draw the Warning once, at the line of the value, which says
+what to write (a `translations` key is also the path's lookup key, and `authoritative` is compared with the
+keys exactly). The check covers `language`, a non-empty `authoritative`, and each `translations` key (found by the
+key as stripped, if it is written padded); a value holding a `{{placeholder:}}` is
+`placeholder-in-structural-field`'s alone. `authoritative` must equal the document's `language` or a
+`translations` key. Only a `language` that is written counts: §3.2 gives it no default, and the "en" the model reads
+for a document that does not say is its own, so `authoritative: en` and `authoritative: fr` without a
+`language` are treated alike, and the message says the language is not declared. **A value that is no code is
+no language**, so the checks that compare languages judge only the codes that passed (the rule of §16.6, that a value that fails one
+format check is exempt from the checks that assume it): `language: english` with `authoritative: en` draws
+`language-code-invalid` alone, and so does a `translations` key that might have been the authoritative.
+
+`translation-implicit-id` (§16.7, Error) and `translation-authoritative-absent` (§16.7, Warning) are the
+single-file translation rows that §17.2 makes Core: the identifiers of the document itself. **A file is a
+translation** when `translations` is non-empty and `language` and `authoritative` are both declared,
+both valid codes, and different: §16.7 is about linked files, so a document that links nothing is
+no translation (`authoritative-not-declared` is the finding for `language: fr` with `authoritative: en`
+and no `translations`), and a code that is no code is not compared. For each heading and each `{{def:}}`
+without an explicit identifier a translation draws an Error (identifiers originate in the primary and are mirrored
+explicitly, §14.2), and a document that declares `translations` without `authoritative` a Warning (the primary
+cannot be told from its translations, so the linked files are checked symmetrically): **one for each
+node**, at its own line, like `anchor-lossy-slug` and `def-lossy-slug`; the message of the Warning says that one line,
+`authoritative:`, ends all of them. The two are exclusive. An identifier that is written but invalid is `anchor-format`,
+not implicit; a duplicate generated identifier draws the Error at each declaration besides `def-duplicate-id`; a heading in a list
+item or a quote is a block, not a section. The identifiers of the *linked* files are Full (§17.4) and are
+named in the Warning of §17.5 as not read ([below](#constructs-beyond-the-level-175)).
 
 `raw-html` (§8.7) warns about raw HTML other than comments, which renderers leave out: once for
 each HTML block that holds more than comments (text after a comment's `-->` on its line
@@ -737,7 +802,7 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
 | Includes (§12, §16.11) | an include paragraph | always: the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document; [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)). For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
 | Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file also `attachment-has-frontmatter`, `attachment-has-h1` and `attachment-anchor-duplicate`, and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below) |
 | Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (for any reason, see below), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
-| Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch` |
+| Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch`; and `translation-implicit-id` and `translation-authoritative-absent` for the linked files, whose identifiers are not read (the document's own are checked, Core, §17.2) |
 | Declared paths (§17.4) | `supersedes.file` (the object form), an image path | `supersedes-file-missing`; the existence of image paths (§8.7), which has no rule id |
 
 - **Not counted as unread.** An include whose path is already an Error (`path-not-relative`,
@@ -767,10 +832,12 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
   in two ways: the document's own path is not counted for an attachment file, and a file that is not
   LegalDown is never counted for an attachment (it is not imported at all) while the original that is not
   LegalDown is.
-- **Core rules are not named here.** The Core rules this implementation lacks
-  (`translation-implicit-id`, `translation-authoritative-absent`, `language-code-invalid`,
-  `authoritative-not-declared`, `definition-used-before-declaration`) are gaps in Core, not
-  constructs beyond it, and are listed in the table above.
+- **Core rules are named only for what was not read.** `translation-implicit-id` and
+  `translation-authoritative-absent` are Core for the document itself and are checked in it, so the
+  Warning does not list them as skipped; it names them "for the linked files", which a Core validator
+  does not open, and says that this document's own identifiers were checked (§17.5: the document is not
+  reported as passing a check that was not run). The other Core rules of #116 (`language-code-invalid`,
+  `authoritative-not-declared`, `definition-used-before-declaration`) read nothing else and are never named.
 - **Rendering** (§17.3) is a category of its own in §17.5's sense only for a `{{ref:}}` to an item
   or paragraph anchor (`ref-not-enumerated`); it draws no Warning, and is listed above.
 - Assembly claims no check, so it adds nothing; `Template.validation` carries the Warning as advice, and
@@ -810,13 +877,13 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Each case's expected rule is asserted at its expected line, where the case gives one (above).
-Cases for the rules above are skipped by name, so the 17 `not implemented` skips reproduce this
+Cases for the rules above are skipped by name, so the 12 `not implemented` skips reproduce this
 table one for one, except `ref-not-enumerated`, which has no fixture. Each fixture document is
 also written back (`serialize`) and validated again, which must report the same diagnostics. The
-run reports 246 passed and 27 skipped (238 and 35 before #35: the five include cases and
-`template-fragment-invalid`, six, now run, and the 17 are the 24 less the seven include rules, which
-the table no longer lists): seven of the other skips are the implemented rules named
-above, skipped as `multi-file case` or `requires conformance level full`, two are the `multi-file`
+run reports 255 passed and 18 skipped (246 and 27 before #116, whose five rules now run, and with them
+the four cases of several files that expect nothing in another: `attachment-id-collision`, `-duplicate`, `-title-empty` and
+`-unreferenced`; 238 and 35 before #35): twelve are the `not implemented` skips, three are the
+implemented amendment rules, skipped as `requires conformance level full`, two are the `multi-file`
 assembly case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py`
 assembles it with a loader instead — and one is the write-back of the `frontmatter-invalid-yaml`
 case, whose frontmatter cannot be read. Cases that need the final option run with it; cases that need an answers set

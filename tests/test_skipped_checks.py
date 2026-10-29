@@ -328,8 +328,14 @@ def test_translations_draw_one_warning_that_names_the_bilingual_checks():
     for rule in ("translation-file-missing", "translation-hierarchy-mismatch", "translation-anchor-mismatch",
                  "translation-def-mismatch", "translation-language-set-mismatch", "translation-template-mismatch"):
         assert rule in warning.message
-    # Rules that are Core (§17.2) are no skipped category: they are not named here.
-    assert "translation-implicit-id" not in warning.message
+    # The identifier rules are Core (§17.2) for the document itself, and checked: only the
+    # linked files' identifiers were not read, and the message says so, and that this document's were.
+    assert warning.message.endswith(
+        "; translation-implicit-id and translation-authoritative-absent for the linked files, whose "
+        "identifiers were not read (this document's own were checked) "
+        "(§14, §16.7; bilingual validation is Full, §17.4; §17.5)."
+    )
+    assert "translation-file-missing, translation-hierarchy-mismatch" in warning.message
 
 
 def test_a_superseded_file_and_an_image_path_are_declared_paths_not_checked_for_existence():

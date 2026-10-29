@@ -197,10 +197,16 @@ def _bilingual(document: Document, where: Locator) -> SkippedCategory | None:
         "translation-file-missing", "translation-hierarchy-mismatch", "translation-anchor-mismatch",
         "translation-def-mismatch", "translation-language-set-mismatch", "translation-template-mismatch",
     ]
+    # The identifiers of the document itself are checked (Core, §17.2); those of the linked files are not.
+    parts = [
+        _join(rules),
+        "translation-implicit-id and translation-authoritative-absent for the linked files, whose identifiers "
+        "were not read (this document's own were checked)",
+    ]
     return SkippedCategory(
         "bilingual",
         f"translations declared ({_count(len(translations), 'linked document')}); bilingual validation not "
-        f"performed: {_join(rules)} (§14, §16.7; bilingual validation is Full, §17.4; §17.5).",
+        f"performed: {_items(parts)} (§14, §16.7; bilingual validation is Full, §17.4; §17.5).",
         partial(where.key, "translations"),
     )
 
