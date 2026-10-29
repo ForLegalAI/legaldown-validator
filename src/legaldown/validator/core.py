@@ -66,6 +66,7 @@ from .patterns import (
     _UNFILLED,
     DURATION_UNITS,
     IDENTIFIER_RE,
+    ISO_639_1_CODES,
     KNOWN_CURRENCIES,
     LEGALDOWN_EXTENSIONS,
     MAX_SECTION_LEVEL,
@@ -1381,6 +1382,40 @@ def _validate(
     ):
         with result.at(where.key(field_name)):
             _check_date_field(field_name, field_value, questions, "metadata-date-invalid", result)
+
+    # ── Language codes and the authoritative language (§3.2, §16.6) ──
+    # `language`, `authoritative` and the `translations` keys, when present, are ISO 639-1 codes;
+    # `authoritative`, when present, is the document's language or a key. The model reads a
+    # `language` that is not written as "en", a default of its own: only the one written counts.
+    # A placeholder is the placeholder rule's. A value that is no code is no language, so the
+    # comparisons judge only the codes that pass (the translation rules below too): one typo
+    # draws one Warning.
+    declared_language = meta.language if where.has("language") or where.start() is None else ""
+    written_keys = {raw.strip(): raw for raw in where.children("translations")}
+    for label, code, path in [
+        ("language", declared_language, ("language",)),
+        ("authoritative", meta.authoritative, ("authoritative",)),
+        *[("translations key", key, ("translations", written_keys.get(key, key))) for key in meta.translations],
+    ]:
+        if code and code not in ISO_639_1_CODES and not named(code, "placeholder"):
+            result.warning(
+                "language-code-invalid",
+                f"The {label} '{code}' must be an ISO 639-1 language code: two lowercase letters, "
+                f"such as 'en' or 'cs'.", line=where.key(*path),
+            )
+    declared_languages = [code for code in (declared_language, *meta.translations) if code]
+    if (
+        meta.authoritative in ISO_639_1_CODES
+        and meta.authoritative not in declared_languages
+        and all(code in ISO_639_1_CODES for code in declared_languages)
+    ):
+        own_language = f"'{declared_language}'" if declared_language else "not declared"
+        keys = ", ".join(f"'{key}'" for key in meta.translations) or "none"
+        result.warning(
+            "authoritative-not-declared",
+            f"authoritative '{meta.authoritative}' is neither the document's language ({own_language}) "
+            f"nor a translations key ({keys}).", line=where.key("authoritative"),
+        )
 
     # ── Build party lookup from metadata ──
     seen_side_names: set[str] = set()

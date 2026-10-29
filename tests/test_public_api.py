@@ -186,7 +186,7 @@ def test_the_renderers_names_are_public():
                  "list_items", "find_definition_anchors", "render_block"):
         assert name in legaldown.syntax.__all__
     for name in ("parse_condition", "Condition", "condition_problem", "exclusive", "Presence", "ALWAYS", "is_template",
-                 "PlacedMarker", "IDENTIFIER_RE", "KNOWN_CURRENCIES", "is_valid_iso_date",
+                 "PlacedMarker", "IDENTIFIER_RE", "KNOWN_CURRENCIES", "ISO_639_1_CODES", "is_valid_iso_date",
                  "is_valid_money_amount", "is_positive_numeric"):
         assert name in legaldown.validator.__all__
 

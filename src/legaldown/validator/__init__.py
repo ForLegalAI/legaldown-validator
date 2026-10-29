@@ -20,6 +20,7 @@ from .helpers import (
 )
 from .patterns import (
     IDENTIFIER_RE,
+    ISO_639_1_CODES,
     KNOWN_CURRENCIES,
     RESERVED_VALUE_TYPES,
     VALID_DOC_TYPES,
@@ -66,4 +67,5 @@ __all__ = [
     "VALID_DURATION_UNITS",
     "VALID_PLACEHOLDER_TYPES",
     "KNOWN_CURRENCIES",
+    "ISO_639_1_CODES",
 ]

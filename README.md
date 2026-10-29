@@ -732,7 +732,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 |---|---|
 | `SPEC_VERSION`, `LEGALDOWN_EXTENSIONS` | The specification version implemented; the file extensions of LegalDown source (§2.1) |
 | `KNOWN_DIRECTIVES`, `DIRECTIVE_PARAMS`, `PLACEHOLDER_TYPE_PARAMS` | The directive vocabulary and the parameters each defines (§11) |
-| `IDENTIFIER_RE`, `RESERVED_VALUE_TYPES`, `VALID_DOC_TYPES`, `PARTY_TYPES`, `KNOWN_CURRENCIES`, `DELIMITER_PAIRS` | Identifier format (§5.3), reserved value-type names, document types, party types, ISO 4217 codes, accepted definition delimiters (§7.2) |
+| `IDENTIFIER_RE`, `RESERVED_VALUE_TYPES`, `VALID_DOC_TYPES`, `PARTY_TYPES`, `KNOWN_CURRENCIES`, `ISO_639_1_CODES`, `DELIMITER_PAIRS` | Identifier format (§5.3), reserved value-type names, document types, party types, ISO 4217 codes, ISO 639-1 codes (§3.2), accepted definition delimiters (§7.2) |
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
 | `LIST_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
