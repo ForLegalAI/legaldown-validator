@@ -901,7 +901,9 @@ _DEF_LINE = '"Fee" {{def: fee}} means money.'
 )
 def test_a_drafting_note_extends_as_its_quote_does(body, in_note):
     document = parse(f"---\ntitle: T\n{_SIDES}---\n\n# A\n\n{body}\n\nPay the {{{{term: fee}}}}.\n")
-    assert ("drafting-note-def" in validate(document).rules()) == in_note
+    rules = validate(document).rules()
+    assert ("drafting-note-def" in rules) == in_note
+    assert ("term-undefined" in rules) == in_note
     assert parse(serialize(document)).sections == document.sections
 
 

@@ -267,10 +267,10 @@ def _check_implicit_identifiers(
     A translation (``identifier_rule``) draws an Error for each, since identifiers originate in the
     primary and a translation mirrors them explicitly. Without ``authoritative`` the primary cannot
     be told from its translations, and the document draws a Warning for each, as any linked file
-    does. *refs* are the definitions outside drafting notes (assembly removes the others, §15.6, and
-    ``drafting-note-def`` reports them); one whose generated identifier ``anchor-format`` rejects is
-    not counted either (the validator passes none: a generated identifier is always valid, §5.3). The
-    linked files' own identifiers are Full (§17.4, §17.5)."""
+    does. *refs* are ``collect_definitions``', which holds none in a drafting note (§15.6); one whose
+    generated identifier ``anchor-format`` rejects is not counted (the validator passes none: a
+    generated identifier is always valid, §5.3). The linked files' own identifiers are Full (§17.4,
+    §17.5)."""
     meta = document.metadata
     rule, _why_not = identifier_rule(meta)
     if rule is None:
@@ -1860,13 +1860,6 @@ def _validate(
             notes_of_block[section, index] = [quote for quote in block_quotes(block) if quote.is_drafting_note]
         return notes_of_block[section, index]
 
-    def in_a_note(ref: DefinitionRef) -> bool:
-        """Whether a definition is in a drafting note: assembly removes it, and ``drafting-note-def``
-        reports it, so it is no declaration of the document's text."""
-        return ref.fragment_index is not None and in_drafting_note(
-            drafting_notes(ref.section_index, ref.block_index), ref.fragment_index
-        )
-
     def definition_line(ref: Any) -> int | None:
         if ref.fragment_index is None:  # a definition block's own anchor
             return where.lifted(ref.section_index, ref.block_index, "{{def")
@@ -1877,7 +1870,7 @@ def _validate(
     # The definitions that are registered, and the {{term:}} uses outside
     # drafting notes, for definition-circular (§16.3, #105).
     registered: list[tuple[DefinitionRef, Presence]] = []
-    #: Every definition with a valid id written outside a drafting note, a duplicate too, for
+    #: The registered definitions and the duplicates among those with a valid id, for
     #: definition-used-before-declaration.
     written: list[tuple[DefinitionRef, Presence]] = []
     term_uses: list[TermUse] = []
@@ -1898,8 +1891,7 @@ def _validate(
                 f"id (§5.3, §7.2).", line=definition_line(ref),
             )
         presence = units.presence(ref.section_index, ref.block_index, ref.fragment_index)
-        if not in_a_note(ref):
-            written.append((ref, presence))
+        written.append((ref, presence))
         # Uniqueness applies between definitions that can appear together
         # (§7.2, §15.4); alternatives may share an identifier.
         together = [
@@ -1923,8 +1915,7 @@ def _validate(
         declared_terms.setdefault(def_id, []).append((ref.term, ref.auto_id, presence))
         registered.append((ref, presence))
         result.index.definition_lookup.setdefault(def_id, ref.term or id_term(def_id))
-    outside = [ref for ref, _presence in written]  # the definitions the identifier rules ask for ids
-    _check_implicit_identifiers(document, outside, where, definition_line, result)
+    _check_implicit_identifiers(document, definition_refs, where, definition_line, result)
 
     # ── Definition source-form checks (§7.2 validation table) ──
     for block_section, block_index, block in document.iter_indexed_blocks():

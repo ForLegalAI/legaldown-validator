@@ -22,6 +22,7 @@ from .markdown import FENCE_OPEN_RE, is_indented_code, normalize_label
 from .models import LIST_KINDS, Block, Document, list_items
 from .validator.helpers import generate_identifier
 from .validator.patterns import IDENTIFIER_RE
+from .validator.templates import Quote  # templates reads this module lazily (see block_quotes), so no cycle
 
 # ---------------------------------------------------------------------------
 # Accepted quotation-mark delimiters (spec 7.2)
@@ -164,7 +165,7 @@ def find_definition_anchors(
 
 @dataclass(frozen=True)
 class DefinitionRef:
-    """A single declared definition with its source location."""
+    """A single declared definition with its source location (none in a drafting note, §15.6)."""
 
     id: str
     term: str
@@ -407,11 +408,15 @@ def collect_definitions(
 
     Scans both ``definition`` blocks (a paragraph whose leading token is a
     definition anchor) and inline anchors inside any text fragment.
-    *lex_fragment* lets a caller that lexes the same fragments share results.
+    A ``{{def:}}`` in a drafting note is left out: assembly removes the note before
+    anything else (§15.7.2), so it declares nothing, and ``drafting-note-def`` reports
+    it (§15.6). *lex_fragment* lets a caller that lexes the same fragments share results.
     """
     lang = language or document.metadata.language
     refs: list[DefinitionRef] = []
     for section_index, block_index, block in document.iter_indexed_blocks():
+        quotes: list[tuple[str, range]] = []
+        noted: set[int] | None = None  # the fragments in the block's drafting notes, once a definition asks (§15.6)
         if block.kind == "definition":
             term = (block.term or "").strip()
             raw_id = (block.definition_id or "").strip()
@@ -428,13 +433,18 @@ def collect_definitions(
                     lossy_id=lossy,
                 )
             )
-        for fragment_index, (fragment, _position) in enumerate(block_fragments(block)):
+        # (the one walk that numbers the fragments and finds the quotes among them)
+        for fragment_index, (fragment, *_rest) in enumerate(_fragments(block, quotes)):
             for anchor in find_definition_anchors(
                 fragment, language=lang, lexed=lex_fragment(fragment)
             ):
                 # A malformed {{def:}} has no id to register; the validator
                 # reports it as directive-malformed.
                 if anchor.term is None or anchor.directive.malformed:
+                    continue
+                if noted is None:
+                    noted = {i for first, span in quotes if Quote(first, span).is_drafting_note for i in span}
+                if fragment_index in noted:
                     continue
                 term = anchor.term
                 raw_id = anchor.directive.positional or ""
