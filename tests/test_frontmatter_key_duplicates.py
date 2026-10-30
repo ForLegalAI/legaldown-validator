@@ -1,8 +1,8 @@
 """Entries of ``translations`` and ``field_types`` that another replaces (#126): the model reads the keys of
 these maps as text, stripped, so the same key written twice, ``1`` and ``'1'``, and ``fr`` and ``' fr'`` are
 one entry. Each entry that does not stay is reported at its own line as ``ldv-frontmatter-key-duplicate``,
-and a padded key is found at its own line by the rules that report on one. Other mappings are not checked
-(#131)."""
+and a padded key is found at its own line by the rules that report on one. The other mappings are
+``test_frontmatter_key_duplicates_generic.py``'s (#131)."""
 from __future__ import annotations
 
 import random

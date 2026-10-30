@@ -61,12 +61,15 @@ from .models import (
     normalise_title,
 )
 from .positions import (
+    Repeated,
     SourceMap,
     StrippedMap,
     document_shape,
     frontmatter_keys,
     line_breaks,
     read_maps,
+    repeated_keys,
+    stripped_nodes,
     written_maps,
 )
 
@@ -84,6 +87,23 @@ class _StrDateSafeLoader(yaml.SafeLoader):
     #: of calls to follow.) Set only as the error passes, so a document that can
     #: be read pays nothing for it.
     constructing: yaml.Node | None = None
+
+    def __init__(self, stream: Any) -> None:
+        super().__init__(stream)
+        #: For each mapping that merges keys in (``<<``): the entries written in it, and the sources merged.
+        #: Flattening brings the sources' entries into the mapping, so this is taken before (#131).
+        self.merges: dict[yaml.Node, tuple[list[tuple[yaml.Node, yaml.Node]], list[yaml.Node]]] = {}
+        #: The tag YAML resolved each scalar to, for those ``_read_as_written`` reads as text.
+        self.resolved: dict[yaml.Node, str] = {}
+
+    def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        # Once: flattening deletes the merge keys, and it recurses into each source through this method.
+        if any(key.tag == _MERGE_TAG for key, _value in node.value):
+            self.merges[node] = (
+                [entry for entry in node.value if entry[0].tag != _MERGE_TAG],
+                [value for key, value in node.value if key.tag == _MERGE_TAG],
+            )
+        super().flatten_mapping(node)
 
     def construct_object(self, node: yaml.Node, deep: bool = False) -> Any:
         try:
@@ -105,6 +125,7 @@ _StrDateSafeLoader.add_constructor(
 # written, except in a question's ``default``, whose YAML type the answer
 # rules rely on (§15.7.1). A value left empty or written ``null`` stays absent.
 _STR_TAG = "tag:yaml.org,2002:str"
+_MERGE_TAG = "tag:yaml.org,2002:merge"
 _NULL_TAG = "tag:yaml.org,2002:null"
 _CONVERTED_TAGS = frozenset(
     f"tag:yaml.org,2002:{name}" for name in ("bool", "int", "float", "timestamp")
@@ -140,10 +161,11 @@ def _entries(loader: yaml.SafeLoader, node: yaml.Node) -> list[tuple[yaml.Node, 
     return node.value
 
 
-def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
+def _read_as_written(loader: _StrDateSafeLoader, root: yaml.Node) -> None:
     """Retag the plain scalars of the frontmatter *root* to read as the
     strings written, leaving the nodes of question defaults typed — even a
-    default shared through an alias with another field."""
+    default shared through an alias with another field. The tag YAML resolved
+    each one to is kept in ``loader.resolved``."""
     typed: set[int] = set()
     for key, questions in _entries(loader, root):
         if key.value == "questions":
@@ -155,8 +177,10 @@ def _read_as_written(loader: yaml.SafeLoader, root: yaml.Node) -> None:
         if isinstance(node, yaml.MappingNode):
             for key, _value in node.value:
                 if isinstance(key, yaml.ScalarNode) and key.style is None and key.tag == _NULL_TAG:
+                    loader.resolved[key] = key.tag
                     key.tag = _STR_TAG
         elif isinstance(node, yaml.ScalarNode) and node.style is None and node.tag in _CONVERTED_TAGS:
+            loader.resolved[node] = node.tag
             node.tag = _STR_TAG
 
 
@@ -254,22 +278,24 @@ class _Frontmatter(NamedTuple):
     keys: dict[tuple[Any, ...], int]
     error: FrontmatterError | None
     maps: dict[str, StrippedMap]
+    repeats: tuple[Repeated, ...]
 
 
 def _no_fields(body: str, absent: bool = False, error: FrontmatterError | None = None) -> _Frontmatter:
     """A source whose frontmatter holds no fields: *absent*, or present but empty, or unreadable (*error*). Its
     ``keys`` are then empty, or only the opening ``---``."""
-    return _Frontmatter([], {}, body, absent, {} if absent else {(): 1}, error, {})
+    return _Frontmatter([], {}, body, absent, {} if absent else {(): 1}, error, {}, ())
 
 
 def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
     """Split *source* into ``(keys not line-editable, parsed frontmatter,
-    body, absent, keys, error, maps)``; the first is read from how the YAML
+    body, absent, keys, error, maps, repeats)``; the first is read from how the YAML
     is written, which the parsed data loses, and *keys* is where each
     frontmatter node is (``positions.frontmatter_keys``, the opening ``---``
     at the empty path), empty without frontmatter. *maps* is what the model made of
-    the entries of ``translations`` and ``field_types`` (``positions.read_maps``, #126).
-    The frontmatter is
+    the entries of ``translations`` and ``field_types`` (``positions.read_maps``, #126), and
+    *repeats* the keys of every other mapping that a later key replaces (``positions.repeated_keys``,
+    #131). The frontmatter is
     *absent* when no closed ``---`` block opens the source, or when the
     block's YAML is a scalar or a list rather than a mapping of fields: then
     its ``---`` lines are thematic breaks, and the whole source is body. A
@@ -311,6 +337,18 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
         metadata = loader.construct_document(node)
         # After the nodes are read as written: the maps are judged as the model reads them.
         maps = read_maps(written, loader.construct_object, metadata)
+        # Every mapping reached has been flattened by now: by `_read_as_written`, by the reader's recursion into a
+        # `<<` source, or when it was built. `translations` and `field_types` are `read_maps`'s.
+        repeats = repeated_keys(
+            node,
+            block,
+            breaks,
+            2,
+            loader.construct_object,
+            loader.merges,
+            loader.resolved,
+            set(stripped_nodes(node).values()),
+        )
     except FrontmatterError as exc:
         if not keep_error:
             raise
@@ -332,7 +370,7 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
             loader.dispose()
     if "questions" in metadata and metadata["questions"] is None:
         metadata["questions"] = {}  # a `questions:` key left empty is still declared (§15.1)
-    return _Frontmatter(not_line_editable, metadata, source[match.end():], False, keys, None, maps)
+    return _Frontmatter(not_line_editable, metadata, source[match.end():], False, keys, None, maps, repeats)
 
 
 def _file_line(block: str, index: int) -> int:
@@ -2086,6 +2124,7 @@ def parse(
         body_start=source.count("\n", 0, len(source) - len(front.body)),
         keys=front.keys,
         maps=front.maps,
+        repeats=front.repeats,
         layout=layout,
         shape=document_shape(document),
     )

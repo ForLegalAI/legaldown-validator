@@ -218,37 +218,61 @@ no language**, so the checks that compare languages judge only the codes that pa
 format check is exempt from the checks that assume it): `language: english` with `authoritative: en` draws
 `language-code-invalid` alone, and so does a `translations` key that might have been the authoritative.
 
-**`ldv-frontmatter-key-duplicate`** (#126) reports an entry of `translations` or `field_types` that another one
-replaces, at its own line, so that it does not go silently. The id is this implementation's own (§16.1, `ldv-`;
-`legaldown.grammar.FRONTMATTER_KEY_DUPLICATE_RULE`): the specification has no rule for it. The model reads the keys
-of these two maps as text, stripped, and keeps the last of the keys it reads as one (in the order the model holds
-them: `fr: a`, `' fr': b`, `fr: c` keeps the entry at the second line, not the last written). Each entry that does
-not stay is reported at its own line, and the finding names the line of the one that does (for a key written again,
-the entry that repeats it, in the same key as read); when the model keeps
-none, because the last entry written has an empty or blank key or a null, empty or blank value, the finding
-says which. The keys are shown as they are written in the source (quotes and escapes included, between backticks),
-so that `1` and `"1"` differ; an aliased key (`&k fr`, then `*k`) is one node for the YAML reader, which keeps
-no position for the alias, so it is at its anchor's line, and the finding does not name that line again. Three cases:
+**`ldv-frontmatter-key-duplicate`** (#126, #131) reports a key of a frontmatter mapping that a later key of the
+same mapping replaces, at its own line, so that it does not go silently. The id is this implementation's own (§16.1,
+`ldv-`; `legaldown.grammar.FRONTMATTER_KEY_DUPLICATE_RULE`): the specification has no rule for it. The YAML reader
+keeps the last of the keys a mapping holds as one (`title:` twice, a party's `name:` twice) and the model's dict does
+the same, so the earlier key and its value are dropped. Every mapping of the frontmatter is checked: the root, the
+mappings in a sequence (`sides[0].parties[1]`), the fields of a question (`questions.my-q.default`) and the mappings
+a `<<` merges in. The finding names the mapping, `frontmatter` for the root and otherwise its path in backticks:
+names as `parties[0]` and `questions.my-q.default`, a key that is no plain name between brackets and escaped as
+JSON (`["weird key"]`), a typed key of a question's `default` as Python writes it (`[1]`), a sequence entry by its
+position in the YAML sequence, and a merged mapping as `x.<<` (`x.<<[0]` in a list of sources).
+
+`translations` and `field_types` are judged apart, with their own wording, as the model reads their keys as text,
+stripped, and keeps the last of the keys it reads as one (in the order the model holds them: `fr: a`, `' fr': b`,
+`fr: c` keeps the entry at the second line, not the last written). Each entry that does not stay is reported at its
+own line, and the finding names the line of the one that does (for a key written again, the entry that repeats it,
+in the same key as read); when the model keeps none, because the last entry written has an empty or blank key or a
+null, empty or blank value, the finding says which. (In the other mappings, a key written again names the line of
+the key that repeats it, and a key read as the same names the line of the one the model holds.) The keys are shown as they are written in the source (quotes and escapes
+included, between backticks), so that `1` and `"1"` differ; an aliased key (`&k fr`, then `*k`) is one node for the
+YAML reader, which keeps no position for the alias, so it is at its anchor's line, and the finding does not name that
+line again. Three cases:
 
 - **The same YAML key written twice** (`fr` and `fr`, or `fr` and `"fr"`): invalid YAML, which a strict loader
   fails as `frontmatter-invalid-yaml`, and this implementation's YAML reader, like PyYAML, reads as the last.
   An Error.
 - **Keys that YAML keeps apart but the model reads as the same text** (`1` and `'1'`: the model reads every
-  plain scalar as written), "once read as text".
-- **Keys that strip alike** (`fr` and `' fr'`), "once stripped": the reader strips these keys
-  ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)).
+  plain scalar as written), "once read as text". In a question's `default` the YAML types stay (§15.7.1), so `1`
+  and `'1'` are two keys there, and `1`, `1.0` and `true`, which Python holds as one, "once read as a YAML value".
+- **Keys that strip alike** (`fr` and `' fr'`), "once stripped": the reader strips the keys of `translations` and
+  `field_types` ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)).
 
-The last two are a **Warning**, in both maps: the specification does not forbid them (it judges a padded language
+The last two are a **Warning**, in every mapping: the specification does not forbid them (it judges a padded language
 code a Warning, `language-code-invalid`, and says nothing of a padded `field_types` key, which no other rule sees
 as the reader strips it), and a rule of this implementation's own does not fail a document that the specification
 accepts. The first is an Error. A `translations` entry that is blank once stripped is skipped before it can replace
-a sibling (#116), so it draws nothing; a blank `field_types` description is a declaration, and does. A key merged
-into a map (`<<`) is not an entry written there, and a mapping shared through an alias is judged under each map that
-holds it.
+a sibling (#116), so it draws nothing; a blank `field_types` description is a declaration, and does. Keys that YAML
+resolves equal but that are written differently (`~` and `null`, `1` and `01`, `true` and `True`) are two text
+keys the model keeps both of, and draw nothing outside a `default`.
 
-**Other mappings are not checked yet:** a key written twice in any other frontmatter mapping (`title:` twice, a
-party's `name:` twice, `questions` keys that read alike) is still silent, as the YAML reader resolves it to the
-last ([#131](https://github.com/ForLegalAI/legaldown-validator/issues/131)).
+How the rule reads the YAML:
+
+- **A key merged into a mapping (`<<`) is not an entry written there.** A key written over a merged one replaces
+  it, as the YAML specification says, and the same key from two merged mappings is a matter of precedence: neither
+  is a repeat. A merged mapping is judged as a mapping of its own, so a key repeated in a source is reported at the
+  source (`x.<<`), and so is one in a source of `translations` or `field_types` (`translations.<<`), whose own
+  entries stay with the check above.
+- **A dropped entry is ignored whole:** a repeat inside the value of a key that a later one replaces is not
+  reported, as the model never holds it.
+- **A mapping shared through an alias is reported once**, under the first path that reaches it, at the line where it
+  is written, whereas the check of `translations` and `field_types` judges it under each map that holds it. A key
+  node shared by two mappings (`{&k a: 1, *k : 2}`) is reported in each, at the anchor's line.
+- **`translations` and `field_types` written twice at the root** are a repeat of the root mapping: the one dropped
+  is reported as `frontmatter`, and the one read, by the check above.
+- **Frontmatter that cannot be read** is `frontmatter-invalid-yaml` alone. A key that cannot be held in a dict (a
+  mapping or a sequence as a key) fails the document before this check.
 
 The keys of these maps are found at the line where they are written, padded or not, by the checks that report on
 one (`language-code-invalid`, `path-not-relative`, `placeholder-in-structural-field`, and the checks of a `field_types`
@@ -883,7 +907,7 @@ expects or forbids it. It is a Warning for every output, so `is_valid` and the e
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
 Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
 validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
-(`translations` and `field_types`, #126) and not a skipped one.
+(any frontmatter mapping, #126, #131) and not a skipped one.
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct

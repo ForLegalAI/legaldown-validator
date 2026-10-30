@@ -1443,8 +1443,7 @@ def _validate(
     # (§16.1). An Error when YAML itself rejects the key written twice (strict readers fail the document as
     # `frontmatter-invalid-yaml`); a Warning for different keys the model reads as one, as the specification
     # judges a padded language code a Warning (`language-code-invalid`) and a rule of ours does not fail a
-    # document it accepts. Judged against the model, not for one edited since it was parsed. Other mappings
-    # are not checked (#131).
+    # document it accepts. Judged against the model, not for one edited since it was parsed.
     if not mode.empty_metadata:
         for map_name, each in where.ignored():
             if (each.by.key in getattr(document.metadata, map_name)) == bool(each.skipped):
@@ -1468,6 +1467,28 @@ def _validate(
                 FRONTMATTER_KEY_DUPLICATE_RULE,
                 f"The {map_name} key {_shown(entry.written)} {what}: this entry is ignored{stays}.",
                 line=entry.line,
+            )
+
+    # ── Keys of any other frontmatter mapping that a later key replaces (#131) ──
+    # The reader keeps the last of the keys a mapping holds as one and says nothing of the others: a `title:` or
+    # a party's `name:` written twice, `1` and `'1'` (read as text outside a question's `default`), `1` and `1.0`
+    # (one key in a `default`, whose YAML types stay). Reported as above, at the line of the key that is dropped,
+    # under the same rule and levels. `translations` and `field_types` are left to #126; a path names the mapping.
+    # A key written over one merged in (`<<`) replaces it, as YAML says, and is no repeat.
+    if not mode.empty_metadata:
+        for each in where.repeats():
+            what = {
+                "repeated": "is written again" + (f" at line {each.by_line}" if each.by_line is not None else ""),
+                "text": f"is the same key as {_shown(each.by_written)} once read as text",
+                "value": f"is the same key as {_shown(each.by_written)} once read as a YAML value (Python treats them as equal)",
+            }[each.why]
+            stays = f", and the entry at line {each.by_line} is the one read" if each.why != "repeated" else ""
+            report = result.error if each.why == "repeated" else result.warning
+            report(
+                FRONTMATTER_KEY_DUPLICATE_RULE,
+                f"The {_shown(each.path) if each.path else 'frontmatter'} key {_shown(each.written)} {what}: "
+                f"this entry is ignored{stays}.",
+                line=each.line,
             )
 
     # ── Metadata dates (§16.6) ──
