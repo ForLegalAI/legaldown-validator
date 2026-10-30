@@ -25,7 +25,6 @@ followed every one and the fragments are not past ``fragments.MAX_SPLICED_BLOCKS
 from __future__ import annotations
 
 import sys
-from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -44,11 +43,10 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class Plan:
-    """What the walk of the includes followed: the file (*fragment*, None for the document) and, for each
-    include paragraph of it that took in a fragment, by its (section, block) in the file, the plan of that
-    fragment. ``weave`` splices it."""
-    fragment: FragmentFile | None
-    children: dict[tuple[int | None, int], Plan] = field(default_factory=dict)
+    """What the walk of the includes followed in a file (the document, or a fragment): for each include
+    paragraph of it that took in a fragment, by its (section, block) in the file, that fragment and the plan
+    of what it followed in turn. ``weave`` splices it."""
+    children: dict[tuple[int | None, int], tuple[FragmentFile, Plan]] = field(default_factory=dict)
 
 
 @dataclass(eq=False, slots=True)
@@ -74,12 +72,11 @@ class Combined:
     """The combined document (*document*) and where its parts are from: *section_origin* has each of its
     sections as the (place, section index) it is a copy of, and *block_origin* each block of the preamble
     (first) and of the sections, as the (place, section index or None, block index) of the file it is
-    from. *host* is the document the includes are in, with its *where*; *instances* are the places of its
+    from. *where* is the locator of the document the includes are in; *instances* are the places of its
     files; *files* and *lex_fragment* are the validation's, so that nothing is read or lexed twice.
-    *imports* is what the validation of the document imported from the files it names (``core._validate``),
-    for the combined pass not to ask again, and *places* what that pass leaves, for ``merge_diagnostics``:
-    which place of its fragment each finding made in one is in."""
-    host: Document
+    *template* is whether that document is a template (§15.1): the combined pass judges as it does, since the
+    assembler decides so from the document alone. *imports* is what the validation of the document imported
+    from the files it names (``core._check``), for the combined pass not to ask again."""
     document: Document
     where: Locator
     files: Files | None
@@ -87,8 +84,8 @@ class Combined:
     instances: list[Instance]
     section_origin: list[tuple[Instance, int]]
     block_origin: list[list[tuple[Instance, int | None, int]]]
+    template: bool = False
     imports: dict[Any, Any] = field(default_factory=dict)
-    places: dict[int, int] = field(default_factory=dict)
     _markers: list[FoundMarker] | None = None
     _local: dict[Instance, list[FoundMarker]] = field(default_factory=dict)
     _first: dict[str, int] = field(default_factory=dict)
@@ -114,12 +111,11 @@ class Combined:
         self.markers()
         return self._local.get(place, [])
 
-    def position(self, diagnostic: Diagnostic) -> tuple[int, int, int, int]:
+    def position(self, diagnostic: Diagnostic, number: int | None) -> tuple[int, int, int, int]:
         """Where a finding is in the combined document, to put the findings in its order: a line of the document
         at itself, a line of a fragment at the include paragraph that took it in (the outermost one, if it is nested),
         after the findings at that line. A finding of the document's own pass in a fragment (its shape, say) is at
-        the first place of the file."""
-        number = self.places.get(id(diagnostic))
+        the first place of the file. *number* is the place of the fragment the finding was made at, if it was."""
         if number is None and diagnostic.file:
             if not self._first:
                 for place in reversed(self.instances):
@@ -163,8 +159,8 @@ def weave(
             for index, block in enumerate(source.preamble if section is None else source.sections[section].blocks):
                 blocks.append(block)
                 origin.append((place, section, index))
-                if (child := plan.children.get((section, index))) is not None and child.fragment is not None:
-                    fragment = child.fragment
+                if (followed := plan.children.get((section, index))) is not None:
+                    fragment, child = followed
                     taken = Instance(len(instances), fragment.path, fragment.document, fragment.where, place, (section, index))
                     instances.append(taken)
                     splice(taken, child)
@@ -173,7 +169,6 @@ def weave(
     instances.append(host)
     splice(host, plan)
     return Combined(
-        host=document,
         document=replace(document, sections=sections, preamble=preamble, source_map=None),
         where=where,
         files=files,
@@ -343,29 +338,49 @@ WHOLE_DOCUMENT_RULES: frozenset[str] = frozenset({
 OWNED_BY: dict[str, str] = {"anchor-duplicate": "include-anchor-duplicate"}
 
 
-def merge_diagnostics(host: list[Diagnostic], whole: list[Diagnostic], combined: Combined) -> list[Diagnostic]:
+#: What a fragment may hold only in a template (§15.3): a condition or a choice on a question, which a document that
+#: declares none (is no template) judges as nothing, as it did before the fragments were validated with it.
+TEMPLATE_IN_FRAGMENTS: frozenset[str] = frozenset({"condition-invalid", "choose-invalid"})
+
+
+def merge_diagnostics(
+    host: list[Diagnostic], whole: list[Diagnostic], places: list[int | None], combined: Combined
+) -> list[Diagnostic]:
     """What the validation of a document says once its combined document is validated too (§16.11): the
     findings of *whole*, the pass over the combined document, which reads every part of the document and of
-    its fragments; and of *host*, the pass over the document alone, those only it can make (``HOST_ONLY``),
-    in the order of the combined document (``Combined.position``).
+    its fragments, each with the place of its fragment it was made at (*places*); and of *host*, the pass over
+    the document alone, those only it can make (``HOST_ONLY``), in the order of the combined document
+    (``Combined.position``).
 
-    A finding in a fragment that is included twice is made twice, once in each place: it is one finding.
-    Of a finding in a fragment (the same rule, file, line and message) as many are kept as one place of the
-    fragment makes: two on a line of one place are two. What ``OWNED_BY`` names is left to its owner."""
+    A finding in a fragment that is included more than once is made once in each place: it is one finding.
+    Of the findings of a fragment with one rule, file and line, as many are kept as one place makes (two on a
+    line of one place are two), with the messages of the first place (``anchor-autogen-collision`` says
+    ``part-2`` in one and ``part-3`` in the next). What ``OWNED_BY`` names is left to its owner. A document that
+    is no template does not judge the conditions of a fragment (``TEMPLATE_IN_FRAGMENTS``). The absolute path or
+    URI of a reference in a fragment is judged by the combined pass (``path-not-relative``); its other paths are the
+    fragment's own, relative to its directory, and are not."""
     owned = {(d.rule, d.file, d.line) for d in host if d.rule in OWNED_BY.values()}
-    merged: list[Diagnostic] = []
-    made: dict[tuple[str, str, int | None, str], Counter[int]] = {}  # of each finding, how many each place made
-    kept: Counter[tuple[str, str, int | None, str]] = Counter()
-    for d in whole:
-        if d.rule in HOST_ONLY or (OWNED_BY.get(d.rule), d.file, d.line) in owned:
+    taken: list[tuple[Diagnostic, int | None]] = []
+    made: dict[tuple[str, str, int | None], dict[int, list[int]]] = {}  # of each finding, by place: where in *taken*
+    for d, number in zip(whole, places, strict=True):
+        if d.rule in HOST_ONLY and not (d.rule == "path-not-relative" and d.file):
             continue
-        number = combined.places.get(id(d))
+        if (OWNED_BY.get(d.rule), d.file, d.line) in owned:
+            continue
+        if d.file and not combined.template and d.rule in TEMPLATE_IN_FRAGMENTS:
+            continue
         if number is not None:
-            key = (d.rule, d.file, d.line, d.message)
-            made.setdefault(key, Counter())[number] += 1
-            if made[key][number] <= kept[key]:
-                continue  # another place of the fragment has made it as often already
-            kept[key] = made[key][number]
-        merged.append(d)
-    merged += [d for d in host if d.rule in HOST_ONLY]
-    return sorted(merged, key=combined.position)
+            made.setdefault((d.rule, d.file, d.line), {}).setdefault(number, []).append(len(taken))
+        taken.append((d, number))
+    dropped: set[int] = set()
+    for by_place in made.values():
+        first, *others = by_place.values()
+        for each in others:
+            dropped.update(each)
+        widest = max(by_place.values(), key=len)
+        if len(widest) > len(first):  # another place makes more: the first's, and the rest of that one's
+            dropped.difference_update(widest[len(first):])
+    merged = [(d, number) for at, (d, number) in enumerate(taken) if at not in dropped]
+    merged += [(d, None) for d in host if d.rule in HOST_ONLY]
+    merged.sort(key=lambda each: combined.position(*each))
+    return [d for d, _number in merged]

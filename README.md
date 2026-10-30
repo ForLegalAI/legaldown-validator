@@ -565,15 +565,17 @@ under `final`, ...) is reported in the fragment, at its line, as for any other d
 fragment is as present as its include paragraph is (§15.3), so a reference into a conditional fragment is
 `condition-reference-unsafe` unless it is as conditional (§15.4), and fragments with exclusive conditions may
 declare one identifier. A finding is at its line in its own file (`Diagnostic.file`), as many times as one place of the fragment makes it
-(none twice for a fragment included twice), in the order of the combined document; the findings of the document alone (the `include-*` and `path-*` rules,
-`template-fragment-invalid`, `heading-skip`) are not made again. It is **all or nothing**: one include that
+(none twice for a fragment included twice), in the order of the combined document; the findings of the document alone (the `include-*` rules,
+`template-fragment-invalid`, `heading-skip`, the document's own `path-*`) are not made again, and the paths of a fragment are judged only as far as
+`path-not-relative` goes (an absolute path or a URI scheme), not against a root. It is **all or nothing**: one include that
 was not followed (missing, unreadable, a path that leads out, not a fragment, a cycle, a cap, an include in a
 template's fragment) leaves the document judged as before, and the Warning of §17.5 says so. A LegalDown
 attachment file is not part of the combined document yet: a `{{ref:}}` into an attachment's section is still
 `ref-broken`. The combined document is not made either when the fragments spliced in come to more than 50,000
-blocks or 200,000 lines (counted for each time a fragment is included); the Warning says so. A fragment that holds
-a condition or a `{{choose:}}` makes the document a template (§15.1), and it is then validated as one, its fragments
-held to §15.3 (`index.is_template` is true). Markers are read over the combined document, as a splice of the text
+blocks or 200,000 lines (counted for each time a fragment is included); the Warning says so. Whether the
+document is a template is decided by the document alone (§15.1), as assembly decides it: a fragment's condition or
+`{{choose:}}` does not make it one, and is judged as the document's status dictates (in a document that is no template,
+not at all, as before). Markers are read over the combined document, as a splice of the text
 would read them: a fragment's first paragraph, spliced into a section, may carry an anchor. A fragment is spliced as
 it was parsed, so a fence it leaves open does not swallow what follows it
 ([CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612)). `ValidationResult.index` is the document's own.

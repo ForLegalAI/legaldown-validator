@@ -1357,7 +1357,7 @@ def _check(
     mode: _Mode,
     document_root: str | os.PathLike[str] | None = None,
     combined: Combined | None = None,
-) -> ValidationResult:
+) -> _Recorder:
     # *combined*: the document is the combined document of another (§16.11, #117), validated once more
     # as the document it is with its fragments in: ``document`` is its own, and the validation reads
     # the files, the lexing and the locations of the document that holds the includes.
@@ -1471,7 +1471,10 @@ def _check(
     # Markers are found first: only a template gives a preamble paragraph's
     # condition its place (§5.7).
     markers = find_markers(document, lex_fragment) if combined is None else combined.markers()
-    template = _is_template(document, markers, lex_fragment) if mode.template is None else mode.template
+    if combined is not None:
+        template = combined.template  # the document's own: §15.1, as the assembler decides it
+    else:
+        template = _is_template(document, markers, lex_fragment) if mode.template is None else mode.template
     units = Units(document, markers, questions, template=template) if combined is None else CombinedUnits(
         combined, questions, template=template
     )
@@ -2597,19 +2600,6 @@ def _check(
         exclusivity=exclusivity,
         lex_fragment=lex_fragment,
     )
-    # §15.1: a document is a template when any file of it is. The walk and the checks above judged the document
-    # by itself, and a fragment that holds a condition or a {{choose:}} makes the combined document one: the
-    # document is judged again as the template it is (its fragments are then held to §15.3, and what the
-    # walk does in a template). The decision is the combined document's (``_is_template``, over the markers it
-    # reads as a splice of the text would); the rare document that changes it pays for a second validation.
-    if (
-        included.combined is not None and mode.template is None and not template
-        and _is_template(included.combined.document, included.combined.markers(), lex_fragment)
-    ):
-        return _check(
-            original, final, resolve, import_definitions, import_attachment_definitions, replace(mode, template=True),
-            document_root,
-        )
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
     # rest are recorded where the loop met them, the last first so that the places hold. That
     # needs the diagnostics since then only to have been added to. If one was moved or removed
@@ -2657,7 +2647,6 @@ def _check(
     # that apply, as every check above read them.
     result.index.is_template = template
     if combined is not None:
-        combined.places = result.places
         return result  # (the findings only: the index is the document's own)
     result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
 
@@ -2665,12 +2654,13 @@ def _check(
     # (#117). What it says is the document's findings, but for those only the document's own pass can
     # make (``combined.HOST_ONLY``).
     if included.combined is not None:
+        included.combined.template = template
         included.combined.imports = imports
         whole = _check(
             included.combined.document, final, resolve, import_definitions, import_attachment_definitions, mode,
             document_root, combined=included.combined,
         )
-        result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, included.combined)
+        result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, whole.places, included.combined)
         result.combined = True
 
     # §17.5: a Warning for each check category the constructs of the document call for and this

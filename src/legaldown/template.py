@@ -64,10 +64,11 @@ TEMPLATE_RULES: frozenset[str] = frozenset({
 })
 
 #: A rule of the validator that a template must satisfy (the safety of a reference, §15.4) when the validator
-#: judged the template with its fragments in (``ValidationResult.combined``, §16.11), or it includes none: it
+#: judged the template with its fragments in (§16.11; ``Template._validated`` says), or it includes none: it
 #: cannot tell, from the template alone, a reference to a section of a fragment from one to a section its
 #: condition removes.
 _COMBINED_ONLY: frozenset[str] = frozenset({"condition-reference-unsafe"})
+
 
 def _coerced(question: Question, value: Any) -> Any:
     """*value* as an answer to *question*, if it can be read as one without guessing."""

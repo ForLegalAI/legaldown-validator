@@ -290,12 +290,13 @@ def test_a_fragment_that_is_fit_for_a_template_is_clean():
     assert _found(result) == []
 
 
-def test_a_condition_in_a_fragment_makes_the_document_a_template_and_the_fragment_is_held_to_it():
-    # §15.1: a document with a condition anywhere is a template, and its fragments are held to §15.3 (#117).
+def test_a_condition_in_a_fragment_that_is_not_in_a_template_is_nothing_to_report():
     part = "## B {#b when=x}\n\nText. {when=x}\n\n> [!DRAFTING]\n> note\n"
     result, _ = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part})
-    assert result.index.is_template
-    assert _found(result, _TFR) == [(_TFR, "part.lgd", 1), (_TFR, "part.lgd", 3), (_TFR, "part.lgd", 5)]
+    assert _found(result) == []
+    # (Nor is the document a template, nor is a condition or a choice of the fragment judged: #117.)
+    assert not result.index.is_template
+    assert not result.rules() & {"condition-invalid", "choose-invalid", _TFR}
     # ... and validated on its own, where the host is not known, it is not.
 
 

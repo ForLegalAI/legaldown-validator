@@ -895,8 +895,9 @@ Decisions the specification leaves open:
     CommonMark says.
   - *Where a finding is.* Each part of the combined document is located in its own file: `Diagnostic.file` is
     the fragment's path and `line` its line in it (the document's own lines are the document's). A fragment
-    included twice is reported once: of the findings of a fragment (the same rule, file, line and message) as many
-    are kept as one place of the fragment makes, so two on one line of a fragment included once are two. (Two
+    included more than once is reported once: of the findings of a fragment with one rule, file and line as many
+    are kept as one place of the fragment makes, with the messages of the first place (`anchor-autogen-collision`
+    says `part-2` in one place and `part-3` in the next), so two on one line of a fragment included once are two. (Two
     targets of the command line are the command line's.) The findings are in the order of the combined document: a
     finding of the document at its line, one of a fragment at the include that took it in, with the Warning of §17.5
     last. The message of
@@ -923,12 +924,14 @@ Decisions the specification leaves open:
     together with that of the include paragraphs that brought it in, so a fragment is as present as its include is.
     `condition-reference-unsafe`, alternatives (`when=x` / `when=!x` fragments declaring one identifier) and
     `Exclusivity` apply over that, and a reference that is covered by the fragment's declaration under the
-    answers that remove the document's own is safe. The combined document is a template when any of its files is
-    (§15.1): a fragment's `{{choose:}}` or condition makes it one, and then the **document is validated again
-    as a template** (`index.is_template` is true, the fragments are held to §15.3: a drafting note or an
-    `{{include:}}` in one is `template-fragment-invalid`, and an include in a fragment is not followed). This is
-    decided after the walk, from the combined document; the simplest sound way, since the checks of the document
-    all depend on the status, and paid for (a second validation) only by the document that changes it. A finding of the combined pass of a rule in `TEMPLATE_RULES`
+    answers that remove the document's own is safe. Whether the combined document is a template is
+    decided by **the document alone** (§15.1: "any LegalDown document that declares questions, carries a `when=`
+    condition, or contains a `{{choose:}}"), as the assembler decides it from the template it is given, and the
+    combined pass runs under it: a fragment's conditions are judged as the document's template status dictates.
+    A document that is no template gives what it gave before the fragments were validated for a fragment's
+    condition or `{{choose:}}` (no `condition-invalid`, `choose-invalid` or `template-fragment-invalid` for them,
+    `index.is_template` false, assembly as before); in a template they are judged, in the fragment, and a fragment
+    is held to §15.3 as before (each fragment is read once, whatever it holds). A finding of the combined pass of a rule in `TEMPLATE_RULES`
     (`placeholder-type-inconsistent`, `insertion-boundary`, `def-term-variable`, ...) stops the assembly of a
     template, **in whichever file it is**, as it does when the files are one document (§15.7.2);
     `Template.problems` leaves out only what assembly said of a file itself (`template-fragment-invalid`).
@@ -960,9 +963,11 @@ Decisions the specification leaves open:
     `{{ref:}}` into an attachment's section is still `ref-broken`, a definition used only in an attachment is
     still `def-unreferenced`, an auto-generated identifier is not suffixed against an attachment's heading, and
     `attachment-anchor-duplicate` is not made; the Warning of §17.5 for attachments says so. The paths of a
-    fragment (`path-not-relative`, `path-outside-root`, the existence of an image) are not judged from the
-    fragment's directory: they were not, and are not part of the combined pass, so an image in a fragment is
-    neither checked nor warned about. `ValidationResult.index` is the document's own (its sections are the
+    fragment are judged as far as they need no base: an absolute path or a URI scheme in an image of a fragment
+    is `path-not-relative` at its line there (the document's validation never looked at a fragment's images before).
+    `path-outside-root` and the existence of an image are not judged from the fragment's directory (the combined
+    pass reads them from the document's), so an image in a fragment that leaves the root is neither checked nor
+    warned about. `ValidationResult.index` is the document's own (its sections are the
     document's, paired with `document.sections`). The cap does not bound the blocks a fragment holds, as
     assembly's splice does not: the work is linear in the size of the combined document.
 - **What of a fragment is reported by the document that includes it.** The fragment is not

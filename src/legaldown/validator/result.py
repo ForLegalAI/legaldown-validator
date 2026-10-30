@@ -288,9 +288,9 @@ class _Recorder(ValidationResult):
     combined: bool = False
     #: The lines diagnostics are recorded at by default (``at``), innermost last.
     _lines: list[Line] = field(default_factory=list, repr=False, compare=False)
-    #: Of a diagnostic made at a line of the combined document that is in a fragment, which place of the
-    #: fragment it is (``Spot.instance``), by ``id`` of the diagnostic.
-    places: dict[int, int] = field(default_factory=dict, repr=False, compare=False)
+    #: Of each diagnostic (the same order), which place of a fragment it was made at, when its line is a line of
+    #: one in the combined document (``Spot.instance``), else None.
+    places: list[int | None] = field(default_factory=list, repr=False, compare=False)
 
     @contextmanager
     def at(self, line: Line) -> Iterator[None]:
@@ -305,16 +305,19 @@ class _Recorder(ValidationResult):
     def _record(
         self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = ""
     ) -> None:
-        self.diagnostics.extend(self._diagnostic(rule, level, message, line, depends, file))
+        found, place = self._diagnostic(rule, level, message, line, depends, file)
+        self.diagnostics.extend(found)
+        self.places.extend([place] * len(found))
 
     def _diagnostic(
         self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = "",
         *, fallback: bool = True,
-    ) -> list[Diagnostic]:
+    ) -> tuple[list[Diagnostic], int | None]:
         """The diagnostic ``_record`` makes, as a list of one, or of none when its
-        reason is suppressed. *fallback*: a *line* of None is the line ``at`` gives."""
+        reason is suppressed, with the place of the fragment it is at (``Spot``). *fallback*: a *line*
+        of None is the line ``at`` gives."""
         if depends is not None and depends in self.suppress:
-            return []  # before the line is looked for: a finding dropped costs nothing
+            return [], None  # before the line is looked for: a finding dropped costs nothing
         if line is None and fallback and self._lines:
             line = self._lines[-1]
         if callable(line):
@@ -326,9 +329,7 @@ class _Recorder(ValidationResult):
             rule=rule, level=level, message=message, line=line, file=file,
             host_dependent=self.fragment and depends is not None,
         )
-        if place is not None:
-            self.places[id(found)] = place
-        return [found]
+        return [found], place
 
     def error(
         self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
@@ -346,7 +347,9 @@ class _Recorder(ValidationResult):
         has the *line* it is given, None included, not the one ``at`` gives where it
         is recorded: that is not where the check came to it. Nothing may have
         removed or moved a diagnostic since *position* was taken."""
-        self.diagnostics[position:position] = self._diagnostic(rule, "error", message, line, None, fallback=False)
+        found, place = self._diagnostic(rule, "error", message, line, None, fallback=False)
+        self.diagnostics[position:position] = found
+        self.places[position:position] = [place] * len(found)
 
     def warning(
         self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""

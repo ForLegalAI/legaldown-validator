@@ -306,15 +306,42 @@ def test_a_reference_to_an_alternative_declared_under_one_answer_only_is_unsafe(
     assert [(r, n) for r, _, n in _found(result, "condition-reference-unsafe")] == [("condition-reference-unsafe", _at(text, "See"))]
 
 
-def test_a_condition_or_a_choice_only_a_fragment_holds_makes_the_combined_document_a_template():
-    # §15.1: a document that holds a {{choose:}} is a template, wherever it is. The document alone is none, and the
-    # fragment alone is not told by the document that includes it; the combined document is judged as the template it is.
+def test_a_condition_or_a_choice_only_a_fragment_holds_does_not_make_the_document_a_template():
+    # §15.1 reads the document: the assembler decides from it alone, so the fragment's constructs are judged as the
+    # document's status dictates, and a document that is no template gives what it gave before the fragments were read.
     text = _FRONT + _SCOPE + "{{include: part.lgd}}\n"
-    result = _run(text, {"part.lgd": "## Part {#part}\n\n{{choose: q}}\n"})
+    for part in (
+        "## Part {#part}\n\n{{choose: q}}\n", "## Part {#part when=x}\n\nText.\n", "## Part {#part}\n\nText. {when=x}\n",
+        "## Part {#part}\n\n> [!DRAFTING]\n> note\n\n{{choose: q}}\n",
+    ):
+        result = _run(text, {"part.lgd": part})
+        assert not result.index.is_template
+        assert not result.rules() & {"condition-invalid", "choose-invalid", "template-fragment-invalid"}
+        assert _warning(result) is None
+        template = Template(text, resolve={"part.lgd": part}.get)
+        assert template.problems == ()
+    # In a template they are judged, in the fragment.
+    result = _run(_TEMPLATE_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": "## Part {#part}\n\n{{choose: nope}}\n"})
     assert _found(result, "choose-invalid") == [("choose-invalid", "part.lgd", 3)]
-    conditional = _run(text, {"part.lgd": "## Part {#part} {when=x}\n\nText.\n"})
-    assert [r for r, _, _ in _found(conditional, "condition-invalid")] == ["condition-invalid"]
-    assert _found(conditional, "condition-invalid")[0][1:] == ("part.lgd", 1)
+
+
+def test_a_fragment_with_a_choice_is_no_trouble_to_a_document_whose_frontmatter_cannot_be_read():
+    text = "---\ntitle: [unclosed\n---\n\n" + _SCOPE + "{{include: part.lgd}}\n"
+    asked = _Loader({"part.lgd": "## Part {#part}\n\n{{choose: q}} See {{ref: scope}}.\n"})
+    result = validate(parse(text, filename="main.lgd", on_frontmatter_error="keep"), resolve=asked)
+    assert "frontmatter-invalid-yaml" in result.rules() and not result.index.is_template
+    assert not result.rules() & {"choose-invalid", "ref-broken"}
+    assert asked.asked == ["part.lgd"]
+
+
+def test_each_fragment_is_asked_for_once_whatever_it_holds():
+    text = _FRONT + _SCOPE + "{{include: part.lgd}}\n\n{{include: other.lgd}}\n"
+    asked = _Loader({"part.lgd": "## Part {#part}\n\n{{choose: q}}\n", "other.lgd": "## Other {#other}\n\nText.\n"})
+    validate(parse(text, filename="main.lgd"), resolve=asked)
+    assert sorted(asked.asked) == ["other.lgd", "part.lgd"]
+    asked = _Loader({"part.lgd": "## Part {#part when=x}\n\nText.\n", "other.lgd": "## Other {#other}\n\nText.\n"})
+    assert Template(text, resolve=asked).validation.is_valid
+    assert sorted(asked.asked) == ["other.lgd", "part.lgd"]
 
 
 def test_a_blank_of_two_types_across_the_document_and_a_fragment_is_found_where_it_is_later():
@@ -484,7 +511,7 @@ def passes(monkeypatch):
     """The two lists of diagnostics ``merge_diagnostics`` was given: the document's own pass and the combined one."""
     given = []
     real = core.merge_diagnostics
-    monkeypatch.setattr(core, "merge_diagnostics", lambda host, whole, combined: given.append((host, whole)) or real(host, whole, combined))
+    monkeypatch.setattr(core, "merge_diagnostics", lambda host, whole, places, combined: given.append((host, whole)) or real(host, whole, places, combined))
     return given
 
 
@@ -784,6 +811,24 @@ def test_two_findings_on_one_line_of_a_fragment_are_two_and_a_fragment_included_
     assert len(_found(both, "ref-broken")) == 2
 
 
+def test_a_fragment_included_in_several_places_makes_one_finding_whatever_its_message_says():
+    # The auto-generated identifier is adjusted to part-2 in one place, part-3 in the next: one finding.
+    text = (
+        _FRONT + _SCOPE + "## Part\n\nText.\n\n{{include: part.lgd}}\n\n## Again {#again}\n\n{{include: part.lgd}}\n\n"
+        "## More {#more}\n\n{{include: part.lgd}}\n"
+    )
+    result = _run(text, {"part.lgd": "## Part\n\nText.\n"})
+    assert _found(result, "anchor-autogen-collision") == [("anchor-autogen-collision", "part.lgd", 1)]
+    assert "part-2" in next(d.message for d in result.diagnostics if d.rule == "anchor-autogen-collision")
+
+
+def test_an_absolute_path_or_a_uri_in_a_fragment_is_not_relative_wherever_the_fragment_is():
+    text = _FRONT + _SCOPE + "{{include: sub/part.lgd}}\n"
+    part = "## Part {#part}\n\n![x](/etc/passwd.png) ![y](C:\\x.png) ![z](https://x/y.png) ![w](../w.png)\n"
+    result = _run(text, {"sub/part.lgd": part})
+    assert _found(result, "path-not-relative", "path-outside-root") == [("path-not-relative", "sub/part.lgd", 3)] * 3
+
+
 def test_the_importers_are_called_once_for_each_file_however_often_the_document_is_read():
     front = _FRONT.replace("---\n\n", "amends:\n  title: Original\n  file: orig.lgd\nattachments:\n  - id: a\n    title: A\n    file: a.lgd\n---\n\n")
     text = front + _SCOPE + "{{attach: a}} {{include: part.lgd}}\n\n{{include: part.lgd}}\n"
@@ -803,22 +848,6 @@ def test_the_importers_are_called_once_for_each_file_however_often_the_document_
             import_definitions=amends, import_attachment_definitions=attachment,
         )
     assert sorted(asked) == ["a.lgd", "orig.lgd"]
-
-
-def test_a_document_that_is_a_template_only_by_its_fragment_is_judged_as_one():
-    # §15.1: a fragment's {{choose:}} makes the combined document a template; the fragment is then held to §15.3
-    # (a drafting note in it is template-fragment-invalid) and the index says so.
-    text = _FRONT + _SCOPE + "{{include: part.lgd}}\n"
-    part = "## Part {#part}\n\n> [!DRAFTING]\n> note\n\n{{choose: q}}\n"
-    result = _run(text, {"part.lgd": part})
-    assert result.index.is_template
-    assert _found(result, "template-fragment-invalid") == [("template-fragment-invalid", "part.lgd", 3)]
-    # A nested include in such a fragment is not followed, and nothing is combined.
-    nested = _run(text, {"part.lgd": part + "\n{{include: deeper.lgd}}\n", "deeper.lgd": "### Deeper {#deeper}\n"})
-    assert ("template-fragment-invalid", "part.lgd", 8) in _found(nested, "template-fragment-invalid")
-    assert "combined-document checks" in _warning(nested).message
-    # A document that is no template, nor its fragment, is none.
-    assert not _run(text, {"part.lgd": "## Part {#part}\n\nText.\n"}).index.is_template
 
 
 def test_a_line_of_a_fragment_keeps_its_file_through_arithmetic():

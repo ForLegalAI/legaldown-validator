@@ -823,7 +823,7 @@ class _Walk:
         self._met: set[tuple[str, int]] = set()  # the includes of fragments (file, number) already judged
         self._budget = IncludeBudget()
         self.incomplete = False
-        self.plan = Plan(None)
+        self.plan = Plan()
         self.complete = True
         self._spliced = [0, 0]  # the blocks and lines the fragments followed bring in
 
@@ -998,7 +998,8 @@ class _Walk:
         if target is None:
             self.incomplete = True
             return []
-        taken = plan.children[include.section, include.block] = Plan(target)
+        taken = Plan()
+        plan.children[include.section, include.block] = (target, taken)
         return self.expand(target, self.extend(chain, target), taken)
 
 
@@ -1089,7 +1090,8 @@ def check_includes(
             continue
         walk.incomplete = False
         presence = units.presence(include.section, include.block, include.fragment)
-        taken = walk.plan.children[include.section, include.block] = Plan(fragment)
+        taken = Plan()
+        walk.plan.children[include.section, include.block] = (fragment, taken)
         splices.setdefault(include.section, []).append(
             Splice(include, presence, walk.expand(fragment, walk.extend(EMPTY_CHAIN, fragment), taken))
         )
