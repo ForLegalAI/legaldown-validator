@@ -226,8 +226,9 @@ the same, so the earlier key and its value are dropped. Every mapping of the fro
 mappings in a sequence (`sides[0].parties[1]`), the fields of a question (`questions.my-q.default`) and the mappings
 a `<<` merges in. The finding names the mapping, `frontmatter` for the root and otherwise its path in backticks:
 names as `parties[0]` and `questions.my-q.default`, a key that is no plain name between brackets and escaped as
-JSON (`["weird key"]`), a typed key of a question's `default` as Python writes it (`[1]`), a sequence entry by its
-position in the YAML sequence, and a merged mapping as `x.<<` (`x.<<[0]` in a list of sources).
+JSON (`["weird key"]`), a typed key of a question's `default` as Python writes it between braces (`{1}`, so that it
+is not taken for a position), a sequence entry by its position in the YAML sequence (`[1]`), and a merged mapping as
+`x.<<` (`x.<<[0]` in a list of sources).
 
 `translations` and `field_types` are judged apart, with their own wording, as the model reads their keys as text,
 stripped, and keeps the last of the keys it reads as one (in the order the model holds them: `fr: a`, `' fr': b`,
@@ -242,10 +243,14 @@ line again. Three cases:
 
 - **The same YAML key written twice** (`fr` and `fr`, or `fr` and `"fr"`): invalid YAML, which a strict loader
   fails as `frontmatter-invalid-yaml`, and this implementation's YAML reader, like PyYAML, reads as the last.
-  An Error.
+  An Error. In the mappings other than those two it is judged by the type YAML gives the keys that the model holds
+  as one: both text, both a boolean (`yes` and `true` in a `default`), both null (`~` and `null`), both an integer
+  (`1` and `01`) are the same key, however written.
 - **Keys that YAML keeps apart but the model reads as the same text** (`1` and `'1'`: the model reads every
   plain scalar as written), "once read as text". In a question's `default` the YAML types stay (§15.7.1), so `1`
-  and `'1'` are two keys there, and `1`, `1.0` and `true`, which Python holds as one, "once read as a YAML value".
+  and `'1'` are two keys there, and `1`, `1.0` and `true`, which Python holds as one though YAML types them
+  differently, "once read as a YAML value". A plain `=` is a YAML type of its own that the reader turns into text, so
+  `=` and `'='` are "once read as text".
 - **Keys that strip alike** (`fr` and `' fr'`), "once stripped": the reader strips the keys of `translations` and
   `field_types` ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)).
 
@@ -260,17 +265,25 @@ keys the model keeps both of, and draw nothing outside a `default`.
 How the rule reads the YAML:
 
 - **A key merged into a mapping (`<<`) is not an entry written there.** A key written over a merged one replaces
-  it, as the YAML specification says, and the same key from two merged mappings is a matter of precedence: neither
-  is a repeat. A merged mapping is judged as a mapping of its own, so a key repeated in a source is reported at the
-  source (`x.<<`), and so is one in a source of `translations` or `field_types` (`translations.<<`), whose own
-  entries stay with the check above.
+  it, as the YAML specification says, and the same key from two merged mappings is a matter of precedence (the
+  first source wins): neither is a repeat. A merged mapping is judged as a mapping of its own, so a key repeated
+  in a source is reported at the source (`x.<<`), and so is one in a source of `translations` or `field_types`
+  (`translations.<<`), whose own entries stay with the check above. Only the entries of a source that reach the
+  mapping are judged: one that the mapping's own key, or an earlier source, takes the place of is never read, and
+  neither is its value. A `<<` written twice in one mapping is not reported: the reader merges both, and the model
+  drops nothing.
 - **A dropped entry is ignored whole:** a repeat inside the value of a key that a later one replaces is not
   reported, as the model never holds it.
 - **A mapping shared through an alias is reported once**, under the first path that reaches it, at the line where it
   is written, whereas the check of `translations` and `field_types` judges it under each map that holds it. A key
-  node shared by two mappings (`{&k a: 1, *k : 2}`) is reported in each, at the anchor's line.
+  node shared by two mappings (`{&k a: 1, *k : 2}`) is reported in each, at the anchor's line. An aliased key is
+  at its anchor's line even when the anchor is written in another mapping: the YAML reader gives an alias no position
+  of its own.
 - **`translations` and `field_types` written twice at the root** are a repeat of the root mapping: the one dropped
   is reported as `frontmatter`, and the one read, by the check above.
+- **The findings describe the source text.** A document whose metadata was changed after it was parsed draws none
+  of them (the parser keeps a digest of the metadata it built, which the validator compares), as one built from a dict
+  has no source map.
 - **Frontmatter that cannot be read** is `frontmatter-invalid-yaml` alone. A key that cannot be held in a dict (a
   mapping or a sequence as a key) fails the document before this check.
 

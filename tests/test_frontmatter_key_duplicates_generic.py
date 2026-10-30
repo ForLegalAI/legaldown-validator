@@ -135,10 +135,40 @@ def test_a_question_default_keeps_the_types_of_its_keys():
     assert _lines(_questions("      a: 1\n      a: 2\n")) == [(6, "error")]
 
 
-def test_the_typed_keys_of_a_default_are_a_path_in_brackets():
+def test_the_typed_keys_of_a_default_are_a_path_in_braces_not_taken_for_a_position():
     front = _questions("      1: {a: 1, a: 2}\n      2: x\n")
     (found,) = _found(front)
-    assert found[2].startswith("The `questions.q1.default[1]` key `a` is written again at line 6")
+    assert found[2].startswith("The `questions.q1.default{1}` key `a` is written again at line 6")
+    # a sequence position is in brackets, so the two differ
+    (other,) = _found(_questions("      - x\n      - {a: 1, a: 2}\n"))
+    assert other[2].startswith("The `questions.q1.default[1]` key `a` is written again at line 7")
+    # and so does the text `'1'`
+    (text,) = _found(_questions("      '1': {a: 1, a: 2}\n"))
+    assert text[2].startswith('The `questions.q1.default["1"]` key `a`')
+
+
+@pytest.mark.parametrize("default", [
+    "      yes: a\n      true: b\n",
+    "      ~: a\n      null: b\n",
+    "      1: a\n      01: b\n",
+    "      a: 1\n      \"a\": 2\n",
+])
+def test_keys_of_one_type_that_a_dict_holds_as_one_are_the_same_key_written_again(default):
+    # In a `default` the YAML types stay: both keys are a bool, a null, an int, a text: an Error, however written.
+    assert [level for _line, level, _message in _found(_questions(default))] == ["error"]
+
+
+@pytest.mark.parametrize("default", ["      1: a\n      1.0: b\n", "      1: a\n      true: b\n", "      1.0: a\n      true: b\n"])
+def test_keys_of_different_types_that_a_dict_holds_as_one_are_a_warning_by_value(default):
+    ((_line, level, message),) = _found(_questions(default))
+    assert level == "warning" and "once read as a YAML value" in message
+
+
+def test_a_key_written_as_an_equals_sign_is_a_different_key_from_the_quoted_one():
+    # YAML resolves a plain `=` to its own type, which the reader turns into text before it builds the mapping.
+    assert [level for _l, level, _m in _found("x: {=: a, '=': b}\n")] == ["warning"]
+    assert [level for _l, level, _m in _found("x:\n  =: a\n  =: b\n")] == ["error"]
+    assert [level for _l, level, _m in _found("translations: {=: a, '=': b}\n")] == ["warning"]
 
 
 # ── aliases ──
@@ -204,6 +234,53 @@ def test_a_merge_into_the_root_counts_the_entries_written_there():
 
 def test_a_mapping_that_merges_itself_ends():
     assert _lines("a: &a\n  <<: *a\n  b: 1\n  b: 2\n") == [(4, "error")]
+
+
+def test_an_entry_that_the_mapping_overrides_is_not_read_and_not_judged():
+    # The merged pair is one key to the model, but the mapping's own `'1'` takes its place: nothing is read of it.
+    assert _found("x:\n  <<: {1: a, '1': b}\n  '1': c\n") == []
+    # Its value is not read either.
+    assert _found("x:\n  <<: {party: {name: A, name: B}}\n  party: {name: C}\n") == []
+    assert _found("x:\n  party: {name: C}\n  <<: {party: {name: A, name: B}}\n") == []
+
+
+def test_an_entry_that_contributes_is_judged_with_its_value():
+    ((line, level, message),) = _found("x:\n  <<: {1: a, '1': b}\n")
+    assert (line, level) == (3, "warning") and message.endswith("and the entry at line 3 is the one read.")
+    assert _found("x:\n  <<: {party: {name: A, name: B}}\n  other: 1\n") == [
+        (3, "error", "The `x.<<.party` key `name` is written again at line 3: this entry is ignored.")
+    ]
+
+
+def test_an_entry_of_a_later_source_that_an_earlier_one_overrides_is_not_read():
+    front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}, d: {e: 1, e: 2}}]\n"
+    assert [message for _l, _lvl, message in _found(front)] == [
+        "The `x.<<[0].a` key `b` is written again at line 3: this entry is ignored.",
+        "The `x.<<[1].d` key `e` is written again at line 3: this entry is ignored.",
+    ]
+
+
+def test_a_source_of_a_source_is_overridden_by_the_source_that_merges_it():
+    front = "x:\n  <<: {<<: {a: {b: 1, b: 2}}, a: 1}\n"
+    assert _found(front) == []
+
+
+def test_an_overridden_translations_in_a_source_gives_nothing():
+    assert _found("<<: {translations: {fr: a, fr: b}}\ntranslations: {de: x}\n") == []
+    assert _found("<<: {translations: {fr: a, fr: b}}\ntranslations: {de: x}\ntitle: T\n") == []
+    # one that contributes is #126's
+    assert [m for _l, _lvl, m in _found("<<: {translations: {fr: a, fr: b}}\n")] == [
+        "The translations key `fr` is written again at line 2: this entry is ignored."
+    ]
+
+
+def test_a_source_judged_for_all_its_keys_and_for_some_is_reported_once():
+    front = "x:\n  <<: &b {a: 1, a: 2}\n  c: 1\ny:\n  <<: *b\n  a: 3\n"
+    assert _lines(front) == [(3, "error")]
+    front = "y:\n  <<: &b {a: 1, a: 2}\n  a: 3\nx:\n  <<: *b\n  c: 1\n"
+    # `y` overrides `a`, so the source is read for `x` alone: the finding is under `x.<<`
+    ((line, _level, message),) = _found(front)
+    assert line == 3 and message.startswith("The `x.<<` key `a`")
 
 
 # ── messages and paths ──
@@ -299,6 +376,19 @@ def test_a_document_whose_body_no_longer_fits_the_source_draws_no_finding():
     document = parse(_source("title: a\ntitle: b\n"))
     document.sections[0].blocks.clear()
     assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
+
+
+def test_a_metadata_changed_after_parsing_draws_no_stale_finding():
+    document = parse(_source("title: a\ntitle: b\nsides:\n  - name: X\n    name: Y\n"))
+    assert len([d for d in validate(document).diagnostics if d.rule == RULE]) == 2
+    document.metadata.sides = []
+    document.metadata.title = "new"
+    assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
+
+
+def test_a_metadata_that_refers_to_itself_is_fingerprinted():
+    document = parse(_source("x: &a [*a]\ny: {a: 1, a: 2}\n"))
+    assert len([d for d in validate(document).diagnostics if d.rule == RULE]) == 1
 
 
 def test_the_findings_are_data_of_the_document_not_of_the_run():

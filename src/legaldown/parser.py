@@ -67,6 +67,7 @@ from .positions import (
     document_shape,
     frontmatter_keys,
     line_breaks,
+    metadata_fingerprint,
     read_maps,
     repeated_keys,
     stripped_nodes,
@@ -97,6 +98,10 @@ class _StrDateSafeLoader(yaml.SafeLoader):
         self.resolved: dict[yaml.Node, str] = {}
 
     def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        # The reader reads a `=` key as text; the tag it resolved to is kept (a `'='` key is text from the start).
+        for key, _value in node.value:
+            if key.tag == _VALUE_TAG:
+                self.resolved[key] = key.tag
         # Once: flattening deletes the merge keys, and it recurses into each source through this method.
         if any(key.tag == _MERGE_TAG for key, _value in node.value):
             self.merges[node] = (
@@ -126,6 +131,7 @@ _StrDateSafeLoader.add_constructor(
 # rules rely on (§15.7.1). A value left empty or written ``null`` stays absent.
 _STR_TAG = "tag:yaml.org,2002:str"
 _MERGE_TAG = "tag:yaml.org,2002:merge"
+_VALUE_TAG = "tag:yaml.org,2002:value"
 _NULL_TAG = "tag:yaml.org,2002:null"
 _CONVERTED_TAGS = frozenset(
     f"tag:yaml.org,2002:{name}" for name in ("bool", "int", "float", "timestamp")
@@ -336,7 +342,7 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
         # After the nodes are read as written: the maps are judged as the model reads them.
-        maps = read_maps(written, loader.construct_object, metadata)
+        maps = read_maps(written, loader.construct_object, metadata, loader.resolved)
         # Every mapping reached has been flattened by now: by `_read_as_written`, by the reader's recursion into a
         # `<<` source, or when it was built. `translations` and `field_types` are `read_maps`'s.
         repeats = repeated_keys(
@@ -2125,6 +2131,7 @@ def parse(
         keys=front.keys,
         maps=front.maps,
         repeats=front.repeats,
+        metadata_print=metadata_fingerprint(document.metadata) if front.repeats else b"",
         layout=layout,
         shape=document_shape(document),
     )
