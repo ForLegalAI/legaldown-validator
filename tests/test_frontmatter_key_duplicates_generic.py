@@ -148,14 +148,27 @@ def test_the_typed_keys_of_a_default_are_a_path_in_braces_not_taken_for_a_positi
 
 
 @pytest.mark.parametrize("default", [
+    "      a: 1\n      a: 2\n",
+    "      a: 1\n      \"a\": 2\n",
+    "      1: a\n      1: b\n",
+    "      yes: a\n      yes: b\n",
+    "      ~: a\n      ~: b\n",
+])
+def test_the_same_key_of_the_same_type_written_again_in_a_default_is_an_error(default):
+    # As `read_maps` judges the keys of `translations`: the type YAML gave them and the text are the same.
+    assert [level for _line, level, _message in _found(_questions(default))] == ["error"]
+
+
+@pytest.mark.parametrize("default", [
     "      yes: a\n      true: b\n",
     "      ~: a\n      null: b\n",
     "      1: a\n      01: b\n",
-    "      a: 1\n      \"a\": 2\n",
+    "      1: a\n      0x1: b\n",
+    "      1.0: a\n      1.00: b\n",
 ])
-def test_keys_of_one_type_that_a_dict_holds_as_one_are_the_same_key_written_again(default):
-    # In a `default` the YAML types stay: both keys are a bool, a null, an int, a text: an Error, however written.
-    assert [level for _line, level, _message in _found(_questions(default))] == ["error"]
+def test_keys_of_one_type_written_differently_that_a_dict_holds_as_one_are_a_warning_by_value(default):
+    ((_line, level, message),) = _found(_questions(default))
+    assert level == "warning" and "once read as a YAML value" in message
 
 
 @pytest.mark.parametrize("default", ["      1: a\n      1.0: b\n", "      1: a\n      true: b\n", "      1.0: a\n      true: b\n"])
@@ -351,6 +364,25 @@ def test_the_findings_are_in_source_order_on_one_line():
     assert [message.split(" key ")[1].split(" ")[0] for _l, _lvl, message in _found(front)] == ["`a`", "`b`"]
 
 
+def test_a_long_key_is_cut_short_in_the_path_of_the_findings_under_it():
+    # 8 000 findings under a key of 50 000 characters: the key is not copied into each of them.
+    front = "? k" + "x" * 50_000 + "\n:\n" + "  a: 1\n" * 8_000
+    start = time.perf_counter()
+    found = _found(front)
+    assert time.perf_counter() - start < 10
+    assert len(found) == 7_999
+    assert all(len(message) < 200 for _line, _level, message in found)
+    assert found[0][2].startswith("The `k" + "x" * 38 + "…` key `a` is written again at line 5")
+
+
+def test_a_lone_surrogate_in_a_key_is_escaped_in_the_path_and_czech_letters_are_not():
+    ((_line, _level, message),) = _found('"\\ud800": {a: 1, a: 2}\n')
+    assert message.startswith('The `["\\ud800"]` key `a`')
+    message.encode("utf-8")  # a message that can be printed
+    ((_line, _level, message),) = _found('"příliš žluťoučký": {a: 1, a: 2}\n')
+    assert message.startswith('The `["příliš žluťoučký"]` key `a`')
+
+
 # ── translations and field_types are #126's alone ──
 
 def test_translations_and_field_types_keep_their_own_findings():
@@ -456,7 +488,8 @@ def test_a_number_too_large_to_write_is_not_written():
     document = parse(_source(key))
     assert document.frontmatter_error is None
     ((_line, _level, message),) = _found(key)
-    assert message.startswith("The `questions.q1.default{" + huge + "}` key `a` is written again")
+    assert message.startswith("The `questions.q1.default{0xffff") and "…` key `a` is written again" in message
+    assert len(message) < 200  # the key is cut short, not copied into the finding
     # no repeat of it: nothing to say, and the document is read
     assert _found(f"questions:\n  q1:\n    type: text\n    default:\n      ? {huge}\n      : 1\n") == []
 
@@ -490,6 +523,17 @@ def test_a_mapping_of_one_key_written_thousands_of_times_takes_linear_time():
     same, document = _parse_time("x:\n" + "".join(f"  k: {i}\n" for i in range(count)))
     assert same < 2 * wide + 1, (wide, same)
     assert len(document.source_map.repeats) == count - 1
+
+
+def test_a_deep_list_of_thousands_of_scalars_takes_linear_time():
+    # A path is made for a mapping or a list entered, not for each of its entries.
+    count, depth = 60_000, 300
+    deep = "x: " + "[" * depth + ", ".join(["1"] * count) + "]" * depth + "\n"
+    flat = "x: [" + ", ".join(["1"] * count) + "]\n"
+    deep_time, document = _parse_time(deep)
+    flat_time, _ = _parse_time(flat)
+    assert deep_time < 2 * flat_time + 1, (flat_time, deep_time)
+    assert document.source_map.repeats == ()
 
 
 def test_a_deep_mapping_is_walked_without_recursion():

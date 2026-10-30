@@ -337,7 +337,8 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
         # The YAML starts on the line after the opening `---` (line 1).
         breaks = line_breaks(block)
         keys = {(): 1, **frontmatter_keys(node, breaks, 2)}
-        written = written_maps(node, block, breaks, 2)
+        stripped = stripped_nodes(node)
+        written = written_maps(node, block, breaks, 2, stripped)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
@@ -353,7 +354,7 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
             loader.construct_object,
             loader.merges,
             loader.resolved,
-            set(stripped_nodes(node).values()),
+            set(stripped.values()),
         )
     except FrontmatterError as exc:
         if not keep_error:

@@ -1491,12 +1491,15 @@ def _validate(
     # under the same rule and levels. `translations` and `field_types` are left to #126; a path names the mapping.
     # A key written over one merged in (`<<`) replaces it, as YAML says, and is no repeat.
     if not mode.empty_metadata:
+        paths: dict[str, str] = {}  # the path of each mapping, shown once
         for each in where.repeats():
             at = "" if each.by_line is None else f" at line {each.by_line}"
             what = _key_clause(each.why, each.by_written, at)
             stays = _key_read(each.by_line) if each.why != "repeated" and each.by_line is not None else ""
             report = result.error if each.why == "repeated" else result.warning
-            subject = _shown(each.path) if each.path else "frontmatter"
+            if each.path not in paths:
+                paths[each.path] = _shown(each.path) if each.path else "frontmatter"
+            subject = paths[each.path]
             report(FRONTMATTER_KEY_DUPLICATE_RULE, _key_ignored(subject, each.written, what, stays), line=each.line)
 
     # ── Metadata dates (§16.6) ──

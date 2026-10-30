@@ -180,19 +180,21 @@ def stripped_nodes(root: yaml.Node) -> dict[str, yaml.Node]:
     return found
 
 
-def written_maps(root: yaml.Node, block: str, breaks: list[int], first_line: int) -> dict[str, list[_Written]]:
+def written_maps(
+    root: yaml.Node, block: str, breaks: list[int], first_line: int, nodes: dict[str, yaml.Node] | None = None
+) -> dict[str, list[_Written]]:
     """The entries of each ``STRIPPED_MAPS`` map written in the frontmatter's YAML *root* (the last one, if the
     map is written twice, which is the one read), in the order of the source. *block* is the YAML's text, whose
     *breaks* are its line feeds (``line_breaks``). Taken before the maps are flattened, which brings the keys
     of a ``<<`` source in as if written there. An aliased key is one node, at its anchor's line and with its text, as in
-    ``frontmatter_keys``."""
+    ``frontmatter_keys``. *nodes* are the maps found already (``stripped_nodes``)."""
     return {
         name: [
             _Written(key, _key_text(block, key), _key_line(breaks, first_line, key), key.start_mark.index)
             for key, _item in value.value
             if isinstance(key, yaml.ScalarNode) and key.tag != "tag:yaml.org,2002:merge"
         ]
-        for name, value in stripped_nodes(root).items()
+        for name, value in (stripped_nodes(root) if nodes is None else nodes).items()
         if isinstance(value, yaml.MappingNode)
     }
 
@@ -334,28 +336,40 @@ def metadata_unchanged(metadata: Any, snapshot: list[Any]) -> bool:
     return next(held, held) is held
 
 
+_SEGMENT_WIDTH = 40  # the most of a step of a path that is written out: a key may be as long as the frontmatter
+
+
 def _segment(slot: Any, key: yaml.Node, block: str) -> str:
     """The step into the value of the entry whose key is the node *key*, held as *slot*, in a path
     (``repeated_keys``): ``.name`` for a plain name, else a text in brackets, escaped as JSON, and any other key
     (of a question's ``default``) as it is written, in braces, so that it is not taken for a position in a
-    sequence, which is ``[1]``. A key that is not text is not written out from its value, which may be too large."""
+    sequence, which is ``[1]``. A key that is not text is not written out from its value, which may be too large.
+    A letter stays as it is written, but a character that cannot be written out (a lone surrogate that an escape
+    makes) is escaped, and a step longer than ``_SEGMENT_WIDTH`` is cut short, so that a long key is not copied
+    into every finding under it."""
     if isinstance(slot, str):
-        return f".{slot}" if _PLAIN_KEY_RE.fullmatch(slot) else f"[{json.dumps(slot, ensure_ascii=False)}]"
-    return "{" + (key.value if isinstance(key, yaml.ScalarNode) else _key_text(block, key)) + "}"
+        step = f".{slot}" if _PLAIN_KEY_RE.fullmatch(slot) else f"[{json.dumps(slot, ensure_ascii=False)}]"
+    else:
+        step = "{" + (key.value if isinstance(key, yaml.ScalarNode) else _key_text(block, key)) + "}"
+    step = step[: _SEGMENT_WIDTH + 1].encode("utf-8", "backslashreplace").decode("utf-8")
+    return step if len(step) <= _SEGMENT_WIDTH else step[:_SEGMENT_WIDTH] + "…"
 
 
-def _path_text(path: tuple[tuple[Any, ...], ...], block: str) -> str:
-    """The path of a mapping as text: each step is ``("k", slot, key)``, ``("i", position)`` for a sequence entry
-    or ``("m", position)`` for a source of a merge, whose position is None unless the sources are a list."""
+def _path_text(path: tuple[Any, ...] | None, block: str) -> str:
+    """The path of a mapping as text. A path is the steps from the root, each linked to the one before it, so
+    that a step is made for a mapping or sequence entered, not for each entry: ``(before, step)``, a step being
+    ``("k", slot, key)``, ``("i", position)`` for a sequence entry or ``("m", position)`` for a source of a merge,
+    whose position is None unless the sources are a list."""
     steps = []
-    for kind, *step in path:
+    while path is not None:
+        path, (kind, *step) = path
         if kind == "k":
             steps.append(_segment(step[0], step[1], block))
         elif kind == "i":
             steps.append(f"[{step[0]}]")
         else:
             steps.append(".<<" if step[0] is None else f".<<[{step[0]}]")
-    return "".join(steps).removeprefix(".")
+    return "".join(reversed(steps)).removeprefix(".")
 
 
 _NO_SLOT = object()  # the slot of a key that cannot be held in a dict (in an ``!!omap`` or ``!!pairs``, where it can be)
@@ -417,8 +431,9 @@ def repeated_keys(
                 held.add(id(entry))
         return held
 
-    Item = tuple[yaml.Node, tuple[tuple[Any, ...], ...], "yaml.Node | None"]  # node, path, mapping it is merged into
-    stack: list[Item] = [(root, (), None)]
+    Item = tuple[yaml.Node, "tuple[Any, ...] | None", "yaml.Node | None"]  # node, path, mapping it is merged into
+    containers = (yaml.MappingNode, yaml.SequenceNode)
+    stack: list[Item] = [(root, None, None)]
     while stack:
         node, path, owner = stack.pop()
         if (id(node), id(owner) if owner else 0) in seen or (owner and (id(node), 0) in seen):
@@ -426,7 +441,7 @@ def repeated_keys(
         seen.add((id(node), id(owner) if owner else 0))
         children: list[Item] = []
         if isinstance(node, yaml.SequenceNode):
-            children = [(entry, (*path, ("i", index)), None) for index, entry in enumerate(node.value)]
+            children = [(entry, (path, ("i", index)), None) for index, entry in enumerate(node.value) if isinstance(entry, containers)]
         elif isinstance(node, yaml.MappingNode):
             own, sources = merges.get(node, (node.value, []))
             if owner is None and sources:
@@ -437,7 +452,8 @@ def repeated_keys(
             for entry in own:
                 slot = slot_of(entry[0])
                 if slot is _NO_SLOT:
-                    children.append((entry[1], (*path, ("k", slot, entry[0])), None))
+                    if isinstance(entry[1], containers):
+                        children.append((entry[1], (path, ("k", slot, entry[0])), None))
                 else:
                     groups.setdefault(slot, []).append(entry)
             where = None
@@ -446,17 +462,16 @@ def repeated_keys(
                     continue  # a later entry of the mapping that merges this one takes its place: not read
                 if len(group) > 1 and node not in skip:
                     where = _path_text(path, block) if where is None else where
-                    for key, repeat in _replaced(group, where, block, breaks, first_line, construct, resolved):
+                    for key, repeat in _replaced(group, where, block, breaks, first_line, slot_of, resolved):
                         if (id(node), id(key)) not in reported:
                             reported.add((id(node), id(key)))
                             found.append(repeat)
-                children.append((group[-1][1], (*path, ("k", slot, group[-1][0])), None))
+                if isinstance(group[-1][1], containers):
+                    children.append((group[-1][1], (path, ("k", slot, group[-1][0])), None))
             for source in sources:
                 for index, each in enumerate(source.value) if isinstance(source, yaml.SequenceNode) else [(None, source)]:
-                    children.append((each, (*path, ("m", index)), owner))
-        stack.extend(
-            child for child in reversed(children) if isinstance(child[0], (yaml.MappingNode, yaml.SequenceNode))
-        )
+                    children.append((each, (path, ("m", index)), owner))
+        stack.extend(reversed(children))
     return tuple(found)
 
 
@@ -466,22 +481,22 @@ def _replaced(
     block: str,
     breaks: list[int],
     first_line: int,
-    construct: Callable[[yaml.Node], Any],
+    slot_of: Callable[[yaml.Node], Any],
     resolved: dict[yaml.Node, str],
 ) -> list[tuple[yaml.Node, Repeated]]:
     """The keys of *group*, the entries of a mapping that its dict holds as one, but the last: each key node
     once, as the first of its entries is written (``repeated_keys``), with what is found of it. A key is
-    written again when a later key of the group has the type YAML gave it (``resolved``): in a dict that holds
-    them as one, that is the same key. Otherwise the model reads different keys as one: as text, when both
-    are text in the model, else by their value."""
+    written again when a later key of the group has the type YAML gave it (``resolved``) and the text it has,
+    as ``read_maps`` judges the keys of ``translations``: ``fr`` and ``"fr"``. Otherwise the model reads
+    different keys as one: as text, when both are text in the model, else by their value (``1`` and ``0x1``)."""
     last = group[-1][0]
-    # By the type YAML gave each key: the nearest later key of the same, and the nearest of those that is another
+    # By the type YAML gave each key and its text: the nearest later key of the same, and the nearest of those that is another
     # node, so that one pass from the end finds, for each entry, the key that repeats it.
-    after: dict[str, tuple[yaml.Node, yaml.Node | None]] = {}
+    after: dict[tuple[str, str], tuple[yaml.Node, yaml.Node | None]] = {}
     dropped: dict[int, tuple[yaml.Node, yaml.Node | None, yaml.Node | None]] = {}  # by node: later key, another node's
     for index in range(len(group) - 1, -1, -1):
         key = group[index][0]
-        read = resolved.get(key, key.tag)
+        read = (resolved.get(key, key.tag), key.value)
         later, other = after.get(read, (None, None))
         again = later if later is not key else other  # the nearest later key that is another node
         if index < len(group) - 1:
@@ -492,7 +507,7 @@ def _replaced(
         if later is not None:
             why, by = "repeated", again  # None: only the same node (an aliased key) repeats it
         else:
-            why = "text" if isinstance(construct(key), str) and isinstance(construct(last), str) else "value"
+            why = "text" if isinstance(slot_of(key), str) and isinstance(slot_of(last), str) else "value"
             by = last
         out.append(
             (

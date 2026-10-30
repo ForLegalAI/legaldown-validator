@@ -228,7 +228,9 @@ a `<<` merges in. The finding names the mapping, `frontmatter` for the root and 
 names as `parties[0]` and `questions.my-q.default`, a key that is no plain name between brackets and escaped as
 JSON (`["weird key"]`), a typed key of a question's `default` as it is written in the source between braces (`{1}`, so
 that it is not taken for a position), a sequence entry by its position in the YAML sequence (`[1]`), and a merged mapping as
-`x.<<` (`x.<<[0]` in a list of sources).
+`x.<<` (`x.<<[0]` in a list of sources). A step of the path is cut after 40 characters (`…`), so that a long key is not
+copied into every finding under it, and a character that cannot be written out, as a lone surrogate that `"\ud800"` makes,
+is escaped; letters stay as they are written. A key written as nothing is shown as `''`.
 
 `translations` and `field_types` are judged apart, with their own wording, as the model reads their keys as text,
 stripped, and keeps the last of the keys it reads as one (in the order the model holds them: `fr: a`, `' fr': b`,
@@ -243,13 +245,13 @@ line again. Three cases:
 
 - **The same YAML key written twice** (`fr` and `fr`, or `fr` and `"fr"`): invalid YAML, which a strict loader
   fails as `frontmatter-invalid-yaml`, and this implementation's YAML reader, like PyYAML, reads as the last.
-  An Error. In the mappings other than those two it is judged by the type YAML gives the keys that the model holds
-  as one: both text, both a boolean (`yes` and `true` in a `default`), both null (`~` and `null`), both an integer
-  (`1` and `01`) are the same key, however written.
+  An Error. Everywhere it is the same key when YAML gave both the same type and they have the same text, as
+  `read_maps` judges the keys of `translations`: `fr` and `"fr"`, `1` and `1`, `yes` and `yes`.
 - **Keys that YAML keeps apart but the model reads as the same text** (`1` and `'1'`: the model reads every
   plain scalar as written), "once read as text". In a question's `default` the YAML types stay (§15.7.1), so `1`
   and `'1'` are two keys there, and `1`, `1.0` and `true`, which Python holds as one though YAML types them
-  differently, "once read as a YAML value". A plain `=` is a YAML type of its own that the reader turns into text, so
+  differently, "once read as a YAML value", as
+  are `yes` and `true`, `~` and `null`, `1` and `01` or `0x1`, `1.0` and `1.00` there. A plain `=` is a YAML type of its own that the reader turns into text, so
   `=` and `'='` are "once read as text".
 - **Keys that strip alike** (`fr` and `' fr'`), "once stripped": the reader strips the keys of `translations` and
   `field_types` ([#116](https://github.com/ForLegalAI/legaldown-validator/issues/116)).
@@ -271,8 +273,8 @@ How the rule reads the YAML:
   (`translations.<<`), whose own entries stay with the check above. Only the entries of a source that reach the
   mapping are judged: one that the mapping's own key, or a source that wins over it, takes the place of is never
   read, and neither is its value. A `<<` written twice in one mapping is not reported as such: the reader merges
-  both, the later's entries over the earlier's, and the model may drop entries there; they are reported only
-  as repeats inside a source, when the source's entry is the one held.
+  both, the later's entries over the earlier's, and the model may drop entries there; that is merge precedence,
+  not a repeat, and is not reported. A repeat inside a source is, when the source's entry is the one held.
 - **A dropped entry is ignored whole:** a repeat inside the value of a key that a later one replaces is not
   reported, as the model never holds it.
 - **A mapping shared through an alias is reported once**, under the first path that reaches it, at the line where it
@@ -285,7 +287,7 @@ How the rule reads the YAML:
 - **The findings describe the source text.** A document whose metadata was changed after it was parsed draws none
   of them (the parser keeps the objects of the metadata it built and the size of each list, dict and model, which the
   validator compares; it reads no value, so a number of any size is no matter), as one built from a dict has no
-  source map.
+  source map. This is deliberately cautious: any edit of the metadata, however small, suppresses all of them.
 - **A pair of an `!!omap` or `!!pairs` may have a sequence or a mapping as its key**, which no dict holds: it is
   never a repeat, and the document is read as before.
 - **Frontmatter that cannot be read** is `frontmatter-invalid-yaml` alone. A key that cannot be held in a dict (a
