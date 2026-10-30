@@ -347,7 +347,9 @@ def fragment_findings(
         # (insertion-boundary, drafting-note-def, def-term-variable, ...): the file is not
         # validated here, and those are template rules (TEMPLATE_RULES) that would newly
         # stop the assembly of a template through a fragment's own finding.
-        scan = check_template_body(document, lex_fragment, _Recorder(), template=False, where=fragment.where)
+        scan = check_template_body(
+            document, lex_fragment, _Recorder(), template=False, where=fragment.where, boundaries=False
+        )
         found += content_findings(
             document, fragment.where, scan, find_markers(document, lex_fragment), kind
         )

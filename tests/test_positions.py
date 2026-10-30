@@ -267,3 +267,20 @@ def test_line_breaks_are_the_line_feeds_only():
     # YAML ends a line at CR, NEL, LS and PS too; the format's only line end is the line feed.
     assert line_breaks("") == [] and line_breaks("abc") == []
     assert line_breaks("a\n\nb\r\nc\x85d e\n") == [1, 2, 5, 11]
+
+
+def test_the_locator_gives_the_lines_of_the_body_and_the_line_of_the_first():
+    from legaldown.positions import Locator
+
+    source = "---\ntitle: T\n---\n\n# A\n\ntext\n\n\n"
+    lines, first = Locator(parse(source)).body()
+    assert (lines, first) == (["", "# A", "", "text", "", ""], 4)
+    assert source.split("\n")[first - 1:] == [*lines, ""]  # the last line's ending is no line
+    lines, first = Locator(parse("# A\n")).body()
+    assert (lines, first) == (["# A"], 1)
+    document = parse(source)
+    document.sections[0].blocks[0].text = "changed"
+    assert Locator(document).body() is None  # the lines are no longer the document's
+    document = parse(source)
+    document.source_map = None
+    assert Locator(document).body() is None

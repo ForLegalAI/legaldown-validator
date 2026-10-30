@@ -2586,7 +2586,10 @@ def _check(
         not_line_editable=meta.not_line_editable,
         where=where,
     )
-    body = check_template_body(document, lex_fragment, result, template=template, where=where)
+    body = check_template_body(
+        document, lex_fragment, result, template=template, where=where, markers=markers, combined=combined,
+        cache=imports,
+    )
     _check_raw_html(document, lex_fragment, result, where)
     check_heading_images(document, lex_fragment, file_references, where, reference_images)
     reference_images.check(file_references, where)

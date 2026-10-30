@@ -1,9 +1,8 @@
 """Differential tests for the one scanner of link destinations and titles (#113).
 
-``markdown.scan_destination``, ``scan_title`` and ``scan_inline_link`` replaced four readers of the same
-syntax: the definitions parser (``markdown._read_definition``), the image paths (``paths._destination``),
-the raw-HTML check (``core._LINK_DESTINATION_RE``) and, for its safety rule only in spirit, the insertion
-boundary. Each is compared with a verbatim copy of what it replaced (the names have an ``old`` prefix; nothing
+``markdown.scan_destination``, ``scan_title`` and ``scan_inline_link`` replaced three readers of the same
+syntax: the definitions parser (``markdown._read_definition``), the image paths (``paths._destination``)
+and the raw-HTML check (``core._LINK_DESTINATION_RE``). Each is compared with a verbatim copy of what it replaced (the names have an ``old`` prefix; nothing
 else is changed) on random token strings and on every ``whitespace destination whitespace title whitespace``
 product, all from fixed seeds.
 
@@ -20,8 +19,6 @@ list stays exact:
   (a gap holds up to one line break);
 * raw HTML: ``glued-title``, ``line-break-around`` (a line break may precede ``<`` and ``)``),
   ``escaped-delimiter`` (a backslash escapes a ``>``, ``"`` or ``)`` in a destination or a title);
-* the insertion boundary has two (#119), ``angle`` and ``title-slot``: ``_InsertionScan._reference_end`` is the old
-  pattern's end, or the longer end of the two readings, at every offset.
 """
 from __future__ import annotations
 
@@ -33,13 +30,12 @@ import subprocess
 from collections import Counter
 
 import pytest
-from helpers_definitions import LABEL_RE, definition_ends, insertion_template
 from helpers_renderers import BACKSLASH_PAIR_RE, PARAGRAPH_END_RE, markdown_it, needs_markdown_it, needs_pandoc
 
 from legaldown import markdown
 from legaldown.directives import Lexed, is_escaped, lex, mask_directives
 from legaldown.markdown import INLINE_HTML_RE, LinkDefinitionSource, inline_html_unclosed, label_end
-from legaldown.validator import core, paths, templates
+from legaldown.validator import core, paths
 
 # ── The code that was replaced (#113), verbatim ───────────────────
 
@@ -292,13 +288,6 @@ def old_inline_html(text: str, lexed: Lexed) -> str | None:
         if not unclosed(at) and (tag := INLINE_HTML_RE.match(view, at)):
             return text[at:tag.end()]
     return None
-
-
-# validator/templates.py: the link reference definition of the insertion boundary (also in test_linear_oracles)
-
-_OLD_LINK_REFERENCE_RE = re.compile(
-    r" {0,3}\[[^\]]+\]:[ \t]*\S*(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?"
-)
 
 
 # ── Random inputs ─────────────────────────────────────────────────
@@ -628,87 +617,6 @@ def test_inline_html_is_found_as_before_with_the_old_link_destination(monkeypatc
 ])
 def test_inline_html_after_a_link_destination(text, found):
     assert core._inline_html(text, lex(text)) == found
-
-
-# ── The insertion boundary ────────────────────────────────────────
-
-_REFERENCE_TOKENS = [
-    "[", "]", "[]", "[]:", "]:", ":", "[a]:", "[a]", " ", "    ", "  ", "\t", "\n", "\r", "u", "x", "\"", "'", "(", ")",
-    "\xa0", "\x1c", "\0", "\0\0", "{{placeholder: p}}", "{{choose: q | a: b}}", "t", " ",
-]
-
-
-def _reference_end_by_the_regular_expressions(template, slots, offset, definitions):
-    """What ``_InsertionScan._reference_end`` is, by regular expressions (``helpers_definitions``): the old pattern's
-    end, or the end of the longer reading of the definition, after a ``<…>`` destination that holds blanks or where
-    an answer could be the title (the blanks after the destination, then insertions and blanks). Returns
-    ``(end, class)``."""
-    label = LABEL_RE.match(template, offset)
-    if not label:
-        return -1, None
-    best, kind = _OLD_LINK_REFERENCE_RE.match(template, offset).end(), None
-    for _angle, end, slot in definition_ends(template, slots, label.end(), definitions):
-        if end > best:
-            best, kind = end, ("title-slot" if slot else "angle")
-    return best, kind
-
-
-def test_the_link_reference_of_the_insertion_boundary_is_the_old_pattern_but_for_two_classes_at_every_offset():
-    """Two classes (#119), each a value-level oracle: ``_InsertionScan._reference_end`` is where the old pattern, run
-    at that offset of the template (its directives masked), ended, or -1 — except that the definition's end is the
-    longer of two readings. ``angle``: the destination is a ``<…>`` that holds blanks (§6.3), so its title, if any,
-    follows its ``>``. ``title-slot``: blanks after the destination, then an insertion (an answer could be its
-    title) — and the blanks and insertions after it; another directive is no title. Every offset is checked against
-    the end by regular expressions, and the old pattern's end is never lost. For text that cannot hold a definition
-    (an ATX heading, a table cell) it is the old pattern's end exactly. A pinned over-approximation, not CommonMark's
-    rule. (The 60000 texts, 4 s, reach each class about 400 times; the floor is a hundred.)"""
-    matches, classes = 0, Counter()
-    for text in _random_texts(
-        _REFERENCE_TOKENS + ["[a]: ", "u ", '"t"', "'t'", "(t)", "<x ", ">", "<", "\\>", "{{ref: q}}"] * 3, 60_000, 14, seed=1135
-    ):
-        lexed = lex(text)
-        template = mask_directives(text, lexed.directives)
-        slots = insertion_template(text, lexed.directives)
-        scan = templates._InsertionScan(text, template, lexed.directives)
-        plain = templates._InsertionScan(text, template, lexed.directives, False)
-        for offset in range(len(template) + 1):
-            old = _OLD_LINK_REFERENCE_RE.match(template, offset)
-            old_end = old.end() if old else -1
-            expected, kind = _reference_end_by_the_regular_expressions(template, slots, offset, True)
-            found = scan._reference_end(offset)
-            assert found == expected, (text, offset)
-            assert found >= old_end, (text, offset)  # no verdict of the old pattern is lost
-            assert plain._reference_end(offset) == old_end, (text, offset)  # and none is added where there is no definition
-            classes[kind] += 1
-            matches += bool(old)
-    assert matches > 10_000, matches
-    assert classes["angle"] > 100 and classes["title-slot"] > 100, classes
-
-
-@pytest.mark.parametrize(("template", "end"), [
-    ("[a]: u", 6),
-    ("[a]: u 'ab", 6),
-    ("[a]: u 'ab'", 11),
-    ("[a]: u (a\nb)", 12),
-    ("   [a]: u", 9),
-    ("    [a]: u", -1),
-    ("[]x]:", -1),
-    ("[]:", -1),
-    ("[a]x]:", -1),
-    ("[a\nb]: u", 8),
-    ("[a]:\nu", 4),
-    ("[a]:  \t\"t\"", 10),
-    ("[a]: u\t\"t\"", 10),
-    ("[a]: u\t\"t", 6),
-    ("[a]: u\r\"t\"", 6),
-    ("[a]: <x y>", 10),  # #119: a <…> destination may hold blanks
-    ("[a]: <x y> 't", 10),
-    ("[a]: <x y> 't'", 14),
-    ("[a]: <x y", 7),
-])
-def test_the_link_reference_end_of_the_cases_that_differ_from_commonmark(template, end):
-    scan = templates._InsertionScan(template, template, [])
-    assert scan._reference_end(0) == end
 
 
 # ── The implementations of CommonMark ─────────────────────────────
