@@ -221,7 +221,7 @@ def test_a_question_only_a_section_names_is_not_varied():
         f"## S{i} {{#s{i} when=q{i}}}\n\nText.\n\n" for i in range(count)
     ) + "{{include: p.lgd}}\n"
     result = _run(text, {"p.lgd": "## Fine {#fine}\n"})
-    assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
+    assert not any("every combination" in d.message for d in result.diagnostics if d.rule == SKIPPED_RULE)
 
 
 @pytest.mark.scaling
@@ -250,7 +250,7 @@ def test_the_work_is_the_combinations_times_the_changes_of_presence_not_the_head
     elapsed = time.perf_counter() - started
     assert elapsed < 30, f"{elapsed:.1f}s"  # a generous budget (about 0.3 s here); the count is the proof
     assert _found(result) == []
-    assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
+    assert not any("every combination" in d.message for d in result.diagnostics if d.rule == SKIPPED_RULE)
     runs = count + 1  # the section, and each include
     assert calls <= MAX_COMBINATIONS * runs + count * 800 + 1000, calls
 
@@ -278,7 +278,7 @@ def test_twelve_questions_are_tried_in_all_their_combinations():
     result = _run(_many(count), files)
     (message,) = _messages(result)
     assert "q0=false, q1=false, q2=false, q3=false, q4=false, q5=false, q6=false, q7=true" in message
-    assert "every combination" not in next(d for d in result.diagnostics if d.rule == SKIPPED_RULE).message
+    assert not any("every combination" in d.message for d in result.diagnostics if d.rule == SKIPPED_RULE)
 
 
 def test_more_questions_than_the_cap_are_judged_once_with_every_include_present_and_the_warning_says_so():

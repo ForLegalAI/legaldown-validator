@@ -46,14 +46,14 @@ __all__ = ["AnswersError", "Form", "Template", "load_answers", "load_template", 
 
 #: The rules of the validator that a template must satisfy for assembly
 #: (§15.7.2 gives assembly a template that validates without Errors): those of
-#: questions, conditions, ``{{choose:}}``, placeholders and insertions. Any
-#: other Error of ``Template.validation`` is advice — the validator reads the
-#: files a template includes only for what they must hold (§12.2, §15.3), and
-#: does not resolve a reference into one, so a reference to a section of a
-#: fragment is ``ref-broken`` to it while assembly reads the fragment.
+#: questions, conditions, ``{{choose:}}``, placeholders and insertions, and the
+#: safety of a reference (§15.4), which the validator judges over the template
+#: with its fragments in (§16.11). Any other Error of ``Template.validation`` is
+#: advice.
 TEMPLATE_RULES: frozenset[str] = frozenset({
     "question-invalid",
     "condition-invalid",
+    "condition-reference-unsafe",
     "choose-invalid",
     "placeholder-id-malformed",
     "placeholder-in-structural-field",
@@ -65,12 +65,6 @@ TEMPLATE_RULES: frozenset[str] = frozenset({
     "drafting-note-def",
     "template-fragment-invalid",
 })
-
-#: A rule of the validator that a template must satisfy, unless it includes
-#: fragments: it then cannot tell a reference to a section of a fragment from
-#: one to a section its condition removes.
-_ALONE_ONLY: frozenset[str] = frozenset({"condition-reference-unsafe"})
-
 
 def _coerced(question: Question, value: Any) -> Any:
     """*value* as an answer to *question*, if it can be read as one without guessing."""
@@ -279,8 +273,6 @@ class Template:
         t = self._t
         problems = list(t.problems)
         if self._check:
-            includes = any(include.target in t.subs for include in t.main.includes)
-            rules = TEMPLATE_RULES if includes else TEMPLATE_RULES | _ALONE_ONLY
             # The validator reads the fragments and attachment files as well, and says what
             # is wrong with them where it is (#35). Assembly has read the same files and
             # reports the same findings in `t.problems`, so those are not counted twice:
@@ -290,7 +282,7 @@ class Template:
             read = set(t.subs) | {d.file for d in t.problems if d.file}
             problems += [
                 d for d in self.validation.diagnostics
-                if d.level == "error" and d.rule in rules and d.file not in read
+                if d.level == "error" and d.rule in TEMPLATE_RULES and d.file not in read
             ]
             problems += _placeholder_problems(t)
         return tuple(problems)

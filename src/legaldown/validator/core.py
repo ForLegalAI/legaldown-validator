@@ -42,6 +42,7 @@ from ..markdown import (
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
+from .combined import Combined, CombinedLocator, CombinedUnits, merge_diagnostics
 from .conditions import (
     ALWAYS,
     Exclusivity,
@@ -52,7 +53,15 @@ from .conditions import (
     parse_condition,
     satisfiable,
 )
-from .fragments import Files, FragmentKind, UnreadReason, check_includes, content_findings, shape_findings
+from .fragments import (
+    Files,
+    FragmentKind,
+    IncludeOutcome,
+    UnreadReason,
+    check_includes,
+    content_findings,
+    shape_findings,
+)
 from .helpers import (
     authoritative_mismatch,
     format_section_number,
@@ -81,7 +90,17 @@ from .patterns import (
     VALID_DURATION_UNITS,
     VALID_PLACEHOLDER_TYPES,
 )
-from .result import Blank, Depends, Diagnostic, Line, PlacedMarker, SectionIndexEntry, ValidationResult, _Recorder
+from .result import (
+    Blank,
+    Depends,
+    Diagnostic,
+    Line,
+    PlacedMarker,
+    SectionIndexEntry,
+    Spot,
+    ValidationResult,
+    _Recorder,
+)
 from .skipped import NOT_IMPORTED, skipped_categories
 from .templates import (
     BRACE_STRAY,
@@ -1069,9 +1088,11 @@ def validate(
     A document that holds a construct whose checks lie beyond Core (an include paragraph,
     an attachment file, ``amends.file``, ``translations``, ``supersedes.file``, an image
     path) draws the Warning ``ldv-check-skipped`` that §17.5 asks for, once for each category
-    and at its first construct, naming what this validation did not perform (the
-    combined-document checks of §16.11 always, for a document with an include; a fragment
-    that was not read, its checks; the limits reached when following includes). A document without such a construct
+    and at its first construct, naming what this validation did not perform (for a document with an
+    include, the combined-document checks of §16.11 when an include was not followed, a fragment
+    that was not read, its checks, and the limits reached when following includes; none when every
+    include was followed and nothing else was skipped; for an attachment file, the checks across
+    the combined document it is not part of). A document without such a construct
     draws none.
 
     Parameters
@@ -1166,7 +1187,15 @@ def validate(
         are, from the fragment's directory, at its line in the fragment, a chain that comes back
         is ``include-cycle`` and an identifier the combined document declares twice
         ``include-anchor-duplicate`` (§16.11); to a depth of 32 fragments and 10,000 includes and
-        headings, past which nothing is followed and the Warning of §17.5 says so.
+        headings, past which nothing is followed and the Warning of §17.5 says so. When every
+        include of the document was followed into a fragment, the document is validated once more
+        with the fragments spliced in at their includes, as the one document it is (§16.11; the
+        combined document): a reference or a term into a fragment resolves, an auto-generated
+        identifier that the fragments and the document share is ``anchor-autogen-collision``, and
+        what a fragment holds that a complete document may not is reported in it, at its line, with
+        ``Diagnostic.file`` the fragment's path. A LegalDown attachment file is not part of that
+        document. With any include not followed, the document is validated as it is, and the
+        Warning says the combined-document checks were not made.
     document_root:
         The directory every file the document refers to must lie within
         (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
@@ -1320,7 +1349,11 @@ def _validate(
     import_attachment_definitions: AttachmentDefinitionsImporter | None,
     mode: _Mode,
     document_root: str | os.PathLike[str] | None = None,
+    combined: Combined | None = None,
 ) -> ValidationResult:
+    # *combined*: the document is the combined document of another (§16.11, #117), validated once more
+    # as the document it is with its fragments in: ``document`` is its own, and the validation reads
+    # the files, the lexing and the locations of the document that holds the includes.
     # A document whose frontmatter could not be read (parse(on_frontmatter_error=
     # "keep"), #43) is validated by its body. A fragment is not: it must have no
     # frontmatter, which is then not read either (§12.2), so what it asks is
@@ -1337,11 +1370,13 @@ def _validate(
     if mode.empty_metadata:
         document = replace(document, metadata=Metadata(frontmatter_absent=True))
     # Where each part is, for the line of each diagnostic (§16.9).
-    where = Locator(document)
+    where = Locator(document) if combined is None else CombinedLocator(combined)
     # The files the document refers to, each read and parsed once: the original it
     # amends, its attachment files, and its include fragments (#35). A fragment
     # validated on its own reads none: its own includes are the host's concern.
-    files = Files(resolve, document, document_root) if resolve is not None else None
+    files = combined.files if combined is not None else (
+        Files(resolve, document, document_root) if resolve is not None else None
+    )
     # The paths the document names (§2.3, #104), from the directory it is in.
     file_references = FileReferences(
         result, document_root, document.path.parent if document.path is not None else None, where.start()
@@ -1398,7 +1433,7 @@ def _validate(
     from .circular import TermUse, circular_message, find_circular_definitions, term_owners, used_before_declaration
 
     # Each text is lexed once per validation and shared by the passes below.
-    lex_fragment = cache(lex)
+    lex_fragment = cache(lex) if combined is None else combined.lex_fragment
     meta = document.metadata
     questions = meta.questions
     #: What each presence wants and refuses of the questions, worked out once for the validation:
@@ -1428,9 +1463,11 @@ def _validate(
     # ── Templates and the presence of units (§15.1, §15.3) ──
     # Markers are found first: only a template gives a preamble paragraph's
     # condition its place (§5.7).
-    markers = find_markers(document, lex_fragment)
+    markers = find_markers(document, lex_fragment) if combined is None else combined.markers()
     template = _is_template(document, markers, lex_fragment) if mode.template is None else mode.template
-    units = Units(document, markers, questions, template=template)
+    units = Units(document, markers, questions, template=template) if combined is None else CombinedUnits(
+        combined, questions, template=template
+    )
     # A host that is not a template declares no questions: a question that a
     # condition or a {{choose:}} names and the fragment does not declare is then
     # nobody's to declare (#39).
@@ -2447,10 +2484,17 @@ def _validate(
         declared = definition_line(ref)
         times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
         at = f" at line {declared}" if declared else ""
+        use = earlier[0].line
+        if combined is not None and declared:
+            # The declaration is in another file than the use when the lines name another: say which.
+            use = use() if callable(use) else use
+            file = declared.file if isinstance(declared, Spot) else document.filename
+            if file != (use.file if isinstance(use, Spot) else document.filename):
+                at += f" of {file or 'the document'}"
         result.info(
             "definition-used-before-declaration",
             f"Definition '{ref.id}' is used {times} before its declaration{at} (§7.2).",
-            line=earlier[0].line,
+            line=use,
         )
 
     # Reference safety (§15.4): a reference resolves in every assembled
@@ -2488,7 +2532,9 @@ def _validate(
     # A question may be used in an include fragment or a LegalDown attachment
     # file. The files are read for their shape and what a template may hold in
     # them (#35), not for the questions they use, so none is unused for certain.
-    reads_other_files = "include" in body_directives or any(
+    # Not so in the combined document, which holds the fragments (but not the
+    # attachment files, #117).
+    reads_other_files = ("include" in body_directives and combined is None) or any(
         att.file.endswith(LEGALDOWN_EXTENSIONS) for att in meta.attachments
     )
     if isinstance(questions, dict) and not reads_other_files:
@@ -2525,7 +2571,8 @@ def _validate(
         for finding in content_findings(document, where, body, markers, mode.kind, noted=True):
             result.error(finding.rule, finding.message, line=finding.line)
     # ── Includes (§12.2, §16.11) ──
-    included = check_includes(
+    # (Not in the combined document: the includes are the document's, and judged there.)
+    included = IncludeOutcome() if combined is not None else check_includes(
         document, body.includes, result, where,
         judged=file_references.reported,
         files=None if mode.fragment else files,
@@ -2534,6 +2581,7 @@ def _validate(
         units=units,
         questions=questions,
         exclusivity=exclusivity,
+        markers=markers,
         lex_fragment=lex_fragment,
     )
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
@@ -2582,7 +2630,19 @@ def _validate(
     # What a renderer builds from: the template decision and the markers
     # that apply, as every check above read them.
     result.index.is_template = template
+    if combined is not None:
+        return result.result()  # (the findings only: the index is the document's own)
     result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
+
+    # §16.11: the document with the fragments its includes take in, validated as the one document it is
+    # (#117). What it says is the document's findings, but for those only the document's own pass can
+    # make (``combined.HOST_ONLY``).
+    if included.combined is not None:
+        whole = _validate(
+            included.combined.document, final, resolve, import_definitions, import_attachment_definitions, mode,
+            document_root, combined=included.combined,
+        )
+        result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics)
 
     # §17.5: a Warning for each check category the constructs of the document call for and this
     # validation did not perform, last, once all that was read and checked is known.

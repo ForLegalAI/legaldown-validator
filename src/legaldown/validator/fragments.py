@@ -12,6 +12,10 @@ A finding is made once for each offender (a heading, a drafting note, a
 condition, an include), at its line in the file it is in (§16.9). The fragment
 is read as it is written: its frontmatter is not read as declarations, and
 frontmatter that cannot be read is a finding of its own, not an exception (#43).
+
+The walk also records what it followed, for the combined document (``combined.weave``, #117): the
+fragment each include paragraph took in, and whether every include was followed. The document and
+its fragments are validated as one only when they were all.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ from ..directives import Lexed, lex
 from ..files import LoadFile, Reach, is_absolute_reference, within
 from ..models import Document, Metadata
 from ..positions import Locator
+from .combined import Combined, weave
 from .conditions import Exclusivity, Presence, answer_combinations, holds_under
 from .patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
@@ -688,11 +693,13 @@ class IncludeOutcome:
     path or found not LegalDown, which are Errors of their own, nor a cycle), how many of the include
     paragraphs it met are in fragments (*nested*), and the limits it
     reached (*caps*, each as a phrase): the depth and the count of the includes followed (#114), and
-    the combinations of answers that ``include-heading-skip`` tries (#108)."""
+    the combinations of answers that ``include-heading-skip`` tries (#108). *combined* is the combined
+    document (``combined.weave``), when every include of the document was followed into a fragment."""
     filled: set[int] = field(default_factory=set)
     unread: list[UnreadInclude] = field(default_factory=list)
     nested: int = 0
     caps: list[str] = field(default_factory=list)
+    combined: Combined | None = None
 
 
 class _NamedInclude(Protocol):
@@ -781,7 +788,9 @@ class _Walk:
     both. An include is judged by ``attempt``, whether it is the document's or a fragment's: a path is
     judged as ``FileReferences`` judges the document's, from the directory of the file that holds
     it. *incomplete* tells that something a fragment includes was not followed, so that what lies after
-    it is not known."""
+    it is not known. What it followed is recorded for the combined document (``combined.weave``): the
+    fragment each include paragraph took in (*targets*, by the file that holds the paragraph, its section and
+    its block), and whether every include was followed (*complete*)."""
 
     def __init__(
         self, files: Files, result: _Recorder, outcome: IncludeOutcome, *, template: bool,
@@ -798,6 +807,8 @@ class _Walk:
         self._met: set[tuple[str, int]] = set()  # the includes of fragments (file, number) already judged
         self._budget = IncludeBudget()
         self.incomplete = False
+        self.targets: dict[tuple[str, int | None, int], FragmentFile] = {}
+        self.complete = True
 
     def shape(self, fragment: FragmentFile) -> None:
         """The findings on *fragment* as a file, once however often it is included."""
@@ -809,6 +820,18 @@ class _Walk:
                 self._result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
 
     def attempt(
+        self, include: IncludeDirective, owner: FragmentFile | None, chain: IncludeChain, first: bool = True
+    ) -> FragmentFile | None:
+        """``_attempt``, and the fragment it took in is a target of the combined document, or the walk is not
+        complete."""
+        target = self._attempt(include, owner, chain, first)
+        if target is None:
+            self.complete = False
+        else:
+            self.targets["" if owner is None else owner.path, include.section, include.block] = target
+        return target
+
+    def _attempt(
         self, include: IncludeDirective, owner: FragmentFile | None, chain: IncludeChain, first: bool = True
     ) -> FragmentFile | None:
         """The fragment that *include* takes in, an include paragraph of the document (*owner* None) or of
@@ -919,7 +942,7 @@ class _Walk:
             return False
         if cap + NOT_CHECKED not in self._outcome.caps:
             self._outcome.caps.append(cap + NOT_CHECKED)
-        self.incomplete = True
+        self.incomplete = self.complete = False
         return True
 
     def _follow(
@@ -936,6 +959,7 @@ class _Walk:
         if self._template:
             if first:
                 self._outcome.unread.append(UnreadInclude(include, "in-template"))
+            self.complete = False
             return []
         if self._spend():
             return []
@@ -959,6 +983,7 @@ def check_includes(
     units: Units,
     questions: Any,
     exclusivity: Exclusivity,
+    markers: list[FoundMarker],
     lex_fragment: Callable[[str], Lexed] = lex,
 ) -> IncludeOutcome:
     """What the include paragraphs of *document* require (§12.2, §16.11), and what the
@@ -990,9 +1015,13 @@ def check_includes(
     (the document itself included) is ``include-cycle`` at the include that closes it
     (``_Walk``).
 
-    Returned (``IncludeOutcome``): the headings of the document whose ``heading-skip`` the combined document
-    makes valid (``include_heading_skips``), which the caller does not report, as the combined
-    document is the one §4.1 judges when every fragment between is read (§12.2). A
+    Returned (``IncludeOutcome``): the combined document (``combined.weave``) when every include paragraph
+    was followed into a fragment (the walk is *complete*: nothing unread, refused, cut short by a cap or
+    left alone in a template), for the validation of what the fragments and the document say across each
+    other (§16.11); *markers* are the document's own (``find_markers``). And the headings of the document
+    whose ``heading-skip`` the combined document makes valid (``include_heading_skips``), which the caller
+    does not report, as the combined document is the one §4.1 judges when every fragment between is read
+    (§12.2). A
     fragment does not count for that when it is not known to be there (a condition
     on its include paragraph or on a section around it) or when it is
     not read as a fragment (frontmatter, or a level 1 heading: it is reported, and not
@@ -1013,6 +1042,8 @@ def check_includes(
             continue
         if include.at in judged:
             unread.add(include.section)
+            if walk is not None:
+                walk.complete = False
             continue
         if walk is None:
             # No file can be read: only the extension is judged (Core), and the rest is unread.
@@ -1055,6 +1086,8 @@ def check_includes(
                 fragment, kind="attachment", template=True, shape=False, lex_fragment=lex_fragment
             ):
                 result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
+    if walk is not None and walk.complete and walk.targets:
+        outcome.combined = weave(document, where, markers, walk.targets, files, lex_fragment)
     if not splices:
         return outcome
     judgement = include_heading_skips(document, where, splices, first_level, unread, units, questions)

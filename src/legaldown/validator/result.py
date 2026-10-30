@@ -146,6 +146,19 @@ class Blank:
     consistent: bool = True
 
 
+class Spot(int):
+    """A line in a file of the combined document (``combined.CombinedLocator``): the line number, which
+    carries the *file* it is in (a fragment's path) through the places that pass a line around. ``0``
+    is a file whose line is not known; it is falsy, as a line of None is. ``_Recorder`` turns it into the
+    diagnostic's ``file`` and ``line``, so no ``Spot`` reaches a ``ValidationResult``."""
+    file: str
+
+    def __new__(cls, line: int | None, file: str) -> Spot:
+        spot = super().__new__(cls, line or 0)
+        spot.file = file
+        return spot
+
+
 #: A diagnostic's line (from 1), or a function giving it, called only when a
 #: diagnostic is recorded at it: finding a line costs more than knowing where.
 Line = int | None | Callable[[], "int | None"]
@@ -285,6 +298,8 @@ class _Recorder(ValidationResult):
             line = self._lines[-1]
         if callable(line):
             line = line()
+        if isinstance(line, Spot):  # a line in a fragment of the combined document: its file goes with it
+            file, line = file or line.file, int(line) or None
         return [Diagnostic(
             rule=rule, level=level, message=message, line=line, file=file,
             host_dependent=self.fragment and depends is not None,

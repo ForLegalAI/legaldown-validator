@@ -321,13 +321,15 @@ def test_an_attachment_file_of_a_template_holds_no_include_and_may_hold_the_rest
     assert _found(result, _TFR) == []
 
 
-def test_fragment_level_checks_of_the_body_are_not_reported_by_the_document_that_includes_it():
-    # insertion-boundary, drafting-note-def, def-term-variable and drafting-note-unrecognized are in the
-    # fragment's own validation (validate(fragment=True)); in the template they would newly stop assembly.
+def test_fragment_level_checks_of_the_body_are_reported_in_the_fragment_and_stop_no_assembly():
+    # insertion-boundary, drafting-note-unrecognized and the like are made of the fragment by the combined
+    # document (#117), at their lines in the fragment, as by its own validation (validate(fragment=True)); they are
+    # in the validator's template rules, but a finding in a file assembly read is not counted twice (Template.problems).
     part = "## B {#b}\n\nPay {{placeholder: fee}}*.\n\n> [!NOTE]\n> n\n"
     result, _ = _template(part)
-    assert result.rules() & {"insertion-boundary", "drafting-note-unrecognized", "def-term-variable"} == set()
+    assert {d.file for d in result.diagnostics if d.rule in {"insertion-boundary", "drafting-note-unrecognized"}} == {"part.lgd"}
     assert "insertion-boundary" in validate(parse(part), fragment=True, template=True).rules()
+    assert "insertion-boundary" not in {d.rule for d in Template(_TEMPLATE_FRONT + "# A {#a}\n\n{{include: part.lgd}}\n", resolve={"part.lgd": part}.get).problems}
 
 
 # ── include-heading-skip ─────────────────────────────────────────
@@ -1001,7 +1003,7 @@ def test_an_include_in_a_drafting_note_is_a_drafting_note_whether_or_not_it_name
         part = {**files, "part.lgd": "## P {#p}\n\n" + note}
         text = front + "# A {#a}\n\n{{include: part.lgd}}\n"
         result, _ = _run(text, part)
-        found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.file and d.rule != _SKIPPED]
+        found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.rule in (_TFR, "include-file-missing")]
         assert found == [(d.rule, d.file, d.line) for d in Template(text, resolve=part.get).problems]
         assert bool(found) == in_template
 

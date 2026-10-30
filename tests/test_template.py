@@ -203,9 +203,14 @@ def test_a_reference_to_an_included_section_is_no_problem_of_the_template():
         "# Intro {#intro}\n\n{{include: frag.lgd}}\n\nSee {{ref: frag}}. The {{term: services}} are for {{placeholder: name}}.\n"
     )
     template = parse_template(text, resolve={"frag.lgd": '## Frag {#frag}\n\n"Services" {{def: services}} means consulting.\n'}.get)
-    assert {d.rule for d in template.validation.diagnostics if d.level == "error"} >= {"ref-broken", "term-undefined"}
-    assert template.problems == ()  # the validator reads the template alone, so these are only advice
+    # the validator reads the fragment with the template (§16.11, #117): the section and the term are there
+    assert not [d for d in template.validation.diagnostics if d.level == "error"]
+    assert template.problems == ()
     assert template.form({"name": "Ann"}).assemble().ok
+    # ... and one that is in no file is broken, which is only advice to a template
+    broken = parse_template(text.replace("{{ref: frag}}", "{{ref: nowhere}}"), resolve={"frag.lgd": '## Frag {#frag}\n\n"Services" {{def: services}} means consulting.\n'}.get)
+    assert [d.rule for d in broken.validation.diagnostics if d.level == "error"] == ["ref-broken"]
+    assert broken.problems == ()
     # the same text, in the template itself, is no error to the validator
     inline = text.replace("{{include: frag.lgd}}", '## Frag {#frag}\n\n"Services" {{def: services}} means consulting.')
     assert not [d for d in parse_template(inline).validation.diagnostics if d.level == "error"]
@@ -417,16 +422,19 @@ _UNSAFE = (
 )
 
 
-def test_a_reference_to_a_section_a_condition_removes_stops_a_template_read_alone_only():
+def test_a_reference_to_a_section_a_condition_removes_stops_a_template():
     # alone, the validator sees every section: the reference is unsafe
     assert [d.rule for d in parse_template(_UNSAFE.replace("{{include: frag.lgd}} {when=!a}\n\n", "")).problems] == [
         "condition-reference-unsafe"
     ]
-    # with a fragment it cannot tell the fragment's `local` from the removable one: advice, not a problem
+    # with a fragment that declares `local` when the section is removed, there is always a target (§15.4)
     template = parse_template(_UNSAFE, resolve={"frag.lgd": "## Other {#local}\n\nText.\n"}.get)
     assert template.problems == ()
-    assert any(d.rule == "condition-reference-unsafe" for d in template.validation.diagnostics)
+    assert not any(d.rule == "condition-reference-unsafe" for d in template.validation.diagnostics)
     assert all(template.form({"a": value}).assemble().ok for value in (True, False))
+    # with one that does not, it is unsafe as it is alone
+    template = parse_template(_UNSAFE, resolve={"frag.lgd": "## Other {#other}\n\nText.\n"}.get)
+    assert [d.rule for d in template.problems] == ["condition-reference-unsafe"]
 
 
 @pytest.mark.parametrize(
