@@ -289,8 +289,9 @@ class _Recorder(ValidationResult):
     #: The lines diagnostics are recorded at by default (``at``), innermost last.
     _lines: list[Line] = field(default_factory=list, repr=False, compare=False)
     #: Of each diagnostic (the same order), which place of a fragment it was made at, when its line is a line of
-    #: one in the combined document (``Spot.instance``), else None.
-    places: list[int | None] = field(default_factory=list, repr=False, compare=False)
+    #: one in the combined document (``Spot.instance``), else None. Kept only by the recorder of the combined
+    #: pass, which is given a list (``merge_diagnostics`` reads it); None for any other.
+    places: list[int | None] | None = field(default=None, repr=False, compare=False)
 
     @contextmanager
     def at(self, line: Line) -> Iterator[None]:
@@ -307,7 +308,8 @@ class _Recorder(ValidationResult):
     ) -> None:
         found, place = self._diagnostic(rule, level, message, line, depends, file)
         self.diagnostics.extend(found)
-        self.places.extend([place] * len(found))
+        if self.places is not None:
+            self.places.extend([place] * len(found))
 
     def _diagnostic(
         self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = "",
@@ -349,7 +351,8 @@ class _Recorder(ValidationResult):
         removed or moved a diagnostic since *position* was taken."""
         found, place = self._diagnostic(rule, "error", message, line, None, fallback=False)
         self.diagnostics[position:position] = found
-        self.places[position:position] = [place] * len(found)
+        if self.places is not None:
+            self.places[position:position] = [place] * len(found)
 
     def warning(
         self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""

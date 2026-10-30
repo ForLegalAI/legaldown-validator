@@ -25,6 +25,7 @@ followed every one and the fragments are not past ``fragments.MAX_SPLICED_BLOCKS
 from __future__ import annotations
 
 import sys
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -114,12 +115,15 @@ class Combined:
     def position(self, diagnostic: Diagnostic, number: int | None) -> tuple[int, int, int, int]:
         """Where a finding is in the combined document, to put the findings in its order: a line of the document
         at itself, a line of a fragment at the include paragraph that took it in (the outermost one, if it is nested),
-        after the findings at that line. A finding of the document's own pass in a fragment (its shape, say) is at
-        the first place of the file. *number* is the place of the fragment the finding was made at, if it was."""
-        if number is None and diagnostic.file:
-            if not self._first:
-                for place in reversed(self.instances):
-                    self._first[place.path] = place.number
+        after the findings at that line, those of one line of the fragment together. A fragment included more than
+        once is at its first place, as its findings are kept once. *number* is the place of the fragment the finding
+        was made at, if it was; a finding of the document's own pass in a fragment (its shape, say) has none."""
+        if not self._first:
+            for place in reversed(self.instances):
+                self._first[place.path] = place.number
+        if number is not None:
+            number = self._first[self.instances[number].path]
+        elif diagnostic.file:
             number = self._first.get(diagnostic.file)
             if number is None:  # a file that is not in the body: an attachment file, after it (§15.7.2)
                 return (sys.maxsize, 0, 0, diagnostic.line or 0)
@@ -288,8 +292,9 @@ class CombinedUnits:
 #: includes and the files they name, which the combined document no longer holds as such, and what the
 #: combined document would judge by the wrong standard. ``heading-skip`` is the combined document's to
 #: judge (§12.2: a level a fragment fills is not skipped), which ``include-heading-skip`` does under every
-#: combination of answers; a path of a fragment is relative to the fragment, not to the document that is
-#: validated (``path-not-relative``, ``path-outside-root``); and the Warning of §17.5 is for the whole validation.
+#: combination of answers; a path is judged against the document root from the document's directory, which a
+#: fragment's is not relative to (``path-outside-root``; ``path-not-relative`` needs no base, and is the
+#: combined pass's); and the Warning of §17.5 is for the whole validation.
 HOST_ONLY: frozenset[str] = frozenset({
     "heading-skip",
     "include-file-missing",
@@ -300,7 +305,6 @@ HOST_ONLY: frozenset[str] = frozenset({
     "include-heading-skip",
     "include-anchor-duplicate",
     "template-fragment-invalid",
-    "path-not-relative",
     "path-outside-root",
     SKIPPED_RULE,
 })
@@ -330,17 +334,15 @@ WHOLE_DOCUMENT_RULES: frozenset[str] = frozenset({
     "amend-def-override",
     "placeholder-type-inconsistent",
     "placeholder-question-mismatch",
+    # An absolute path or a URI scheme needs no base, so a fragment's is judged (and the document's definition of
+    # an image that only a fragment uses, which only the combined document sees to be used).
+    "path-not-relative",
 })
 
 #: A rule of the combined pass that another rule of the document's pass reports for the same thing, at the
 #: same place: the combined pass says nothing of it where the owner has.
 #: Two section identifiers that clash across a fragment and the document are ``include-anchor-duplicate``'s.
 OWNED_BY: dict[str, str] = {"anchor-duplicate": "include-anchor-duplicate"}
-
-
-#: What a fragment may hold only in a template (§15.3): a condition or a choice on a question, which a document that
-#: declares none (is no template) judges as nothing, as it did before the fragments were validated with it.
-TEMPLATE_IN_FRAGMENTS: frozenset[str] = frozenset({"condition-invalid", "choose-invalid"})
 
 
 def merge_diagnostics(
@@ -352,35 +354,29 @@ def merge_diagnostics(
     the document alone, those only it can make (``HOST_ONLY``), in the order of the combined document
     (``Combined.position``).
 
-    A finding in a fragment that is included more than once is made once in each place: it is one finding.
-    Of the findings of a fragment with one rule, file and line, as many are kept as one place makes (two on a
-    line of one place are two), with the messages of the first place (``anchor-autogen-collision`` says
-    ``part-2`` in one and ``part-3`` in the next). What ``OWNED_BY`` names is left to its owner. A document that
-    is no template does not judge the conditions of a fragment (``TEMPLATE_IN_FRAGMENTS``). The absolute path or
-    URI of a reference in a fragment is judged by the combined pass (``path-not-relative``); its other paths are the
-    fragment's own, relative to its directory, and are not."""
+    A finding in a fragment that is included more than once is made once in each place: it is one finding. Of
+    the findings in the places of a fragment, those with one rule, file, line and message are kept as often as the
+    place that makes it most often makes it (two on a line of one place are two). Findings that differ, another
+    target or a message with what is of the place (``anchor-autogen-collision`` says ``part-2`` in one place and
+    ``part-3`` in the next), are each kept. What ``OWNED_BY`` names is left to its owner. What a reference in a fragment
+    says is its own: ``path-not-relative`` says the path is to be relative to the fragment."""
     owned = {(d.rule, d.file, d.line) for d in host if d.rule in OWNED_BY.values()}
-    taken: list[tuple[Diagnostic, int | None]] = []
-    made: dict[tuple[str, str, int | None], dict[int, list[int]]] = {}  # of each finding, by place: where in *taken*
+    merged: list[tuple[Diagnostic, int | None]] = []
+    made: dict[tuple[str, str, int | None, str], dict[int, int]] = {}  # of each finding, how often each place made it
+    kept: Counter[tuple[str, str, int | None, str]] = Counter()
     for d, number in zip(whole, places, strict=True):
-        if d.rule in HOST_ONLY and not (d.rule == "path-not-relative" and d.file):
+        if d.rule in HOST_ONLY or (OWNED_BY.get(d.rule), d.file, d.line) in owned:
             continue
-        if (OWNED_BY.get(d.rule), d.file, d.line) in owned:
-            continue
-        if d.file and not combined.template and d.rule in TEMPLATE_IN_FRAGMENTS:
-            continue
+        if d.file and d.rule == "path-not-relative":
+            d = replace(d, message=d.message.replace("relative to the document", "relative to the fragment"))
         if number is not None:
-            made.setdefault((d.rule, d.file, d.line), {}).setdefault(number, []).append(len(taken))
-        taken.append((d, number))
-    dropped: set[int] = set()
-    for by_place in made.values():
-        first, *others = by_place.values()
-        for each in others:
-            dropped.update(each)
-        widest = max(by_place.values(), key=len)
-        if len(widest) > len(first):  # another place makes more: the first's, and the rest of that one's
-            dropped.difference_update(widest[len(first):])
-    merged = [(d, number) for at, (d, number) in enumerate(taken) if at not in dropped]
+            key = (d.rule, d.file, d.line, d.message)
+            made_here = made.setdefault(key, {})
+            made_here[number] = made_here.get(number, 0) + 1
+            if made_here[number] <= kept[key]:
+                continue  # a place has made it as often already
+            kept[key] = made_here[number]
+        merged.append((d, number))
     merged += [(d, None) for d in host if d.rule in HOST_ONLY]
     merged.sort(key=lambda each: combined.position(*each))
     return [d for d, _number in merged]

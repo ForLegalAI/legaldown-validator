@@ -876,7 +876,7 @@ Decisions the specification leaves open:
   every include paragraph was followed into a fragment, `validate` runs its checks a second time over the
   document with each fragment spliced in at its include (`validator/combined.py`), and the document's findings
   are that pass's, but for the rules only the document's own pass can make (`combined.HOST_ONLY`: the `include-*`
-  rules, `template-fragment-invalid`, `heading-skip`, `path-not-relative`, `path-outside-root`,
+  rules, `template-fragment-invalid`, `heading-skip`, `path-outside-root`,
   `ldv-check-skipped`), which are taken from it as before. The combined pass runs under the document's own
   mode (unreadable frontmatter) and `final`.
   - *What is spliced.* The combined document is built from the fragments as they were parsed (each file is
@@ -895,9 +895,11 @@ Decisions the specification leaves open:
     CommonMark says.
   - *Where a finding is.* Each part of the combined document is located in its own file: `Diagnostic.file` is
     the fragment's path and `line` its line in it (the document's own lines are the document's). A fragment
-    included more than once is reported once: of the findings of a fragment with one rule, file and line as many
-    are kept as one place of the fragment makes, with the messages of the first place (`anchor-autogen-collision`
-    says `part-2` in one place and `part-3` in the next), so two on one line of a fragment included once are two. (Two
+    included more than once is reported once per distinct finding: of the findings with one rule, file, line and
+    message as many are kept as the place of the fragment that makes it most often makes it (two on one line of a
+    fragment included once are two); a finding with another target (`{{ref: a}}` unsafe in one place, `{{ref: b}}` in
+    another), or whose message differs by place (`anchor-autogen-collision` says `part-2` in one place and `part-3`
+    in the next), is reported for each. (Two
     targets of the command line are the command line's.) The findings are in the order of the combined document: a
     finding of the document at its line, one of a fragment at the include that took it in, with the Warning of §17.5
     last. The message of
@@ -928,6 +930,9 @@ Decisions the specification leaves open:
     decided by **the document alone** (§15.1: "any LegalDown document that declares questions, carries a `when=`
     condition, or contains a `{{choose:}}"), as the assembler decides it from the template it is given, and the
     combined pass runs under it: a fragment's conditions are judged as the document's template status dictates.
+    In a document that is no template the combined pass does not collect a fragment's conditions and `{{choose:}}`
+    at all (a document that is none has none of its own), so no rule that they cause is made, under `final` too
+    (`template-construct-present`).
     A document that is no template gives what it gave before the fragments were validated for a fragment's
     condition or `{{choose:}}` (no `condition-invalid`, `choose-invalid` or `template-fragment-invalid` for them,
     `index.is_template` false, assembly as before); in a template they are judged, in the fragment, and a fragment
@@ -964,7 +969,9 @@ Decisions the specification leaves open:
     still `def-unreferenced`, an auto-generated identifier is not suffixed against an attachment's heading, and
     `attachment-anchor-duplicate` is not made; the Warning of §17.5 for attachments says so. The paths of a
     fragment are judged as far as they need no base: an absolute path or a URI scheme in an image of a fragment
-    is `path-not-relative` at its line there (the document's validation never looked at a fragment's images before).
+    is `path-not-relative` at its line there ("relative to the fragment"; the document's validation never looked at a
+    fragment's images before), and a link reference definition of the document that only a fragment's image uses is
+    judged where it is written, the other way round too (`path-not-relative` is the combined pass's).
     `path-outside-root` and the existence of an image are not judged from the fragment's directory (the combined
     pass reads them from the document's), so an image in a fragment that leaves the root is neither checked nor
     warned about. `ValidationResult.index` is the document's own (its sections are the

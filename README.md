@@ -564,10 +564,11 @@ that a complete document may not (`insertion-boundary`, `raw-html`, `date-invali
 under `final`, ...) is reported in the fragment, at its line, as for any other document. In a template a
 fragment is as present as its include paragraph is (§15.3), so a reference into a conditional fragment is
 `condition-reference-unsafe` unless it is as conditional (§15.4), and fragments with exclusive conditions may
-declare one identifier. A finding is at its line in its own file (`Diagnostic.file`), as many times as one place of the fragment makes it
-(none twice for a fragment included twice), in the order of the combined document; the findings of the document alone (the `include-*` rules,
-`template-fragment-invalid`, `heading-skip`, the document's own `path-*`) are not made again, and the paths of a fragment are judged only as far as
-`path-not-relative` goes (an absolute path or a URI scheme), not against a root. It is **all or nothing**: one include that
+declare one identifier. A finding is at its line in its own file (`Diagnostic.file`), reported once per distinct finding
+(a fragment included twice is not reported twice; a finding whose message differs by place, as the suffix of an adjusted identifier does, is
+reported for each place), in the order of the combined document; the findings of the document alone (the `include-*` rules,
+`template-fragment-invalid`, `heading-skip`, `path-outside-root`) are not made again, and the paths of a fragment are judged only as far as
+`path-not-relative` goes (an absolute path or a URI scheme, "relative to the fragment"), not against a root. It is **all or nothing**: one include that
 was not followed (missing, unreadable, a path that leads out, not a fragment, a cycle, a cap, an include in a
 template's fragment) leaves the document judged as before, and the Warning of §17.5 says so. A LegalDown
 attachment file is not part of the combined document yet: a `{{ref:}}` into an attachment's section is still

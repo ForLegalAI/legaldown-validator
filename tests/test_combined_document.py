@@ -334,6 +334,21 @@ def test_a_fragment_with_a_choice_is_no_trouble_to_a_document_whose_frontmatter_
     assert asked.asked == ["part.lgd"]
 
 
+@pytest.mark.parametrize("part", [
+    "## Part {#part when=x}\n\nText.\n", "## Part {#part}\n\n{{choose: q}}\n", "## Part {#part}\n\nText. {when=x}\n",
+    "## Part {#part}\n\n- one. {when=x}\n- two\n",
+])
+def test_a_documents_fragment_constructs_are_not_template_constructs_of_a_document_that_is_none(part):
+    # Under the final check too (§15.9): the combined pass does not take them up, as the document before did not.
+    text = _FRONT + _SCOPE + "{{include: part.lgd}}\n"
+    for final in (False, True):
+        result = _run(text, {"part.lgd": part}, final=final)
+        assert _found(result) == [], (part, final)
+    # The document is a template when it declares a question: then they are its constructs, in the fragment.
+    result = _run(_TEMPLATE_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part}, final=True)
+    assert "template-construct-present" in result.rules()
+
+
 def test_each_fragment_is_asked_for_once_whatever_it_holds():
     text = _FRONT + _SCOPE + "{{include: part.lgd}}\n\n{{include: other.lgd}}\n"
     asked = _Loader({"part.lgd": "## Part {#part}\n\n{{choose: q}}\n", "other.lgd": "## Other {#other}\n\nText.\n"})
@@ -511,7 +526,13 @@ def passes(monkeypatch):
     """The two lists of diagnostics ``merge_diagnostics`` was given: the document's own pass and the combined one."""
     given = []
     real = core.merge_diagnostics
-    monkeypatch.setattr(core, "merge_diagnostics", lambda host, whole, places, combined: given.append((host, whole)) or real(host, whole, places, combined))
+
+    def spy(host, whole, places, combined):
+        assert len(places) == len(whole)  # a place for each finding of the combined pass
+        given.append((host, whole))
+        return real(host, whole, places, combined)
+
+    monkeypatch.setattr(core, "merge_diagnostics", spy)
     return given
 
 
@@ -811,15 +832,31 @@ def test_two_findings_on_one_line_of_a_fragment_are_two_and_a_fragment_included_
     assert len(_found(both, "ref-broken")) == 2
 
 
-def test_a_fragment_included_in_several_places_makes_one_finding_whatever_its_message_says():
-    # The auto-generated identifier is adjusted to part-2 in one place, part-3 in the next: one finding.
+def test_a_fragment_included_in_several_places_makes_each_distinct_finding_once():
+    # The auto-generated identifier is adjusted to part-2 in one place and part-3 in the next: a finding whose message
+    # differs by place is reported for each place; the same finding made in every place, once.
     text = (
         _FRONT + _SCOPE + "## Part\n\nText.\n\n{{include: part.lgd}}\n\n## Again {#again}\n\n{{include: part.lgd}}\n\n"
         "## More {#more}\n\n{{include: part.lgd}}\n"
     )
-    result = _run(text, {"part.lgd": "## Part\n\nText.\n"})
-    assert _found(result, "anchor-autogen-collision") == [("anchor-autogen-collision", "part.lgd", 1)]
-    assert "part-2" in next(d.message for d in result.diagnostics if d.rule == "anchor-autogen-collision")
+    result = _run(text, {"part.lgd": "## Part\n\nSee {{ref: gone}}.\n"})
+    assert _found(result, "anchor-autogen-collision") == [("anchor-autogen-collision", "part.lgd", 1)] * 3
+    assert [d.message.split("adjusted to '")[1].split("'")[0] for d in result.diagnostics if d.rule == "anchor-autogen-collision"] == [
+        "part-2", "part-3", "part-4"
+    ]
+    assert _found(result, "ref-broken") == [("ref-broken", "part.lgd", 3)]
+
+
+def test_findings_of_different_targets_in_the_places_of_a_fragment_are_all_kept():
+    # A reference in a fragment that is unsafe to one section in one place and to another in the next: both are findings.
+    text = (
+        _TEMPLATE_FRONT + _SCOPE + "## A {#a when=x}\n\nA.\n\n## B {#b when=z}\n\nB.\n\n## P1 {#p1 when=x}\n\n{{include: part.lgd}}\n\n"
+        "## P2 {#p2 when=z}\n\n{{include: part.lgd}}\n"
+    )
+    result = _run(text, {"part.lgd": "See {{ref: a}} and {{ref: b}}.\n"})
+    messages = [d.message for d in result.diagnostics if d.rule == "condition-reference-unsafe"]
+    assert len(messages) == 2 and any("'a'" in m for m in messages) and any("'b'" in m for m in messages)
+    assert {(d.file, d.line) for d in result.diagnostics if d.rule == "condition-reference-unsafe"} == {("part.lgd", 1)}
 
 
 def test_an_absolute_path_or_a_uri_in_a_fragment_is_not_relative_wherever_the_fragment_is():
@@ -827,6 +864,21 @@ def test_an_absolute_path_or_a_uri_in_a_fragment_is_not_relative_wherever_the_fr
     part = "## Part {#part}\n\n![x](/etc/passwd.png) ![y](C:\\x.png) ![z](https://x/y.png) ![w](../w.png)\n"
     result = _run(text, {"sub/part.lgd": part})
     assert _found(result, "path-not-relative", "path-outside-root") == [("path-not-relative", "sub/part.lgd", 3)] * 3
+    assert all("relative to the fragment" in d.message for d in result.diagnostics if d.rule == "path-not-relative")
+    # The document's own say the document.
+    own = _run(_FRONT + _SCOPE + "![x](/abs.png)\n\n{{include: part.lgd}}\n", {"part.lgd": "Text.\n"})
+    assert [d.message for d in own.diagnostics if d.rule == "path-not-relative"][0].endswith("relative to the document (§2.3).")
+
+
+def test_a_definition_of_the_document_that_only_a_fragments_image_uses_is_judged_where_it_is_written():
+    # A link reference definition is judged where it is written, once something uses it: here a fragment does.
+    text = _FRONT + _SCOPE + "Text.\n\n[r]: /abs.png\n\n{{include: part.lgd}}\n"
+    result = _run(text, {"part.lgd": "See ![a][r].\n"})
+    assert _found(result, "path-not-relative") == [("path-not-relative", "main.lgd", _at(text, "[r]:"))]
+    # ... and the other way round: a definition of the fragment that an image of the document uses.
+    text = _FRONT + _SCOPE + "See ![a][r].\n\n{{include: part.lgd}}\n"
+    result = _run(text, {"part.lgd": "Text.\n\n[r]: /abs.png\n"})
+    assert _found(result, "path-not-relative") == [("path-not-relative", "part.lgd", 3)]
 
 
 def test_the_importers_are_called_once_for_each_file_however_often_the_document_is_read():

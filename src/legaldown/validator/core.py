@@ -1368,7 +1368,9 @@ def _check(
     unreadable = document.frontmatter_error if not mode.fragment else None
     if unreadable is not None:
         mode = _UNREADABLE_FRONTMATTER
-    result = _Recorder(suppress=mode.suppress, fragment=mode.fragment)
+    result = _Recorder(
+        suppress=mode.suppress, fragment=mode.fragment, places=[] if combined is not None else None
+    )
     # A fragment's own frontmatter, if it wrongly has any, is reported below
     # and then not read: the host's frontmatter is the one that declares.
     # Everything after this reads the document as a body-only one, whose
@@ -1455,6 +1457,10 @@ def _check(
         lexed once per validation."""
         return [d for d in lex_fragment(text or "").directives if d.name == name]
 
+    # The combined pass of a document that is no template: §15.1 decides it by the document alone, and a
+    # document that is none has no condition and no {{choose:}} of its own, so those of its fragments are not
+    # collected, nor judged (the fragment is as it was before it was validated with the document).
+    untemplated = combined is not None and not combined.template
     # {{choose:}} belongs in body text: never in frontmatter or a heading
     # (§15.5). Wherever it is, it makes the document a template (§15.1).
     misplaced_chooses = [
@@ -1466,6 +1472,8 @@ def _check(
         for index, text in enumerate(headings)
         for directive in named(text, "choose")
     ]
+    if untemplated:
+        misplaced_chooses = []
 
     # ── Templates and the presence of units (§15.1, §15.3) ──
     # Markers are found first: only a template gives a preamble paragraph's
@@ -2240,7 +2248,7 @@ def _check(
                 name = directive.name
                 # Found only if a diagnostic is made there.
                 line = partial(where.find, section_index, block_index, directive.source, fragment_index, directive.start)
-                if name == "choose":
+                if name == "choose" and not untemplated:
                     chooses.append((directive, line))  # a template even when malformed
                 if name in ("choose", "placeholder") and directive.positional:
                     (asked_in_notes if in_note else asked).add(directive.positional)
@@ -2369,7 +2377,7 @@ def _check(
                             f"Field type '{ftype}' is not declared in field_types.", line=line,
                         )
                     result.index.values.fields.append((value, ftype))
-                elif name == "choose":
+                elif name == "choose" and not untemplated:
                     with result.at(line):
                         check_choose(directive, questions, result, host_declares=host_declares)
                 elif name == "include":
@@ -2452,7 +2460,7 @@ def _check(
     conditions: list[tuple[str, str, int | None]] = [
         (f"the heading '{section.title}'", section.condition, where.heading(index))
         for index, section in enumerate(document.sections)
-        if section.condition
+        if section.condition and not untemplated
     ]
     conditions.extend(
         (f"'{found.source}'", found.marker.condition, marker_line(found))
@@ -2460,6 +2468,7 @@ def _check(
         if found.marker
         and found.marker.condition
         and found.placed(template)
+        and not untemplated
     )
     conditions.extend(
         (f"attachment '{att.id}'", att.when, where.key("attachments", index, "when"))
@@ -2660,6 +2669,7 @@ def _check(
             included.combined.document, final, resolve, import_definitions, import_attachment_definitions, mode,
             document_root, combined=included.combined,
         )
+        assert whole.places is not None and len(whole.places) == len(whole.diagnostics)
         result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, whole.places, included.combined)
         result.combined = True
 
