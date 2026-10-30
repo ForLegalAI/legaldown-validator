@@ -372,7 +372,7 @@ def test_a_long_key_is_cut_short_in_the_path_of_the_findings_under_it():
     assert time.perf_counter() - start < 10
     assert len(found) == 7_999
     assert all(len(message) < 200 for _line, _level, message in found)
-    assert found[0][2].startswith("The `k" + "x" * 38 + "…` key `a` is written again at line 5")
+    assert found[0][2].startswith("The `k" + "x" * 39 + "…` key `a` is written again at line 5")
 
 
 def test_a_lone_surrogate_in_a_key_is_escaped_in_the_path_and_czech_letters_are_not():
@@ -381,6 +381,38 @@ def test_a_lone_surrogate_in_a_key_is_escaped_in_the_path_and_czech_letters_are_
     message.encode("utf-8")  # a message that can be printed
     ((_line, _level, message),) = _found('"příliš žluťoučký": {a: 1, a: 2}\n')
     assert message.startswith('The `["příliš žluťoučký"]` key `a`')
+
+
+def test_a_step_is_cut_before_it_is_escaped_and_closed_after():
+    # a 60-character quoted key: the cut is in the text, and the step keeps its closing bracket
+    ((_line, _level, message),) = _found('"' + "ab c" * 15 + '": {a: 1, a: 2}\n')
+    assert message.startswith('The `["' + "ab c" * 10 + '…"]` key `a`')
+    # a surrogate at the cut: the escape is whole or it is not there
+    for before in (36, 38, 39, 40):
+        ((_line, _level, message),) = _found('"' + "x" * before + "\\ud800" + "y" * 30 + '": {a: 1, a: 2}\n')
+        step = message.split("`")[1]
+        assert step.startswith('["') and step.endswith('…"]')
+        assert ("\\ud800" in step) == (before < 40), (before, step)
+        message.encode("utf-8")
+    # a typed key: the brace is closed too
+    ((_line, _level, message),) = _found(_questions("      ? " + "0" * 60 + "1\n      : {a: 1, a: 2}\n"))
+    assert message.startswith("The `questions.q1.default{" + "0" * 40 + "…}` key `a`")
+
+
+def test_a_key_is_cut_short_where_a_message_names_it():
+    # Thousands of spellings of one integer, the last 50 000 characters long: each finding names it.
+    def front(count):
+        spellings = "".join(f"      ? {'0' * i}1\n      : v\n" for i in range(count))
+        return _questions(spellings + "      ? " + "0" * 50_000 + "1\n      : v\n")
+
+    small, large = _found(front(500)), _found(front(2_000))
+    assert len(small) == 500 and len(large) == 2_000
+    assert all(len(message) < 400 for _line, _level, message in large)
+    assert "…" in large[0][2]
+    total = lambda found: sum(len(message) for _line, _level, message in found)  # noqa: E731
+    assert total(large) < 5 * total(small)
+    # and a key that is short is shown whole
+    assert _found(_questions("      1: a\n      01: b\n"))[0][2].count("…") == 0
 
 
 # ── translations and field_types are #126's alone ──
@@ -488,7 +520,7 @@ def test_a_number_too_large_to_write_is_not_written():
     document = parse(_source(key))
     assert document.frontmatter_error is None
     ((_line, _level, message),) = _found(key)
-    assert message.startswith("The `questions.q1.default{0xffff") and "…` key `a` is written again" in message
+    assert message.startswith("The `questions.q1.default{0xffff") and "…}` key `a` is written again" in message
     assert len(message) < 200  # the key is cut short, not copied into the finding
     # no repeat of it: nothing to say, and the document is read
     assert _found(f"questions:\n  q1:\n    type: text\n    default:\n      ? {huge}\n      : 1\n") == []
@@ -541,5 +573,6 @@ def test_a_deep_mapping_is_walked_without_recursion():
     depth = 300
     deep = "".join("  " * i + f"k{i}:\n" for i in range(depth)) + "  " * depth + "a: 1\n" + "  " * depth + "a: 2\n"
     (found,) = _found(deep)
-    assert found[2].startswith("The `k0.k1.k2.k3") and ".k299` key `a` is written again" in found[2]
+    # a long path keeps its end
+    assert found[2].startswith("The `…") and ".k298.k299` key `a` is written again" in found[2]
     assert _found(deep.replace("a: 2", "b: 2")) == []

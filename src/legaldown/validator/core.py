@@ -146,10 +146,17 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
     )
 
 
+_SHOWN_WIDTH = 80  # the most of a key that a message writes out
+
+
 def _shown(key: str) -> str:
     """A key as it is written in the source, for a message: its line breaks (and the indentation after them)
-    folded to a space, between backticks (a longer fence if it holds backticks, padded, as CommonMark does)."""
-    text = re.sub(r"\s*\n\s*", " ", key).strip()
+    folded to a space, cut short (``…``) after ``_SHOWN_WIDTH`` characters (a key may be as long as the frontmatter,
+    and a message names it for each entry it replaces), between backticks (a longer fence if it holds backticks,
+    padded, as CommonMark does)."""
+    text = re.sub(r"\s*\n\s*", " ", key[: 10 * _SHOWN_WIDTH]).strip()
+    if len(text) > _SHOWN_WIDTH or len(key) > 10 * _SHOWN_WIDTH:
+        text = text[:_SHOWN_WIDTH] + "…"
     text = text or "''"  # a key written as nothing
     fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
@@ -1498,7 +1505,9 @@ def _validate(
             stays = _key_read(each.by_line) if each.why != "repeated" and each.by_line is not None else ""
             report = result.error if each.why == "repeated" else result.warning
             if each.path not in paths:
-                paths[each.path] = _shown(each.path) if each.path else "frontmatter"
+                # a long path keeps its end, which names the mapping
+                cut = each.path if len(each.path) <= _SHOWN_WIDTH else "…" + each.path[1 - _SHOWN_WIDTH:]
+                paths[each.path] = _shown(cut) if cut else "frontmatter"
             subject = paths[each.path]
             report(FRONTMATTER_KEY_DUPLICATE_RULE, _key_ignored(subject, each.written, what, stays), line=each.line)
 

@@ -228,9 +228,11 @@ a `<<` merges in. The finding names the mapping, `frontmatter` for the root and 
 names as `parties[0]` and `questions.my-q.default`, a key that is no plain name between brackets and escaped as
 JSON (`["weird key"]`), a typed key of a question's `default` as it is written in the source between braces (`{1}`, so
 that it is not taken for a position), a sequence entry by its position in the YAML sequence (`[1]`), and a merged mapping as
-`x.<<` (`x.<<[0]` in a list of sources). A step of the path is cut after 40 characters (`…`), so that a long key is not
+`x.<<` (`x.<<[0]` in a list of sources). A key in a step of the path is cut after 40 characters (`…`), so that a long key is not
 copied into every finding under it, and a character that cannot be written out, as a lone surrogate that `"\ud800"` makes,
-is escaped; letters stay as they are written. A key written as nothing is shown as `''`.
+is escaped; letters stay as they are written. A path longer than 80 characters keeps its end (`…k298.k299`), and a key
+named in a message, in this check and in that of `translations` and `field_types`, is cut after 80 characters (`…`). A key written
+as nothing is shown as `''`.
 
 `translations` and `field_types` are judged apart, with their own wording, as the model reads their keys as text,
 stripped, and keeps the last of the keys it reads as one (in the order the model holds them: `fr: a`, `' fr': b`,

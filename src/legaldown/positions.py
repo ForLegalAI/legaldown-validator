@@ -336,7 +336,7 @@ def metadata_unchanged(metadata: Any, snapshot: list[Any]) -> bool:
     return next(held, held) is held
 
 
-_SEGMENT_WIDTH = 40  # the most of a step of a path that is written out: a key may be as long as the frontmatter
+_SEGMENT_WIDTH = 40  # the most of a key that a step of a path writes out: a key may be as long as the frontmatter
 
 
 def _segment(slot: Any, key: yaml.Node, block: str) -> str:
@@ -344,15 +344,19 @@ def _segment(slot: Any, key: yaml.Node, block: str) -> str:
     (``repeated_keys``): ``.name`` for a plain name, else a text in brackets, escaped as JSON, and any other key
     (of a question's ``default``) as it is written, in braces, so that it is not taken for a position in a
     sequence, which is ``[1]``. A key that is not text is not written out from its value, which may be too large.
-    A letter stays as it is written, but a character that cannot be written out (a lone surrogate that an escape
-    makes) is escaped, and a step longer than ``_SEGMENT_WIDTH`` is cut short, so that a long key is not copied
-    into every finding under it."""
-    if isinstance(slot, str):
-        step = f".{slot}" if _PLAIN_KEY_RE.fullmatch(slot) else f"[{json.dumps(slot, ensure_ascii=False)}]"
+    A key longer than ``_SEGMENT_WIDTH`` is cut short (``…``) before it is escaped and the step closed, so that a
+    long key is not copied into every finding under it, no escape is split and no bracket is left open. A letter
+    stays as it is written, but a character that cannot be written out (a lone surrogate that an escape makes) is
+    escaped."""
+    text = slot if isinstance(slot, str) else key.value if isinstance(key, yaml.ScalarNode) else _key_text(block, key)
+    head, more = text[:_SEGMENT_WIDTH], "…" if len(text) > _SEGMENT_WIDTH else ""
+    if not isinstance(slot, str):
+        step = "{" + head + more + "}"
+    elif _PLAIN_KEY_RE.fullmatch(slot):
+        step = "." + head + more
     else:
-        step = "{" + (key.value if isinstance(key, yaml.ScalarNode) else _key_text(block, key)) + "}"
-    step = step[: _SEGMENT_WIDTH + 1].encode("utf-8", "backslashreplace").decode("utf-8")
-    return step if len(step) <= _SEGMENT_WIDTH else step[:_SEGMENT_WIDTH] + "…"
+        step = '["' + json.dumps(head, ensure_ascii=False)[1:-1] + more + '"]'
+    return step.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def _path_text(path: tuple[Any, ...] | None, block: str) -> str:
@@ -490,6 +494,13 @@ def _replaced(
     as ``read_maps`` judges the keys of ``translations``: ``fr`` and ``"fr"``. Otherwise the model reads
     different keys as one: as text, when both are text in the model, else by their value (``1`` and ``0x1``)."""
     last = group[-1][0]
+    texts: dict[int, str] = {}  # the text of each key node, cut from the source once
+
+    def text(node: yaml.Node) -> str:
+        if id(node) not in texts:
+            texts[id(node)] = _key_text(block, node)
+        return texts[id(node)]
+
     # By the type YAML gave each key and its text: the nearest later key of the same, and the nearest of those that is another
     # node, so that one pass from the end finds, for each entry, the key that repeats it.
     after: dict[tuple[str, str], tuple[yaml.Node, yaml.Node | None]] = {}
@@ -514,11 +525,11 @@ def _replaced(
                 key,
                 Repeated(
                     where,
-                    _key_text(block, key),
+                    text(key),
                     _key_line(breaks, first_line, key),
                     key.start_mark.index,
                     why,
-                    _key_text(block, key if by is None else by),
+                    text(key if by is None else by),
                     None if by is None else _key_line(breaks, first_line, by),
                 ),
             )
