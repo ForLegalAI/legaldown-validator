@@ -358,8 +358,7 @@ def merge_diagnostics(
     the findings in the places of a fragment, those with one rule, file, line and message are kept as often as the
     place that makes it most often makes it (two on a line of one place are two). Findings that differ, another
     target or a message with what is of the place (``anchor-autogen-collision`` says ``part-2`` in one place and
-    ``part-3`` in the next), are each kept. What ``OWNED_BY`` names is left to its owner. What a reference in a fragment
-    says is its own: ``path-not-relative`` says the path is to be relative to the fragment."""
+    ``part-3`` in the next), are each kept. What ``OWNED_BY`` names is left to its owner."""
     owned = {(d.rule, d.file, d.line) for d in host if d.rule in OWNED_BY.values()}
     merged: list[tuple[Diagnostic, int | None]] = []
     made: dict[tuple[str, str, int | None, str], dict[int, int]] = {}  # of each finding, how often each place made it
@@ -367,8 +366,6 @@ def merge_diagnostics(
     for d, number in zip(whole, places, strict=True):
         if d.rule in HOST_ONLY or (OWNED_BY.get(d.rule), d.file, d.line) in owned:
             continue
-        if d.file and d.rule == "path-not-relative":
-            d = replace(d, message=d.message.replace("relative to the document", "relative to the fragment"))
         if number is not None:
             key = (d.rule, d.file, d.line, d.message)
             made_here = made.setdefault(key, {})
