@@ -150,6 +150,7 @@ def _shown(key: str) -> str:
     """A key as it is written in the source, for a message: its line breaks (and the indentation after them)
     folded to a space, between backticks (a longer fence if it holds backticks, padded, as CommonMark does)."""
     text = re.sub(r"\s*\n\s*", " ", key).strip()
+    text = text or "''"  # a key written as nothing
     fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{pad}{text}{pad}{fence}"

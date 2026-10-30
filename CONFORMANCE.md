@@ -226,8 +226,8 @@ the same, so the earlier key and its value are dropped. Every mapping of the fro
 mappings in a sequence (`sides[0].parties[1]`), the fields of a question (`questions.my-q.default`) and the mappings
 a `<<` merges in. The finding names the mapping, `frontmatter` for the root and otherwise its path in backticks:
 names as `parties[0]` and `questions.my-q.default`, a key that is no plain name between brackets and escaped as
-JSON (`["weird key"]`), a typed key of a question's `default` as Python writes it between braces (`{1}`, so that it
-is not taken for a position), a sequence entry by its position in the YAML sequence (`[1]`), and a merged mapping as
+JSON (`["weird key"]`), a typed key of a question's `default` as it is written in the source between braces (`{1}`, so
+that it is not taken for a position), a sequence entry by its position in the YAML sequence (`[1]`), and a merged mapping as
 `x.<<` (`x.<<[0]` in a list of sources).
 
 `translations` and `field_types` are judged apart, with their own wording, as the model reads their keys as text,
@@ -266,12 +266,13 @@ How the rule reads the YAML:
 
 - **A key merged into a mapping (`<<`) is not an entry written there.** A key written over a merged one replaces
   it, as the YAML specification says, and the same key from two merged mappings is a matter of precedence (the
-  first source wins): neither is a repeat. A merged mapping is judged as a mapping of its own, so a key repeated
+  first source of a list wins, and the sources of a later `<<` win over an earlier one): neither is a repeat. A merged mapping is judged as a mapping of its own, so a key repeated
   in a source is reported at the source (`x.<<`), and so is one in a source of `translations` or `field_types`
   (`translations.<<`), whose own entries stay with the check above. Only the entries of a source that reach the
-  mapping are judged: one that the mapping's own key, or an earlier source, takes the place of is never read, and
-  neither is its value. A `<<` written twice in one mapping is not reported: the reader merges both, and the model
-  drops nothing.
+  mapping are judged: one that the mapping's own key, or a source that wins over it, takes the place of is never
+  read, and neither is its value. A `<<` written twice in one mapping is not reported as such: the reader merges
+  both, the later's entries over the earlier's, and the model may drop entries there; they are reported only
+  as repeats inside a source, when the source's entry is the one held.
 - **A dropped entry is ignored whole:** a repeat inside the value of a key that a later one replaces is not
   reported, as the model never holds it.
 - **A mapping shared through an alias is reported once**, under the first path that reaches it, at the line where it
@@ -282,10 +283,13 @@ How the rule reads the YAML:
 - **`translations` and `field_types` written twice at the root** are a repeat of the root mapping: the one dropped
   is reported as `frontmatter`, and the one read, by the check above.
 - **The findings describe the source text.** A document whose metadata was changed after it was parsed draws none
-  of them (the parser keeps a digest of the metadata it built, which the validator compares), as one built from a dict
-  has no source map.
+  of them (the parser keeps the objects of the metadata it built and the size of each list, dict and model, which the
+  validator compares; it reads no value, so a number of any size is no matter), as one built from a dict has no
+  source map.
+- **A pair of an `!!omap` or `!!pairs` may have a sequence or a mapping as its key**, which no dict holds: it is
+  never a repeat, and the document is read as before.
 - **Frontmatter that cannot be read** is `frontmatter-invalid-yaml` alone. A key that cannot be held in a dict (a
-  mapping or a sequence as a key) fails the document before this check.
+  mapping or a sequence as a key) fails the document before this check, but for the pairs of an `!!omap` below.
 
 The keys of these maps are found at the line where they are written, padded or not, by the checks that report on
 one (`language-code-invalid`, `path-not-relative`, `placeholder-in-structural-field`, and the checks of a `field_types`

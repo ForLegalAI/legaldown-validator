@@ -67,7 +67,7 @@ from .positions import (
     document_shape,
     frontmatter_keys,
     line_breaks,
-    metadata_fingerprint,
+    metadata_snapshot,
     read_maps,
     repeated_keys,
     stripped_nodes,
@@ -2131,7 +2131,7 @@ def parse(
         keys=front.keys,
         maps=front.maps,
         repeats=front.repeats,
-        metadata_print=metadata_fingerprint(document.metadata) if front.repeats else b"",
+        metadata_seen=list(metadata_snapshot(document.metadata)) if front.repeats else [],
         layout=layout,
         shape=document_shape(document),
     )

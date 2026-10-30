@@ -283,6 +283,45 @@ def test_a_source_judged_for_all_its_keys_and_for_some_is_reported_once():
     assert line == 3 and message.startswith("The `x.<<` key `a`")
 
 
+def test_a_key_written_twice_among_two_merges_is_judged_as_the_reader_orders_them():
+    # `<<` twice: the sources of both are merged, the later's entries over the earlier's; a key repeated inside the
+    # later source is a repeat there, though the earlier source has it too.
+    ((line, level, message),) = _found("x:\n  <<: {k: 1}\n  <<: {k: 2, k: 3}\n")
+    assert (line, level) == (4, "error") and message.startswith("The `x.<<` key `k` is written again at line 4")
+    # the earlier source's entry is dropped by the later one: neither it nor its value is read
+    assert _found("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {k: 1}\n") == []
+    # but a key only the earlier source has still is
+    assert [m for _l, _lvl, m in _found("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {j: 1}\n")] == [
+        "The `x.<<.k` key `a` is written again at line 3: this entry is ignored."
+    ]
+
+
+def test_the_first_source_of_a_list_wins_and_a_second_merge_wins_over_both():
+    front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}}]\n  <<: {a: 1}\n"
+    assert _found(front) == []
+    front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}}]\n"
+    assert [m.split(" key ")[0] for _l, _lvl, m in _found(front)] == ["The `x.<<[0].a`"]
+
+
+def test_a_mapping_of_thousands_of_sources_takes_linear_time():
+    # Each source is judged for the entries the mapping holds, found in one pass over its entries.
+    count = 10_000
+    flat, _ = _parse_time("x: {" + ", ".join(f"a{i}: 1" for i in range(count)) + "}\n")
+    merged, document = _parse_time("x:\n  <<: [" + ", ".join(f"{{a{i}: 1}}" for i in range(count)) + "]\n")
+    again, _ = _parse_time("x:\n  <<: [" + ", ".join(f"{{a: {i}}}" for i in range(count)) + "]\n")
+    assert merged < 2 * flat + 1 and again < 2 * flat + 1, (flat, merged, again)
+    assert document.source_map.repeats == ()
+
+
+def test_the_key_of_a_pair_in_an_omap_may_be_a_sequence_or_a_mapping():
+    # No dict holds such a key, so it is never a repeat; the document is read as before.
+    for tag in ("!!omap", "!!pairs"):
+        front = f"x: {tag} [{{? [a] : 1}}, {{? [a] : 2}}, {{? {{b: 1}} : 3}}]\ny: {{c: 1, c: 2}}\n"
+        document = parse(_source(front))
+        assert document.frontmatter_error is None
+        assert [(line, level) for line, level, _m in _found(front)] == [(3, "error")]
+
+
 # ── messages and paths ──
 
 def test_a_name_with_a_hyphen_is_not_bracketed_and_an_odd_key_is_escaped():
@@ -386,9 +425,45 @@ def test_a_metadata_changed_after_parsing_draws_no_stale_finding():
     assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
 
 
-def test_a_metadata_that_refers_to_itself_is_fingerprinted():
+def test_an_edit_in_place_draws_no_stale_finding_either():
+    document = parse(_source("title: a\ntitle: b\nsides:\n  - name: X\n    parties: [{name: P}, {name: Q}]\n"))
+    assert len([d for d in validate(document).diagnostics if d.rule == RULE]) == 1
+    document.metadata.sides[0].parties.clear()
+    assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
+    document = parse(_source("title: a\ntitle: b\nsides:\n  - name: X\n"))
+    document.metadata.sides[0].name = "Y"
+    assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
+
+
+def test_a_metadata_that_refers_to_itself_or_shares_much_is_judged_in_linear_time():
     document = parse(_source("x: &a [*a]\ny: {a: 1, a: 2}\n"))
     assert len([d for d in validate(document).diagnostics if d.rule == RULE]) == 1
+    # each default holds the one before twice: written out, 2 ** 24 values
+    questions = "questions:\n  q0: {type: text, default: &a0 [1, 1]}\n" + "".join(
+        f"  q{i}: {{type: text, default: &a{i} [*a{i - 1}, *a{i - 1}]}}\n" for i in range(1, 24)
+    )
+    start = time.perf_counter()
+    document = parse(_source(questions + "title: a\ntitle: b\n"))
+    assert len(_found(questions + "title: a\ntitle: b\n")) == 1
+    assert time.perf_counter() - start < 5
+
+
+def test_a_number_too_large_to_write_is_not_written():
+    huge = "0x" + "f" * 4000  # about 4800 decimal digits, which `str` and `repr` refuse
+    front = f"title: a\ntitle: b\nquestions:\n  q1:\n    type: text\n    default: {huge}\n"
+    assert len(_found(front)) == 1
+    key = f"questions:\n  q1:\n    type: text\n    default:\n      ? {huge}\n      : {{a: 1, a: 2}}\n"
+    document = parse(_source(key))
+    assert document.frontmatter_error is None
+    ((_line, _level, message),) = _found(key)
+    assert message.startswith("The `questions.q1.default{" + huge + "}` key `a` is written again")
+    # no repeat of it: nothing to say, and the document is read
+    assert _found(f"questions:\n  q1:\n    type: text\n    default:\n      ? {huge}\n      : 1\n") == []
+
+
+def test_a_key_written_as_nothing_is_shown_readably():
+    ((_line, _level, message),) = _found("x:\n  ? \n  : 1\n  ? \n  : 2\n")
+    assert message == "The `x` key `\'\'` is written again at line 5: this entry is ignored."
 
 
 def test_the_findings_are_data_of_the_document_not_of_the_run():
