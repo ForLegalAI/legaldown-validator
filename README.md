@@ -171,6 +171,13 @@ missing, or beside the document under another name, is now an Error, where it wa
 document without reading its fragments, validate it without its path
 (`validate(dataclasses.replace(document, path=None))`; `resolve=lambda path: None` says that every file
 is missing). `parse(text)` has no path and reads nothing, as before.
+A document whose includes were all read is validated with its fragments spliced in (the combined document, §16.11,
+[Include fragments](#include-fragments)): a reference or a term across a fragment and the document no
+longer draws `ref-broken` or `term-undefined`, and **findings in fragments** (`raw-html`, `date-invalid`,
+`insertion-boundary`, `placeholder-unfilled` under `final`, ...) are now reported by the validation of the
+document that includes them, at their line in the fragment's file. A document that was clean can fail for them,
+and so can an exit status. In a template, a rule that stops assembly stops it when a fragment is where it is
+found (`Template.problems`).
 Five rules that §17.2 places at Core are now checked ([What gets checked](#what-gets-checked)), and a
 CI gate that was passing can fail for them. **A translation without explicit identifiers is now an
 Error** (`translation-implicit-id`): a document that links `translations`, and whose `language` differs
@@ -557,15 +564,19 @@ that a complete document may not (`insertion-boundary`, `raw-html`, `date-invali
 under `final`, ...) is reported in the fragment, at its line, as for any other document. In a template a
 fragment is as present as its include paragraph is (§15.3), so a reference into a conditional fragment is
 `condition-reference-unsafe` unless it is as conditional (§15.4), and fragments with exclusive conditions may
-declare one identifier. A finding is at its line in its own file (`Diagnostic.file`), once however often the
-fragment is included; the findings of the document alone (the `include-*` and `path-*` rules,
+declare one identifier. A finding is at its line in its own file (`Diagnostic.file`), as many times as one place of the fragment makes it
+(none twice for a fragment included twice), in the order of the combined document; the findings of the document alone (the `include-*` and `path-*` rules,
 `template-fragment-invalid`, `heading-skip`) are not made again. It is **all or nothing**: one include that
 was not followed (missing, unreadable, a path that leads out, not a fragment, a cycle, a cap, an include in a
 template's fragment) leaves the document judged as before, and the Warning of §17.5 says so. A LegalDown
 attachment file is not part of the combined document yet: a `{{ref:}}` into an attachment's section is still
-`ref-broken`. `ValidationResult.index` is the document's own. A fragment is spliced as it was parsed, so a
-fence it leaves open does not swallow what follows it
-([CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612)).
+`ref-broken`. The combined document is not made either when the fragments spliced in come to more than 50,000
+blocks or 200,000 lines (counted for each time a fragment is included); the Warning says so. A fragment that holds
+a condition or a `{{choose:}}` makes the document a template (§15.1), and it is then validated as one, its fragments
+held to §15.3 (`index.is_template` is true). Markers are read over the combined document, as a splice of the text
+would read them: a fragment's first paragraph, spliced into a section, may carry an anchor. A fragment is spliced as
+it was parsed, so a fence it leaves open does not swallow what follows it
+([CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612)). `ValidationResult.index` is the document's own.
 
 `include-not-legaldown` needs no file: an include paragraph whose path does not end in `.lgd`,
 `.legaldown` or `.legal.md` is reported at its line (Core), and the path is never read. A path

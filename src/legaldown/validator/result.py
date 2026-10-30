@@ -148,15 +148,31 @@ class Blank:
 
 class Spot(int):
     """A line in a file of the combined document (``combined.CombinedLocator``): the line number, which
-    carries the *file* it is in (a fragment's path) through the places that pass a line around. ``0``
-    is a file whose line is not known; it is falsy, as a line of None is. ``_Recorder`` turns it into the
-    diagnostic's ``file`` and ``line``, so no ``Spot`` reaches a ``ValidationResult``."""
+    carries the *file* it is in (a fragment's path) through the places that pass a line around, and the
+    *instance* of the file (which of the places a fragment is included at, ``combined.Instance.number``), which
+    tells a finding made once in each from one that is made twice in one. A line computed from it (``line + 2``)
+    is in the same file. ``0`` is a file whose line is not known; it is falsy, as a line of None is.
+    ``_Recorder`` turns it into the diagnostic's ``file`` and ``line``, so no ``Spot`` reaches a
+    ``ValidationResult``."""
     file: str
+    instance: int
 
-    def __new__(cls, line: int | None, file: str) -> Spot:
+    def __new__(cls, line: int | None, file: str, instance: int = 0) -> Spot:
         spot = super().__new__(cls, line or 0)
         spot.file = file
+        spot.instance = instance
         return spot
+
+    def __add__(self, other: int) -> Spot:  # type: ignore[override]
+        return Spot(int(self) + other, self.file, self.instance)
+
+    __radd__ = __add__
+
+    def __sub__(self, other: int) -> Spot:  # type: ignore[override]
+        return Spot(int(self) - other, self.file, self.instance)
+
+    def __rsub__(self, other: int) -> Spot:  # type: ignore[override]
+        return Spot(other - int(self), self.file, self.instance)
 
 
 #: A diagnostic's line (from 1), or a function giving it, called only when a
@@ -225,7 +241,6 @@ class ValidationResult:
     """
     diagnostics: list[Diagnostic] = field(default_factory=list)
     index: DocumentIndex = field(default_factory=DocumentIndex)
-
     def _messages(self, level: str) -> list[str]:
         return [d.message for d in self.diagnostics if d.level == level]
 
@@ -268,8 +283,14 @@ class _Recorder(ValidationResult):
     #: Whether the document is validated as a fragment: a finding with a
     #: reason is then ``host_dependent``, and is not otherwise.
     fragment: bool = False
+    #: Whether the document was validated with its include fragments spliced in (§16.11): every include
+    #: was followed into a fragment, and what the fragments and the document say across each other was judged.
+    combined: bool = False
     #: The lines diagnostics are recorded at by default (``at``), innermost last.
     _lines: list[Line] = field(default_factory=list, repr=False, compare=False)
+    #: Of a diagnostic made at a line of the combined document that is in a fragment, which place of the
+    #: fragment it is (``Spot.instance``), by ``id`` of the diagnostic.
+    places: dict[int, int] = field(default_factory=dict, repr=False, compare=False)
 
     @contextmanager
     def at(self, line: Line) -> Iterator[None]:
@@ -298,12 +319,16 @@ class _Recorder(ValidationResult):
             line = self._lines[-1]
         if callable(line):
             line = line()
+        place = None
         if isinstance(line, Spot):  # a line in a fragment of the combined document: its file goes with it
-            file, line = file or line.file, int(line) or None
-        return [Diagnostic(
+            file, place, line = file or line.file, line.instance, int(line) or None
+        found = Diagnostic(
             rule=rule, level=level, message=message, line=line, file=file,
             host_dependent=self.fragment and depends is not None,
-        )]
+        )
+        if place is not None:
+            self.places[id(found)] = place
+        return [found]
 
     def error(
         self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""

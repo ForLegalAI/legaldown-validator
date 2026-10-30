@@ -1257,11 +1257,13 @@ def validate_document(
 
 def validate_template(
     document: Document, resolve: LoadFile | None, document_root: str | os.PathLike[str] | None
-) -> ValidationResult:
+) -> tuple[ValidationResult, bool]:
     """``validate`` for the template of a ``Template``: it reads through *resolve* and no other way. A
     document with a path (the template's, for the root and for the self-include test) is not read from beside
-    it by default, as assembly does not: with no *resolve*, nothing is read, and the Warning of §17.5 says so."""
-    return _validate(document, False, resolve, None, None, _DOCUMENT, document_root=document_root)
+    it by default, as assembly does not: with no *resolve*, nothing is read, and the Warning of §17.5 says so.
+    With it, whether the template was validated with its fragments in (§16.11)."""
+    result = _check(document, False, resolve, None, None, _DOCUMENT, document_root=document_root)
+    return result.result(), result.combined
 
 
 def _resolver(
@@ -1341,7 +1343,12 @@ def _definitions_in(
     return _Imported(definition_lookup(collect_definitions(other.document)))
 
 
-def _validate(
+def _validate(*args: Any, **kwargs: Any) -> ValidationResult:
+    """``_check``, as the ``ValidationResult`` ``validate`` returns."""
+    return _check(*args, **kwargs).result()
+
+
+def _check(
     document: Document,
     final: bool,
     resolve: LoadFile | None,
@@ -2075,13 +2082,18 @@ def _validate(
     # Error (§16.8) rather than being downgraded to Info. Not so for a file that is not LegalDown.
     original_imported = False
     _imported_definitions: dict[str, str] = {}
+    # What is imported from the files the document names, asked once: the combined pass takes it from the
+    # document's own (``Combined.imports``), for an importer is called once however often the document is read.
+    imports = combined.imports if combined is not None else {}
     if document.metadata.amends and document.metadata.amends.file:
         amends_file = document.metadata.amends.file
         if amends_file.endswith(LEGALDOWN_EXTENSIONS):
-            if import_definitions is not None:
-                imported = _imported(import_definitions(amends_file, document.filename))
-            else:
-                imported = _definitions_in(document, files, amends_file, file_references)
+            if "amends" not in imports:
+                imports["amends"] = (
+                    _imported(import_definitions(amends_file, document.filename)) if import_definitions is not None
+                    else _definitions_in(document, files, amends_file, file_references)
+                )
+            imported = imports["amends"]
             if imported.definitions is not None:
                 original_imported = True
                 _imported_definitions = imported.definitions
@@ -2107,10 +2119,12 @@ def _validate(
     for att_index, att in enumerate(document.metadata.attachments):
         if not att.file.endswith(LEGALDOWN_EXTENSIONS):
             continue
-        if import_attachment_definitions is not None:
-            imported = _imported(import_attachment_definitions(att.file))
-        else:
-            imported = _definitions_in(document, files, att.file, file_references)
+        if ("attachment", att_index) not in imports:
+            imports["attachment", att_index] = (
+                _imported(import_attachment_definitions(att.file)) if import_attachment_definitions is not None
+                else _definitions_in(document, files, att.file, file_references)
+            )
+        imported = imports["attachment", att_index]
         if imported.not_imported is not None:
             attachments_unread.append(imported.not_imported)
         att_defs = imported.definitions
@@ -2581,9 +2595,21 @@ def _validate(
         units=units,
         questions=questions,
         exclusivity=exclusivity,
-        markers=markers,
         lex_fragment=lex_fragment,
     )
+    # §15.1: a document is a template when any file of it is. The walk and the checks above judged the document
+    # by itself, and a fragment that holds a condition or a {{choose:}} makes the combined document one: the
+    # document is judged again as the template it is (its fragments are then held to §15.3, and what the
+    # walk does in a template). The decision is the combined document's (``_is_template``, over the markers it
+    # reads as a splice of the text would); the rare document that changes it pays for a second validation.
+    if (
+        included.combined is not None and mode.template is None and not template
+        and _is_template(included.combined.document, included.combined.markers(), lex_fragment)
+    ):
+        return _check(
+            original, final, resolve, import_definitions, import_attachment_definitions, replace(mode, template=True),
+            document_root,
+        )
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
     # rest are recorded where the loop met them, the last first so that the places hold. That
     # needs the diagnostics since then only to have been added to. If one was moved or removed
@@ -2631,18 +2657,21 @@ def _validate(
     # that apply, as every check above read them.
     result.index.is_template = template
     if combined is not None:
-        return result.result()  # (the findings only: the index is the document's own)
+        combined.places = result.places
+        return result  # (the findings only: the index is the document's own)
     result.index.placed_markers = _placed_markers(document, markers, template, marker_line)
 
     # §16.11: the document with the fragments its includes take in, validated as the one document it is
     # (#117). What it says is the document's findings, but for those only the document's own pass can
     # make (``combined.HOST_ONLY``).
     if included.combined is not None:
-        whole = _validate(
+        included.combined.imports = imports
+        whole = _check(
             included.combined.document, final, resolve, import_definitions, import_attachment_definitions, mode,
             document_root, combined=included.combined,
         )
-        result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics)
+        result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, included.combined)
+        result.combined = True
 
     # §17.5: a Warning for each check category the constructs of the document call for and this
     # validation did not perform, last, once all that was read and checked is known.
@@ -2661,7 +2690,7 @@ def _validate(
     # A finding in a fragment the document includes has its file already (#35).
     if document.filename:
         result.diagnostics = [d if d.file else replace(d, file=document.filename) for d in result.diagnostics]
-    return result.result()
+    return result
 
 
 def _placed_markers(

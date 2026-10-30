@@ -886,13 +886,20 @@ Decisions the specification leaves open:
     after the include go on in the last section of the expansion. Each file keeps its own structure, so that it
     differs from a splice of the text only for a fragment that is itself malformed: a fence a fragment leaves
     open does not swallow what follows it, and a list a fragment ends with is not continued by the list the
-    document starts after it (assembly writes the fragments as files of their own as well). A marker in a fragment's
-    preamble is classified as the file has it (a preamble paragraph's anchor is `anchor-misplaced`, as in the file
-    on its own), wherever it is spliced. Link reference definitions are document-wide, the first one winning, as
+    document starts after it (assembly writes the fragments as files of their own as well). Markers and the
+    preamble are read over the **combined structure**, exactly as a splice of the text would read them (§12.2): a
+    fragment's first paragraph, spliced into a section, is a paragraph of that section and may carry an anchor
+    (`A clause. {#clause}`), and the blocks of the document after a fragment that has headings are in its last
+    section, those of a preamble too. Only the presence of a unit (§15.3) is its own file's (a section extends
+    to the end of its file). Link reference definitions are document-wide, the first one winning, as
     CommonMark says.
   - *Where a finding is.* Each part of the combined document is located in its own file: `Diagnostic.file` is
     the fragment's path and `line` its line in it (the document's own lines are the document's). A fragment
-    included twice (or reached by two targets of the command line) is reported once. The message of
+    included twice is reported once: of the findings of a fragment (the same rule, file, line and message) as many
+    are kept as one place of the fragment makes, so two on one line of a fragment included once are two. (Two
+    targets of the command line are the command line's.) The findings are in the order of the combined document: a
+    finding of the document at its line, one of a fragment at the include that took it in, with the Warning of §17.5
+    last. The message of
     `definition-used-before-declaration` names the file when the declaration is in another one than the use
     (`at line 3 of part.lgd`).
   - *What is judged.* `ref-broken`, `term-undefined`, `amend-term-undefined`, `def-unreferenced`,
@@ -917,12 +924,23 @@ Decisions the specification leaves open:
     `condition-reference-unsafe`, alternatives (`when=x` / `when=!x` fragments declaring one identifier) and
     `Exclusivity` apply over that, and a reference that is covered by the fragment's declaration under the
     answers that remove the document's own is safe. The combined document is a template when any of its files is
-    (§15.1): a fragment's `{{choose:}}` or condition makes it one, and the document is judged as the template it
-    is. A host-line finding of the combined pass that is a template rule (`placeholder-type-inconsistent`,
-    `condition-reference-unsafe`) can stop the assembly of a template, as it does when the files are one
-    document; a finding in a fragment does not (`Template.problems` does not count a finding of a file assembly
-    read). `condition-reference-unsafe` is a template rule always: the document-alone reason for leaving it out
-    when a template includes a fragment is gone.
+    (§15.1): a fragment's `{{choose:}}` or condition makes it one, and then the **document is validated again
+    as a template** (`index.is_template` is true, the fragments are held to §15.3: a drafting note or an
+    `{{include:}}` in one is `template-fragment-invalid`, and an include in a fragment is not followed). This is
+    decided after the walk, from the combined document; the simplest sound way, since the checks of the document
+    all depend on the status, and paid for (a second validation) only by the document that changes it. A finding of the combined pass of a rule in `TEMPLATE_RULES`
+    (`placeholder-type-inconsistent`, `insertion-boundary`, `def-term-variable`, ...) stops the assembly of a
+    template, **in whichever file it is**, as it does when the files are one document (§15.7.2);
+    `Template.problems` leaves out only what assembly said of a file itself (`template-fragment-invalid`).
+    `condition-reference-unsafe` counts when the template was validated with its fragments in
+    (`Template` knows from the validation) or includes none; when the walk was cut short or a fragment could not
+    be read, the validator cannot see what the fragments declare, and it is advice, as it was.
+  - *Size.* The fragments spliced in may come to at most **50,000 blocks and 200,000 lines**, counted for each
+    time a fragment is included (the walk is bounded by the headings and includes it counts, not by what a
+    fragment holds, so N includes of a fragment of M blocks would make a document of N x M). Past either, no
+    combined document is made, as for an include not followed, and the Warning of §17.5 says
+    "building the combined document of more than ... blocks or ... lines of fragments". The caps are this
+    implementation's own.
   - *All or nothing.* The combined document is made only when every include paragraph (the document's and the
     fragments') was followed into a fragment: nothing unread (no loader, a path that leads out of the directory
     with no `document_root`, a file that cannot be read), refused (`include-cycle`, a path finding, a file that is
@@ -932,6 +950,12 @@ Decisions the specification leaves open:
     document would make `question-unused`, `def-unreferenced` and `condition-reference-unsafe` wrong for what the
     missing fragment holds. When it is made, the Warning no longer names them, and a document with includes that
     is otherwise skipped nothing has none.
+  - *Cost.* The document is validated twice, itself and combined, and the files it imports from (an amended
+    original, attachment files; an `import_definitions` callback) are read, and the callbacks called, once. The
+    document's own pass is not shortened when a combined document will be made (it is not known until the
+    includes are followed, near its end), and the units and markers of the document are not reused, since the
+    combined structure reads them differently; so the work is about twice the document's and linear in the
+    size of the combined document (bounded, above).
   - *Not part of it yet.* LegalDown attachment files (§12.4, §15.7.2 step 7 puts them after the body): a
     `{{ref:}}` into an attachment's section is still `ref-broken`, a definition used only in an attachment is
     still `def-unreferenced`, an auto-generated identifier is not suffixed against an attachment's heading, and
@@ -946,9 +970,9 @@ Decisions the specification leaves open:
   `check_template_body` says of its body (`insertion-boundary`, `drafting-note-def`,
   `def-term-variable`, `drafting-note-unrecognized`) is reported in the fragment (`Diagnostic.file`), with
   the rest. `insertion-boundary`, `drafting-note-def` and `def-term-variable` are in the validator's
-  template rules (`TEMPLATE_RULES`), but `Template.problems` does not count a finding of a file assembly read,
-  so reporting them through the including template does not newly stop its assembly (`Template.validation`
-  has them as advice). A fragment that is not read (a cycle, a missing include, ...) is not validated. `attachment-has-frontmatter` and `attachment-has-h1` are
+  template rules (`TEMPLATE_RULES`), so reporting them through the including template **newly stops its
+  assembly** when a fragment has one (§15.7.2 wants a template without Errors); `Template.problems` counts them
+  at their line in the fragment. A fragment that is not read (a cycle, a missing include, ...) is not validated. `attachment-has-frontmatter` and `attachment-has-h1` are
   not reported for an attachment file that `validate(resolve=)` reads either (assembly refuses a
   template for them, with the file and line); they are reported for the file validated on its own
   with `fragment_kind="attachment"`.
@@ -1019,7 +1043,7 @@ validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warn
 
 | Category (§17.4) | Construct | Not performed |
 |---|---|---|
-| Includes (§12, §16.11) | an include paragraph | the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document) when the combined document was not put together, which is when an include was not followed (below, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)); with every include followed and nothing else skipped, no Warning. For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
+| Includes (§12, §16.11) | an include paragraph | the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document) when the combined document was not put together, which is when an include was not followed (below, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)); with every include followed and nothing else skipped, no Warning. For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the size of the combined document (50,000 blocks or 200,000 lines of fragments spliced in), the combined-document checks. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
 | Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file also `attachment-has-frontmatter`, `attachment-has-h1` and `attachment-anchor-duplicate`, the combined-document checks for the attachment files (a reference into an attachment's section; they are not part of the combined document), and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below) |
 | Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (for any reason, see below), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
 | Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch`; and `translation-implicit-id` and `translation-authoritative-absent` for the linked files, whose identifiers are not read (the document's own are checked, Core, §17.2) |

@@ -322,8 +322,8 @@ def test_a_blank_of_two_types_across_the_document_and_a_fragment_is_found_where_
     first = _FRONT + _SCOPE + "Due {{placeholder: due, type=date}}.\n\n{{include: part.lgd}}\n"
     template = Template(first, resolve=files.get)
     assert _found(template.validation, "placeholder-type-inconsistent") == [("placeholder-type-inconsistent", "part.lgd", 3)]
-    # A finding in a fragment does not stop assembly: the template is read as the files are.
-    assert template.problems == ()
+    # A finding of the combined document stops assembly (§15.7.2), in a fragment as in the template.
+    assert [(d.rule, d.file, d.line) for d in template.problems] == [("placeholder-type-inconsistent", "part.lgd", 3)]
     # In the document, as the later of the two, it is the document's own finding and it does (§15.7.2).
     later = _FRONT + _SCOPE + "{{include: part.lgd}}\n\nDue {{placeholder: due, type=date}}.\n"
     template = Template(later, resolve=files.get)
@@ -332,12 +332,34 @@ def test_a_blank_of_two_types_across_the_document_and_a_fragment_is_found_where_
     assert [(d.rule, d.line) for d in template.problems] == [("placeholder-type-inconsistent", line)]
 
 
-def test_a_fragment_finding_does_not_stop_assembly_of_a_template():
+def test_a_template_rule_the_combined_document_finds_in_a_fragment_stops_assembly():
     text = _TEMPLATE_FRONT + _SCOPE + "{{include: part.lgd}}\n\n{{placeholder: p}}\n"
     part = "## Part {#part}\n\n*{{placeholder: p}}*\n"
     template = Template(text, resolve={"part.lgd": part}.get)
-    assert any(d.rule == "insertion-boundary" and d.file == "part.lgd" for d in template.validation.diagnostics)
-    assert not any(d.rule == "insertion-boundary" for d in template.problems)
+    assert [(d.rule, d.file, d.line) for d in template.problems] == [("insertion-boundary", "part.lgd", 3)]
+    # ... an unsafe reference in a fragment to a section the document makes conditional, too (§15.4).
+    text = _TEMPLATE_FRONT + "# Scope {#scope}\n\n## Opt {#opt when=x}\n\nText.\n\n# More {#more}\n\n{{include: part.lgd}}\n"
+    template = Template(text, resolve={"part.lgd": "## Part {#part}\n\nSee {{ref: opt}}.\n"}.get)
+    assert [(d.rule, d.file, d.line) for d in template.problems] == [("condition-reference-unsafe", "part.lgd", 3)]
+    assert template.form({"x": True}).assemble().ok is False
+
+
+def test_a_reference_that_is_unsafe_when_the_walk_was_cut_short_does_not_stop_a_template(monkeypatch):
+    # Without the combined document the validator cannot see what a fragment declares: advice, as it was.
+    text = (
+        _TEMPLATE_FRONT + "# One {#one}\n\nSee {{ref: local}}.\n\n{{include: frag.lgd}} {when=!x}\n\n"
+        "# Local {#local when=x}\n\nText.\n"
+    )
+    files = {"frag.lgd": "## Other {#local}\n\nText.\n"}
+    assert Template(text, resolve=files.get).problems == ()
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_INCLUDE_EXPANDED", 0)
+    template = Template(text, resolve=files.get)
+    assert any(d.rule == "condition-reference-unsafe" for d in template.validation.diagnostics)
+    assert template.problems == ()
+    monkeypatch.undo()
+    # ... and with no fragment that declares it, the combined document says it is unsafe, and it stops.
+    template = Template(text, resolve={"frag.lgd": "## Other {#other}\n\nText.\n"}.get)
+    assert [d.rule for d in template.problems] == ["condition-reference-unsafe"]
 
 
 # ── All or nothing: the combined document is built when every include was followed ───────────────────────────────
@@ -462,7 +484,7 @@ def passes(monkeypatch):
     """The two lists of diagnostics ``merge_diagnostics`` was given: the document's own pass and the combined one."""
     given = []
     real = core.merge_diagnostics
-    monkeypatch.setattr(core, "merge_diagnostics", lambda host, whole: given.append((host, whole)) or real(host, whole))
+    monkeypatch.setattr(core, "merge_diagnostics", lambda host, whole, combined: given.append((host, whole)) or real(host, whole, combined))
     return given
 
 
@@ -516,12 +538,31 @@ _ORACLE_CASES = [
 ]
 
 
+_ORACLE_CASES += [
+    # A fragment that opens with a paragraph that has an anchor, spliced into a section of the document: the
+    # paragraph is that section's, as a splice of the text reads it.
+    (
+        _FRONT + _SCOPE + "{{include: a.lgd}}\n\nSee {{ref: clause}}.\n",
+        {"a.lgd": "A clause. {#clause}\n\n## Sub {#sub}\n\nText {{ref: clause}}.\n"},
+    ),
+    # Blocks of the document after a fragment that has headings are in its last section, also those of the preamble.
+    (
+        _FRONT + "{{include: a.lgd}}\n\nLate paragraph. {#late}\n\n# Main {#main}\n\nSee {{ref: late}} and {{ref: sub}}.\n",
+        {"a.lgd": "## Sub {#sub}\n\nText.\n"},
+    ),
+    (
+        _FRONT + _SCOPE + "{{include: a.lgd}}\n\nAfter one. {#after}\n\n- item {{ref: after}}\n\n{{include: b.lgd}}\n\nAfter two {{ref: b-sec}}.\n",
+        {"a.lgd": "## A {#a-sec}\n\nText.\n", "b.lgd": "Lead {#lead}\n\n## B {#b-sec}\n\nSee {{ref: lead}}.\n"},
+    ),
+]
+
+
 @pytest.mark.parametrize(("text", "files"), _ORACLE_CASES)
 def test_the_combined_pass_equals_validating_the_spliced_text(text, files, monkeypatch):
     """The differential test: the text of the fragments spliced in and validated as one document says the same
     (the rules, the messages and the identifiers of the sections), but for what is about the includes and files."""
     seen = []
-    real = core._validate
+    real = core._check
 
     def spy(*args, **kwargs):
         result = real(*args, **kwargs)
@@ -529,7 +570,7 @@ def test_the_combined_pass_equals_validating_the_spliced_text(text, files, monke
             seen.append(result)
         return result
 
-    monkeypatch.setattr(core, "_validate", spy)
+    monkeypatch.setattr(core, "_check", spy)
     merged = _run(text, files)
     (combined,) = seen
     oracle = validate(parse(_splice(text, files)))
@@ -596,7 +637,7 @@ def _random_case(seed: int) -> tuple[str, dict[str, str]]:
 def test_the_combined_pass_equals_validating_the_spliced_text_for_random_documents(seed, monkeypatch):
     text, files = _random_case(seed)
     seen = []
-    real = core._validate
+    real = core._check
 
     def spy(*args, **kwargs):
         result = real(*args, **kwargs)
@@ -604,7 +645,7 @@ def test_the_combined_pass_equals_validating_the_spliced_text_for_random_documen
             seen.append(result)
         return result
 
-    monkeypatch.setattr(core, "_validate", spy)
+    monkeypatch.setattr(core, "_check", spy)
     merged = _run(text, files)
     (combined,) = seen
     oracle = validate(parse(_splice(text, files)))
@@ -682,3 +723,109 @@ def test_a_deep_chain_and_many_fragments_cost_what_the_same_content_in_one_docum
     diamond = _FRONT + _SCOPE + "".join(f"{{{{include: shared.lgd}}}}\n\n## Next {n} {{#next-{n}}}\n\n" for n in range(500))
     shared = {"shared.lgd": "### Shared\n\n" + "Text {{ref: scope}}.\n\n" * 20}
     assert _seconds(lambda: _run(diamond, shared)) < 20
+
+
+# ── Size, order, dedup, once ──────────────────────────────────────────────────────────────────────────────
+
+def test_a_fragment_of_many_blocks_included_many_times_is_not_combined_past_the_cap():
+    part = "".join(f"Paragraph {k}.\n\n" for k in range(400))
+    text = _FRONT + _SCOPE + "".join("{{include: part.lgd}}\n\n" for _ in range(400))
+    started = time.perf_counter()
+    result = _run(text, {"part.lgd": part})
+    # 160,000 blocks past the cap: what the walk did is as it was (0.1 s), not the product of the two.
+    assert time.perf_counter() - started < 10
+    message = _warning(result).message
+    assert "combined-document checks (§16.11)" in message and "building the combined document of more than 50,000 blocks" in message
+
+
+def test_the_caps_on_the_combined_document_are_in_blocks_and_in_lines(monkeypatch):
+    text = _FRONT + _SCOPE + "See {{ref: part-sec}}.\n\n{{include: part.lgd}}\n\n{{include: part.lgd}}\n"
+    files = {"part.lgd": "## Part {#part-sec}\n\nOne.\n\nTwo.\n"}
+    assert _warning(_run(text, files)) is None
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 3)  # 2 x 2 blocks
+    assert "building the combined document of more than 3 blocks" in _warning(_run(text, files)).message
+    monkeypatch.undo()
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_LINES", 11)  # 2 x 6 lines
+    assert "lines of fragments" in _warning(_run(text, files)).message
+    # Within the caps the combined document is made: a reference into the fragment is not broken.
+    monkeypatch.undo()
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 2)
+    assert _found(_run(text.replace("{{include: part.lgd}}\n\n{{include: part.lgd}}", "{{include: part.lgd}}"), files), "ref-broken") == []
+
+
+def test_the_findings_are_in_the_order_of_the_combined_document_and_the_warning_is_last():
+    skipping = "# One {#one}\n\n### Skips {#skips}\n\nText.\n\n"
+    text = (
+        _FRONT + skipping + "{{include: part.lgd}}\n\n" + "Text.\n\n" * 20 + "After {{ref: gone}}.\n\n"
+        "## Two {#two}\n\n{{include: other.lgd}}\n\nThen {{ref: gone-too}}.\n"
+    )
+    files = {"part.lgd": "## Part {#part}\n\nSee {{ref: gone-part}}.\n", "other.lgd": "### Other {#other}\n\n{{ref: gone-other}}\n"}
+    result = _run(text, files)
+    found = [(d.rule, d.file, d.line) for d in result.diagnostics if d.rule != SKIPPED_RULE]
+    assert [rule for rule, _, _ in found].count("heading-skip") == 1
+    assert found == [
+        ("heading-skip", "main.lgd", _at(text, "### Skips")),
+        ("ref-broken", "part.lgd", 3),
+        ("ref-broken", "main.lgd", _at(text, "After")),
+        ("ref-broken", "other.lgd", 3),
+        ("ref-broken", "main.lgd", _at(text, "Then")),
+    ]
+    assert result.diagnostics[-1].rule == SKIPPED_RULE or _warning(result) is None
+
+
+def test_two_findings_on_one_line_of_a_fragment_are_two_and_a_fragment_included_twice_makes_each_once():
+    part = "## Part {#part}\n\nSee {{ref: gone}} and {{ref: gone}}.\n"
+    once = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part})
+    assert _found(once, "ref-broken") == [("ref-broken", "part.lgd", 3)] * 2
+    twice = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n\n## Again {#again}\n\n{{include: part.lgd}}\n", {"part.lgd": part})
+    assert _found(twice, "ref-broken") == [("ref-broken", "part.lgd", 3)] * 2
+    # The document alone is not deduplicated either.
+    both = _run(_FRONT + _SCOPE + "{{ref: gone}} and {{ref: gone}}.\n", {})
+    assert len(_found(both, "ref-broken")) == 2
+
+
+def test_the_importers_are_called_once_for_each_file_however_often_the_document_is_read():
+    front = _FRONT.replace("---\n\n", "amends:\n  title: Original\n  file: orig.lgd\nattachments:\n  - id: a\n    title: A\n    file: a.lgd\n---\n\n")
+    text = front + _SCOPE + "{{attach: a}} {{include: part.lgd}}\n\n{{include: part.lgd}}\n"
+    asked: list[str] = []
+
+    def amends(path, filename):
+        asked.append(path)
+        return {"orig": "Original"}
+
+    def attachment(path):
+        asked.append(path)
+        return {"x": "X"}
+
+    with pytest.warns(DeprecationWarning):
+        validate(
+            parse(text, filename="main.lgd"), resolve={"part.lgd": "## Part {#part}\n\nText.\n"}.get,
+            import_definitions=amends, import_attachment_definitions=attachment,
+        )
+    assert sorted(asked) == ["a.lgd", "orig.lgd"]
+
+
+def test_a_document_that_is_a_template_only_by_its_fragment_is_judged_as_one():
+    # §15.1: a fragment's {{choose:}} makes the combined document a template; the fragment is then held to §15.3
+    # (a drafting note in it is template-fragment-invalid) and the index says so.
+    text = _FRONT + _SCOPE + "{{include: part.lgd}}\n"
+    part = "## Part {#part}\n\n> [!DRAFTING]\n> note\n\n{{choose: q}}\n"
+    result = _run(text, {"part.lgd": part})
+    assert result.index.is_template
+    assert _found(result, "template-fragment-invalid") == [("template-fragment-invalid", "part.lgd", 3)]
+    # A nested include in such a fragment is not followed, and nothing is combined.
+    nested = _run(text, {"part.lgd": part + "\n{{include: deeper.lgd}}\n", "deeper.lgd": "### Deeper {#deeper}\n"})
+    assert ("template-fragment-invalid", "part.lgd", 8) in _found(nested, "template-fragment-invalid")
+    assert "combined-document checks" in _warning(nested).message
+    # A document that is no template, nor its fragment, is none.
+    assert not _run(text, {"part.lgd": "## Part {#part}\n\nText.\n"}).index.is_template
+
+
+def test_a_line_of_a_fragment_keeps_its_file_through_arithmetic():
+    from legaldown.validator.result import Spot
+
+    spot = Spot(3, "part.lgd", 2)
+    for computed in (spot + 2, 2 + spot, spot - 1, 5 - spot):
+        assert isinstance(computed, Spot) and (computed.file, computed.instance) == ("part.lgd", 2)
+    assert (spot + 2, 2 + spot, spot - 1, 5 - spot) == (5, 5, 2, 2)
+    assert Spot(None, "part.lgd") == 0 and not Spot(None, "part.lgd")

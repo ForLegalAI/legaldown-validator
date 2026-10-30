@@ -290,10 +290,13 @@ def test_a_fragment_that_is_fit_for_a_template_is_clean():
     assert _found(result) == []
 
 
-def test_a_condition_in_a_fragment_that_is_not_in_a_template_is_nothing_to_report():
+def test_a_condition_in_a_fragment_makes_the_document_a_template_and_the_fragment_is_held_to_it():
+    # §15.1: a document with a condition anywhere is a template, and its fragments are held to §15.3 (#117).
     part = "## B {#b when=x}\n\nText. {when=x}\n\n> [!DRAFTING]\n> note\n"
     result, _ = _run(_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part})
-    assert _found(result) == []
+    assert result.index.is_template
+    assert _found(result, _TFR) == [(_TFR, "part.lgd", 1), (_TFR, "part.lgd", 3), (_TFR, "part.lgd", 5)]
+    # ... and validated on its own, where the host is not known, it is not.
 
 
 def test_the_includes_a_template_makes_twice_or_in_a_note_are_the_templates_own_findings_in_the_template():
@@ -321,15 +324,17 @@ def test_an_attachment_file_of_a_template_holds_no_include_and_may_hold_the_rest
     assert _found(result, _TFR) == []
 
 
-def test_fragment_level_checks_of_the_body_are_reported_in_the_fragment_and_stop_no_assembly():
+def test_fragment_level_checks_of_the_body_are_reported_in_the_fragment_and_stop_a_template():
     # insertion-boundary, drafting-note-unrecognized and the like are made of the fragment by the combined
     # document (#117), at their lines in the fragment, as by its own validation (validate(fragment=True)); they are
-    # in the validator's template rules, but a finding in a file assembly read is not counted twice (Template.problems).
+    # in the validator's template rules, so they stop the assembly of a template (Template.problems counts what the
+    # combined document finds in a fragment; what assembly said of the file itself it does not count twice).
     part = "## B {#b}\n\nPay {{placeholder: fee}}*.\n\n> [!NOTE]\n> n\n"
     result, _ = _template(part)
     assert {d.file for d in result.diagnostics if d.rule in {"insertion-boundary", "drafting-note-unrecognized"}} == {"part.lgd"}
     assert "insertion-boundary" in validate(parse(part), fragment=True, template=True).rules()
-    assert "insertion-boundary" not in {d.rule for d in Template(_TEMPLATE_FRONT + "# A {#a}\n\n{{include: part.lgd}}\n", resolve={"part.lgd": part}.get).problems}
+    problems = Template(_TEMPLATE_FRONT + "# A {#a}\n\n{{include: part.lgd}}\n", resolve={"part.lgd": part}.get).problems
+    assert [(d.rule, d.file) for d in problems if d.rule == "insertion-boundary"] == [("insertion-boundary", "part.lgd")]
 
 
 # ── include-heading-skip ─────────────────────────────────────────
