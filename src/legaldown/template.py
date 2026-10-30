@@ -47,10 +47,7 @@ __all__ = ["AnswersError", "Form", "Template", "load_answers", "load_template", 
 #: The rules of the validator that a template must satisfy for assembly
 #: (§15.7.2 gives assembly a template that validates without Errors): those of
 #: questions, conditions, ``{{choose:}}``, placeholders and insertions. Any
-#: other Error of ``Template.validation`` is advice — the validator reads the
-#: files a template includes only for what they must hold (§12.2, §15.3), and
-#: does not resolve a reference into one, so a reference to a section of a
-#: fragment is ``ref-broken`` to it while assembly reads the fragment.
+#: other Error of ``Template.validation`` is advice.
 TEMPLATE_RULES: frozenset[str] = frozenset({
     "question-invalid",
     "condition-invalid",
@@ -66,10 +63,11 @@ TEMPLATE_RULES: frozenset[str] = frozenset({
     "template-fragment-invalid",
 })
 
-#: A rule of the validator that a template must satisfy, unless it includes
-#: fragments: it then cannot tell a reference to a section of a fragment from
-#: one to a section its condition removes.
-_ALONE_ONLY: frozenset[str] = frozenset({"condition-reference-unsafe"})
+#: A rule of the validator that a template must satisfy (the safety of a reference, §15.4) when the validator
+#: judged the template with its fragments in (§16.11; ``Template._validated`` says), or it includes none: it
+#: cannot tell, from the template alone, a reference to a section of a fragment from one to a section its
+#: condition removes.
+_COMBINED_ONLY: frozenset[str] = frozenset({"condition-reference-unsafe"})
 
 
 def _coerced(question: Question, value: Any) -> Any:
@@ -261,14 +259,19 @@ class Template:
         return tuple(_questions(self._t))
 
     @cached_property
-    def validation(self) -> ValidationResult:
-        """What ``validate`` says of the template, and of the fragments and
-        attachment files it reads (``Diagnostic.file`` names the file, #35).
-        Advice: only the rules in ``problems`` stop assembly."""
+    def _validated(self) -> tuple[ValidationResult, bool]:
+        """``validation``, and whether the validator judged the template with its fragments in (§16.11)."""
         document = self._t.document
         if self.path is not None:
             document = replace(document, path=self.path)
         return validate_template(document, self._resolve, self._root)
+
+    @cached_property
+    def validation(self) -> ValidationResult:
+        """What ``validate`` says of the template, and of the fragments and
+        attachment files it reads (``Diagnostic.file`` names the file, #35).
+        Advice: only the rules in ``problems`` stop assembly."""
+        return self._validated[0]
 
     @cached_property
     def problems(self) -> tuple[Diagnostic, ...]:
@@ -279,8 +282,6 @@ class Template:
         t = self._t
         problems = list(t.problems)
         if self._check:
-            includes = any(include.target in t.subs for include in t.main.includes)
-            rules = TEMPLATE_RULES if includes else TEMPLATE_RULES | _ALONE_ONLY
             # The validator reads the fragments and attachment files as well, and says what
             # is wrong with them where it is (#35). Assembly has read the same files and
             # reports the same findings in `t.problems`, so those are not counted twice:
@@ -288,9 +289,15 @@ class Template:
             # (A file assembly could not parse is in `t.problems` by its path, with the
             # error that stopped it, and nothing else of it is counted.)
             read = set(t.subs) | {d.file for d in t.problems if d.file}
+            includes = any(include.target in t.subs for include in t.main.includes)
+            rules = TEMPLATE_RULES | _COMBINED_ONLY if self._validated[1] or not includes else TEMPLATE_RULES
+            # What the validator makes of a file in the combined document (a blank not kept apart, a reference
+            # that is unsafe) is its own, wherever the file is, and is counted; what it says of the file itself
+            # (template-fragment-invalid) is what assembly said (above).
             problems += [
                 d for d in self.validation.diagnostics
-                if d.level == "error" and d.rule in rules and d.file not in read
+                if d.level == "error" and d.rule in rules
+                and not (d.rule == "template-fragment-invalid" and d.file in read)
             ]
             problems += _placeholder_problems(t)
         return tuple(problems)

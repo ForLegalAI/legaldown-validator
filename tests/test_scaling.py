@@ -656,8 +656,10 @@ def test_a_fragment_expanded_many_times_is_looked_for_a_clash_once(monkeypatch):
     duplicates = [d for d in result.diagnostics if d.rule == "include-anchor-duplicate"]
     assert [(d.file, d.line) for d in duplicates] == [("part.lgd", 3)]
     assert tests.calls <= 2 * alternatives  # the first expansion's heading against the alternatives; none after it
-    # The alternatives of the document are told apart by pairs (n² / 2); the expansions add none (n x m before).
-    assert satisfiable.calls <= alternatives**2
+    # The alternatives of the document are told apart by pairs (n² / 2); the walk's expansions add none (n x m before).
+    # The combined pass declares each expansion's heading again, against the alternatives: n x m, linear in the size
+    # of the combined document (it is the one that tells an explicit identifier declared again, ``anchor-duplicate``).
+    assert satisfiable.calls <= alternatives**2 + 2 * alternatives * expansions
 
 
 # ── A flat list: each block is built once ─────────────────────────

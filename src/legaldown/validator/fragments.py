@@ -12,6 +12,10 @@ A finding is made once for each offender (a heading, a drafting note, a
 condition, an include), at its line in the file it is in (§16.9). The fragment
 is read as it is written: its frontmatter is not read as declarations, and
 frontmatter that cannot be read is a finding of its own, not an exception (#43).
+
+The walk also records what it followed, for the combined document (``combined.weave``, #117): a ``Plan``,
+and whether every include was followed and the fragments are of a size to splice. The document and its
+fragments are validated as one only when they were.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ from ..directives import Lexed, lex
 from ..files import LoadFile, Reach, is_absolute_reference, within
 from ..models import Document, Metadata
 from ..positions import Locator
+from .combined import Combined, Plan, weave
 from .conditions import Exclusivity, Presence, answer_combinations, holds_under
 from .patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
@@ -64,6 +69,13 @@ class FragmentFile:
     def where(self) -> Locator:
         """The lines of the file's parts."""
         return Locator(self.document)
+
+    @cached_property
+    def size(self) -> tuple[int, int]:
+        """How many blocks the file has, and lines: what it adds to the combined document each time it is
+        included (``MAX_SPLICED_BLOCKS``)."""
+        blocks = len(self.document.preamble) + sum(len(section.blocks) for section in self.document.sections)
+        return blocks, self.text.count("\n") + 1
 
     @cached_property
     def spliceable(self) -> bool:
@@ -669,6 +681,15 @@ UnreadReason = Literal["no-resolver", "leads-out", "unreadable", "own", "rejecte
 #: coming back. Past either, nothing more is followed and the Warning of §17.5 says so.
 MAX_INCLUDE_DEPTH = 32
 MAX_INCLUDE_EXPANDED = 10_000
+#: How many blocks and lines of fragments one document may have spliced in (counted once for each time a
+#: fragment is included, as the splice is): the walk of the includes is bounded by what it counts (headings and
+#: includes), not by what the fragments hold, so a fragment of many blocks included many times would make
+#: the combined document the size of their product. Past either the combined document is not built, and the
+#: Warning of §17.5 says so. The caps are this implementation's own.
+MAX_SPLICED_BLOCKS = 50_000
+MAX_SPLICED_LINES = 200_000
+
+
 #: What the Warning adds to the phrase of a cap, which assembly (where a cap is an Error) leaves out.
 NOT_CHECKED = " (not checked past that point)"
 
@@ -688,11 +709,13 @@ class IncludeOutcome:
     path or found not LegalDown, which are Errors of their own, nor a cycle), how many of the include
     paragraphs it met are in fragments (*nested*), and the limits it
     reached (*caps*, each as a phrase): the depth and the count of the includes followed (#114), and
-    the combinations of answers that ``include-heading-skip`` tries (#108)."""
+    the combinations of answers that ``include-heading-skip`` tries (#108). *combined* is the combined
+    document (``combined.weave``), when every include of the document was followed into a fragment."""
     filled: set[int] = field(default_factory=set)
     unread: list[UnreadInclude] = field(default_factory=list)
     nested: int = 0
     caps: list[str] = field(default_factory=list)
+    combined: Combined | None = None
 
 
 class _NamedInclude(Protocol):
@@ -781,7 +804,9 @@ class _Walk:
     both. An include is judged by ``attempt``, whether it is the document's or a fragment's: a path is
     judged as ``FileReferences`` judges the document's, from the directory of the file that holds
     it. *incomplete* tells that something a fragment includes was not followed, so that what lies after
-    it is not known."""
+    it is not known. What it followed is recorded for the combined document (``combined.weave``): the *plan*
+    of the fragments the include paragraphs took in, and whether it is *complete*: every include was followed,
+    and the fragments spliced are no more than the combined document may hold."""
 
     def __init__(
         self, files: Files, result: _Recorder, outcome: IncludeOutcome, *, template: bool,
@@ -798,6 +823,9 @@ class _Walk:
         self._met: set[tuple[str, int]] = set()  # the includes of fragments (file, number) already judged
         self._budget = IncludeBudget()
         self.incomplete = False
+        self.plan = Plan()
+        self.complete = True
+        self._spliced = [0, 0]  # the blocks and lines the fragments followed bring in
 
     def shape(self, fragment: FragmentFile) -> None:
         """The findings on *fragment* as a file, once however often it is included."""
@@ -809,6 +837,15 @@ class _Walk:
                 self._result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
 
     def attempt(
+        self, include: IncludeDirective, owner: FragmentFile | None, chain: IncludeChain, first: bool = True
+    ) -> FragmentFile | None:
+        """``_attempt``, and the walk is not complete when it took in no fragment."""
+        target = self._attempt(include, owner, chain, first)
+        if target is None:
+            self.complete = False
+        return target
+
+    def _attempt(
         self, include: IncludeDirective, owner: FragmentFile | None, chain: IncludeChain, first: bool = True
     ) -> FragmentFile | None:
         """The fragment that *include* takes in, an include paragraph of the document (*owner* None) or of
@@ -887,10 +924,12 @@ class _Walk:
         """*chain* with *fragment* last."""
         return extend(self._files, chain, fragment.path)
 
-    def expand(self, fragment: FragmentFile, chain: IncludeChain) -> list[Heading]:
+    def expand(self, fragment: FragmentFile, chain: IncludeChain, plan: Plan) -> list[Heading]:
         """The headings *fragment* brings into the combined document: its own, each followed by those of the
         fragments its section includes (those of the preamble first). *chain* are the files being
-        included, outermost first, *fragment* last."""
+        included, outermost first, *fragment* last. The fragments its includes take in are put in *plan*,
+        that of *fragment*."""
+        self._grow(fragment)
         if fragment.path not in self._includes:
             by_section: dict[int | None, list[tuple[int, IncludeDirective]]] = {}
             for number, include in enumerate(fragment_includes(fragment, self._lex_fragment)):
@@ -902,7 +941,7 @@ class _Walk:
 
         def follow(section: int | None) -> None:
             for number, include in by_section.get(section, ()):
-                headings.extend(self._follow(fragment, number, include, chain))
+                headings.extend(self._follow(fragment, number, include, chain, plan))
 
         follow(None)
         for index in range(len(fragment.document.sections)):
@@ -919,11 +958,26 @@ class _Walk:
             return False
         if cap + NOT_CHECKED not in self._outcome.caps:
             self._outcome.caps.append(cap + NOT_CHECKED)
-        self.incomplete = True
+        self.incomplete = self.complete = False
         return True
 
+    def _grow(self, fragment: FragmentFile) -> None:
+        """Count what *fragment* brings into the combined document once more; past what it may hold
+        (``MAX_SPLICED_BLOCKS``) the combined document is not made, and the Warning of §17.5 says so.
+        What lies after is still followed, for the checks that do not need it."""
+        self._spliced[0] += fragment.size[0]
+        self._spliced[1] += fragment.size[1]
+        if self._spliced[0] > MAX_SPLICED_BLOCKS or self._spliced[1] > MAX_SPLICED_LINES:
+            self.complete = False
+            cap = (
+                f"building the combined document of more than {MAX_SPLICED_BLOCKS:,} blocks or "
+                f"{MAX_SPLICED_LINES:,} lines of fragments"
+            )
+            if cap not in self._outcome.caps:
+                self._outcome.caps.append(cap)
+
     def _follow(
-        self, fragment: FragmentFile, number: int, include: IncludeDirective, chain: IncludeChain
+        self, fragment: FragmentFile, number: int, include: IncludeDirective, chain: IncludeChain, plan: Plan
     ) -> list[Heading]:
         """The headings of the fragment that *include*, the *number*th include paragraph of *fragment*,
         takes in. In a template there are none to follow: an include in a fragment is
@@ -936,6 +990,7 @@ class _Walk:
         if self._template:
             if first:
                 self._outcome.unread.append(UnreadInclude(include, "in-template"))
+            self.complete = False
             return []
         if self._spend():
             return []
@@ -943,7 +998,9 @@ class _Walk:
         if target is None:
             self.incomplete = True
             return []
-        return self.expand(target, self.extend(chain, target))
+        taken = Plan()
+        plan.children[include.section, include.block] = (target, taken)
+        return self.expand(target, self.extend(chain, target), taken)
 
 
 def check_includes(
@@ -990,9 +1047,13 @@ def check_includes(
     (the document itself included) is ``include-cycle`` at the include that closes it
     (``_Walk``).
 
-    Returned (``IncludeOutcome``): the headings of the document whose ``heading-skip`` the combined document
-    makes valid (``include_heading_skips``), which the caller does not report, as the combined
-    document is the one §4.1 judges when every fragment between is read (§12.2). A
+    Returned (``IncludeOutcome``): the combined document (``combined.weave``) when every include paragraph
+    was followed into a fragment (the walk is *complete*: nothing unread, refused, cut short by a cap or
+    left alone in a template, and no more than ``MAX_SPLICED_BLOCKS`` blocks spliced in), for the validation of what the fragments and the document say across each
+    other (§16.11). And the headings of the document
+    whose ``heading-skip`` the combined document makes valid (``include_heading_skips``), which the caller
+    does not report, as the combined document is the one §4.1 judges when every fragment between is read
+    (§12.2). A
     fragment does not count for that when it is not known to be there (a condition
     on its include paragraph or on a section around it) or when it is
     not read as a fragment (frontmatter, or a level 1 heading: it is reported, and not
@@ -1013,6 +1074,8 @@ def check_includes(
             continue
         if include.at in judged:
             unread.add(include.section)
+            if walk is not None:
+                walk.complete = False
             continue
         if walk is None:
             # No file can be read: only the extension is judged (Core), and the rest is unread.
@@ -1027,8 +1090,10 @@ def check_includes(
             continue
         walk.incomplete = False
         presence = units.presence(include.section, include.block, include.fragment)
+        taken = Plan()
+        walk.plan.children[include.section, include.block] = (fragment, taken)
         splices.setdefault(include.section, []).append(
-            Splice(include, presence, walk.expand(fragment, walk.extend(EMPTY_CHAIN, fragment)))
+            Splice(include, presence, walk.expand(fragment, walk.extend(EMPTY_CHAIN, fragment), taken))
         )
         if walk.incomplete:
             unread.add(include.section)  # something it includes is not known: it fills nothing
@@ -1055,6 +1120,8 @@ def check_includes(
                 fragment, kind="attachment", template=True, shape=False, lex_fragment=lex_fragment
             ):
                 result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
+    if walk is not None and walk.complete and walk.plan.children:
+        outcome.combined = weave(document, where, walk.plan, files, lex_fragment)
     if not splices:
         return outcome
     judgement = include_heading_skips(document, where, splices, first_level, unread, units, questions)

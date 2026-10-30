@@ -171,6 +171,13 @@ missing, or beside the document under another name, is now an Error, where it wa
 document without reading its fragments, validate it without its path
 (`validate(dataclasses.replace(document, path=None))`; `resolve=lambda path: None` says that every file
 is missing). `parse(text)` has no path and reads nothing, as before.
+A document whose includes were all read is validated with its fragments spliced in (the combined document, §16.11,
+[Include fragments](#include-fragments)): a reference or a term across a fragment and the document no
+longer draws `ref-broken` or `term-undefined`, and **findings in fragments** (`raw-html`, `date-invalid`,
+`insertion-boundary`, `placeholder-unfilled` under `final`, ...) are now reported by the validation of the
+document that includes them, at their line in the fragment's file. A document that was clean can fail for them,
+and so can an exit status. In a template, a rule that stops assembly stops it when a fragment is where it is
+found (`Template.problems`).
 Five rules that §17.2 places at Core are now checked ([What gets checked](#what-gets-checked)), and a
 CI gate that was passing can fail for them. **A translation without explicit identifiers is now an
 Error** (`translation-implicit-id`): a document that links `translations`, and whose `language` differs
@@ -541,10 +548,38 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
 - `include-anchor-duplicate` at the later declaration of an explicit section identifier that the combined
   document declares twice (a fragment's heading in its file, a heading of the document at its own line), unless
   the two can never be there together (alternatives, §15.4); a fragment included twice is reported once, at its
-  heading. Auto-generated identifiers are not compared across files;
+  heading. Auto-generated identifiers are not compared by this rule, but by the combined document (below);
 - in a template, `template-fragment-invalid` for what §15.3 forbids in a fragment (a condition, a
   drafting note, an `{{include:}}`, a heading without an explicit identifier), one finding for each
   offender, and for an `{{include:}}` in a LegalDown attachment file.
+
+**The combined document** (§12.2, §16.11): when every include paragraph was followed into a fragment,
+`validate` also validates the document with the fragments spliced in at their includes, as the one document it is,
+and reports what that says: a `{{ref:}}` or a `{{term:}}` into a fragment (or from one into the document) is
+resolved by what both declare, so it is no `ref-broken` or `term-undefined`, and a definition the other file
+references is no `def-unreferenced`; an auto-generated identifier the fragments and the document share is
+`anchor-autogen-collision`; `definition-circular`, `definition-used-before-declaration`, `def-duplicate-id`
+and the other rules about what is declared elsewhere are judged across the files; and what a fragment holds
+that a complete document may not (`insertion-boundary`, `raw-html`, `date-invalid`, `placeholder-unfilled`
+under `final`, ...) is reported in the fragment, at its line, as for any other document. In a template a
+fragment is as present as its include paragraph is (§15.3), so a reference into a conditional fragment is
+`condition-reference-unsafe` unless it is as conditional (§15.4), and fragments with exclusive conditions may
+declare one identifier. A finding is at its line in its own file (`Diagnostic.file`), reported once per distinct finding
+(a fragment included twice is not reported twice; a finding whose message differs by place, as the suffix of an adjusted identifier does, is
+reported for each place), in the order of the combined document; the findings of the document alone (the `include-*` rules,
+`template-fragment-invalid`, `heading-skip`, `path-outside-root`) are not made again, and the paths of a fragment are judged only as far as
+`path-not-relative` goes (an absolute path or a URI scheme, "relative to the fragment"), not against a root. It is **all or nothing**: one include that
+was not followed (missing, unreadable, a path that leads out, not a fragment, a cycle, a cap, an include in a
+template's fragment) leaves the document judged as before, and the Warning of §17.5 says so. A LegalDown
+attachment file is not part of the combined document yet: a `{{ref:}}` into an attachment's section is still
+`ref-broken`. The combined document is not made either when the fragments spliced in come to more than 50,000
+blocks or 200,000 lines (counted for each time a fragment is included); the Warning says so. Whether the
+document is a template is decided by the document alone (§15.1), as assembly decides it: a fragment's condition or
+`{{choose:}}` does not make it one, and is judged as the document's status dictates (in a document that is no template,
+not at all, as before). Markers are read over the combined document, as a splice of the text
+would read them: a fragment's first paragraph, spliced into a section, may carry an anchor. A fragment is spliced as
+it was parsed, so a fence it leaves open does not swallow what follows it
+([CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612)). `ValidationResult.index` is the document's own.
 
 `include-not-legaldown` needs no file: an include paragraph whose path does not end in `.lgd`,
 `.legaldown` or `.legal.md` is reported at its line (Core), and the path is never read. A path
@@ -1057,9 +1092,11 @@ checks lie beyond Core — an `{{include:}}` paragraph, an attachment file, `ame
 such category: one, at the first construct, naming what this validation did not do (§17.5). Which
 checks are named depends on the validation: a fragment that was read (a document with a path, or
 `validate(resolve=)`) is not listed as unread, and neither are the `include-cycle` and
-`include-anchor-duplicate` checks made over what it includes; but the combined-document checks of
-§16.11 (a reference or a term into a fragment, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117))
-are never performed, so a document with an include always draws it. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
+`include-anchor-duplicate` checks made over what it includes; and when every fragment was followed
+the combined document is validated too (§16.11, [Include fragments](#include-fragments)), so the Warning
+is not drawn for a document whose includes were all read and nothing else is skipped. While one is not, the Warning
+names the combined-document checks (a reference or a term into a fragment). A LegalDown attachment file is not part
+of the combined document, which its Warning says. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
 (`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`, `INCLUDE_LIMIT_RULE`; validation has a second, `ldv-frontmatter-key-duplicate`, `FRONTMATTER_KEY_DUPLICATE_RULE`, which is no skipped check). It is a Warning: the exit status is
 unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
 `--ignore ldv-check-skipped` once it has read what it says.

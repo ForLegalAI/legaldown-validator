@@ -26,7 +26,7 @@ from ..files import containment, is_absolute_reference, names_below
 from ..markdown import collapse_label_whitespace, label_end, normalize_label, scan_inline_link
 from ..models import Amends, Document, Metadata
 from ..positions import Locator
-from .result import Line, _Recorder
+from .result import Line, Spot, _Recorder
 
 if TYPE_CHECKING:
     from ..definitions import PlacedLinkDefinition
@@ -195,12 +195,15 @@ class FileReferences:
         kind, form, names = found
         self.reported.add(at)
         if kind == "not-relative":
+            # (The line is a line of a fragment in the combined document: the path is the fragment's own.)
+            where = line() if callable(line) else line
+            relative_to = "fragment" if isinstance(where, Spot) and where.file else "document"
             self._result.error(
                 "path-not-relative",
                 f"File reference '{written}' ({what}{_reading(known, judged, form)}) is not relative: an "
                 f"absolute path, or one beginning with a URI scheme (https://, file://, a drive letter), is an "
-                f"Error. Write a path relative to the document (§2.3).",
-                line=line,
+                f"Error. Write a path relative to the {relative_to} (§2.3).",
+                line=where,
             )
         elif kind == "document-outside":
             # Every path of the document leads out of the root, and one finding says so, not one for each.

@@ -91,44 +91,46 @@ def test_an_include_read_by_no_loader_draws_one_warning_at_its_line():
     assert "template-fragment-invalid" not in message  # not a template
 
 
-def test_an_include_read_by_a_loader_still_names_what_is_never_performed():
+def test_an_include_read_by_a_loader_draws_none_as_everything_it_calls_for_was_done():
+    # The fragments are read and the combined document is validated (#117), as are the cycle and duplicate checks (#114):
+    # a check that was made is not listed (§17.5), and nothing is left.
     text = _FRONT + _BODY + "{{include: p.lgd}}\n"
+    assert _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"})) == []
+
+
+def test_an_include_read_beside_one_that_is_not_names_the_combined_document_still():
+    text = _FRONT + _BODY + "{{include: p.lgd}}\n\n{{include: gone.lgd}}\n"
     (warning,) = _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
     assert warning.line == _at(text, "p.lgd")
     message = warning.message
-    assert "not read" not in message
-    # Implemented (#114): neither is named when the fragments were read; the combined document is still never built.
-    assert "include-cycle" not in message and "include-anchor-duplicate" not in message
-    assert "not implemented" not in message
+    assert "1 include not read (1 could not be read (include-file-missing))" in message
+    # Not put together while a fragment is missing: a reference into the one that was read is judged as before.
     assert "combined-document checks (§16.11)" in message
     # Done, not listed: the fragment was read, so these were made.
-    assert "include-file-missing" not in message and "include-has-frontmatter" not in message
+    assert "include-cycle" in message and "not implemented" not in message
 
 
 def test_a_template_names_the_part_of_the_fragment_check_that_reads_a_file():
     text = _TEMPLATE_FRONT + _BODY + "{{include: p.lgd}}\n"
     (warning,) = _warnings(text)
     assert "the parts of template-fragment-invalid that read a fragment" in warning.message
-    (read,) = _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
-    assert "template-fragment-invalid" not in read.message
+    assert _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"})) == []
 
 
 def test_a_conditional_include_is_judged_under_every_combination_and_the_warning_names_no_such_limit():
     text = _TEMPLATE_FRONT + _BODY + "{{include: p.lgd}} {when=x}\n"
-    (warning,) = _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
     # Tried (#108), so nothing is left to say of it: only past the cap of the combinations is it named.
-    assert "every combination" not in warning.message and "judged with every include present" not in warning.message
+    assert _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"})) == []
 
 
-def test_the_includes_warning_of_the_end_state_names_only_the_combined_document_when_everything_was_read():
-    # Everything the includes call for is done (#109, #114, #108) but the combined document (§16.11, #117).
+def test_the_includes_warning_of_the_end_state_is_none_when_everything_was_read():
+    # Everything the includes call for is done (#109, #114, #108, #117): there is nothing to say.
     text = _TEMPLATE_FRONT + _BODY + "{{include: p.lgd}} {when=x}\n"
-    (warning,) = _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
-    assert warning.message == (
-        "1 `{{include:}}` paragraph. Not performed: the combined-document checks (§16.11), such as a reference "
-        "or a term into a fragment, or an auto-generated identifier the fragments and the document share "
-        "(include processing is Full, §17.4; §17.5)."
-    )
+    assert _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"})) == []
+    # While the combined document is not put together, it is what the Warning names.
+    unread = text + "\n{{include: gone.lgd}}\n"
+    (warning,) = _warnings(unread, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
+    assert "the combined-document checks (§16.11), such as a reference or a term into a fragment, or an auto-generated identifier the fragments and the document share" in warning.message
     # ... and for fragments not read, the rules that read or join them, in this order.
     (unread,) = _warnings(text)
     assert (
@@ -161,7 +163,7 @@ def test_an_include_of_the_document_itself_is_include_cycle_and_not_unread(tmp_p
 
 def test_an_include_that_is_already_a_finding_is_not_counted_as_unread():
     # A path judged (path-not-relative) and a file that is not LegalDown (include-not-legaldown) are
-    # Errors; nothing is skipped about them. The Warning is still there: the combined document is never built.
+    # Errors; nothing is skipped about them. The Warning is still there: the combined document is not built.
     text = _FRONT + _BODY + "{{include: /abs.lgd}}\n\n{{include: n.txt}}\n"
     result = validate(parse(text, filename="main.lgd"), resolve=_loader({}))
     assert {d.rule for d in result.diagnostics} >= {"path-not-relative", "include-not-legaldown"}
@@ -497,13 +499,16 @@ def test_the_command_exits_zero_unless_strict_and_can_ignore_the_rule(tmp_path, 
     assert [r["rule"] for r in records] == [SKIPPED_RULE] and records[0]["level"] == "warning"
 
 
-def test_the_command_reads_the_fragments_beside_the_document_and_still_says_what_is_not_done(tmp_path, capsys):
+def test_the_command_reads_the_fragments_beside_the_document_and_says_what_is_not_done(tmp_path, capsys):
     (tmp_path / "p.lgd").write_text("## Part {#part}\n\nText.\n", encoding="utf-8")
     path = tmp_path / "main.lgd"
     path.write_text(_FRONT + _BODY + "{{include: p.lgd}}\n", encoding="utf-8")
     assert main(["validate", str(path)]) == EXIT_OK
+    assert "ldv-check-skipped" not in capsys.readouterr().out  # everything was read and judged together
+    path.write_text(_FRONT + _BODY + "{{include: p.lgd}}\n\n{{include: gone.lgd}}\n", encoding="utf-8")
+    assert main(["validate", str(path)]) == EXIT_DIAGNOSTICS
     out = capsys.readouterr().out
-    assert "[ldv-check-skipped]" in out and "combined-document checks (§16.11)" in out and "not read" not in out
+    assert "[ldv-check-skipped]" in out and "combined-document checks (§16.11)" in out and "1 include not read" in out
 
 
 def test_assembly_is_unchanged_by_it(tmp_path):
@@ -511,7 +516,7 @@ def test_assembly_is_unchanged_by_it(tmp_path):
     files = {"p.lgd": "## Part {#part}\n\nText.\n"}
     template = Template(text, resolve=files.get)
     assert not template.problems
-    assert SKIPPED_RULE in {d.rule for d in template.validation.diagnostics}
+    assert SKIPPED_RULE not in {d.rule for d in template.validation.diagnostics}
     assembled = template.form({"x": True}).assemble()
     assert assembled.ok and not assembled.diagnostics and "ldv-" not in assembled.output
 

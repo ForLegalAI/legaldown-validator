@@ -306,7 +306,8 @@ def test_includes_deeper_than_the_depth_cap_are_not_followed_and_the_warning_say
     files = {f"p{i}.lgd": f"Text.\n\n{{{{include: p{i + 1}.lgd}}}}\n" for i in range(MAX_INCLUDE_DEPTH - 1)}
     files[f"p{MAX_INCLUDE_DEPTH - 1}.lgd"] = "Text.\n"
     result, loader = _run(_FRONT + _SCOPE + "{{include: p0.lgd}}\n", files)
-    assert len(loader.asked) == MAX_INCLUDE_DEPTH and "deeper than" not in _warning(result).message
+    # (Everything was followed, so the combined document is put together and nothing is left to say.)
+    assert len(loader.asked) == MAX_INCLUDE_DEPTH and not [d for d in result.diagnostics if d.rule == SKIPPED_RULE]
 
 
 def test_a_tree_of_more_includes_than_the_cap_is_cut_short_not_expanded():
@@ -330,11 +331,14 @@ def test_a_fragment_with_more_headings_than_the_cap_is_cut_short_too():
 # ── What the Warning of §17.5 says now ───────────────────────────────────────
 
 @pytest.mark.parametrize("files", [{"p.lgd": "## Part {#part}\n\nText.\n"}, {"p.lgd": "Text.\n\n{{include: q.lgd}}\n", "q.lgd": "Text.\n"}])
-def test_the_includes_warning_no_longer_says_cycle_and_duplicate_are_not_implemented(files):
+def test_the_includes_warning_is_gone_when_every_fragment_was_followed(files):
     result, _ = _run(_FRONT + _SCOPE + "{{include: p.lgd}}\n", files)
+    # Nothing is left that was not done: the combined document is put together (§16.11, #117).
+    assert not [d for d in result.diagnostics if d.rule == SKIPPED_RULE]
+    # ... and while one fragment is not read, it says what the cycle and duplicate checks and the combined document miss.
+    result, _ = _run(_FRONT + _SCOPE + "{{include: p.lgd}}\n\n{{include: absent.lgd}}\n", files)
     message = _warning(result).message
-    assert "include-cycle" not in message and "include-anchor-duplicate" not in message and "not implemented" not in message
-    # The combined document is still never put together (§16.11, #117).
+    assert "include-cycle" in message and "include-anchor-duplicate" in message and "not implemented" not in message
     assert "combined-document checks (§16.11)" in message
 
 

@@ -146,6 +146,35 @@ class Blank:
     consistent: bool = True
 
 
+class Spot(int):
+    """A line in a file of the combined document (``combined.CombinedLocator``): the line number, which
+    carries the *file* it is in (a fragment's path) through the places that pass a line around, and the
+    *instance* of the file (which of the places a fragment is included at, ``combined.Instance.number``), which
+    tells a finding made once in each from one that is made twice in one. A line computed from it (``line + 2``)
+    is in the same file. ``0`` is a file whose line is not known; it is falsy, as a line of None is.
+    ``_Recorder`` turns it into the diagnostic's ``file`` and ``line``, so no ``Spot`` reaches a
+    ``ValidationResult``."""
+    file: str
+    instance: int
+
+    def __new__(cls, line: int | None, file: str, instance: int = 0) -> Spot:
+        spot = super().__new__(cls, line or 0)
+        spot.file = file
+        spot.instance = instance
+        return spot
+
+    def __add__(self, other: int) -> Spot:  # type: ignore[override]
+        return Spot(int(self) + other, self.file, self.instance)
+
+    __radd__ = __add__
+
+    def __sub__(self, other: int) -> Spot:  # type: ignore[override]
+        return Spot(int(self) - other, self.file, self.instance)
+
+    def __rsub__(self, other: int) -> Spot:  # type: ignore[override]
+        return Spot(other - int(self), self.file, self.instance)
+
+
 #: A diagnostic's line (from 1), or a function giving it, called only when a
 #: diagnostic is recorded at it: finding a line costs more than knowing where.
 Line = int | None | Callable[[], "int | None"]
@@ -212,7 +241,6 @@ class ValidationResult:
     """
     diagnostics: list[Diagnostic] = field(default_factory=list)
     index: DocumentIndex = field(default_factory=DocumentIndex)
-
     def _messages(self, level: str) -> list[str]:
         return [d.message for d in self.diagnostics if d.level == level]
 
@@ -255,8 +283,15 @@ class _Recorder(ValidationResult):
     #: Whether the document is validated as a fragment: a finding with a
     #: reason is then ``host_dependent``, and is not otherwise.
     fragment: bool = False
+    #: Whether the document was validated with its include fragments spliced in (§16.11): every include
+    #: was followed into a fragment, and what the fragments and the document say across each other was judged.
+    combined: bool = False
     #: The lines diagnostics are recorded at by default (``at``), innermost last.
     _lines: list[Line] = field(default_factory=list, repr=False, compare=False)
+    #: Of each diagnostic (the same order), which place of a fragment it was made at, when its line is a line of
+    #: one in the combined document (``Spot.instance``), else None. Kept only by the recorder of the combined
+    #: pass, which is given a list (``merge_diagnostics`` reads it); None for any other.
+    places: list[int | None] | None = field(default=None, repr=False, compare=False)
 
     @contextmanager
     def at(self, line: Line) -> Iterator[None]:
@@ -271,24 +306,32 @@ class _Recorder(ValidationResult):
     def _record(
         self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = ""
     ) -> None:
-        self.diagnostics.extend(self._diagnostic(rule, level, message, line, depends, file))
+        found, place = self._diagnostic(rule, level, message, line, depends, file)
+        self.diagnostics.extend(found)
+        if self.places is not None:
+            self.places.extend([place] * len(found))
 
     def _diagnostic(
         self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = "",
         *, fallback: bool = True,
-    ) -> list[Diagnostic]:
+    ) -> tuple[list[Diagnostic], int | None]:
         """The diagnostic ``_record`` makes, as a list of one, or of none when its
-        reason is suppressed. *fallback*: a *line* of None is the line ``at`` gives."""
+        reason is suppressed, with the place of the fragment it is at (``Spot``). *fallback*: a *line*
+        of None is the line ``at`` gives."""
         if depends is not None and depends in self.suppress:
-            return []  # before the line is looked for: a finding dropped costs nothing
+            return [], None  # before the line is looked for: a finding dropped costs nothing
         if line is None and fallback and self._lines:
             line = self._lines[-1]
         if callable(line):
             line = line()
-        return [Diagnostic(
+        place = None
+        if isinstance(line, Spot):  # a line in a fragment of the combined document: its file goes with it
+            file, place, line = file or line.file, line.instance, int(line) or None
+        found = Diagnostic(
             rule=rule, level=level, message=message, line=line, file=file,
             host_dependent=self.fragment and depends is not None,
-        )]
+        )
+        return [found], place
 
     def error(
         self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
@@ -306,7 +349,10 @@ class _Recorder(ValidationResult):
         has the *line* it is given, None included, not the one ``at`` gives where it
         is recorded: that is not where the check came to it. Nothing may have
         removed or moved a diagnostic since *position* was taken."""
-        self.diagnostics[position:position] = self._diagnostic(rule, "error", message, line, None, fallback=False)
+        found, place = self._diagnostic(rule, "error", message, line, None, fallback=False)
+        self.diagnostics[position:position] = found
+        if self.places is not None:
+            self.places[position:position] = [place] * len(found)
 
     def warning(
         self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""

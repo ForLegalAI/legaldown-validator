@@ -136,13 +136,16 @@ def _includes(
     parts = []
     if rules:
         parts.append(f"{_join(rules)} for the fragments not read")
-    # The combined document is never put together (§12.2, §16.11): what refers across a
-    # fragment and the document is judged as if the fragment were not there.
-    parts.append(
-        "the combined-document checks (§16.11), such as a reference or a term into a fragment, "
-        "or an auto-generated identifier the fragments and the document share"
-    )
+    # The combined document is put together only when every include was followed (#117): else what
+    # refers across a fragment and the document is judged as if the fragment were not there.
+    if outcome.combined is None:
+        parts.append(
+            "the combined-document checks (§16.11), such as a reference or a term into a fragment, "
+            "or an auto-generated identifier the fragments and the document share"
+        )
     parts += outcome.caps
+    if not parts:
+        return None  # a check that was made is not listed (§17.5): nothing is left
     return SkippedCategory(
         "includes",
         f"{_items(met)}. Not performed: {_items(parts)} "
@@ -160,6 +163,12 @@ def _attachments(document: Document, where: Locator, unread: Sequence[UnreadReas
     if legaldown:
         rules += ["attachment-has-frontmatter", "attachment-has-h1", "attachment-anchor-duplicate"]
     parts = [_join(rules)]
+    if legaldown:
+        # The attachment files are not part of the combined document yet (§12.4, §15.7.2 step 7).
+        parts.append(
+            "the combined-document checks for the attachment files, such as a reference into an "
+            "attachment's section"
+        )
     if unread:
         parts.append(
             "importing the definitions of "
