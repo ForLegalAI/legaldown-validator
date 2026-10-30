@@ -146,13 +146,44 @@ def _is_date_placeholder(value: str, directives: list[Directive], questions: Any
     )
 
 
+_SHOWN_WIDTH = 80  # the most of a key that a message writes out
+
+
 def _shown(key: str) -> str:
     """A key as it is written in the source, for a message: its line breaks (and the indentation after them)
-    folded to a space, between backticks (a longer fence if it holds backticks, padded, as CommonMark does)."""
-    text = re.sub(r"\s*\n\s*", " ", key).strip()
+    folded to a space, cut short (``…``) after ``_SHOWN_WIDTH`` characters (a key may be as long as the frontmatter,
+    and a message names it for each entry it replaces), between backticks (a longer fence if it holds backticks,
+    padded, as CommonMark does)."""
+    text = re.sub(r"\s*\n\s*", " ", key[: 10 * _SHOWN_WIDTH]).strip()
+    if len(text) > _SHOWN_WIDTH or len(key) > 10 * _SHOWN_WIDTH:
+        text = text[:_SHOWN_WIDTH] + "…"
+    text = text or "''"  # a key written as nothing
     fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def _key_clause(why: str, by_written: str, again: str = "") -> str:
+    """What a frontmatter key that the model drops is (``ldv-frontmatter-key-duplicate``): written again
+    (*again*, " at line N", when there is a line to name), or the same key as *by_written* once read as
+    text, stripped, or as a YAML value."""
+    return {
+        "repeated": f"is written again{again}",
+        "text": f"is the same key as {_shown(by_written)} once read as text",
+        "stripped": f"is the same key as {_shown(by_written)} once stripped",
+        "value": f"is the same key as {_shown(by_written)} once read as a YAML value (Python treats them as equal)",
+    }[why]
+
+
+def _key_ignored(subject: str, written: str, clause: str, stays: str = "") -> str:
+    """The message of ``ldv-frontmatter-key-duplicate``: the key *written* of *subject* (a map or a mapping) is
+    *clause* (``_key_clause``), and ignored, with *stays* saying which entry the model keeps."""
+    return f"The {subject} key {_shown(written)} {clause}: this entry is ignored{stays}."
+
+
+def _key_read(line: int) -> str:
+    """What follows a key that the model drops for another: the entry at *line* is the one it reads."""
+    return f", and the entry at line {line} is the one read"
 
 
 def _frontmatter_fields(
@@ -1443,32 +1474,42 @@ def _validate(
     # (§16.1). An Error when YAML itself rejects the key written twice (strict readers fail the document as
     # `frontmatter-invalid-yaml`); a Warning for different keys the model reads as one, as the specification
     # judges a padded language code a Warning (`language-code-invalid`) and a rule of ours does not fail a
-    # document it accepts. Judged against the model, not for one edited since it was parsed. Other mappings
-    # are not checked (#131).
+    # document it accepts. Judged against the model, not for one edited since it was parsed.
     if not mode.empty_metadata:
         for map_name, each in where.ignored():
             if (each.by.key in getattr(document.metadata, map_name)) == bool(each.skipped):
                 continue
             entry, by = each.entry, each.by
             again = f" at line {by.line}" if by.start != entry.start else ""  # an aliased key is one node
-            what = {
-                "repeated": f"is written again{again}" if not each.skipped else "is written again",
-                "text": f"is the same key as {_shown(by.written)} once read as text",
-                "stripped": f"is the same key as {_shown(by.written)} once stripped",
-                "value": f"is the same key as {_shown(by.written)} once read as a YAML value (Python treats them as equal)",
-            }[each.why]
+            what = _key_clause(each.why, by.written, "" if each.skipped else again)
             if each.skipped:
                 stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"
             elif each.why != "repeated" and again:
-                stays = f", and the entry at line {by.line} is the one read"
+                stays = _key_read(by.line)
             else:
                 stays = ""
             report = result.error if each.why == "repeated" else result.warning
-            report(
-                FRONTMATTER_KEY_DUPLICATE_RULE,
-                f"The {map_name} key {_shown(entry.written)} {what}: this entry is ignored{stays}.",
-                line=entry.line,
-            )
+            report(FRONTMATTER_KEY_DUPLICATE_RULE, _key_ignored(map_name, entry.written, what, stays), line=entry.line)
+
+    # ── Keys of any other frontmatter mapping that a later key replaces (#131) ──
+    # The reader keeps the last of the keys a mapping holds as one and says nothing of the others: a `title:` or
+    # a party's `name:` written twice, `1` and `'1'` (read as text outside a question's `default`), `1` and `1.0`
+    # (one key in a `default`, whose YAML types stay). Reported as above, at the line of the key that is dropped,
+    # under the same rule and levels. `translations` and `field_types` are left to #126; a path names the mapping.
+    # A key written over one merged in (`<<`) replaces it, as YAML says, and is no repeat.
+    if not mode.empty_metadata:
+        paths: dict[str, str] = {}  # the path of each mapping, shown once
+        for each in where.repeats():
+            at = "" if each.by_line is None else f" at line {each.by_line}"
+            what = _key_clause(each.why, each.by_written, at)
+            stays = _key_read(each.by_line) if each.why != "repeated" and each.by_line is not None else ""
+            report = result.error if each.why == "repeated" else result.warning
+            if each.path not in paths:
+                # a long path keeps its end, which names the mapping
+                cut = each.path if len(each.path) <= _SHOWN_WIDTH else "…" + each.path[1 - _SHOWN_WIDTH:]
+                paths[each.path] = _shown(cut) if cut else "frontmatter"
+            subject = paths[each.path]
+            report(FRONTMATTER_KEY_DUPLICATE_RULE, _key_ignored(subject, each.written, what, stays), line=each.line)
 
     # ── Metadata dates (§16.6) ──
     for field_name, field_value in (
