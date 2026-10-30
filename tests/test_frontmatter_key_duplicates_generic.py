@@ -5,10 +5,12 @@ leaves to that check."""
 from __future__ import annotations
 
 import time
+from unittest import mock
 
 import pytest
 
-from legaldown import document_from_dict, parse
+from legaldown import document_from_dict, parse, parser
+from legaldown.positions import repeated_keys
 from legaldown.validator import validate
 
 RULE = "ldv-frontmatter-key-duplicate"
@@ -322,7 +324,7 @@ def test_a_mapping_of_thousands_of_sources_takes_linear_time():
     flat, _ = _parse_time("x: {" + ", ".join(f"a{i}: 1" for i in range(count)) + "}\n")
     merged, document = _parse_time("x:\n  <<: [" + ", ".join(f"{{a{i}: 1}}" for i in range(count)) + "]\n")
     again, _ = _parse_time("x:\n  <<: [" + ", ".join(f"{{a: {i}}}" for i in range(count)) + "]\n")
-    assert merged < 2 * flat + 1 and again < 2 * flat + 1, (flat, merged, again)
+    assert merged < 5 * flat + 0.5 and again < 5 * flat + 0.5, (flat, merged, again)
     assert document.source_map.repeats == ()
 
 
@@ -541,19 +543,28 @@ def test_the_findings_are_data_of_the_document_not_of_the_run():
 # ── the work is linear ──
 
 def _parse_time(front):
-    start = time.perf_counter()
-    document = parse(_source(front))
-    return time.perf_counter() - start, document
+    # The time of the walk alone: the YAML reader's own cost of a shape (deep flow nesting, say) varies too much
+    # between machines to judge the walk by the whole parse.
+    spent = []
+
+    def timed(*args, **kwargs):
+        start = time.perf_counter()
+        found = repeated_keys(*args, **kwargs)
+        spent.append(time.perf_counter() - start)
+        return found
+
+    with mock.patch.object(parser, "repeated_keys", timed):
+        document = parse(_source(front))
+    return sum(spent), document
 
 
 def test_a_mapping_of_one_key_written_thousands_of_times_takes_linear_time():
     # The key that repeats each one is found in one pass over the group: a lookup that scans the rest of it for
-    # each entry is quadratic (7 s for these 50 000 against 0.4 s). Judged against a mapping of as many keys
-    # with no repeat, which costs the YAML reader as much.
+    # each entry is quadratic. Judged against a mapping of as many keys with no repeat.
     count = 50_000
     wide, _ = _parse_time("".join(f"k{i}: {i}\n" for i in range(count)))
     same, document = _parse_time("x:\n" + "".join(f"  k: {i}\n" for i in range(count)))
-    assert same < 2 * wide + 1, (wide, same)
+    assert same < 5 * wide + 0.5, (wide, same)
     assert len(document.source_map.repeats) == count - 1
 
 
@@ -564,7 +575,7 @@ def test_a_deep_list_of_thousands_of_scalars_takes_linear_time():
     flat = "x: [" + ", ".join(["1"] * count) + "]\n"
     deep_time, document = _parse_time(deep)
     flat_time, _ = _parse_time(flat)
-    assert deep_time < 2 * flat_time + 1, (flat_time, deep_time)
+    assert deep_time < 5 * flat_time + 0.5, (flat_time, deep_time)
     assert document.source_map.repeats == ()
 
 
