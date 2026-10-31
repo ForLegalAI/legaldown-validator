@@ -30,7 +30,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from legaldown import CAPABILITIES, Template, assemble, parse_template
+from legaldown import CAPABILITIES, AssemblyResult, FrontmatterError, Template, parse_template
+from legaldown.assembly import frontmatter_diagnostic
 from legaldown.files import file_loader
 from legaldown.parser import parse
 from legaldown.validator import validate
@@ -191,15 +192,16 @@ def _loader(case: Path):
     return load
 
 
-def _assemble_case(template: Path, answers: Path):
-    loaded = yaml.safe_load(_read(answers)) or {}
-    with pytest.warns(DeprecationWarning):  # assemble is deprecated for Template (0.4.0); it is still pinned
-        return assemble(_read(template), loaded, load_file=_loader(template.parent))
+def _assemble_case(template: Path, answers: Path) -> AssemblyResult:
+    """Assemble a case by way of ``Template`` and ``Form``, without the validator's template rules."""
+    try:
+        return _assemble_case_with_a_form(template, answers)[1]
+    except FrontmatterError as exc:
+        return AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
 
 
 def _assemble_case_with_a_form(template: Path, answers: Path):
-    """The same by way of ``Template`` and ``Form``, without the validator's template rules:
-    the form and its result."""
+    """The form of a case, without the validator's template rules, and its result."""
     loaded = yaml.safe_load(_read(answers)) or {}
     form = Template(_read(template), resolve=_loader(template.parent), _check=False).form(loaded)
     return form, form.assemble()
@@ -389,9 +391,9 @@ def test_assembly_case_assembles_byte_for_byte(case: Path):
     assert {"template.lgd": result.output, **result.files} == _expected_tree(case)
     # The assembly guarantee (§15.7.4): the output has no Errors either.
     assert not validate(parse(result.output)).errors
-    # And a ``Template`` with its ``Form`` assembles the same bytes, and says assembly can run.
-    form, through_a_form = _assemble_case_with_a_form(case / "template.lgd", case / "answers.yaml")
-    assert form.ready and (through_a_form.output, through_a_form.files) == (result.output, result.files)
+    # The form says assembly can run.
+    form, _through_a_form = _assemble_case_with_a_form(case / "template.lgd", case / "answers.yaml")
+    assert form.ready
     # ... and so does the public door, with the validator's template rules on: the fixtures are valid templates.
     loaded = yaml.safe_load(_read(case / "answers.yaml")) or {}
     public = parse_template(_read(case / "template.lgd"), resolve=_loader(case)).form(loaded)

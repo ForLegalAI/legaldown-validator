@@ -161,11 +161,6 @@ def test_an_error_unrelated_to_the_answers_does_not_stop_the_form():
 def test_the_questions_of_an_include_are_asked_where_the_include_is():
     template = parse_template(_INCLUDING, resolve={"frag.lgd": _FRAGMENT}.get)
     assert _ids(template.form({}).questions) == ["client", "who", "extras"]
-    # the function reads the fragment after the body
-    with pytest.warns(DeprecationWarning):
-        assert _ids(legaldown.needed_questions(_INCLUDING, {}, load_file={"frag.lgd": _FRAGMENT}.get)) == [
-            "who", "extras", "client",
-        ]
 
 
 @pytest.mark.parametrize("answers", [{}, {"extras": True}, {"extras": False, "who": "Ann"}, {"extras": "yes"}])
@@ -186,15 +181,13 @@ def test_reading_includes_in_place_decides_the_same_lines_and_files(answers):
 _BROKEN = _FRONT + 'Choose {{choose: forum, courts="only one phrase"}}.\n'
 
 
-def test_a_template_rule_error_stops_assembly_of_the_form_but_not_of_the_function():
+def test_a_template_rule_error_stops_assembly_of_the_form():
     template = parse_template(_BROKEN)
     assert [d.rule for d in template.problems] == ["choose-invalid"]
     form = template.form({"forum": "courts"})
     assert not form.ready
     refused = form.assemble()
     assert not refused.ok and refused.output == "" and refused.diagnostics == list(template.problems)
-    with pytest.warns(DeprecationWarning):
-        assert legaldown.assemble(_BROKEN, {"forum": "courts"}).ok  # as before: assembly does not validate
 
 
 def test_a_reference_to_an_included_section_is_no_problem_of_the_template():
@@ -383,29 +376,7 @@ def test_a_template_that_is_not_there_is_an_oserror(tmp_path):
         load_template(tmp_path / "nope.lgd")
 
 
-# ── The functions are deprecated, and as they were ───────────────
-
-
-def test_the_functions_say_they_are_deprecated_and_name_the_caller():
-    for call in (
-        lambda: legaldown.assemble(_TEMPLATE, {"extras": False}),
-        lambda: legaldown.needed_questions(_TEMPLATE, {}),
-        lambda: legaldown.template_questions(_TEMPLATE),
-    ):
-        with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0") as record:
-            call()
-        assert record[0].filename == __file__
-
-
-def test_the_functions_keep_their_behaviour_for_unreadable_frontmatter():
-    bad = "---\ntitle: [unclosed\n---\n"
-    with pytest.warns(DeprecationWarning):
-        result = legaldown.assemble(bad, {})
-        assert [d.rule for d in result.diagnostics] == ["frontmatter-invalid-yaml"]
-        with pytest.raises(FrontmatterError):
-            legaldown.needed_questions(bad, {})
-        with pytest.raises(FrontmatterError):
-            legaldown.template_questions(bad)
+# ── The public names ─────────────────────────────────────────────
 
 
 def test_the_new_names_are_public():

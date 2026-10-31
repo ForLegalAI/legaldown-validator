@@ -20,8 +20,8 @@ validation cannot disagree about a template's structure.
 
 Assembly is given a template that validates without Errors (§15.7.2); the
 guarantee that the output validates too (§15.7.4) rests on that. Include
-fragments and LegalDown attachment files are read through ``load_file`` (a
-Full capability, §17.4); without it such a template is refused rather than
+fragments and LegalDown attachment files are read through a loader
+(``resolve``; a Full capability, §17.4); without it such a template is refused rather than
 assembled partially (§17.6), and so is a template with ``translations``,
 whose linked templates are assembled with it (§15.7.2).
 
@@ -39,7 +39,6 @@ import os
 import posixpath
 import re
 import reprlib
-import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import InitVar, dataclass, field, replace
@@ -49,7 +48,6 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from ._deprecation import LegaldownDeprecationWarning
 from .definitions import list_fragments
 from .directives import PLACEHOLDER_TYPE_PARAMS, Directive, format_value, lex
 from .files import LoadFile
@@ -124,9 +122,6 @@ __all__ = [
     "AssemblyResult",
     "LoadFile",
     "Question",
-    "assemble",
-    "needed_questions",
-    "template_questions",
 ]
 
 #: A question with neither an answer nor a default.
@@ -1414,10 +1409,6 @@ class _FormAnswers(_Answers):
             if not self._valid[qid]:
                 return _MISSING
         return super().get(qid)
-
-
-def _answer_diagnostics(t: _Template, answers: Mapping[str, Any]) -> list[Diagnostic]:
-    return [diagnostic for _qid, diagnostic in _answer_pairs(t, answers)]
 
 
 @dataclass(slots=True)
@@ -2718,41 +2709,6 @@ def _finish(head: str, lines: list[_Line]) -> str:
 # ── Public API ───────────────────────────────────────────────────
 
 
-def assemble(
-    template: str,
-    answers: Mapping[str, Any],
-    *,
-    load_file: LoadFile | None = None,
-) -> AssemblyResult:
-    """Assemble *template* with *answers* (§15.7.2).
-
-    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(text,
-    resolve=...).form(answers).assemble()``, which reads the template once.
-
-    A draft or an ordinary document goes through the same steps: its drafting
-    notes are removed, its answered blanks filled and its blank lines
-    collapsed. *load_file* reads the include fragments (those they include
-    too, in an ordinary document) and LegalDown attachment files; the
-    assembled ones are returned in ``files``.
-    """
-    warnings.warn(
-        "legaldown.assemble() is deprecated since 0.4.0 and will be removed in 0.5.0; "
-        "use legaldown.load_template() or parse_template(), then .form(answers).assemble()",
-        LegaldownDeprecationWarning,
-        stacklevel=2,
-    )
-    try:
-        t = _read(template, load_file)
-    except FrontmatterError as exc:
-        return AssemblyResult(diagnostics=[frontmatter_diagnostic(exc)])
-    if t.problems:
-        return AssemblyResult(diagnostics=list(t.problems))
-    resolved = _Answers(answers, t.declared)
-    decision = _decide(t, resolved)
-    diagnostics = _answer_diagnostics(t, answers) + [_missing_diagnostic(qid) for qid in decision.missing]
-    return _emit_result(t, resolved, decision, diagnostics)
-
-
 def frontmatter_diagnostic(exc: FrontmatterError, file: str | None = None) -> Diagnostic:
     """The error assembly reports for frontmatter that cannot be read: the one
     ``validate`` reports for it, with the same message and line (#43). *file* is
@@ -2786,48 +2742,3 @@ def _emit_result(
         },
         diagnostics=diagnostics,
     )
-
-
-def template_questions(
-    template: str, *, load_file: LoadFile | None = None
-) -> list[Question]:
-    """Every question of *template* (§15.2): the declared ones in declaration
-    order, then each undeclared placeholder, in the order first written.
-    Raises ``FrontmatterError`` when the template's frontmatter cannot be
-    read.
-
-    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(...).questions``."""
-    warnings.warn(
-        "legaldown.template_questions() is deprecated since 0.4.0 and will be removed in 0.5.0; "
-        "use legaldown.load_template() or parse_template(), then .questions",
-        LegaldownDeprecationWarning,
-        stacklevel=2,
-    )
-    return _questions(_read(template, load_file))
-
-
-def needed_questions(
-    template: str,
-    answers: Mapping[str, Any],
-    *,
-    load_file: LoadFile | None = None,
-) -> list[Question]:
-    """The questions to ask now, given *answers* so far, in the order they
-    are reached: a decision question when a condition or ``{{choose:}}``
-    using it lies in a present unit outside drafting notes (§15.7.2 step 1),
-    a value question when one of its placeholders does. A unit under a
-    condition whose question is still unanswered is not reached yet, so the
-    form grows as decisions are made. Raises ``FrontmatterError`` when the
-    template's frontmatter cannot be read.
-
-    Deprecated since 0.4.0, removed in 0.5.0: ``parse_template(...).form(answers).questions``."""
-    warnings.warn(
-        "legaldown.needed_questions() is deprecated since 0.4.0 and will be removed in 0.5.0; "
-        "use legaldown.load_template() or parse_template(), then .form(answers).questions",
-        LegaldownDeprecationWarning,
-        stacklevel=2,
-    )
-    t = _read(template, load_file)
-    decision = _decide(t, _Answers(answers, t.declared))
-    by_id = {question.id: question for question in _questions(t)}
-    return [by_id[qid] for qid in decision.needed if qid in by_id]

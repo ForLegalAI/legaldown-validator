@@ -700,12 +700,6 @@ def test_the_warning_names_the_shape_checks_when_a_file_was_not_read_for_its_sha
     assert [r for r, _, _ in _found(result, "attachment-has-frontmatter")] == ["attachment-has-frontmatter"]
     message = _warning(result).message
     assert "attachment-has-frontmatter" not in message.split("Not performed")[1] and "importing the definitions" in message
-    # Not read for its shape, though an importer gave its definitions (the deprecated callback, and no loader).
-    with pytest.warns(DeprecationWarning):
-        callback = validate(parse(text, filename="main.lgd"), resolve=None, import_attachment_definitions=lambda path: {"fee": "Fee"})
-    message = _warning(callback).message
-    assert "attachment-file-missing, attachment-has-frontmatter and attachment-has-h1;" in message
-    assert "importing" not in message
 
 
 def test_the_findings_of_attachment_files_are_in_the_order_they_are_declared_those_not_spliced_among_them():
@@ -1322,25 +1316,18 @@ def test_the_definitions_of_each_file_are_read_again_once_however_often_it_is_in
     assert [d.file for d in result.diagnostics if d.rule == "path-not-relative"].count("part.lgd") == 1
 
 
-def test_the_importers_are_called_once_for_each_file_however_often_the_document_is_read():
+def test_each_file_is_asked_for_once_however_often_the_document_is_read():
     front = _FRONT.replace("---\n\n", "amends:\n  title: Original\n  file: orig.lgd\nattachments:\n  - id: a\n    title: A\n    file: a.lgd\n---\n\n")
     text = front + _SCOPE + "{{attach: a}} {{include: part.lgd}}\n\n{{include: part.lgd}}\n"
+    files = {"part.lgd": "## Part {#part}\n\nText.\n", "orig.lgd": "# Original {#orig}\n\nThe {{def: x, \"X\"}}.\n", "a.lgd": "## A {#a}\n\nThe {{def: y, \"Y\"}}.\n"}
     asked: list[str] = []
 
-    def amends(path, filename):
+    def resolve(path):
         asked.append(path)
-        return {"orig": "Original"}
+        return files.get(path)
 
-    def attachment(path):
-        asked.append(path)
-        return {"x": "X"}
-
-    with pytest.warns(DeprecationWarning):
-        validate(
-            parse(text, filename="main.lgd"), resolve={"part.lgd": "## Part {#part}\n\nText.\n"}.get,
-            import_definitions=amends, import_attachment_definitions=attachment,
-        )
-    assert sorted(asked) == ["a.lgd", "orig.lgd"]
+    validate(parse(text, filename="main.lgd"), resolve=resolve)
+    assert sorted(asked) == ["a.lgd", "orig.lgd", "part.lgd"]
 
 
 def test_a_line_of_a_fragment_keeps_its_file_through_arithmetic():

@@ -30,14 +30,11 @@ from helpers_renderers import (
     pandoc_words,
 )
 
-from legaldown import assemble
+from legaldown import Template
 from legaldown import assembly as assembly_module
 from legaldown.assembly import _item_column, _parse_body, _Reading, _signatures
 from legaldown.markdown import indent_width
 from legaldown.parser import _Layout
-
-pytestmark = pytest.mark.filterwarnings(r"ignore:legaldown\.assemble\(\) is deprecated:DeprecationWarning")
-
 
 
 @pytest.fixture(autouse=True)
@@ -193,7 +190,7 @@ def assembled(body: str, answers: dict) -> str | None:
     """The body of what the template assembles to, or None if it does not (or leaves a directive)."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        result = assemble(_template(body), answers)
+        result = Template(_template(body), _check=False).form(answers).assemble()
     if not result.ok:
         return None
     out = result.output.split("\n---\n", 1)[1].removeprefix("\n")

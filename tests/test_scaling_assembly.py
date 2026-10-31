@@ -18,13 +18,10 @@ import time
 
 import pytest
 
-from legaldown import assemble
+from legaldown import Template
 from legaldown import assembly as assembly_module
 
-pytestmark = [
-    pytest.mark.scaling,
-    pytest.mark.filterwarnings(r"ignore:legaldown\.assemble\(\) is deprecated:DeprecationWarning"),
-]
+pytestmark = pytest.mark.scaling
 
 _SIDES = """sides:
   - name: providers
@@ -45,7 +42,7 @@ def _assembled(lines: list[str], answer: str, *, others: dict[str, str] | None =
     template = f"---\ntitle: Fixture\ndocument_type: contract\nquestions:\n{questions}{_SIDES}---\n\n" + "\n".join(lines) + "\n"
     answers = {f"p{n}": answer for n in range(len(lines))} | (others or {}) | {"c": True}
     start = time.perf_counter()
-    result = assemble(template, answers)
+    result = Template(template, _check=False).form(answers).assemble()
     seconds = time.perf_counter() - start
     assert result.ok, result.diagnostics
     return result.output.split("\n---\n", 1)[1], PARSES.calls, seconds

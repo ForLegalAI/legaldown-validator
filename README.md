@@ -150,7 +150,7 @@ amended original defines was an Info (`amend-term-unresolvable`) and is now foun
 can start to fail for that reason: it is the specification's result, and the files must be beside the
 document. A file that is not there, or cannot be read, is as if it had not been asked for.
 
-**Changed in 0.5.0 (unreleased):** a document that holds a construct beyond Core (an include paragraph,
+**Changed in 0.5.0:** a document that holds a construct beyond Core (an include paragraph,
 an attachment file, `amends.file`, `translations`, `supersedes.file`, an image path) now draws the
 Warning `ldv-check-skipped` that §17.5 asks for, for each category of checks not performed ([Scope](#scope));
 a CI gate on `--strict` or `--warnings-as-errors` can start to fail for it: `--ignore ldv-check-skipped`.
@@ -271,7 +271,7 @@ integrations, and dashboards:
 ```json
 {
   "legaldown_spec": "0.2",
-  "validator_version": "0.4.0",
+  "validator_version": "0.5.0",
   "diagnostics": [
     {
       "file": "contract.lgd",
@@ -368,17 +368,11 @@ loaded document without its files, validate it without its path (`dataclasses.re
 `resolve=` too. Each file is asked for once and parsed once, whichever check wants it. Where those
 files may lie is [`document_root`](#file-references-and-the-document-root).
 
-> **Deprecated:** `parse_document` is now `parse` (string; same arguments) or `load` (file),
-> `validate_document` is now `validate`, `serialize_document` is now `serialize` (text) or `save`
-> (file), and the importer callbacks `import_definitions=` and `import_attachment_definitions=` (and
-> their types, `DefinitionsImporter` and `AttachmentDefinitionsImporter`) are replaced by `resolve=`.
-> They still work, and calling one raises a `DeprecationWarning`; they are deprecated since 0.4.0
-> and will be removed in 0.5.0 (the template functions too: [Assembly](#assembly)). Every deprecation warning legaldown raises is a
-> `legaldown.LegaldownDeprecationWarning` (a `DeprecationWarning` subclass), so one filter catches
-> them all: `warnings.simplefilter("error", legaldown.LegaldownDeprecationWarning)` in code, or
-> `filterwarnings = ["error::legaldown.LegaldownDeprecationWarning"]` in pytest's configuration
-> (Python's own `-W` option and `PYTHONWARNINGS` ignore a category from a package, as they read it
-> before the package can be imported).
+> **Removed in 0.5.0:** everything deprecated since 0.4.0. `legaldown.LegaldownDeprecationWarning` (a
+> `DeprecationWarning` subclass) stays, as the category legaldown raises its deprecations with, so that a filter
+> that names it, `warnings.simplefilter("error", legaldown.LegaldownDeprecationWarning)` in code or
+> `filterwarnings = ["error::legaldown.LegaldownDeprecationWarning"]` in pytest's configuration, keeps working;
+> nothing raises it in 0.5.0.
 >
 > **Changed in 0.4.0:** `ValidationResult` is a plain value of two parts, `diagnostics` and `index`.
 > `errors`, `warnings` and `infos` are read-only lists taken from `diagnostics` (changing them
@@ -604,7 +598,9 @@ template (it does not assemble it), so `Template.problems` and `validate` never 
 
 A document names other files by a path relative to itself (§2.3): `{{include:}}`, an image's path,
 and `attachments[].file`, `amends.file`, `supersedes.file` and `translations` in the frontmatter.
-`validate` checks the text of each path, at Core level, and reads no file:
+`validate` checks the text of each path, at Core level, and reads no file. An image's path is judged as each
+supported renderer reads it (the specification's reading, pandoc `-f commonmark` and markdown-it, which read a
+destination and a label differently: [CONFORMANCE.md](CONFORMANCE.md) has the readings). For example:
 
 ```python
 validate(document, document_root="/srv/contracts")
@@ -915,9 +911,10 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |
 | **Placeholders** | Malformed ids, invalid types, one blank with two types, currencies, or units, placeholders in structural and format-checked frontmatter fields |
-| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, invalid or contradictory conditions, references whose target a condition can remove, identifiers shared by units that can appear together, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term or against Markdown punctuation, fragments included twice, what a fragment or attachment file of a template may not hold (a condition, a drafting note, an include, a heading without an identifier); with `--final`, anything left unfilled; on assembly, answers that are invalid, missing, or unknown |
-| **Includes** | An include of a file that is not LegalDown, a fragment that is missing, with frontmatter or a level-1 heading, or whose headings skip a level where it is spliced in; with a template, a fragment that holds what §15.3 forbids |
-| **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments |
+| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, invalid or contradictory conditions, references whose target a condition can remove, identifiers shared by units that can appear together, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term, in a link reference definition's destination or title, or against Markdown punctuation, fragments included twice, what a fragment or attachment file of a template may not hold (a condition, a drafting note, an include, a heading without an identifier); with `--final`, anything left unfilled; on assembly, answers that are invalid, missing, or unknown |
+| **Includes** | An include of a file that is not LegalDown, a fragment that is missing, with frontmatter or a level-1 heading, or whose headings skip a level where it is spliced in; a chain of includes that comes back (`include-cycle`) and an identifier that the document and its fragments declare twice (`include-anchor-duplicate`); the document with its fragments spliced in is validated as the one document it is (the combined document, §16.11); with a template, a fragment that holds what §15.3 forbids |
+| **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments; for a LegalDown attachment file that was read: frontmatter, a level-1 heading, and an identifier it shares with the document or another file (`attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`) |
+| **File paths** | A path the document names (`{{include:}}`, an image, `attachments[].file`, `amends.file`, `supersedes.file`, `translations`) that is absolute or begins with a URI scheme (`path-not-relative`), or that leads out of the `document_root` (`path-outside-root`), an image's path as each supported renderer reads it ([File references](#file-references-and-the-document-root)) |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
 | **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2, a `language`, `authoritative` or `translations` key that is not an ISO 639-1 code, an `authoritative` language the document does not declare, a frontmatter key that another replaces, in any mapping: the same key written twice or keys the model reads as one (`ldv-frontmatter-key-duplicate`, this implementation's own id, §16.1; an Error for the same key written twice, a Warning for different keys the model reads as one), and in a document that links translations the headings and definitions without an explicit identifier (an Error in a translation, a Warning when `authoritative` is absent) |
 | **Beyond Core** | `ldv-check-skipped` (Warning, this implementation's own id, §16.1): for each category of checks that a construct in the document calls for and the validation did not perform, as §17.5 requires, once and listing exactly what was not done ([below](#scope)) |
@@ -1066,16 +1063,15 @@ offender, with its `file` and `line`, and a template whose
 files fail is refused. [CONFORMANCE.md](CONFORMANCE.md#assembly-157-176) lists what assembly
 checks and what it does not.
 
-> **Deprecated:** `assemble(text, answers, load_file=)`, `template_questions` and `needed_questions`
-> are replaced by `Template` and `Form`. They still work, unchanged (but for `Question`, below, and
-> that a `load_file=` loader is never asked for a path that is absolute or leads out of the template's
-> directory, §2.3, and takes no `document_root`), and raise a `LegaldownDeprecationWarning`; they are deprecated since 0.4.0 and will be removed in 0.5.0. Two things
-> differ in the new API: it asks the questions of an included fragment where its `{{include:}}` is
-> (the functions ask them after the body), and it refuses a template that has Errors in the
-> validator's template rules (the functions assemble it). `legaldown assemble` follows the new API,
-> and puts the shapes of its answers file right (`template.coerce`): `5000 EUR` is accepted for a money
-> question (and `fee: 5000`, where its placeholders fix the currency), `no` for a boolean, and surrounding spaces of a text answer are
-> dropped, which were `answer-invalid` before. A `Question` is now a fixed value.
+> **Removed in 0.5.0:** the functions `assemble(text, answers, load_file=)`, `template_questions` and
+> `needed_questions` (deprecated since 0.4.0); use `Template` and `Form`. Code moving from the
+> functions sees two differences: the questions of an included fragment are asked where its
+> `{{include:}}` is (the functions asked them after the body), and a template that has Errors in the
+> validator's template rules is refused (the functions assembled it).
+>
+> **Changed in 0.4.0:** `legaldown assemble` follows `Template` and `Form`, and puts the shapes of its answers file right (`template.coerce`): `5000 EUR` is accepted for a money
+> question (and `fee: 5000`, where its placeholders fix the currency), `no` for a boolean, and surrounding spaces of a
+> text answer are dropped, which were `answer-invalid` before. A `Question` is a fixed value.
 
 ## Scope
 

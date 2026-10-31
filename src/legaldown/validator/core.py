@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import re
-import warnings
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -17,7 +16,6 @@ from functools import cache, partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from .._deprecation import LegaldownDeprecationWarning
 from ..directives import (
     DIRECTIVE_PARAMS,
     KNOWN_DIRECTIVES,
@@ -118,11 +116,6 @@ from .units import FoundMarker, Units, find_markers, marker_matches, own_presenc
 
 if TYPE_CHECKING:
     from ..definitions import DefinitionRef
-
-# Type aliases for the definitions-import callbacks: deprecated since 0.4.0,
-# removed in 0.5.0, with the callbacks (``validate(resolve=)`` replaces them).
-DefinitionsImporter = Callable[[str, str], dict[str, str] | None]
-AttachmentDefinitionsImporter = Callable[[str], dict[str, str] | None]
 
 
 def _strings(value: Any) -> Iterator[str]:
@@ -1072,8 +1065,6 @@ def validate(
     template: bool | None = None,
     resolve: LoadFile | None = None,
     document_root: str | os.PathLike[str] | None = None,
-    import_definitions: DefinitionsImporter | None = None,
-    import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
 ) -> ValidationResult:
     """Validate a LegalDown document and build lookup indices.
 
@@ -1219,9 +1210,6 @@ def validate(
         (§17.4). In a *fragment* the include and image paths are the
         fragment's own, so they are checked and never ``host_dependent``;
         its frontmatter is never read, so it has no paths to check.
-    import_definitions, import_attachment_definitions:
-        Deprecated since 0.4.0, removed in 0.5.0: use *resolve*. They give the
-        definitions themselves, which *resolve* leaves to the validator.
     """
     if template is not None and not fragment:
         raise ValueError("validate(template=) is only meaningful with fragment=True")
@@ -1229,32 +1217,9 @@ def validate(
         raise ValueError("validate(fragment_kind=) is only meaningful with fragment=True")
     if fragment_kind not in (None, "include", "attachment"):
         raise ValueError(f"fragment_kind must be 'include' or 'attachment', not {fragment_kind!r}")
-    resolve = _resolver(
-        document, resolve, import_definitions, import_attachment_definitions, stacklevel=3, document_root=document_root
-    )
+    resolve = _resolver(document, resolve, document_root=document_root)
     mode = replace(_FRAGMENT, template=template, kind=fragment_kind or "include") if fragment else _DOCUMENT
-    return _validate(
-        document, final, resolve, import_definitions, import_attachment_definitions, mode, document_root=document_root
-    )
-
-
-def validate_document(
-    document: Document,
-    *,
-    import_definitions: DefinitionsImporter | None = None,
-    import_attachment_definitions: AttachmentDefinitionsImporter | None = None,
-    final: bool = False,
-) -> ValidationResult:
-    """Deprecated since 0.4.0, removed in 0.5.0. Same as ``validate``, with the
-    same arguments."""
-    warnings.warn(
-        "legaldown.validate_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
-        "use legaldown.validate()",
-        LegaldownDeprecationWarning,
-        stacklevel=2,
-    )
-    resolve = _resolver(document, None, import_definitions, import_attachment_definitions, stacklevel=3)
-    return _validate(document, final, resolve, import_definitions, import_attachment_definitions, _DOCUMENT)
+    return _validate(document, final, resolve, mode, document_root=document_root)
 
 
 def validate_template(
@@ -1264,32 +1229,16 @@ def validate_template(
     document with a path (the template's, for the root and for the self-include test) is not read from beside
     it by default, as assembly does not: with no *resolve*, nothing is read, and the Warning of §17.5 says so.
     With it, whether the template was validated with its fragments in (§16.11)."""
-    result = _check(document, False, resolve, None, None, _DOCUMENT, document_root=document_root)
+    result = _check(document, False, resolve, _DOCUMENT, document_root=document_root)
     return result.result(), result.combined
 
 
 def _resolver(
-    document: Document,
-    resolve: LoadFile | None,
-    import_definitions: DefinitionsImporter | None,
-    import_attachment_definitions: AttachmentDefinitionsImporter | None,
-    *,
-    stacklevel: int,
-    document_root: str | os.PathLike[str] | None = None,
+    document: Document, resolve: LoadFile | None, *, document_root: str | os.PathLike[str] | None = None
 ) -> LoadFile | None:
     """How the validation reads the files *document* refers to: *resolve*, else
     the directory of its path (and the *document_root* around it, which a file may
-    lead out to, #109), else not at all.
-    Says the importers are deprecated when one is given, and then reads nothing
-    by itself: each importer answers for its own files, as it always did."""
-    if import_definitions is not None or import_attachment_definitions is not None:
-        warnings.warn(
-            "import_definitions and import_attachment_definitions are deprecated since 0.4.0 "
-            "and will be removed in 0.5.0; use validate(resolve=), which reads the files itself",
-            LegaldownDeprecationWarning,
-            stacklevel=stacklevel,
-        )
-        return resolve
+    lead out to, #109), else not at all."""
     if resolve is None and document.path is not None:
         resolve = file_loader(document.path.parent, root=document_root)
 
@@ -1307,11 +1256,6 @@ class _Imported(NamedTuple):
         """The reason the Warning of §17.5 names an import that did not happen for (``NOT_IMPORTED``):
         every one but the document's own, whose definitions are the document's already."""
         return self.unread if self.unread in NOT_IMPORTED else None
-
-
-def _imported(definitions: dict[str, str] | None) -> _Imported:
-    """What a deprecated importer gave: its word for the file; None is a file it had not."""
-    return _Imported(definitions, None if definitions is not None else "unreadable")
 
 
 def _definitions_in(
@@ -1354,8 +1298,6 @@ def _check(
     document: Document,
     final: bool,
     resolve: LoadFile | None,
-    import_definitions: DefinitionsImporter | None,
-    import_attachment_definitions: AttachmentDefinitionsImporter | None,
     mode: _Mode,
     document_root: str | os.PathLike[str] | None = None,
     combined: Combined | None = None,
@@ -2100,16 +2042,13 @@ def _check(
     original_imported = False
     _imported_definitions: dict[str, str] = {}
     # What is imported from the files the document names, asked once: the combined pass takes it from the
-    # document's own (``Combined.imports``), for an importer is called once however often the document is read.
+    # document's own (``Combined.imports``) rather than reading them again.
     imports = combined.imports if combined is not None else {}
     if document.metadata.amends and document.metadata.amends.file:
         amends_file = document.metadata.amends.file
         if amends_file.endswith(LEGALDOWN_EXTENSIONS):
             if "amends" not in imports:
-                imports["amends"] = (
-                    _imported(import_definitions(amends_file, document.filename)) if import_definitions is not None
-                    else _definitions_in(document, files, amends_file, file_references)
-                )
+                imports["amends"] = _definitions_in(document, files, amends_file, file_references)
             imported = imports["amends"]
             if imported.definitions is not None:
                 original_imported = True
@@ -2138,10 +2077,7 @@ def _check(
         if att_index in spliced:
             continue  # (its definitions are in the combined document: imported again they would clash with themselves)
         if ("attachment", att_index) not in imports:
-            imports["attachment", att_index] = (
-                _imported(import_attachment_definitions(att_file)) if import_attachment_definitions is not None
-                else _definitions_in(document, files, att_file, file_references)
-            )
+            imports["attachment", att_index] = _definitions_in(document, files, att_file, file_references)
         imported = imports["attachment", att_index]
         if imported.not_imported is not None:
             attachments_unread.append(imported.not_imported)
@@ -2694,7 +2630,7 @@ def _check(
         included.combined.attachments_out = included.attachments_out
         included.combined.definition_reads = reference_images.reads
         whole = _check(
-            included.combined.document, final, resolve, import_definitions, import_attachment_definitions, mode,
+            included.combined.document, final, resolve, mode,
             document_root, combined=included.combined,
         )
         assert whole.places is not None and len(whole.places) == len(whole.diagnostics)

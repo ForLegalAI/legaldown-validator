@@ -243,9 +243,8 @@ class Template:
         _check: bool = True,
     ) -> None:
         # Private: ``_check=False`` leaves the validator's template rules
-        # (``TEMPLATE_RULES``) out of ``problems``, as the deprecated ``assemble``
-        # does, for the tests and the conformance harness that check assembly
-        # on its own.
+        # (``TEMPLATE_RULES``) out of ``problems``, for the tests and the
+        # conformance harness that check assembly on its own.
         self.path: Path | None = None if path is None else Path(path).absolute()
         self._root = None if document_root is None else Path(document_root).absolute()
         self._resolve = _snapshot(resolve)

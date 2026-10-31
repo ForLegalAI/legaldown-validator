@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import os
 import re
-import warnings
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from ._deprecation import LegaldownDeprecationWarning
 from .directives import format_value
 from .files import write_atomically
 from .markdown import (
@@ -773,19 +771,6 @@ def save(document: Document, path: str | os.PathLike[str] | None = None) -> Path
     document.path = file
     document.filename = file.name
     return file
-
-
-def serialize_document(document: Document) -> str:
-    """Deprecated since 0.4.0, removed in 0.5.0. Same as ``serialize``."""
-    warnings.warn(
-        "legaldown.serialize_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
-        "use legaldown.serialize()",
-        LegaldownDeprecationWarning,
-        stacklevel=2,
-    )
-    return serialize(document)
-
-
 
 
 def render_item(item: ListItem) -> str:
