@@ -177,7 +177,10 @@ longer draws `ref-broken` or `term-undefined`, and **findings in fragments** (`r
 `insertion-boundary`, `placeholder-unfilled` under `final`, ...) are now reported by the validation of the
 document that includes them, at their line in the fragment's file. A document that was clean can fail for them,
 and so can an exit status. In a template, a rule that stops assembly stops it when a fragment is where it is
-found (`Template.problems`).
+found (`Template.problems`). The same holds for a LegalDown attachment file that was read: it follows the body in the
+combined document, so a reference into its sections resolves, `attachment-anchor-duplicate` and the shape rules
+`attachment-has-frontmatter` and `attachment-has-h1` are reported, and its own findings are reported at their line
+in it; `path-outside-root` is judged for a fragment's and an attachment file's paths from their own directory.
 Five rules that §17.2 places at Core are now checked ([What gets checked](#what-gets-checked)), and a
 CI gate that was passing can fail for them. **A translation without explicit identifiers is now an
 Error** (`translation-implicit-id`): a document that links `translations`, and whose `language` differs
@@ -567,12 +570,20 @@ fragment is as present as its include paragraph is (§15.3), so a reference into
 declare one identifier. A finding is at its line in its own file (`Diagnostic.file`), reported once per distinct finding
 (a fragment included twice is not reported twice; a finding whose message differs by place, as the suffix of an adjusted identifier does, is
 reported for each place), in the order of the combined document; the findings of the document alone (the `include-*` rules,
-`template-fragment-invalid`, `heading-skip`, `path-outside-root`) are not made again, and the paths of a fragment are judged only as far as
-`path-not-relative` goes (an absolute path or a URI scheme, "relative to the fragment"), not against a root. It is **all or nothing**: one include that
+`template-fragment-invalid`, `heading-skip`, `attachment-has-frontmatter`, `attachment-has-h1`) are not made again, and the paths of a
+fragment are judged as `path-not-relative` (an absolute path or a URI scheme, "relative to the fragment") and, against a
+`document_root`, as `path-outside-root` from the fragment's own directory (`sub/part.lgd`'s `../x.png` stays within the
+root, its `../../x.png` leaves it). It is **all or nothing** for the includes: one include that
 was not followed (missing, unreadable, a path that leads out, not a fragment, a cycle, a cap, an include in a
-template's fragment) leaves the document judged as before, and the Warning of §17.5 says so. A LegalDown
-attachment file is not part of the combined document yet: a `{{ref:}}` into an attachment's section is still
-`ref-broken`. The combined document is not made either when the fragments spliced in come to more than 50,000
+template's fragment) leaves the document judged as before, and the Warning of §17.5 says so. The LegalDown
+attachment files (§12.4) follow the body in the combined document, in the order they are declared, each as a
+fragment is spliced, with its entry's `when` for its presence: a `{{ref:}}` into an attachment's section resolves, a
+term only an attachment uses keeps its definition referenced, and a section identifier an attachment declares
+again is `attachment-anchor-duplicate` (§16.10). Each is an appendix of its own, so one that was not read, or that has
+frontmatter or a level-1 heading (`attachment-has-frontmatter`, `attachment-has-h1`, reported in the file), is not
+spliced and leaves the body and the others as they are; the Warning says how many were not. A document with no include
+but a readable attachment file is validated combined too. As for a fragment, what an attachment file holds is
+now reported at its line there, which may change an exit status. The combined document is not made either when the fragments spliced in come to more than 50,000
 blocks or 200,000 lines (counted for each time a fragment is included); the Warning says so. Whether the
 document is a template is decided by the document alone (§15.1), as assembly decides it: a fragment's condition or
 `{{choose:}}` does not make it one, and is judged as the document's status dictates (in a document that is no template,
@@ -1095,8 +1106,8 @@ checks are named depends on the validation: a fragment that was read (a document
 `include-anchor-duplicate` checks made over what it includes; and when every fragment was followed
 the combined document is validated too (§16.11, [Include fragments](#include-fragments)), so the Warning
 is not drawn for a document whose includes were all read and nothing else is skipped. While one is not, the Warning
-names the combined-document checks (a reference or a term into a fragment). A LegalDown attachment file is not part
-of the combined document, which its Warning says. The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
+names the combined-document checks (a reference or a term into a fragment), and so does the Warning for an
+attachment file not spliced into it (not read, or not a fragment). The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
 (`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`, `INCLUDE_LIMIT_RULE`; validation has a second, `ldv-frontmatter-key-duplicate`, `FRONTMATTER_KEY_DUPLICATE_RULE`, which is no skipped check). It is a Warning: the exit status is
 unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
 `--ignore ldv-check-skipped` once it has read what it says.

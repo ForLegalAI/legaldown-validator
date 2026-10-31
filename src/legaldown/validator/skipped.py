@@ -20,10 +20,10 @@ from functools import partial
 
 from ..models import Amends, Document
 from ..positions import Locator
+from . import fragments
 from .fragments import IncludeOutcome, UnreadInclude, UnreadReason
-from .helpers import identifier_rule
+from .helpers import identifier_rule, legaldown_attachments
 from .paths import FileReference
-from .patterns import LEGALDOWN_EXTENSIONS
 from .result import Line
 from .templates import IncludeDirective
 
@@ -154,21 +154,29 @@ def _includes(
     )
 
 
-def _attachments(document: Document, where: Locator, unread: Sequence[UnreadReason]) -> SkippedCategory | None:
+def _attachments(document: Document, where: Locator, unread: Sequence[UnreadReason], outcome: IncludeOutcome) -> SkippedCategory | None:
     files = [(index, att.file.strip()) for index, att in enumerate(document.metadata.attachments) if att.file.strip()]
     if not files:
         return None
-    legaldown = sum(1 for _index, file in files if file.endswith(LEGALDOWN_EXTENSIONS))
+    legaldown = len(legaldown_attachments(document.metadata))
     rules = ["attachment-file-missing"]
-    if legaldown:
-        rules += ["attachment-has-frontmatter", "attachment-has-h1", "attachment-anchor-duplicate"]
+    if outcome.attachments_unshaped:
+        # (The shape of a file that was read is judged: what is not done is of the files not read.)
+        rules += ["attachment-has-frontmatter", "attachment-has-h1"]
     parts = [_join(rules)]
-    if legaldown:
-        # The attachment files are not part of the combined document yet (§12.4, §15.7.2 step 7).
-        parts.append(
-            "the combined-document checks for the attachment files, such as a reference into an "
-            "attachment's section"
+    if out := outcome.attachments_out:
+        # A LegalDown attachment file is spliced into the combined document when it was read and is a fragment
+        # (§12.4); the others, and the checks across them, are not made.
+        said = (
+            "attachment-anchor-duplicate and the combined-document checks (§12.4, such as a reference into an "
+            f"attachment's section) for {_count(out, 'LegalDown attachment file')} not spliced into the combined document"
         )
+        if outcome.attachments_capped:
+            said += (
+                f" ({outcome.attachments_capped} past the size the combined document may have: more than "
+                f"{fragments.MAX_SPLICED_BLOCKS:,} blocks or {fragments.MAX_SPLICED_LINES:,} lines of attachment files)"
+            )
+        parts.append(said)
     if unread:
         parts.append(
             "importing the definitions of "
@@ -268,7 +276,7 @@ def skipped_categories(
     *amends_unread*: the same of the original it amends."""
     found = [
         _includes(document, [each for each in includes if each.paragraph], outcome, template, fragment),
-        _attachments(document, where, attachments_unread),
+        _attachments(document, where, attachments_unread, outcome),
         _amendment(document, where, amends_unread),
         _bilingual(document, where),
         _paths(document, where, image),

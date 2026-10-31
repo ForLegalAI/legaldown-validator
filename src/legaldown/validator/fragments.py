@@ -33,6 +33,7 @@ from ..models import Document, Metadata
 from ..positions import Locator
 from .combined import Combined, Plan, weave
 from .conditions import Exclusivity, Presence, answer_combinations, holds_under
+from .helpers import legaldown_attachments
 from .patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
 from .templates import BodyScan, IncludeDirective, check_template_body
@@ -712,12 +713,18 @@ class IncludeOutcome:
     paragraphs it met are in fragments (*nested*), and the limits it
     reached (*caps*, each as a phrase): the depth and the count of the includes followed (#114), and
     the combinations of answers that ``include-heading-skip`` tries (#108). *combined* is the combined
-    document (``combined.weave``), when every include of the document was followed into a fragment."""
+    document (``combined.weave``), when every include of the document was followed into a fragment; and
+    of its LegalDown attachment files, *attachments_out* how many are not in it, *attachments_capped* how
+    many of those were left out for the size of the combined document, and *attachments_unshaped* how many
+    were not read for their shape (``attachment-has-frontmatter``, ``attachment-has-h1``)."""
     filled: set[int] = field(default_factory=set)
     unread: list[UnreadInclude] = field(default_factory=list)
     nested: int = 0
     caps: list[str] = field(default_factory=list)
     combined: Combined | None = None
+    attachments_out: int = 0
+    attachments_capped: int = 0
+    attachments_unshaped: int = 0
 
 
 class _NamedInclude(Protocol):
@@ -828,6 +835,11 @@ class _Walk:
         self.plan = Plan()
         self.complete = True
         self._spliced = [0, 0]  # the blocks and lines the fragments followed bring in
+        #: The attachment files to follow the body, with their entries, and the blocks and lines they bring in: a
+        #: budget of their own, which leaves the includes' alone (#135).
+        self.attached: list[tuple[int, FragmentFile]] = []
+        self._attached = [0, 0]
+        self._full = False  # the budget of the attachment files is spent
 
     def shape(self, fragment: FragmentFile) -> None:
         """The findings on *fragment* as a file, once however often it is included."""
@@ -978,6 +990,26 @@ class _Walk:
             if cap not in self._outcome.caps:
                 self._outcome.caps.append(cap)
 
+    @property
+    def full(self) -> bool:
+        """Whether the budget of the attachment files is spent (``attach``)."""
+        return self._full
+
+    def attach(self, index: int, fragment: FragmentFile) -> bool:
+        """Take the attachment file *fragment*, the entry *index* of the attachments, for the combined document,
+        after the body: each is an appendix of its own, so this changes nothing of the walk of the includes (it is
+        not ``complete`` or not for it). They may bring in no more than ``MAX_SPLICED_BLOCKS`` blocks and
+        ``MAX_SPLICED_LINES`` lines (counted for each entry); past that it and the attachment files after it
+        are not taken, and False is returned."""
+        blocks, lines = fragment.size
+        if self._full or self._attached[0] + blocks > MAX_SPLICED_BLOCKS or self._attached[1] + lines > MAX_SPLICED_LINES:
+            self._full = True
+            return False
+        self._attached[0] += blocks
+        self._attached[1] += lines
+        self.attached.append((index, fragment))
+        return True
+
     def _follow(
         self, fragment: FragmentFile, number: int, include: IncludeDirective, chain: IncludeChain, plan: Plan
     ) -> list[Heading]:
@@ -1041,8 +1073,9 @@ def check_includes(
     its headings are joined to the document's for ``include-heading-skip``
     (*first_level*) and ``include-anchor-duplicate`` (*units* has the presence of the
     document's sections, which with *questions* tell two declarations that can never be
-    together). In a template, each LegalDown attachment file is read too,
-    for the ``{{include:}}`` it must not hold. A fragment's own includes are followed
+    together). Each LegalDown attachment file is read too (§12.4): checked for its shape
+    (``attachment-has-frontmatter``, ``attachment-has-h1``, §16.10) and, in a template, for the
+    ``{{include:}}`` it must not hold. A fragment's own includes are followed
     outside a template, where they are allowed (§12.2; in a template they are
     ``template-fragment-invalid``): each is judged as the document's are, from the
     fragment's directory, at its line in the fragment, and an include that comes back to a file of the chain
@@ -1052,7 +1085,8 @@ def check_includes(
     Returned (``IncludeOutcome``): the combined document (``combined.weave``) when every include paragraph
     was followed into a fragment (the walk is *complete*: nothing unread, refused, cut short by a cap or
     left alone in a template, and no more than ``MAX_SPLICED_BLOCKS`` blocks spliced in), for the validation of what the fragments and the document say across each
-    other (§16.11). And the headings of the document
+    other (§16.11), and something is to be spliced: a fragment, or an attachment file that was read and is
+    a fragment, each on its own (§12.4, #135). And the headings of the document
     whose ``heading-skip`` the combined document makes valid (``include_heading_skips``), which the caller
     does not report, as the combined document is the one §4.1 judges when every fragment between is read
     (§12.2). A
@@ -1099,31 +1133,50 @@ def check_includes(
         )
         if walk.incomplete:
             unread.add(include.section)  # something it includes is not known: it fills nothing
-    if files is not None and template:
-        # The attachment files of a template hold no include (§16.12); only that is checked
-        # of them here: their frontmatter and heading are assembly's to refuse, and are not
-        # reported by this validation (CONFORMANCE.md).
-        attached: set[str] = set()
+    entries = legaldown_attachments(document.metadata)
+    capped = unshaped = 0
+    if files is None or walk is None:
+        unshaped = len(entries)
+    else:
+        # Each LegalDown attachment file is read too (§12.4): for its shape, and in a template for the
+        # ``{{include:}}`` it must not hold (§16.12), once for each file however often it is attached.
+        checked: set[str] = set()
+        holds_includes: dict[str, bool] = {}  # whether each file has include paragraphs
         include_keys = {files.key(path) for path in findings}  # the files already checked as includes
-        for attachment in document.metadata.attachments:
-            relative = files.relative(attachment.file) if attachment.file.endswith(LEGALDOWN_EXTENSIONS) else None
-            if relative is None:
+        for index, _attachment, written in entries:
+            relative = files.relative(written)
+            if relative is not None and files.is_own(relative):
+                continue
+            fragment = None if relative is None else files.read(relative)
+            if relative is None or fragment is None:
+                unshaped += 1  # not read: refused, leading out of the directory, or not there
                 continue
             # (A file that was also an include was checked above, and is a finding of its own; however either
             # is spelled, it is one file, named by the path it was first met by.)
             key = files.key(relative)
-            if key in attached or key in include_keys or files.is_own(relative):
+            if key not in checked and key not in include_keys:
+                checked.add(key)
+                for finding in fragment_findings(
+                    fragment, kind="attachment", template=template, lex_fragment=lex_fragment
+                ):
+                    result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
+            # One copy for each entry. A file with include paragraphs is left out: they are not followed in it
+            # (they are in an include fragment), so what it includes would be as missing as it was.
+            if not fragment.spliceable:
                 continue
-            attached.add(key)
-            fragment = files.read(relative)
-            if fragment is None:
+            if walk.full:
+                capped += 1
                 continue
-            for finding in fragment_findings(
-                fragment, kind="attachment", template=True, shape=False, lex_fragment=lex_fragment
-            ):
-                result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
-    if walk is not None and walk.complete and walk.plan.children:
-        outcome.combined = weave(document, where, walk.plan, files, lex_fragment)
+            if key not in holds_includes:
+                holds_includes[key] = bool(fragment_includes(fragment, lex_fragment))
+            if not holds_includes[key] and not walk.attach(index, fragment):
+                capped += 1
+    if walk is not None and walk.complete and (walk.plan.children or walk.attached):
+        outcome.combined = weave(document, where, walk.plan, files, lex_fragment, walk.attached)
+    built = outcome.combined is not None
+    outcome.attachments_out = len(entries) - (len(walk.attached) if built and walk is not None else 0)
+    outcome.attachments_capped = capped if walk is not None and walk.complete else 0  # (else the includes are to blame)
+    outcome.attachments_unshaped = unshaped
     if not splices:
         return outcome
     judgement = include_heading_skips(document, where, splices, first_level, unread, units, questions)

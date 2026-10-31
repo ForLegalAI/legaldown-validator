@@ -42,7 +42,7 @@ from ..markdown import (
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import Locator
 from ..specification import SPEC_VERSION, parse_version
-from .combined import Combined, CombinedLocator, CombinedUnits, merge_diagnostics
+from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
     ALWAYS,
     Exclusivity,
@@ -70,6 +70,7 @@ from .helpers import (
     is_positive_numeric,
     is_valid_iso_date,
     is_valid_money_amount,
+    legaldown_attachments,
     slugify_identifier,
 )
 from .paths import FileReferences, ReferenceImages, check_fragment_images, check_frontmatter_paths, check_heading_images
@@ -1193,8 +1194,9 @@ def validate(
         combined document): a reference or a term into a fragment resolves, an auto-generated
         identifier that the fragments and the document share is ``anchor-autogen-collision``, and
         what a fragment holds that a complete document may not is reported in it, at its line, with
-        ``Diagnostic.file`` the fragment's path. A LegalDown attachment file is not part of that
-        document. With any include not followed, the document is validated as it is, and the
+        ``Diagnostic.file`` the fragment's path. The LegalDown attachment files that were read and
+        are fragments follow the body in it, each on its own (§12.4; one not read leaves the others
+        as they are). With any include not followed, the document is validated as it is, and the
         Warning says the combined-document checks were not made.
     document_root:
         The directory every file the document refers to must lie within
@@ -1388,7 +1390,8 @@ def _check(
     )
     # The paths the document names (§2.3, #104), from the directory it is in.
     file_references = FileReferences(
-        result, document_root, document.path.parent if document.path is not None else None, where.start()
+        result, document_root, document.path.parent if document.path is not None else None, where.start(),
+        base_of=combined.base_of if combined is not None else None,
     )
     # §3.2: a newer declared version draws a Warning, never a failure, and
     # softens unknown directives to Warnings (§11.5).
@@ -1870,7 +1873,10 @@ def _check(
             # is still adjusted so downstream indices stay usable.
             identifier = free_identifier(identifier, presence)
             result.error(
-                "anchor-duplicate",
+                # (An attachment file comes after the body, so the later heading is its own: §16.10.)
+                "attachment-anchor-duplicate"
+                if combined is not None and combined.section_origin[section_index][0].attachment is not None
+                else "anchor-duplicate",
                 f"Duplicate section identifier on '{section.title}'. It was adjusted to "
                 f"'{identifier}'.", line=where.heading(section_index),
             )
@@ -2127,13 +2133,14 @@ def _check(
     # A {{def:}} inside an attachment file registers a document-wide term; ids
     # must remain unique across the combined document (§16.10).
     attachments_unread: list[UnreadReason] = []  # why, of the LegalDown attachment files with none imported
-    for att_index, att in enumerate(document.metadata.attachments):
-        if not att.file.endswith(LEGALDOWN_EXTENSIONS):
-            continue
+    spliced = combined.attached if combined is not None else frozenset()
+    for att_index, att, att_file in legaldown_attachments(document.metadata):
+        if att_index in spliced:
+            continue  # (its definitions are in the combined document: imported again they would clash with themselves)
         if ("attachment", att_index) not in imports:
             imports["attachment", att_index] = (
-                _imported(import_attachment_definitions(att.file)) if import_attachment_definitions is not None
-                else _definitions_in(document, files, att.file, file_references)
+                _imported(import_attachment_definitions(att_file)) if import_attachment_definitions is not None
+                else _definitions_in(document, files, att_file, file_references)
             )
         imported = imports["attachment", att_index]
         if imported.not_imported is not None:
@@ -2503,8 +2510,23 @@ def _check(
 
     # Definitions used before declaration (§16.3, Info): one for each definition, at its first
     # earlier use. The original an amendment amends is in force before the document (§7.5).
+    # A definition an attachment file declares is document-wide (§7.2, §12.4): only a use in the attachment
+    # itself, before its declaration there, is a use before it. (A body use, or one in another attachment, is not.)
+    uses = term_uses
+    if combined is not None and combined.attached:
+        places: dict[str, set[Instance]] = {}  # of each definition, the places of its declarations
+        for ref, _presence in written:
+            places.setdefault(ref.id, set()).add(combined.place_of(ref.section_index, ref.block_index))
+        within = {
+            def_id: where_declared for def_id, where_declared in places.items()
+            if all(place.attachment is not None for place in where_declared)
+        }
+        uses = [
+            use for use in term_uses
+            if use.target not in within or combined.place_of(use.section, use.block) in within[use.target]
+        ]
     for number, earlier in used_before_declaration(
-        written, term_uses, _imported_definitions, exclusivity if template else None
+        written, uses, _imported_definitions, exclusivity if template else None
     ):
         ref = written[number][0]
         declared = definition_line(ref)
@@ -2558,10 +2580,11 @@ def _check(
     # A question may be used in an include fragment or a LegalDown attachment
     # file. The files are read for their shape and what a template may hold in
     # them (#35), not for the questions they use, so none is unused for certain.
-    # Not so in the combined document, which holds the fragments (but not the
-    # attachment files, #117).
-    reads_other_files = ("include" in body_directives and combined is None) or any(
-        att.file.endswith(LEGALDOWN_EXTENSIONS) for att in meta.attachments
+    # Not so in the combined document, which holds the fragments and the attachment files
+    # it could read (#117, #135).
+    reads_other_files = (
+        ("include" in body_directives or bool(legaldown_attachments(meta)))
+        if combined is None else combined.attachments_out > 0
     )
     if isinstance(questions, dict) and not reads_other_files:
         for qid in questions:
@@ -2668,6 +2691,7 @@ def _check(
     if included.combined is not None:
         included.combined.template = template
         included.combined.imports = imports
+        included.combined.attachments_out = included.attachments_out
         included.combined.definition_reads = reference_images.reads
         whole = _check(
             included.combined.document, final, resolve, import_definitions, import_attachment_definitions, mode,

@@ -7,8 +7,8 @@ import unicodedata
 from datetime import date as date_type
 
 from ..markdown import strip_comments
-from ..models import Metadata
-from .patterns import ISO_639_1_CODES
+from ..models import Attachment, Metadata
+from .patterns import ISO_639_1_CODES, LEGALDOWN_EXTENSIONS
 
 # The §5.3 transliteration table, exhaustive: exactly these mappings.
 _TRANSLITERATION = str.maketrans({
@@ -114,6 +114,15 @@ def is_positive_numeric(value: str) -> bool:
     """Return True if *value* is a positive integer or decimal (§10.5): a
     period as the decimal separator, and no sign or exponent."""
     return bool(_DECIMAL_RE.fullmatch(value or "")) and float(value) > 0
+
+
+def legaldown_attachments(meta: Metadata) -> list[tuple[int, Attachment, str]]:
+    """The entries of ``meta.attachments`` that name a LegalDown file (§12.4), each with its index and its
+    file as written once stripped, as ``parse`` reads it: what is read, imported and spliced (#135)."""
+    return [
+        (index, attachment, written) for index, attachment in enumerate(meta.attachments)
+        if (written := attachment.file.strip()).endswith(LEGALDOWN_EXTENSIONS)
+    ]
 
 
 def authoritative_mismatch(meta: Metadata) -> bool:

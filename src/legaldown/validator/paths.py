@@ -90,7 +90,11 @@ class FileReferences:
     run, and ``../shared/definitions.lgd`` is valid, §2.3). *base* is the directory
     the paths are relative to: that of a loaded document; a parsed string has
     none and is assumed to sit at the root, so a leading ``..`` leaves it. *line*
-    is where a document outside the root is reported.
+    is where a document outside the root is reported. In the combined document of
+    a document and its files (#135) a path is relative to the file it is written in:
+    *base_of* gives the directory of that file from the document's (``Combined.base_of``,
+    for the section and block of the place of a reference), and the depth of each below the
+    root is worked out once.
 
     References are met as the document is walked, in no order that reads well, and
     recorded by ``check`` with their place in the document (*at*); ``finish`` judges
@@ -103,16 +107,21 @@ class FileReferences:
         root: str | os.PathLike[str] | None,
         base: str | os.PathLike[str] | None,
         line: Line,
+        base_of: Callable[[int, int], str] | None = None,
     ) -> None:
         self._result = result
         self._root = None if root is None else os.fspath(root)
         self._line = line
+        self._base = None if base is None else os.fspath(base)
+        self._base_of = base_of
         # How many names the document is below the root, once: None when it is
         # not within it. Every path of a document outside the root leads out of
         # it, and one finding says so, not one for each path (#104).
         self._depth: int | None = None
         if self._root is not None:
             self._depth = names_below(self._root if base is None else base, self._root)
+        #: The same of the directories of the other files of the combined document, by their path from the document's.
+        self._depths: dict[str, int | None] = {"": self._depth}
         self._met: list[FileReference] = []
         #: Whether a document outside the root has been said to be (once, however many paths).
         self._said_outside = False
@@ -163,9 +172,19 @@ class FileReferences:
         (``path-not-relative``) or out of the root (``path-outside-root``). The same
         judgement (``_finding``), asked before the references are judged."""
         path = path.strip()
-        return self._finding(path, path, True) is not None
+        return self._finding(path, path, True, self._depth) is not None
 
-    def _finding(self, judged: str, decoded: str, whole: bool) -> tuple[FindingKind, str, str] | None:
+    def _depth_of(self, base: str) -> int | None:
+        """How many names the directory *base* (from the document's) is below the root, once for each."""
+        if base not in self._depths:
+            self._depths[base] = (
+                None if self._root is None else names_below(os.path.join(self._base or self._root, base), self._root)
+            )
+        return self._depths[base]
+
+    def _finding(
+        self, judged: str, decoded: str, whole: bool, depth: int | None
+    ) -> tuple[FindingKind, str, str] | None:
         """What is wrong with a path, as written (*judged*) and percent-decoded (*decoded*, the
         same when it is not an image's), or None: ``("not-relative", form, form)`` when it is
         absolute, in the *form* that makes it so; ``("document-outside", judged, judged)`` when the
@@ -180,7 +199,7 @@ class FileReferences:
         for form in (judged, decoded):
             names = form if whole else _whole_names(form)  # what is judged, and what a finding says
             # (The same judgement as the files a document reads: ``files.containment``.)
-            contained = containment(names, rooted=self._root is not None, depth=self._depth)
+            contained = containment(names, rooted=self._root is not None, depth=depth)
             if contained == "document-outside":
                 return "document-outside", judged, judged
             if contained == "leaves":
@@ -211,7 +230,8 @@ class FileReferences:
         if not judged and (whole or not rest):
             return False  # a query or a fragment alone, or a directive alone, names no file
         decoded = unquote(judged) if url and "%" in judged else judged
-        found = self._finding(judged, decoded, whole)
+        base = self._base_of(at[0], at[1]) if self._base_of is not None and len(at) >= 2 else ""
+        found = self._finding(judged, decoded, whole, self._depth_of(base))
         if found is None:
             return True
         kind, form, names = found
