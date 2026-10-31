@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from legaldown import Template, assemble, load_template
+from legaldown import Template, load_template
 from legaldown.assembly import _template_identifiers
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.grammar import SKIPPED_RULE
@@ -25,8 +25,6 @@ from legaldown.validator.fragments import (
     fragment_includes,
 )
 from legaldown.validator.patterns import INCLUDE_LIMIT_RULE
-
-pytestmark = pytest.mark.filterwarnings(r"ignore:legaldown\.assemble\(\) is deprecated:DeprecationWarning")
 
 _FRONT = "---\ntitle: Fixture\ndocument_type: contract\n---\n\n"
 _TEMPLATE_FRONT = "---\ntitle: Fixture\ndocument_type: contract\nquestions:\n  x:\n    type: boolean\n---\n\n"
@@ -137,14 +135,6 @@ def test_the_include_paragraphs_assembly_reads_are_the_ones_the_validator_reads(
     expected = fragment_includes(fragments.FragmentFile("sub/a.lgd", parse(part, on_frontmatter_error="keep")))
     assert [(i.path, i.section) for i in source.includes] == [(i.path, i.section) for i in expected]
     assert [i.section for i in source.includes] == [None, 0, 1]
-
-
-def test_the_deprecated_function_assembles_a_nested_include_too():
-    files = {"sub/a.lgd": "### A\n\n{{include: b.lgd}}\n", "sub/b.lgd": "#### B\n\nText.\n"}
-    result = assemble(_FRONT + _MAIN, {}, load_file=files.get)
-    assert result.ok and result.files == files
-    result = assemble(_FRONT + _MAIN, {}, load_file={**files, "sub/b.lgd": "#### B\n\n{{include: a.lgd}}\n"}.get)
-    assert _found(result) == [("include-cycle", "sub/b.lgd", 3)]
 
 
 def test_the_questions_of_a_nested_fragment_are_asked_where_they_are_reached():

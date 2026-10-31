@@ -447,7 +447,7 @@ def test_every_reason_is_computed_in_a_complete_document_and_none_is_flagged():
 def test_suppressing_frontmatter_drops_what_the_frontmatter_may_declare_and_keeps_the_body_rules():
     document = parse(_FULL)
     mode = _Mode(suppress=frozenset({Depends.FRONTMATTER}))
-    rules = {d.rule for d in _validate(document, False, None, None, None, mode).diagnostics}
+    rules = {d.rule for d in _validate(document, False, None, mode).diagnostics}
     assert rules.isdisjoint({
         "party-unknown", "side-unknown", "attach-undeclared", "ref-targets-attachment",
         "choose-invalid", "condition-invalid",
@@ -458,7 +458,7 @@ def test_suppressing_frontmatter_drops_what_the_frontmatter_may_declare_and_keep
 def test_suppressing_body_drops_references_alone():
     document = parse(_FULL)
     mode = _Mode(suppress=frozenset({Depends.BODY}))
-    rules = {d.rule for d in _validate(document, False, None, None, None, mode).diagnostics}
+    rules = {d.rule for d in _validate(document, False, None, mode).diagnostics}
     assert rules.isdisjoint({"ref-broken", "term-undefined"})
     assert {"party-unknown", "ref-targets-attachment", "condition-invalid"} <= rules
 
@@ -480,7 +480,7 @@ def test_the_presets():
 def test_the_unreadable_frontmatter_preset_validates_the_body_as_the_body_of_a_main_document():
     body = "## Scope\n\n{{party: x}} {{side: x}} {{attach: x}} {{choose: q, a=\"x\"}} {{ref: nope}} {{term: nope}}\n"
     for source in (body, _FULL.split("# Scope")[0] + body):
-        result = _validate(parse(source), False, None, None, None, _UNREADABLE_FRONTMATTER)
+        result = _validate(parse(source), False, None, _UNREADABLE_FRONTMATTER)
         rules = [d.rule for d in result.diagnostics]
         assert "frontmatter-absent" not in rules
         assert "title-missing" not in rules and "sides-absent" not in rules
@@ -492,7 +492,7 @@ def test_the_unreadable_frontmatter_preset_validates_the_body_as_the_body_of_a_m
 
 
 def test_the_unreadable_frontmatter_preset_accepts_a_first_heading_at_level_one():
-    result = _validate(parse("# Scope\n\n## Sub\n"), False, None, None, None, _UNREADABLE_FRONTMATTER)
+    result = _validate(parse("# Scope\n\n## Sub\n"), False, None, _UNREADABLE_FRONTMATTER)
     assert result.diagnostics == []
 
 

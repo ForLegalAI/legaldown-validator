@@ -6,7 +6,7 @@ parse and validate a single document in memory. It also claims the **Assembly** 
 
 It is verified against the specification's own
 [fixtures corpus](https://github.com/ForLegalAI/LegalDown/tree/main/fixtures) — one case per
-validation rule, paired with the diagnostic a conforming validator must produce. **101 of the
+validation rule, paired with the diagnostic a conforming validator must produce. **104 of the
 corpus's 113 rules are implemented, and every case the harness runs passes**, at the line each
 case gives and, for a finding in a file the document includes, in that file.
 
@@ -383,8 +383,8 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
     refused as ever. A document under a symbolic link to elsewhere is below the root by its names (the
     check is lexical) and reads nothing outside the root, so a fragment it names is `include-file-missing`.
   - **Without a root**, `../x` is valid and **not read**: no finding, a custom `resolve=` is not asked, and
-    the Warning of §17.5 says so (a document one does not control may not read what it names). The
-    deprecated `assemble()` is unchanged: it asks for no `../`. `-o` still refuses an output that leads
+    the Warning of §17.5 says so (a document one does not control may not read what it names). Assembly
+    asks for no `../` either. `-o` still refuses an output that leads
     out of its directory, so a kept file read from `../` is assembled in memory (`AssemblyResult.files` keeps
     its `../shared/x.lgd`) but the CLI cannot write it.
   - `Diagnostic.file` of a finding in such a file is its path from the document's directory, `../shared/x.lgd`;
@@ -1107,7 +1107,7 @@ Decisions the specification leaves open:
     is otherwise skipped nothing has none. The attachment files are each on their own (below): one not read leaves
     the body and the others as they are.
   - *Cost.* The document is validated twice, itself and combined, and the files it imports from (an amended
-    original, attachment files; an `import_definitions` callback) are read, and the callbacks called, once. The
+    original, attachment files) are read once, whichever check wants them. The
     document's own pass is not shortened when a combined document will be made (it is not known until the
     includes are followed, near its end), and the units and markers of the document are not reused, since the
     combined structure reads them differently; so the work is about twice the document's and linear in the
@@ -1259,8 +1259,7 @@ validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warn
   imported, so that a `def-duplicate-id` against them (§16.10) is not made; or a file that could not be read
   (the loader has none, frontmatter that cannot be read, or a backslash or a null byte in the path, which no
   finding reports). The message counts each reason (`3 LegalDown attachment files (1 leads out of the
-  document's directory, which is not read without a document root; 2 could not be read)`). With the deprecated `import_attachment_definitions`, any path the
-  importer was asked about and gave nothing for is one that could not be read, whatever the path is. A path is
+  document's directory, which is not read without a document root; 2 could not be read)`). A path is
   judged as it is written once stripped, as `parse` reads it (it strips `attachments[].file` and
   `amends.file`) and the references are judged.
 - **When `amend-term-undefined` is named, for the original.** Whenever the definitions of the original an
@@ -1341,12 +1340,11 @@ structure assembly edits is recorded by the parser's own walk, so assembly and v
 template the same way. `Template.questions` lists the questions a template asks; `Form.questions`
 those it reaches given an answers set, and `Form.unanswered` those still left open. §15.7.2 gives assembly a template that
 validates without Errors. Assembly does not require the whole of that, but a `Template` refuses a
-template with Errors in the validator's template rules (`Template.problems`); the deprecated
-`assemble` function does not.
+template with Errors in the validator's template rules (`Template.problems`).
 
 - A single-file template is assembled at Core, as §17.6 permits ("Core + Assembly").
 - A template with include fragments or LegalDown attachment files is assembled when the caller
-  passes `resolve` (`load_file` of the deprecated function), which reads them; the CLI reads them relative to the template and refuses a
+  passes `resolve`, which reads them; the CLI reads them relative to the template and refuses a
   path that leads out of its directory, unless `--document-root` holds it (#109). Reading them is a Full capability (§17.4) that this
   implementation provides for assembly without claiming Full, as §17.1 allows. Without
   `resolve`, such a template is refused with `include-file-missing` or

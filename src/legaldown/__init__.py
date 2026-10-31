@@ -22,11 +22,11 @@ Quick start::
 """
 from __future__ import annotations
 
-# The category of every deprecation warning legaldown raises
+# The category legaldown's deprecation warnings are raised with (none are, in 0.5.0)
 from ._deprecation import LegaldownDeprecationWarning
 
 # Assembly (§15.7): a named capability (§17.6)
-from .assembly import AssemblyError, AssemblyResult, Question, assemble, needed_questions, template_questions
+from .assembly import AssemblyError, AssemblyResult, Question
 from .files import LoadFile, file_loader
 
 # Compatibility: the ``grammar`` and ``syntax`` names imported here, and the
@@ -61,8 +61,8 @@ from .models import (  # noqa: F401 -- BLOCK_DEFAULTS and the *_from_dict factor
 )
 
 # Parser & serializer
-from .parser import FrontmatterError, load, parse, parse_document
-from .serializer import save, serialize, serialize_document
+from .parser import FrontmatterError, load, parse
+from .serializer import save, serialize
 
 # The LegalDown specification version this implementation targets.
 from .specification import SPEC_VERSION
@@ -93,9 +93,7 @@ from .template import AnswersError, Form, Template, load_answers, load_template,
 
 # Validator
 from .validator import (
-    AttachmentDefinitionsImporter,
     Blank,
-    DefinitionsImporter,
     Diagnostic,
     DocumentIndex,
     InlineValues,
@@ -104,10 +102,9 @@ from .validator import (
     ValidationResult,
     is_template,
     validate,
-    validate_document,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 #: Conformance level per specification §17. "core" — parse and validate a
 #: single document. Rendering and Full (multi-file: includes, attachments,
@@ -129,13 +126,10 @@ __all__ = [
     # Core workflow
     "load",
     "parse",
-    "parse_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``parse`` or ``load``
     "FrontmatterError",
     "save",
     "serialize",
-    "serialize_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``serialize``
     "validate",
-    "validate_document",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate``
     # Assembly (§15.7, §17.6)
     "load_template",
     "parse_template",
@@ -143,9 +137,6 @@ __all__ = [
     "AnswersError",
     "Template",
     "Form",
-    "assemble",  # deprecated since 0.4.0, removed in 0.5.0
-    "template_questions",  # deprecated since 0.4.0, removed in 0.5.0
-    "needed_questions",  # deprecated since 0.4.0, removed in 0.5.0
     "AssemblyResult",
     "AssemblyError",
     "Question",
@@ -173,9 +164,7 @@ __all__ = [
     "CustomField",
     "Amends",
     "Attachment",
-    # Deprecated importer callbacks
-    "DefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate(resolve=)``
-    "AttachmentDefinitionsImporter",  # deprecated since 0.4.0, removed in 0.5.0: use ``validate(resolve=)``
-    # What each deprecated name above warns with when used: one category to filter
+    # The category of the deprecation warnings legaldown raises (none in 0.5.0), kept so that a
+    # ``warnings`` filter naming it keeps working
     "LegaldownDeprecationWarning",
 ]

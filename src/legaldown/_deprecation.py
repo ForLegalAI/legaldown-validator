@@ -3,10 +3,11 @@ from __future__ import annotations
 
 
 class LegaldownDeprecationWarning(DeprecationWarning):
-    """A deprecated legaldown API was used: it is removed in the next minor
-    release. Every deprecation warning legaldown raises is of this category,
-    so one filter covers them all; a ``DeprecationWarning`` filter still
-    matches them too."""
+    """The category every deprecation warning of legaldown is raised with: an API
+    that is removed in a later minor release. No API is deprecated in 0.5.0, so
+    nothing raises it now; it stays public so that a ``warnings`` filter naming it
+    (``error::legaldown.LegaldownDeprecationWarning``) keeps working, and a
+    ``DeprecationWarning`` filter matches it too."""
 
 
 # Named where it is imported from, ``legaldown.LegaldownDeprecationWarning``

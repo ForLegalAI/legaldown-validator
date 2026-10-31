@@ -52,17 +52,15 @@ def test_every_public_name_is_importable(module):
     assert [name for name in module.__all__ if not hasattr(module, name)] == []
 
 
-#: ``legaldown.__all__``: the workflow and the model (0.4.0).
+#: ``legaldown.__all__``: the workflow and the model (0.5.0).
 PUBLIC = sorted([
     # Package metadata
     "__version__", "SPEC_VERSION", "CONFORMANCE_LEVEL", "CAPABILITIES",
     # Core workflow
     "load", "parse", "FrontmatterError", "save", "serialize", "validate",
-    "parse_document", "serialize_document", "validate_document",  # deprecated
     # Assembly
     "load_template", "parse_template", "load_answers", "AnswersError", "Template", "Form",
     "Question", "AssemblyResult", "AssemblyError", "LoadFile", "file_loader",
-    "assemble", "template_questions", "needed_questions",  # deprecated
     # Result types
     "ValidationResult", "DocumentIndex", "InlineValues", "SectionIndexEntry", "Blank", "Diagnostic",
     "PlacedMarker",
@@ -70,8 +68,7 @@ PUBLIC = sorted([
     # Document model
     "Document", "Metadata", "Section", "Block", "ListItem", "Side", "Party", "Representative",
     "CustomField", "Amends", "Attachment",
-    "DefinitionsImporter", "AttachmentDefinitionsImporter",  # deprecated
-    "LegaldownDeprecationWarning",  # what the deprecated names warn with
+    "LegaldownDeprecationWarning",  # kept so that a warnings filter naming it keeps working
 ])
 
 #: What PactTrack and legaldown-render import from ``legaldown`` itself.
@@ -79,17 +76,17 @@ _PACTTRACK = [
     "Amends", "AssemblyError", "AssemblyResult", "Attachment", "BLOCK_DEFAULTS", "Block", "CustomField",
     "DIRECTIVE_PARAMS", "DefinitionAnchor", "DefinitionRef", "Diagnostic", "Directive", "Document",
     "KNOWN_DIRECTIVES", "Lexed", "ListItem", "LoadFile", "Metadata", "Party", "Question", "Representative",
-    "SPEC_VERSION", "Section", "SectionIndexEntry", "Side", "ValidationResult", "assemble", "block_fragments",
+    "SPEC_VERSION", "Section", "SectionIndexEntry", "Side", "ValidationResult", "block_fragments",
     "block_from_dict", "collect_definitions", "collect_source_directives", "document_from_dict",
     "document_to_dict", "empty_document", "find_definition_anchors", "is_drafting_note", "is_escaped",
-    "is_template", "iter_directives", "lex", "list_items", "metadata_from_dict", "needed_questions",
-    "parse_document", "party_from_dict", "render_block", "section_from_dict", "serialize_document",
-    "side_from_dict", "slugify_identifier", "template_questions", "validate_document",
+    "is_template", "iter_directives", "lex", "list_items", "metadata_from_dict",
+    "party_from_dict", "render_block", "section_from_dict",
+    "side_from_dict", "slugify_identifier",
 ]
 _RENDER = [
     "AssemblyError", "Block", "Diagnostic", "Directive", "Document", "PlacedMarker", "ValidationResult",
-    "assemble", "find_definition_anchors", "is_drafting_note", "lex", "list_items", "parse_document",
-    "render_block", "slugify_identifier", "validate_document",
+    "find_definition_anchors", "is_drafting_note", "lex", "list_items",
+    "render_block", "slugify_identifier",
 ]
 DOWNSTREAM_TOP_LEVEL = sorted(set(_PACTTRACK) | set(_RENDER))
 
@@ -139,7 +136,7 @@ def test_every_name_that_moved_out_is_its_homes_object():
 
 @pytest.mark.parametrize("name", DOWNSTREAM_TOP_LEVEL)
 def test_a_downstream_top_level_import_keeps_working_without_a_warning(name):
-    """Importing never warns; the deprecated callables warn only when called."""
+    """Importing never warns."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         namespace: dict = {}
@@ -427,21 +424,6 @@ def test_where_a_document_lives_is_not_part_of_what_it_says(tmp_path):
     assert "path" not in legaldown.document_to_dict(load(file))
 
 
-def test_parse_document_is_a_deprecated_alias_of_parse():
-    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0") as record:
-        document = legaldown.parse_document(_SOURCE, filename="x.lgd")
-    assert document == parse(_SOURCE, filename="x.lgd")
-    assert record[0].filename == __file__  # the caller is named, not the shim
-
-
-def test_serialize_document_is_a_deprecated_alias_of_serialize():
-    document = parse(_SOURCE)
-    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0") as record:
-        text = legaldown.serialize_document(document)
-    assert text == legaldown.serialize(document)
-    assert record[0].filename == __file__  # the caller is named, not the shim
-
-
 def test_writing_mirrors_reading():
     for name in ("load", "parse", "save", "serialize"):
         assert name in legaldown.__all__
@@ -541,71 +523,29 @@ def test_resolve_stands_in_for_the_filesystem(tmp_path):
     assert "amend-term-undefined" not in validate(parse(_AMENDMENT.format(file="o.lgd")), resolve=resolve).rules()
 
 
-def test_the_importer_callbacks_still_work_and_say_they_are_deprecated():
-    document = parse(_AMENDMENT.format(file="original.lgd"))
-    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0"):
-        result = validate(document, import_definitions=lambda *_: {"services": "Services"})
-    assert "amend-term-undefined" not in result.rules() and "amend-term-unresolvable" not in result.rules()
-    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0"):
-        validate(document, import_attachment_definitions=lambda _file: {})
-
-
-def test_validate_document_is_a_deprecated_alias_of_validate():
-    document = parse(_SOURCE)
-    with pytest.warns(DeprecationWarning, match=r"removed in 0\.5\.0") as record:
-        result = legaldown.validate_document(document, final=True)
-    assert result == validate(document, final=True)
-    assert record[0].filename == __file__
-
-
 _TEMPLATE_TEXT = "---\ntitle: T\n---\n\n# A {#a}\n\nHi {{placeholder: who}}.\n"
-
-#: Every deprecated entry point, called: (name, call).
-_DEPRECATED_CALLS = [
-    ("parse_document", lambda: legaldown.parse_document(_SOURCE)),
-    ("serialize_document", lambda: legaldown.serialize_document(parse(_SOURCE))),
-    ("validate_document", lambda: legaldown.validate_document(parse(_SOURCE))),
-    ("validator.validate_document", lambda: legaldown.validator.validate_document(parse(_SOURCE))),
-    ("import_definitions", lambda: validate(parse(_SOURCE), import_definitions=lambda *_: {})),
-    ("import_attachment_definitions", lambda: validate(parse(_SOURCE), import_attachment_definitions=lambda _f: {})),
-    ("validate_document importer", lambda: legaldown.validate_document(parse(_SOURCE), import_definitions=lambda *_: {})),
-    ("assemble", lambda: legaldown.assemble(_TEMPLATE_TEXT, {"who": "Ann"})),
-    ("template_questions", lambda: legaldown.template_questions(_TEMPLATE_TEXT)),
-    ("needed_questions", lambda: legaldown.needed_questions(_TEMPLATE_TEXT, {})),
-]
-
-
-@pytest.mark.parametrize("call", [call for _name, call in _DEPRECATED_CALLS], ids=[n for n, _c in _DEPRECATED_CALLS])
-def test_every_deprecation_warns_with_legaldowns_own_category(call):
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        call()
-    assert caught, "no warning"
-    assert {type(w.message) for w in caught} == {legaldown.LegaldownDeprecationWarning}
-    assert all("removed in 0.5.0" in str(w.message) and w.filename == __file__ for w in caught)
-
-
-@pytest.mark.parametrize("call", [call for _name, call in _DEPRECATED_CALLS], ids=[n for n, _c in _DEPRECATED_CALLS])
-def test_one_filter_turns_every_deprecation_into_an_error(call):
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", legaldown.LegaldownDeprecationWarning)
-        with pytest.raises(legaldown.LegaldownDeprecationWarning):
-            call()
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)  # a filter on the base category still matches
-        with pytest.raises(DeprecationWarning):
-            call()
 
 
 def test_the_deprecation_category_is_a_deprecation_warning_named_from_legaldown():
     category = legaldown.LegaldownDeprecationWarning
     assert issubclass(category, DeprecationWarning) and category is not DeprecationWarning
     assert f"{category.__module__}.{category.__qualname__}" == "legaldown.LegaldownDeprecationWarning"
-    assert "removed in the next minor release" in " ".join(category.__doc__.split())
+    assert "removed in a later minor release" in " ".join(category.__doc__.split())
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         legaldown.validate(parse(_SOURCE))  # the current API does not warn
         legaldown.parse_template(_TEMPLATE_TEXT).form({"who": "Ann"}).assemble()
+
+
+def test_what_was_deprecated_in_0_4_0_is_gone():
+    removed = ["parse_document", "serialize_document", "validate_document", "assemble", "template_questions",
+               "needed_questions", "DefinitionsImporter", "AttachmentDefinitionsImporter"]
+    for module in (legaldown, legaldown.validator):
+        assert [name for name in removed if hasattr(module, name) or name in module.__all__] == []
+    parameters = inspect.signature(validate).parameters
+    assert "import_definitions" not in parameters and "import_attachment_definitions" not in parameters
+    with pytest.raises(TypeError):
+        validate(parse(_SOURCE), import_definitions=lambda *_: {})  # type: ignore[call-arg]
 
 
 def test_the_messages_by_severity_are_the_diagnostics_own():
@@ -667,14 +607,6 @@ def test_a_document_that_names_itself_as_its_original_reads_nothing(tmp_path):
     for options in ({}, {"resolve": file_loader(tmp_path)}):  # by default, and through any resolver
         rules = validate(load(path), **options).rules()
         assert "amend-def-override" not in rules
-
-
-def test_one_importer_does_not_start_reading_the_other_files_from_disk(tmp_path):
-    document = _amendment(tmp_path, _ORIGINAL)
-    with pytest.warns(DeprecationWarning):
-        # An importer for the attachments only: the amended original is still not read, as it never was.
-        result = validate(document, import_attachment_definitions=lambda _file: {})
-    assert "amend-term-unresolvable" in result.rules()
 
 
 @pytest.mark.parametrize(
@@ -753,8 +685,7 @@ def test_a_loader_is_never_asked_for_a_path_outside_the_directory(hostile):
     text = f"---\ntitle: T\n---\n\n# A {{#a}}\n\n{{{{include: {hostile}}}}}\n"
     template = legaldown.parse_template(text, resolve=resolve)
     assert "include-file-missing" in [d.rule for d in template.problems]
-    with pytest.warns(DeprecationWarning):
-        assert not legaldown.assemble(text, {}, load_file=resolve).ok
+    assert not Template(text, resolve=resolve, _check=False).form({}).assemble().ok
     assert asked == []
 
 

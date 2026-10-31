@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from legaldown import LegaldownDeprecationWarning, Template, load, parse, validate
+from legaldown import Template, load, parse, validate
 from legaldown.cli import EXIT_DIAGNOSTICS, EXIT_OK, main
 from legaldown.grammar import IMPLEMENTATION_RULE_PREFIX, SKIPPED_RULE
 from legaldown.positions import Locator
@@ -306,18 +306,6 @@ def test_the_document_itself_is_no_import_that_did_not_happen_for_an_attachment_
     result = validate(load(path))
     (warning,) = [d for d in result.diagnostics if d.rule == SKIPPED_RULE]
     assert "amend-term-undefined" in warning.message and "amend-term-unresolvable" in result.rules()
-
-
-def test_a_deprecated_importer_that_gave_nothing_is_an_import_that_did_not_happen_whatever_the_path():
-    for file in ("../x.lgd", "/abs.lgd", "ok.lgd"):
-        with pytest.warns(LegaldownDeprecationWarning):
-            result = validate(parse(_attached(file)), import_attachment_definitions=lambda _path: None)
-        (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
-        assert "importing the definitions of 1 LegalDown attachment file (1 could not be read)" in warning.message
-        with pytest.warns(LegaldownDeprecationWarning):
-            result = validate(parse(_attached(file)), import_attachment_definitions=lambda _path: {})
-        (warning,) = (d for d in result.diagnostics if d.rule == SKIPPED_RULE)
-        assert "importing" not in warning.message
 
 
 def test_an_amendment_draws_one_warning_at_its_file():

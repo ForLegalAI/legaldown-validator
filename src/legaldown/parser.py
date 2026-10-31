@@ -11,7 +11,6 @@ from __future__ import annotations
 import bisect
 import os
 import re
-import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -20,7 +19,6 @@ from typing import Any, Literal, NamedTuple
 
 import yaml
 
-from ._deprecation import LegaldownDeprecationWarning
 from .definitions import DefinitionAnchor, block_fragments, find_definition_anchors, fragments_before_target
 from .directives import Directive, lex
 from .markdown import (
@@ -2147,18 +2145,6 @@ def parse(
         shape=document_shape(document),
     )
     return document
-
-
-def parse_document(source: str, *, filename: str = "") -> Document:
-    """Deprecated since 0.4.0, removed in 0.5.0. Same as ``parse``, with the same
-    arguments; ``load`` is the call for a file."""
-    warnings.warn(
-        "legaldown.parse_document() is deprecated since 0.4.0 and will be removed in 0.5.0; "
-        "use legaldown.parse() for a string, or legaldown.load() for a file",
-        LegaldownDeprecationWarning,
-        stacklevel=2,
-    )
-    return parse(source, filename=filename)
 
 
 class DirectiveLocation(NamedTuple):
