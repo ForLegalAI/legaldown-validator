@@ -87,6 +87,9 @@ class Combined:
     block_origin: list[list[tuple[Instance, int | None, int]]]
     template: bool = False
     imports: dict[Any, Any] = field(default_factory=dict)
+    #: What the document's own pass read the link reference definitions of its files as (``paths.ReferenceImages``),
+    #: for the combined pass not to read them again (#121).
+    definition_reads: dict[Any, Any] = field(default_factory=dict)
     _markers: list[FoundMarker] | None = None
     _local: dict[Instance, list[FoundMarker]] = field(default_factory=dict)
     _first: dict[str, int] = field(default_factory=dict)

@@ -180,3 +180,31 @@ def test_a_line_of_thousands_of_quote_markers_is_read_in_one_pass() -> None:
     body, _parses, seconds = _assembled(lines, "# h")
     assert body.splitlines()[-1].endswith("\\# h")
     assert seconds < 1
+
+
+@pytest.mark.parametrize("shape", ["tabs", "spaces", "lines-in-an-item"])
+def test_the_markers_and_columns_of_a_line_are_walked_once_along_it(shape: str, monkeypatch) -> None:
+    """Quote markers by the thousand, or thousands of lines in an item in a quote (#122): the columns of
+    each line are counted along one walk of it (``_frame``), not again from its start for each marker or
+    for each line. What is counted is the characters that the line-start check passes to ``advance_column``
+    (a recount from the start of the line for each marker, as a first attempt made, passed tens of millions
+    for the first shape, in six thousand calls: calls say little), against the characters of the template."""
+    if shape == "tabs":
+        lines = [">\t" * 6000 + "{{placeholder: p0}}"]
+    elif shape == "spaces":
+        lines = ["> " * 6000 + "{{placeholder: p0}}"]
+    else:
+        lines = ["> - a"] + [f">   {{{{placeholder: p{n + 1}}}}}" for n in range(3000)]
+    columns = [0]
+    advance_column = assembly_module.advance_column
+
+    def counted(column: int, text: str) -> int:
+        columns[0] += len(text)
+        return advance_column(column, text)
+
+    monkeypatch.setattr(assembly_module, "advance_column", counted)
+    body, parses, seconds = _assembled(lines, "# h" if shape != "lines-in-an-item" else "y")
+    assert body.splitlines()[-1].endswith("\\# h" if shape != "lines-in-an-item" else ">   y")
+    assert columns[0] < 4 * sum(len(line) for line in lines)
+    assert parses <= 6  # the template, its lines read again with the spaces after their markers gone, and the output
+    assert seconds < 10

@@ -511,6 +511,17 @@ def locate_link_definitions(document: Document) -> dict[str, PlacedLinkDefinitio
     (``PlacedLinkDefinition``): the first definition of each label, by the same key
     (``markdown.normalize_label``), in document order."""
     found: dict[str, PlacedLinkDefinition] = {}
+    for each in iter_link_definitions(document):
+        key = normalize_label(each.definition.label)
+        if key:
+            found.setdefault(key, each)
+    return found
+
+
+def iter_link_definitions(document: Document) -> Iterator[PlacedLinkDefinition]:
+    """Every link reference definition of *document*, the first of its label or not, in document order
+    (``locate_link_definitions`` keeps the first of each): for a key other than the specification's
+    (``markdown.label_key``, #121)."""
     for section, index, top in document.iter_indexed_blocks():
         if not _may_hold_definition(top):
             continue  # (a quote is not read again for nothing, #92 review)
@@ -519,11 +530,8 @@ def locate_link_definitions(document: Document) -> dict[str, PlacedLinkDefinitio
         ordinal = 0
         for block in nested_blocks(top):
             if block.kind == "link_definition":
-                key = normalize_label(block.label)
-                if key:
-                    found.setdefault(key, PlacedLinkDefinition(section, index, ordinal, block, before[ordinal]))
+                yield PlacedLinkDefinition(section, index, ordinal, block, before[ordinal])
                 ordinal += 1
-    return found
 
 
 def _may_hold_definition(block: Block) -> bool:

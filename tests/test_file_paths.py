@@ -9,7 +9,6 @@ never a file; the second runs only when a document root is configured
 from __future__ import annotations
 
 import random
-import re
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -17,7 +16,6 @@ from urllib.parse import unquote
 
 import pytest
 from helpers_renderers import (
-    BACKSLASH_PAIR_RE,
     PARAGRAPH_END_RE,
     URL_SCHEME_RE,
     markdown_it,
@@ -897,9 +895,17 @@ def test_a_reference_image_is_checked_though_a_renderer_reads_its_text_as_an_inl
     assert [rule for rule, _line in found] == ["path-not-relative"], document
 
 
-@pytest.mark.xfail(strict=True, reason="a definition only pandoc reads (a DEL or control character in a bare destination) is not judged: #121")
-@pytest.mark.parametrize("document", ["![a][r]\n\n[r]: /etc/passwd\x7f", "![a][r]\n\n[r]: /etc/passwd\x01"])
-def test_a_definition_only_pandoc_reads_is_judged(document):
+@pytest.mark.parametrize(
+    "document",
+    [
+        "![a][r]\n\n[r]: /etc/passwd\x7f", "![a][r]\n\n[r]: /etc/passwd\x01", "![a][r]\n\n[r]: /etc/passwd\\\tx",
+        "![a][r]\n\n[r]: </etc/passwd\\\nx>",
+    ],
+)
+def test_a_definition_only_pandoc_or_markdown_it_reads_is_judged(document):
+    """pandoc keeps a control character or DEL in a bare destination, and a backslash before a line break in ``<…>``;
+    markdown-it reads a backslash before a tab as a pair. The specification reads paragraph text there, and the image is
+    displayed all the same (``test_path_definitions.py`` has the other forms)."""
     assert _found(validate(_body(document))) == [("path-not-relative", 9)]
 
 
@@ -914,7 +920,6 @@ _IMAGE_TOKENS = [
     "<b>", "<", ">", "(", ")", "\\", '"', "'", " ", "\t", "\n", "\x7f", "\\)", '\\"', "\\>", '"t"', "'x'", "(t)", "b",
     "a", "\x01", "\x1f", "]", "[", "](", "/etc", "x.png", "\\\\", ":", "[r]",
 ]
-_CONTROLS_RE = re.compile("[\x01-\x08\x0b-\x1f\x7f]")
 
 
 def _image_sources_by_markdown_it(text):
@@ -970,9 +975,7 @@ def _image_sources_by_pandoc(documents):
 
 def _random_image_documents(seed, count):
     """Documents with images by an inline destination, a definition or both. Not those with a blank line or a quote
-    line in a paragraph, nor with the backslash before a character that is no punctuation (which only markdown-it
-    reads as a pair, #121), nor a definition only pandoc reads (a control character or DEL in its bare
-    destination, #121): one in its title or in a ``<…>`` destination is read by all."""
+    line in a paragraph: that ends the paragraph a link is in."""
     rng = random.Random(seed)
 
     def body():
@@ -988,22 +991,13 @@ def _random_image_documents(seed, count):
             f"![a]({first}", f"![r]({first}\n\n[r]: {second}", f"![a][r]\n\n[r]: {second}", f"![r]\n\n[r]: {second}",
             f"[x]: y\n[r]: {second}\n\n![a][r] ![r]({first}",
         ]
-        kind = rng.randrange(len(templates))
-        text = templates[kind]
+        text = templates[rng.randrange(len(templates))]
         if (
-            BACKSLASH_PAIR_RE.search(text) or text.endswith("\\") or "\n\n\n" in text
+            text.endswith("\\") or "\n\n\n" in text
             or any(PARAGRAPH_END_RE.search(part) for part in (first, second))
-            or (kind > 0 and _CONTROLS_RE.search(_bare_destination(second)))
         ):
             continue
         yield text
-
-
-def _bare_destination(definition):
-    """What a definition ``[r]: definition`` has for a bare destination (up to the first blank), or nothing if its
-    destination is in ``<…>``."""
-    rest = definition.lstrip(" \t\n")
-    return "" if rest.startswith("<") else re.split("[ \t\n]", rest, maxsplit=1)[0]
 
 
 def _judged_by_validate(monkeypatch):
