@@ -675,14 +675,32 @@ Where this differs from CommonMark, or is read more simply:
       fragments it includes together) are not tried: every insertion in the region is reported, with a message that
       says why and tells the author to write `\[` if the bracket is text, or to put a blank line after the
       definition. That is an over-flag, and accepted: it is for paragraphs that a definition begins in (a line-start
-      `[label]:`, or an insertion for its colon) and no others. Measured, in a paragraph that begins `[label]:` and a
+      `[label]:`, or an insertion for its colon) and no others. Before the witnesses are tried, a region with text
+      blanks is assembled once for each combination of its choices and conditions, with every text answer a
+      sentinel character, and is clean without them if every `[` that opens a line of the output is dead (#137): its
+      label is closed on the line, and the template's colon follows it, then, before the first answer or `{{`, a bare
+      destination word (no `<`, no parenthesis, no backslash, no control character), a blank and a character that
+      cannot open a title. The definition is then none whatever the answers are, and whatever follows on the line and
+      after it, under the reading of the specification and of the renderers. The witnesses are tried instead (and
+      the over-flag stands, if they are over the cap) when any line-start `[` of any assembly is not dead (the next
+      line of the paragraph, `[b]: v`, too), when the region has more than `DECISION_CAP` = 64 combinations of
+      decisions, is over `WORK_CAP`, or is past the budget, or when the template holds the sentinel. The cutoff is
+      not tried, and costs nothing, for a region in which a line begins with a label that cannot be dead from its
+      text up to the first `{{` (`[a]: u {{p}}`: a destination, a blank, then an answer). It is charged like the
+      witnesses (`WORK_CAP`, the budget), once for each shape of region, whether it settles it or not. Measured, in a paragraph that begins `[label]:` and a
       sentence of nine words: one text blank is tried in 5 ms, two in 0.14 s (0.3 s with a choice, 0.5 s with a
-      condition on the item); three or more are over the cap in every paragraph (25 of 25, with a condition and a
-      choice too: 31 answers cubed is 29791), and so are two text blanks with two choices (`The {{choose}} shall pay
-      {{p1}} to {{p2}} within {{choose}} days`: 3844 combinations of a long line). The budget is some 1000 different
+      condition on the item); three or more fall back only when the label's line, after the colon, does not hold a
+      destination word, a blank and a word that opens no title before its first blank (or typed value). `[Option A]:
+      The Seller shall pay {{p1}} to {{p2}} at {{p3}}` is clean in 3 ms, with four blanks and two choices too, in an
+      item, in a quote, with a choice or an empty phrase first, and 50 such paragraphs in 0.1 s. Over the cap still
+      (29791 is 31 answers cubed): `[Option A]: {{p1}} shall pay …` (a blank first), `[Option A]: Pay {{p1}} to …`
+      (one word, then a blank), `[Option A]: (The) Seller …` (a title may open), `[Effective Date]: {{d1}} is …`
+      (a typed value first), a label over two lines or alone on its line (`[gdpr]: https://x` and the sentence on the
+      next), and a destination that an answer continues (`[a]: u{{p1}} x …`). Labels that an answer can complete stay
+      reported as hazards where the witnesses are tried (`[a]: u {{p1}}`, `[a]: u "t {{p1}} {{p2}}`). The budget is some 1000 different
       paragraphs of one line and one text blank, or 40 of two, or 11 of two with a choice: past it the rest are
       reported (of 60 paragraphs of two blanks, 20 are; of 1200 of one, 64). The same paragraph is assembled once,
-      however often it occurs. Five text blanks in one paragraph, or one question asked in more than a thousand
+      however often it occurs. Five text blanks in one paragraph that the cutoff does not decide, or one question asked in more than a thousand
       lines of a paragraph, are over the cap whatever the budget; and so is a paragraph of 300 KB (it took 107 s to try
       four of them): the characters are counted. A region in which no insertion can vary (each has one answer) is judged clean without being read. A file or a
       region the assembler cannot read is judged by the conservative rule too (every insertion in a paragraph in which
