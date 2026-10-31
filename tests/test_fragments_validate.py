@@ -316,9 +316,11 @@ def test_an_attachment_file_of_a_template_holds_no_include_and_may_hold_the_rest
     result, loader = _run(front + "# A {#a}\n\nSee {{attach: s}}.\n", {"s.lgd": attachment})
     assert loader.asked == ["s.lgd"]
     assert _found(result, _TFR) == [(_TFR, "s.lgd", 8), (_TFR, "s.lgd", 10)]
-    # Its frontmatter and level 1 heading are assembly's to refuse: not reported here (CONFORMANCE.md).
+    # Its frontmatter and level 1 heading are reported in the file, once, as an include's are (§16.10, #135).
     result, _ = _run(front + "# A {#a}\n\nSee {{attach: s}}.\n", {"s.lgd": "---\ntitle: T\n---\n\n# H {#h}\n"})
-    assert _found(result, "attachment-has-frontmatter", "attachment-has-h1", _TFR) == []
+    assert _found(result, "attachment-has-frontmatter", "attachment-has-h1", _TFR) == [
+        ("attachment-has-frontmatter", "s.lgd", 2), ("attachment-has-h1", "s.lgd", 5),
+    ]
     # Outside a template its includes are allowed.
     plain = _FRONT.replace("---\n\n", "attachments:\n  - id: s\n    title: S\n    file: s.lgd\n---\n\n")
     result, _ = _run(plain + "# A {#a}\n\nSee {{attach: s}}.\n", {"s.lgd": attachment})

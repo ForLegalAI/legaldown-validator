@@ -21,12 +21,22 @@ while a unit's presence is what its own file says (a section extends to the end 
 
 What is spliced is what the walk of the includes followed (``fragments._Walk``, ``Plan``), and only when it
 followed every one and the fragments are not past ``fragments.MAX_SPLICED_BLOCKS`` and ``MAX_SPLICED_LINES``.
+
+The LegalDown attachment files (§12.4) follow the body, in the order the attachments are declared, each a place
+of its own that is there when its attachment is (its ``when``, §15.3): the renderer puts them after the
+document, and they inherit its definitions, types and metadata, which only this pass has (#135). Each is
+appended when it was read and is a fragment in the sense of §12.2 (``FragmentFile.spliceable``), whatever the
+others are: an attachment is an appendix of its own, so one not read leaves the body and the others as they are.
+
+A path is judged against the document root from the directory of the file it is written in (``Combined.base_of``),
+so that a fragment's ``../x.png`` is read from the fragment's place, not the document's (#135).
 """
 from __future__ import annotations
 
+import posixpath
 import sys
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -34,9 +44,10 @@ from ..directives import Lexed
 from ..models import Block, Document, Section
 from ..positions import Locator
 from .conditions import ALWAYS, Presence
+from .helpers import legaldown_attachments
 from .patterns import SKIPPED_RULE
 from .result import Diagnostic, Spot
-from .units import FoundMarker, Units, find_markers
+from .units import FoundMarker, Units, find_markers, own_presence
 
 if TYPE_CHECKING:
     from .fragments import Files, FragmentFile
@@ -55,13 +66,16 @@ class Instance:
     """A place a file has in the combined document: the document itself (*path* ``""``, *number* 0) or a
     fragment at one of its includes (a fragment included twice is in two places), numbered in the order
     they are spliced. *parent* is the place holding the include paragraph and *at* its (section, block) in
-    the file of *parent*; they give the presence of the include (§15.3), which the whole fragment has."""
+    the file of *parent*; they give the presence of the include (§15.3), which the whole fragment has. An
+    attachment file (§12.4) has no *parent*: *attachment* is its entry in ``metadata.attachments``, whose ``when``
+    is its presence."""
     number: int
     path: str
     document: Document
     where: Locator
     parent: Instance | None = None
     at: tuple[int | None, int] = (None, 0)
+    attachment: int | None = None
 
     def spot(self, line: int | None) -> int | None:
         """*line* of this file, as a diagnostic names it: the file goes with a line of a fragment."""
@@ -77,7 +91,9 @@ class Combined:
     files; *files* and *lex_fragment* are the validation's, so that nothing is read or lexed twice.
     *template* is whether that document is a template (§15.1): the combined pass judges as it does, since the
     assembler decides so from the document alone. *imports* is what the validation of the document imported
-    from the files it names (``core._check``), for the combined pass not to ask again."""
+    from the files it names (``core._check``), for the combined pass not to ask again. *attachments_out* is how
+    many of its LegalDown attachment files are not in it (not read, or not a fragment), which the checks that need
+    all of them (``question-unused``) wait for."""
     document: Document
     where: Locator
     files: Files | None
@@ -87,17 +103,37 @@ class Combined:
     block_origin: list[list[tuple[Instance, int | None, int]]]
     template: bool = False
     imports: dict[Any, Any] = field(default_factory=dict)
+    attachments_out: int = 0
     #: What the document's own pass read the link reference definitions of its files as (``paths.ReferenceImages``),
     #: for the combined pass not to read them again (#121).
     definition_reads: dict[Any, Any] = field(default_factory=dict)
     _markers: list[FoundMarker] | None = None
     _local: dict[Instance, list[FoundMarker]] = field(default_factory=dict)
     _first: dict[str, int] = field(default_factory=dict)
+    _entries: dict[str, int] = field(default_factory=dict)
 
     def of_block(self, section: int | None, block: int) -> tuple[Instance, int | None, int]:
         """The place, section index and block index in its file of block *block* of the preamble
         (*section* None) or of section *section*."""
         return self.block_origin[0 if section is None else section + 1][block]
+
+    @property
+    def attached(self) -> frozenset[int]:
+        """The entries of ``metadata.attachments`` whose file is in the combined document."""
+        return frozenset(place.attachment for place in self.instances if place.attachment is not None)
+
+    def place_of(self, section: int | None, block: int) -> Instance:
+        """The place that holds the part at *section* and *block* of the combined document: a heading when
+        *block* is negative, a block of the preamble when *section* is None."""
+        if block < 0 and section is not None:
+            return self.section_origin[section][0]
+        return self.of_block(section, block)[0]
+
+    def base_of(self, section: int, block: int) -> str:
+        """The directory, from the document's, of the file that holds the part at *section* and *block* of the
+        combined document (``""``: the document itself): a heading when *block* is negative, a block of the
+        preamble when *section* is."""
+        return posixpath.dirname(self.place_of(None if section < 0 else section, block).path)
 
     def markers(self) -> list[FoundMarker]:
         """The markers of the combined document (``find_markers``): read over its structure, as a splice of the
@@ -115,6 +151,16 @@ class Combined:
         self.markers()
         return self._local.get(place, [])
 
+    def _entry(self, file: str) -> int:
+        """The first entry of the attachments that names *file* (as ``Diagnostic.file`` has it), or past them all."""
+        if not self._entries:
+            self._entries.update({"": len(self.document.metadata.attachments)})
+            for index, _attachment, written in reversed(legaldown_attachments(self.document.metadata)):
+                relative = self.files.relative(written) if self.files is not None else None
+                if relative is not None:
+                    self._entries[relative] = index
+        return self._entries.get(file, self._entries[""])
+
     def position(self, diagnostic: Diagnostic, number: int | None) -> tuple[int, int, int, int]:
         """Where a finding is in the combined document, to put the findings in its order: a line of the document
         at itself, a line of a fragment at the include paragraph that took it in (the outermost one, if it is nested),
@@ -128,11 +174,13 @@ class Combined:
             number = self._first[self.instances[number].path]
         elif diagnostic.file:
             number = self._first.get(diagnostic.file)
-            if number is None:  # a file that is not in the body: an attachment file, after it (§15.7.2)
-                return (sys.maxsize, 0, 0, diagnostic.line or 0)
+            if number is None:  # a file that is not in it: an attachment file not spliced, after the body (§15.7.2)
+                return (sys.maxsize, 0, self._entry(diagnostic.file), diagnostic.line or 0)
         if number is None:
             return (diagnostic.line or 0, 0, 0, 0)
         top = self.instances[number]
+        if top.attachment is not None:  # after the body, in the order the attachments are declared
+            return (sys.maxsize, 0, top.attachment, diagnostic.line or 0)
         while top.parent is not None and top.parent.parent is not None:
             top = top.parent
         return (self.where.block(*top.at) or 0, 1, number, diagnostic.line or 0)
@@ -144,9 +192,12 @@ def weave(
     plan: Plan,
     files: Files | None,
     lex_fragment: Callable[[str], Lexed],
+    attachments: Sequence[tuple[int, FragmentFile]] = (),
 ) -> Combined:
     """The combined document of *document*, with the fragments of *plan*, what the walk of its includes
-    followed, spliced in at their include paragraphs. *where* is the document's own."""
+    followed, spliced in at their include paragraphs. *where* is the document's own. *attachments* are the
+    LegalDown attachment files to follow the body (§12.4), each with its entry in ``metadata.attachments``, in
+    the order they are declared."""
     sections: list[Section] = []
     preamble: list[Block] = []
     instances: list[Instance] = []
@@ -175,6 +226,10 @@ def weave(
     host = Instance(0, "", document, where)
     instances.append(host)
     splice(host, plan)
+    for index, fragment in attachments:  # the last section of the body takes the first one's preamble
+        taken = Instance(len(instances), fragment.path, fragment.document, fragment.where, attachment=index)
+        instances.append(taken)
+        splice(taken, Plan())
     return Combined(
         document=replace(document, sections=sections, preamble=preamble, source_map=None),
         where=where,
@@ -251,14 +306,19 @@ class CombinedUnits:
         return self._units[place]
 
     def _brought_in_by(self, place: Instance) -> Presence:
-        """The presence of the include paragraphs the fragment at *place* is in."""
-        if place.parent is None:
+        """The presence of the include paragraphs the fragment at *place* is in, or of the entry of the attachment."""
+        if place.parent is None and place.attachment is None:
             return ALWAYS
         if place not in self._context:
-            section, block = place.at
-            self._context[place] = self._brought_in_by(place.parent) | self._of(place.parent).presence(
-                section, block, 0
-            )
+            if place.attachment is not None:  # an attachment is there when its entry is (§15.3)
+                when = self._combined.document.metadata.attachments[place.attachment].when
+                self._context[place] = own_presence(when, self._questions)
+            else:
+                assert place.parent is not None
+                section, block = place.at
+                self._context[place] = self._brought_in_by(place.parent) | self._of(place.parent).presence(
+                    section, block, 0
+                )
         return self._context[place]
 
     def enclosing(self, section: int) -> Presence:
@@ -287,9 +347,10 @@ class CombinedUnits:
 #: includes and the files they name, which the combined document no longer holds as such, and what the
 #: combined document would judge by the wrong standard. ``heading-skip`` is the combined document's to
 #: judge (§12.2: a level a fragment fills is not skipped), which ``include-heading-skip`` does under every
-#: combination of answers; a path is judged against the document root from the document's directory, which a
-#: fragment's is not relative to (``path-outside-root``; ``path-not-relative`` needs no base, and is the
-#: combined pass's); and the Warning of §17.5 is for the whole validation.
+#: combination of answers; the shape of an attachment file (``attachment-has-frontmatter``,
+#: ``attachment-has-h1``) is judged of the file as it is, and the file is not spliced when it has either; and
+#: the Warning of §17.5 is for the whole validation. (A path is judged against the document root from the
+#: directory of the file it is written in, which the combined pass does, ``Combined.base_of``.)
 HOST_ONLY: frozenset[str] = frozenset({
     "heading-skip",
     "include-file-missing",
@@ -300,7 +361,8 @@ HOST_ONLY: frozenset[str] = frozenset({
     "include-heading-skip",
     "include-anchor-duplicate",
     "template-fragment-invalid",
-    "path-outside-root",
+    "attachment-has-frontmatter",
+    "attachment-has-h1",
     SKIPPED_RULE,
 })
 
@@ -322,6 +384,7 @@ WHOLE_DOCUMENT_RULES: frozenset[str] = frozenset({
     "definition-circular",
     "definition-used-before-declaration",
     "anchor-duplicate",
+    "attachment-anchor-duplicate",  # (the same, when the later heading is an attachment file's, §16.10)
     "anchor-autogen-collision",
     "def-duplicate-id",
     "def-autogen-collision",
@@ -330,7 +393,8 @@ WHOLE_DOCUMENT_RULES: frozenset[str] = frozenset({
     "placeholder-type-inconsistent",
     "placeholder-question-mismatch",
     # An absolute path or a URI scheme needs no base, so a fragment's is judged (and the document's definition of
-    # an image that only a fragment uses, which only the combined document sees to be used).
+    # an image that only a fragment uses, which only the combined document sees to be used). (A path that leaves
+    # the root is judged from the directory of its file by either pass: it is in neither set.)
     "path-not-relative",
 })
 

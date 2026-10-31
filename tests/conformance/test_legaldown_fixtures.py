@@ -54,7 +54,8 @@ IMPLEMENTED_RULES = {
     "answer-invalid", "answer-missing", "answer-unknown",
     "amends-title-empty", "amend-def-override", "amend-term-undefined",
     "amend-term-unresolvable",
-    "attach-undeclared", "attachment-id-collision", "attachment-id-duplicate",
+    "attach-undeclared", "attachment-anchor-duplicate", "attachment-has-frontmatter", "attachment-has-h1",
+    "attachment-id-collision", "attachment-id-duplicate",
     "attachment-title-empty", "attachment-unreferenced", "authoritative-not-declared", "brace-stray", "choose-invalid",
     "condition-invalid", "condition-never-true", "condition-reference-unsafe",
     "date-invalid", "date-of-birth-invalid",
@@ -90,9 +91,10 @@ IMPLEMENTED_RULES = {
 
 
 # The Full rules a validator that reads the include fragments through a loader reports
-# (#35): their cases are multi-file, so they are run with the loader of their directory,
-# and judged by file as well as by line. include-not-legaldown is Core and runs as any case.
+# (#35) and the LegalDown attachment files (#135): their cases are multi-file, so they are run with the loader
+# of their directory, and judged by file as well as by line. include-not-legaldown is Core and runs as any case.
 _FULL_WITH_A_LOADER = {
+    "attachment-anchor-duplicate", "attachment-has-frontmatter", "attachment-has-h1",
     "include-anchor-duplicate", "include-cycle", "include-file-missing", "include-has-frontmatter",
     "include-has-h1", "include-heading-skip", "template-fragment-invalid",
 }

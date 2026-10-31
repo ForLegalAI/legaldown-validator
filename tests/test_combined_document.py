@@ -12,6 +12,8 @@ import random
 import re
 import time
 from collections import Counter
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -183,7 +185,7 @@ def test_a_question_only_a_fragment_uses_is_used():
     # Used by nothing, in the fragments too: reported, as it is in a document with no include.
     result = _run(text, {"part.lgd": "## Part {#part}\n\nText.\n"})
     assert [(r, f) for r, f, _ in _found(result, "question-unused")] == [("question-unused", "main.lgd")]
-    # A LegalDown attachment file is not part of the combined document: a question may be used there.
+    # A LegalDown attachment file that was not read may use it (one that was is part of the combined document).
     attached = front.replace("---\n\n", "attachments:\n  - id: a\n    title: A\n    file: a.lgd\n---\n\n")
     quiet = _run(attached + _SCOPE + "{{include: part.lgd}}\n\n{{attach: a}}\n", {"part.lgd": "## Part {#part}\n\nText.\n"})
     assert _found(quiet, "question-unused") == []
@@ -487,14 +489,262 @@ def test_an_include_in_a_templates_fragment_is_not_followed_and_nothing_is_combi
     assert "combined-document checks" in _warning(result).message
 
 
-def test_attachment_files_are_not_part_of_the_combined_document_yet():
-    attached = _FRONT.replace("---\n\n", "attachments:\n  - id: sched\n    title: Schedule\n    file: sched.lgd\n---\n\n")
-    text = attached + _SCOPE + "See {{ref: in-schedule}} and {{attach: sched}}.\n\n{{include: part.lgd}}\n"
-    result = _run(text, {"part.lgd": "## Part {#part}\n\nText.\n", "sched.lgd": "## Inside {#in-schedule}\n\nText.\n"})
-    # The reference into the attachment's section is as it was, and the Warning says so.
-    assert [r for r, _, _ in _found(result, "ref-broken")] == ["ref-broken"]
-    warning = _warning(result)
-    assert "a reference into an attachment's section" in warning.message and "includes" not in warning.message.split("Not performed")[0]
+# ── Attachment files follow the body (§12.4, §16.10, #135) ────────────────────────────────────────────────────
+
+def _attached(*entries: tuple[str, str] | tuple[str, str, str], front: str = _FRONT) -> str:
+    """*front* with the attachments of *entries* declared: (id, file) or (id, file, when)."""
+    declared = "".join(
+        f"  - id: {each[0]}\n    title: T {each[0]}\n    file: {each[1]}\n" + (f"    when: '{each[2]}'\n" if len(each) > 2 else "")
+        for each in entries
+    )
+    return front.replace("---\n\n", "attachments:\n" + declared + "---\n\n")
+
+
+def test_a_reference_into_an_attachments_section_resolves_and_so_do_those_out_of_it():
+    text = _attached(("sched", "sched.lgd"), ("other", "other.lgd")) + _SCOPE + (
+        '"Fee" {{def: fee}} is due. See {{ref: in-sched}}, {{attach: sched}} and {{attach: other}}.\n\n{{include: part.lgd}}\n'
+    )
+    files = {
+        "part.lgd": "## Part {#part}\n\nText.\n",
+        "sched.lgd": "## Inside {#in-sched}\n\nSee {{ref: scope}}, {{ref: part}}, {{ref: in-other}}; {{term: fee}}.\n",
+        "other.lgd": "## Other {#in-other}\n\nSee {{ref: in-sched}} and {{attach: sched}}.\n",
+    }
+    result = _run(text, files)
+    assert _found(result, "ref-broken", "term-undefined", "def-unreferenced", "ref-targets-attachment") == []
+    # The Warning no longer names what these files add, nor does it say they were not read.
+    assert "attachment-anchor-duplicate" not in _warning(result).message
+    # ... and the same reference into an attachment not there is as broken as it was.
+    broken = _run(text, {name: each for name, each in files.items() if name != "sched.lgd"})
+    assert [(r, f) for r, f, _ in _found(broken, "ref-broken")] == [("ref-broken", "main.lgd"), ("ref-broken", "other.lgd")]
+
+
+def test_a_term_defined_in_the_body_is_defined_for_an_attachment_and_one_only_an_attachment_uses_is_referenced():
+    text = _attached(("sched", "sched.lgd")) + _SCOPE + '"Fee" {{def: fee}} is due. See {{attach: sched}}.\n'
+    result = _run(text, {"sched.lgd": "## Inside {#in-sched}\n\nThe {{term: fee}} and {{term: gone}}.\n"})
+    assert _found(result, "term-undefined", "def-unreferenced") == [("term-undefined", "sched.lgd", 3)]
+    # The other way round: the attachment defines, the body uses it later in the combined document.
+    text = _attached(("sched", "sched.lgd")) + _SCOPE + "See {{attach: sched}}.\n"
+    result = _run(text, {"sched.lgd": '## Inside {#in-sched}\n\n"Fee" {{def: fee}} is due.\n'})
+    assert _found(result, "def-unreferenced") == [("def-unreferenced", "sched.lgd", 3)]
+    result = _run(text + "\nThe {{term: fee}}.\n", {"sched.lgd": '## Inside {#in-sched}\n\n"Fee" {{def: fee}} is due.\n'})
+    assert _found(result, "def-unreferenced", "term-undefined") == []
+
+
+def test_an_identifier_an_attachment_declares_again_is_attachment_anchor_duplicate():
+    front = _attached(("a", "a.lgd"), ("b", "b.lgd"))
+    text = front + _SCOPE + "{{include: part.lgd}}\n\nSee {{attach: a}} and {{attach: b}}.\n"
+    files = {"part.lgd": "## Part {#part}\n\nText.\n", "a.lgd": "## Scope {#scope}\n\nText.\n", "b.lgd": "## Part {#part}\n\n### Sub\n\n## Sub\n"}
+    # The later heading is the attachment's, whether the earlier one is the body's, a fragment's or an attachment's.
+    result = _run(text, files)
+    assert _found(result, "attachment-anchor-duplicate", "anchor-duplicate", "include-anchor-duplicate") == [
+        ("attachment-anchor-duplicate", "a.lgd", 1), ("attachment-anchor-duplicate", "b.lgd", 1),
+    ]
+    twice = _run(text, {**files, "b.lgd": "## Scope {#scope}\n\nText.\n"})
+    assert _found(twice, "attachment-anchor-duplicate") == [("attachment-anchor-duplicate", "a.lgd", 1), ("attachment-anchor-duplicate", "b.lgd", 1)]
+    message = next(d.message for d in result.diagnostics if d.rule == "attachment-anchor-duplicate")
+    assert message == "Duplicate section identifier on 'Scope'. It was adjusted to 'scope-2'."
+    # An auto-generated identifier is adjusted, not an Error; a paragraph's anchor is anchor-duplicate as ever.
+    result = _run(text, {**files, "a.lgd": "## Scope\n\nA clause. {#clause}\n\nAnother. {#clause}\n", "b.lgd": "Text.\n"})
+    assert _found(result, "attachment-anchor-duplicate", "anchor-duplicate") == [("anchor-duplicate", "a.lgd", 5)]
+
+
+def test_attachments_that_are_alternatives_may_share_an_identifier():
+    front = _attached(("a", "a.lgd", "x"), ("b", "b.lgd", "!x"), front=_TEMPLATE_FRONT)
+    text = front + _SCOPE + "{{attach: a}} {when=x}\n\n{{attach: b}} {when=!x}\n"
+    files = {"a.lgd": "## Sched {#sched}\n\nA.\n", "b.lgd": "## Sched {#sched}\n\nB.\n"}
+    assert _found(_run(text, files), "attachment-anchor-duplicate", "anchor-duplicate") == []
+    # ... and a reference to it is safe, whichever is there.
+    both = _run(text + "\nSee {{ref: sched}}.\n", files)
+    assert _found(both, "condition-reference-unsafe", "ref-broken") == []
+    # Not alternatives: the second is the duplicate.
+    same = _attached(("a", "a.lgd", "x"), ("b", "b.lgd", "z"), front=_TEMPLATE_FRONT)
+    assert _found(_run(same + _SCOPE + "{{attach: a}} {{attach: b}}\n", files), "attachment-anchor-duplicate") == [
+        ("attachment-anchor-duplicate", "b.lgd", 1)
+    ]
+
+
+def test_what_an_attachment_file_holds_is_found_at_its_line_in_it_after_the_findings_of_the_body():
+    text = _attached(("sched", "sched.lgd")) + _SCOPE + "See {{attach: sched}} and {{ref: missing}}.\n\n{{include: part.lgd}}\n"
+    files = {"part.lgd": "## Part {#part}\n\nA {{ref: nope}}.\n", "sched.lgd": "## Sched {#sched}\n\nThe {{term: gone}} <b>x</b>.\n"}
+    result = _run(text, files)
+    assert _found(result, "ref-broken", "term-undefined", "raw-html") == [
+        ("ref-broken", "main.lgd", _at(text, "{{ref: missing}}")), ("ref-broken", "part.lgd", 3),
+        ("term-undefined", "sched.lgd", 3), ("raw-html", "sched.lgd", 3),
+    ]
+    assert result.diagnostics[-1].rule == SKIPPED_RULE
+    # An attachment declared twice (two entries, one file) draws each finding once; a file that is also
+    # an include is one file, and its shape is the include's to report.
+    twice = _run(_attached(("one", "sched.lgd"), ("two", "sched.lgd")) + _SCOPE + "See {{attach: one}} {{attach: two}}.\n", files)
+    assert _found(twice, "term-undefined") == [("term-undefined", "sched.lgd", 3)]
+    both = _run(
+        _attached(("sched", "sched.lgd")) + _SCOPE + "See {{attach: sched}}.\n\n{{include: sched.lgd}}\n", files
+    )
+    assert _found(both, "term-undefined", "attachment-has-h1", "attachment-has-frontmatter") == [("term-undefined", "sched.lgd", 3)]
+    odd = _run(_attached(("sched", "sched.lgd")) + _SCOPE + "See {{attach: sched}}.\n\n{{include: sched.lgd}}\n", {"sched.lgd": "# One\n"})
+    assert _found(odd, "include-has-h1", "attachment-has-h1") == [("include-has-h1", "sched.lgd", 1)]
+
+
+def test_a_reference_into_a_conditional_attachment_is_unsafe_unless_it_is_as_conditional():
+    front = _attached(("sched", "sched.lgd", "x"), front=_TEMPLATE_FRONT)
+    text = front + _SCOPE + "Unsafe {{ref: in-sched}}.\n\nSafe {{ref: in-sched}} {when=x}\n\nSee {{attach: sched}} {when=x}\n"
+    result = _run(text, {"sched.lgd": "## Inside {#in-sched}\n\nText.\n"})
+    assert _found(result, "condition-reference-unsafe", "ref-broken") == [
+        ("condition-reference-unsafe", "main.lgd", _at(text, "Unsafe {{ref"))
+    ]
+    # In a document that is no template the condition is not read (§15.1): a reference to it is none.
+    plain = _attached(("sched", "sched.lgd", "x")) + _SCOPE + "See {{ref: in-sched}} and {{attach: sched}}.\n"
+    assert _found(_run(plain, {"sched.lgd": "## Inside {#in-sched}\n\nText.\n"}), "condition-reference-unsafe") == []
+
+
+def test_an_attachment_not_read_leaves_the_others_and_the_body_as_they_are():
+    text = _attached(("a", "a.lgd"), ("b", "b.lgd"), ("c", "c.lgd")) + _SCOPE + (
+        "See {{ref: in-a}}, {{ref: in-b}}, {{ref: in-c}} and {{ref: part}}; {{attach: a}} {{attach: b}} {{attach: c}}.\n\n"
+        "{{include: part.lgd}}\n"
+    )
+    files = {
+        "part.lgd": "## Part {#part}\n\nText.\n",
+        "a.lgd": "## A {#in-a}\n\nText.\n",
+        "c.lgd": "## C {#in-c}\n\nText.\n",
+    }
+    result = _run(text, files)
+    # The fragment is still combined and so is the attachment that is there: only the reference into b.lgd is broken.
+    assert [(r, d.line) for r, d in ((d.rule, d) for d in result.diagnostics if d.rule == "ref-broken")] == [("ref-broken", _at(text, "See {{ref"))]
+    assert "in-b" in next(d.message for d in result.diagnostics if d.rule == "ref-broken")
+    assert "for 1 LegalDown attachment file not spliced into the combined document" in _warning(result).message
+    # ... one that is not a fragment is reported by its shape, and not spliced.
+    shaped = _run(text, {**files, "b.lgd": "# B {#in-b}\n\nText.\n"})
+    assert _found(shaped, "attachment-has-h1", "ref-broken") == [
+        ("ref-broken", "main.lgd", _at(text, "See {{ref")), ("attachment-has-h1", "b.lgd", 1)
+    ]
+    framed = _run(text, {**files, "b.lgd": "---\ntitle: B\n---\n\n## B {#in-b}\n"})
+    assert _found(framed, "attachment-has-frontmatter") == [("attachment-has-frontmatter", "b.lgd", 2)]
+    assert "for 1 LegalDown attachment file not spliced" in _warning(framed).message
+    # With all three in, the Warning says nothing of them.
+    whole = _run(text, {**files, "b.lgd": "## B {#in-b}\n\nText.\n"})
+    assert _found(whole, "ref-broken") == [] and "not spliced" not in _warning(whole).message
+
+
+def test_an_attachment_file_with_an_include_is_left_out_and_not_judged_as_if_the_include_were_missing():
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}}.\n"
+    files = {
+        "s.lgd": "## S {#s}\n\nSee {{ref: deep}} and {{term: fee}}.\n\n{{include: deep.lgd}}\n",
+        "deep.lgd": '## Deep {#deep}\n\n"Fee" {{def: fee}}.\n',
+    }
+    result = _run(text, files)
+    # (An include in an attachment file is not followed: the file is not spliced, and its references are not judged.)
+    assert _found(result, "ref-broken", "term-undefined") == []
+    assert "for 1 LegalDown attachment file not spliced into the combined document" in _warning(result).message
+    # An attachment file whose include is text, in a sentence, is a fragment as any other.
+    plain = _run(text, {**files, "s.lgd": "## S {#s}\n\nSee {{ref: deep}} and `{{include: deep.lgd}}`.\n"})
+    assert [r for r, _, _ in _found(plain, "ref-broken")] == ["ref-broken"]
+
+
+def test_attachment_files_have_a_budget_of_their_own_and_leave_the_walk_of_the_includes_alone(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 3)
+    text = _attached(("big", "big.lgd"), ("small", "small.lgd")) + _SCOPE + (
+        "See {{ref: part}} and {{ref: gone}}, {{attach: big}} {{attach: small}}.\n\n{{include: part.lgd}}\n"
+    )
+    files = {
+        "part.lgd": "## Part {#part}\n\nText.\n",
+        "big.lgd": "## Big {#big}\n\n" + "Text.\n\n" * 6,
+        "small.lgd": "## Small {#small}\n",
+    }
+    result = _run(text, files)
+    # The include is combined (the reference into it resolves, the other is broken), and both attachment files are
+    # out, the small one too, since the ones after the first past the budget are not taken; the Warning says so.
+    assert len(_found(result, "ref-broken")) == 1 and "'gone'" in next(d.message for d in result.diagnostics if d.rule == "ref-broken")
+    message = _warning(result).message
+    assert "for 2 LegalDown attachment files not spliced into the combined document (2 past the size" in message
+    assert "more than 3 blocks" in message
+    # Without an include the Warning says it all the same, and the attachments are not combined.
+    only = _run(_attached(("big", "big.lgd")) + _SCOPE + "See {{attach: big}}.\n", files)
+    assert "for 1 LegalDown attachment file not spliced into the combined document (1 past the size" in _warning(only).message
+    # Within the budget they are in, and the Warning says nothing of them.
+    monkeypatch.undo()
+    assert "not spliced" not in _warning(_run(text, files)).message
+
+
+def test_a_term_the_body_uses_before_an_attachment_defines_it_is_no_use_before_declaration():
+    # An attachment's definitions are document-wide (§7.2, §12.4), as they were before the attachment was in the
+    # combined document; a use in the attachment before its own declaration is one.
+    for front in (_FRONT, _TEMPLATE_FRONT):
+        text = _attached(("s", "s.lgd"), front=front) + _SCOPE + "See {{attach: s}}. The {{term: fee}}.\n"
+        result = _run(text, {"s.lgd": '## S {#s}\n\n"Fee" {{def: fee}} is due.\n'})
+        assert _found(result, "definition-used-before-declaration", "term-undefined", "def-unreferenced") == []
+        early = _run(text, {"s.lgd": '## S {#s}\n\nThe {{term: fee}}.\n\n"Fee" {{def: fee}} is due.\n'})
+        assert _found(early, "definition-used-before-declaration") == [("definition-used-before-declaration", "s.lgd", 3)]
+
+
+def test_a_use_in_one_attachment_of_a_term_another_attachment_defines_is_no_use_before_declaration():
+    text = _attached(("a", "a.lgd"), ("b", "b.lgd")) + _SCOPE + "See {{attach: a}} {{attach: b}}.\n"
+    files = {"a.lgd": "## Aa\n\nThe {{term: fee}}.\n", "b.lgd": '## Bb\n\n"Fee" {{def: fee}} is due.\n'}
+    assert _found(_run(text, files), "definition-used-before-declaration", "term-undefined", "def-unreferenced") == []
+    # In the same attachment, before the declaration, it is one.
+    same = _run(text, {**files, "b.lgd": '## Bb\n\nThe {{term: fee}}.\n\n"Fee" {{def: fee}} is due.\n'})
+    assert _found(same, "definition-used-before-declaration") == [("definition-used-before-declaration", "b.lgd", 3)]
+
+
+def test_the_warning_does_not_blame_the_size_when_the_includes_were_not_followed(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 3)
+    text = _attached(("big", "big.lgd")) + _SCOPE + "See {{attach: big}}.\n\n{{include: gone.lgd}}\n"
+    result = _run(text, {"big.lgd": "## Big {#big}\n\n" + "Text.\n\n" * 6})
+    message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "attachment file declared" in d.message)
+    assert "for 1 LegalDown attachment file not spliced into the combined document (attachment processing" in message
+    assert "past the size" not in message
+
+
+def test_the_warning_names_the_shape_checks_when_a_file_was_not_read_for_its_shape_not_when_its_definitions_were_not_imported():
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}}.\n"
+    # Read, with frontmatter that cannot be read: its definitions are not imported, its shape was judged.
+    result = _run(text, {"s.lgd": "---\ntitle: [\n---\n\n## S\n"})
+    assert [r for r, _, _ in _found(result, "attachment-has-frontmatter")] == ["attachment-has-frontmatter"]
+    message = _warning(result).message
+    assert "attachment-has-frontmatter" not in message.split("Not performed")[1] and "importing the definitions" in message
+    # Not read for its shape, though an importer gave its definitions (the deprecated callback, and no loader).
+    with pytest.warns(DeprecationWarning):
+        callback = validate(parse(text, filename="main.lgd"), resolve=None, import_attachment_definitions=lambda path: {"fee": "Fee"})
+    message = _warning(callback).message
+    assert "attachment-file-missing, attachment-has-frontmatter and attachment-has-h1;" in message
+    assert "importing" not in message
+
+
+def test_the_findings_of_attachment_files_are_in_the_order_they_are_declared_those_not_spliced_among_them():
+    text = _attached(("a", "a.lgd"), ("b", "b.lgd"), ("c", "c.lgd")) + _SCOPE + "{{attach: a}} {{attach: b}} {{attach: c}}\n"
+    result = _run(text, {"a.lgd": "## Aa\n\nThe {{term: x}}.\n", "b.lgd": "# B\n", "c.lgd": "## Cc\n\nThe {{term: y}}.\n"})
+    assert _found(result, "term-undefined", "attachment-has-h1") == [
+        ("term-undefined", "a.lgd", 3), ("attachment-has-h1", "b.lgd", 1), ("term-undefined", "c.lgd", 3),
+    ]
+
+
+def test_a_file_that_is_both_included_and_attached_is_in_both_places_and_its_identifiers_clash_there():
+    # §16.10: an identifier the combined document declares twice, the later in an attachment file.
+    text = _attached(("appendix", "sched.lgd")) + _SCOPE + "See {{attach: appendix}}.\n\n{{include: sched.lgd}}\n"
+    result = _run(text, {"sched.lgd": "## Sched {#sched}\n\nText.\n"})
+    assert _found(result, "attachment-anchor-duplicate", "include-anchor-duplicate", "anchor-duplicate") == [
+        ("attachment-anchor-duplicate", "sched.lgd", 1)
+    ]
+
+
+def test_a_question_only_an_attachment_uses_is_used_and_is_unknown_when_one_was_not_read():
+    front = _attached(("a", "a.lgd"), ("b", "b.lgd"), front=_FRONT.replace("---\n\n", "questions:\n  amount:\n    type: money\n---\n\n"))
+    text = front + _SCOPE + "{{attach: a}} {{attach: b}}\n"
+    files = {"a.lgd": "## A {#a}\n\nText.\n", "b.lgd": "## B {#b}\n\nPay {{placeholder: amount, type=money}}.\n"}
+    assert _found(_run(text, files), "question-unused") == []
+    # Used by nothing, in the attachments too: reported, as it is with no attachment.
+    assert [(r, f) for r, f, _ in _found(_run(text, {**files, "b.lgd": "## B {#b}\n\nText.\n"}), "question-unused")] == [("question-unused", "main.lgd")]
+    # An attachment that was not read may use it.
+    assert _found(_run(text, {"a.lgd": files["a.lgd"]}), "question-unused") == []
+    assert _found(_run(text, {**files, "b.lgd": "# B\n\nText.\n"}), "question-unused") == []
+
+
+def test_the_definitions_of_an_attachment_are_the_documents_once_and_clash_with_nothing_of_their_own():
+    text = _attached(("sched", "sched.lgd")) + _SCOPE + 'The {{term: fee}}.\n\nSee {{attach: sched}}.\n'
+    result = _run(text, {"sched.lgd": '## Inside {#in-sched}\n\n"Fee" {{def: fee}} is due.\n'})
+    assert _found(result, "def-duplicate-id", "def-unreferenced", "term-undefined") == []
+    # Defined in the body and in the attachment: one finding, at the definition in the attachment.
+    text = _attached(("sched", "sched.lgd")) + _SCOPE + '"Fee" {{def: fee}} is due, {{term: fee}}.\n\nSee {{attach: sched}}.\n'
+    result = _run(text, {"sched.lgd": '## Inside {#in-sched}\n\nText.\n\n"Fee" {{def: fee}} again.\n'})
+    assert _found(result, "def-duplicate-id") == [("def-duplicate-id", "sched.lgd", 5)]
 
 
 def test_a_conditional_include_in_a_template_is_combined_and_leaves_no_warning():
@@ -572,6 +822,29 @@ def _splice(text: str, files: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _appended(text: str, files: dict[str, str]) -> str:
+    """``_splice``, and each LegalDown attachment file after it, in the order they are declared, as the combined
+    document has them (§12.4). The entries then name a ``.pdf``, so that the text imports no definition and judges
+    ``question-unused`` as the combined pass does, with the attachments in."""
+    spliced = _splice(text, files)
+    head, closing, rest = spliced.partition("\n---\n")
+    for attachment in parse(text).metadata.attachments:
+        if attachment.file.endswith(".lgd"):
+            rest += "\n" + files[attachment.file].rstrip("\n") + "\n"
+    return re.sub(r"(\n    file: \S+)\.lgd", r"\1.pdf", head) + closing + rest
+
+
+def _in_attachment_definition(text: str, files: dict[str, str]) -> Callable[[Any], bool]:
+    """Whether a finding is a ``definition-used-before-declaration`` of a definition an attachment file declares: a
+    splice of the text has it after the body, and a definition of an attachment is document-wide (§7.2, §12.4), so
+    only a use in the same attachment is before it. The comparison keeps the others."""
+    ids = {
+        found for attachment in parse(text).metadata.attachments if attachment.file.endswith(".lgd")
+        for found in re.findall(r"\{\{def:\s*([a-z0-9-]+)", files[attachment.file])
+    }
+    return lambda d: d.rule == "definition-used-before-declaration" and any(f"Definition '{each}' " in d.message for each in ids)
+
+
 _ORACLE_CASES = [
     _CASES[0],
     _CASES[1],
@@ -626,6 +899,48 @@ _ORACLE_CASES += [
 ]
 
 
+_ORACLE_CASES += [
+    # Attachment files (§12.4, #135) follow the body: a reference into one and a term out of one, a definition only
+    # one uses, and the identifiers two of them share (explicit, and auto-generated).
+    (
+        _attached(("a", "a.lgd"), ("b", "b.lgd")) + _SCOPE + 'See {{ref: in-b}} {{attach: a}} {{attach: b}}. "Fee" {{def: fee}} due.\n',
+        {"a.lgd": "## A {#in-a}\n\nThe {{term: fee}} and {{ref: in-b}}.\n", "b.lgd": "## B {#in-b}\n\nSee {{ref: in-a}}.\n"},
+    ),
+    (
+        _attached(("a", "a.lgd")) + _SCOPE + "See {{attach: a}}.\n",
+        {"a.lgd": '## A {#in-a}\n\n"Fee" {{def: fee}} due.\n'},
+    ),
+    (
+        _attached(("a", "a.lgd"), ("b", "b.lgd")) + _SCOPE + "See {{attach: a}} {{attach: b}}.\n",
+        {"a.lgd": "## Terms {#terms}\n\n## Notes\n\nA.\n", "b.lgd": "## Terms {#terms}\n\n## Notes\n\nB.\n"},
+    ),
+    # An attachment that opens with a paragraph that has an anchor, after a body that ends in a section.
+    (
+        _attached(("a", "a.lgd")) + _SCOPE + "See {{ref: clause}} {{attach: a}}.\n",
+        {"a.lgd": "A clause. {#clause}\n\n## Sub {#sub}\n\nText {{ref: clause}}.\n"},
+    ),
+    # A fragment and an attachment together, and the attachment's own anchor that the fragment declares.
+    (
+        _attached(("a", "a.lgd")) + _SCOPE + "{{include: part.lgd}}\n\nSee {{attach: a}} {{ref: late}}.\n",
+        {"part.lgd": "## Part {#part}\n\nText.\n", "a.lgd": "Late. {#late}\n\n## Part {#part}\n\nSee {{ref: part}}.\n"},
+    ),
+    # A definition only pandoc or markdown-it reads, across the body and an attachment, in both orders.
+    (
+        _attached(("a", "a.lgd")) + _SCOPE + "See ![a][r]. {{attach: a}}\n",
+        {"a.lgd": "Text.\n\n[r]: /etc/p\x7f\n"},
+    ),
+    (
+        _attached(("a", "a.lgd")) + _SCOPE + "{{attach: a}}\n\n[r]: /etc/q\x01\n",
+        {"a.lgd": "See ![a][r].\n"},
+    ),
+    # A template with a question only an attachment uses.
+    (
+        _attached(("a", "a.lgd"), front=_TEMPLATE_FRONT) + _SCOPE + "Maybe. {when=x}\n\nSee {{attach: a}}.\n",
+        {"a.lgd": "## A {#in-a}\n\nExtra. {when=z}\n"},
+    ),
+]
+
+
 @pytest.mark.parametrize(("text", "files"), _ORACLE_CASES)
 def test_the_combined_pass_equals_validating_the_spliced_text(text, files, monkeypatch):
     """The differential test: the text of the fragments spliced in and validated as one document says the same
@@ -642,14 +957,19 @@ def test_the_combined_pass_equals_validating_the_spliced_text(text, files, monke
     monkeypatch.setattr(core, "_check", spy)
     merged = _run(text, files)
     (combined,) = seen
-    oracle = validate(parse(_splice(text, files)))
+    oracle = validate(parse(_appended(text, files)))
+    not_compared = _in_attachment_definition(text, files)
 
     def counted(diagnostics):
         # (A line of the spliced text is no line of any file: a message that names one is as it is in each, and a path
-        # is relative to the file it is in: the fragment's own, which the spliced text has none of.)
+        # is relative to the file it is in: the fragment's own, which the spliced text has none of. An identifier an
+        # attachment declares again is attachment-anchor-duplicate, which the spliced text calls what it is there.)
         return Counter(
-            (d.rule, d.level, re.sub(r"relative to the fragment", "relative to the document", re.sub(r" at line \d+( of \S+)?", "", d.message)))
-            for d in diagnostics if d.rule not in HOST_ONLY
+            (
+                "anchor-duplicate" if d.rule == "attachment-anchor-duplicate" else d.rule, d.level,
+                re.sub(r"relative to the fragment", "relative to the document", re.sub(r" at line \d+( of \S+)?", "", d.message)),
+            )
+            for d in diagnostics if d.rule not in HOST_ONLY and not not_compared(d)
         )
 
     assert counted(combined.diagnostics) == counted(oracle.diagnostics)
@@ -660,7 +980,8 @@ def test_the_combined_pass_equals_validating_the_spliced_text(text, files, monke
 
 def test_what_only_the_documents_own_pass_can_judge_is_reported_once():
     # The heading levels are judged by include-heading-skip, which tries every combination: the combined pass
-    # does not say heading-skip as well. The paths of a fragment are its own, not judged from the document's directory.
+    # does not say heading-skip as well. The paths of a fragment are judged from its own directory, and here,
+    # with no document root, lead nowhere out of it.
     text = _FRONT + _SCOPE + "{{include: part.lgd}}\n"
     result = _run(text, {"part.lgd": "#### Deep {#deep}\n\n![x](../shared/x.png)\n"})
     assert _found(result, "include-heading-skip", "heading-skip", "path-outside-root", "path-not-relative") == [
@@ -669,7 +990,7 @@ def test_what_only_the_documents_own_pass_can_judge_is_reported_once():
 
 
 def _random_case(seed: int) -> tuple[str, dict[str, str]]:
-    """A document that includes three fragments (one of them in another), of random blocks."""
+    """A document that includes three fragments (one of them in another) and attaches up to two files, of random blocks."""
     rng = random.Random(seed)
     titles = ["Terms", "Scope", "Fees", "Notice"]
 
@@ -701,7 +1022,11 @@ def _random_case(seed: int) -> tuple[str, dict[str, str]]:
     host = ["# Main {#main}", *blocks(["##"])]
     for name in ("a.lgd", "b.lgd") + (() if nested else ("c.lgd",)):
         host.insert(rng.randint(1, len(host)), f"{{{{include: {name}}}}}")
-    return _FRONT + "\n\n".join(host) + "\n", {name: "\n\n".join(found) + "\n" for name, found in files.items()}
+    for name in (f"att{number}.lgd" for number in range(rng.randint(0, 2))):  # (drawn last: the cases above are as they were)
+        files[name] = blocks(["##", "###"])
+    attachments = tuple((name[:-4], name) for name in files if name.startswith("att"))
+    front = _attached(*attachments) if attachments else _FRONT
+    return front + "\n\n".join(host) + "\n", {name: "\n\n".join(found) + "\n" for name, found in files.items()}
 
 
 @pytest.mark.parametrize("seed", range(40))
@@ -719,12 +1044,18 @@ def test_the_combined_pass_equals_validating_the_spliced_text_for_random_documen
     monkeypatch.setattr(core, "_check", spy)
     merged = _run(text, files)
     (combined,) = seen
-    oracle = validate(parse(_splice(text, files)))
+    oracle = validate(parse(_appended(text, files)))
+    not_compared = _in_attachment_definition(text, files)
 
     def counted(diagnostics, *, owned: bool = True):
         return Counter(
-            (d.rule, d.level, re.sub(r" at line \d+( of \S+)?", "", d.message)) for d in diagnostics
-            if d.rule not in HOST_ONLY and (owned or d.rule != "anchor-duplicate")
+            (
+                "anchor-duplicate" if d.rule == "attachment-anchor-duplicate" else d.rule, d.level,
+                re.sub(r" at line \d+( of \S+)?", "", d.message),
+            )
+            for d in diagnostics
+            if d.rule not in HOST_ONLY and not not_compared(d)
+            and (owned or d.rule not in ("anchor-duplicate", "attachment-anchor-duplicate"))
         )
 
     assert counted(combined.diagnostics) == counted(oracle.diagnostics)
@@ -893,6 +1224,43 @@ def test_an_absolute_path_or_a_uri_in_a_fragment_is_not_relative_wherever_the_fr
     assert [d.message for d in own.diagnostics if d.rule == "path-not-relative"][0].endswith("relative to the document (§2.3).")
 
 
+def _rooted(tmp_path, text: str, files: dict[str, str], **kwargs):
+    """*text* as ``main.lgd`` at the document root *tmp_path*, with *files* beside it, validated with the root."""
+    (tmp_path / "main.lgd").write_text(text, encoding="utf-8")
+    for name, each in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(each, encoding="utf-8")
+    return validate(load(tmp_path / "main.lgd"), document_root=tmp_path, **kwargs)
+
+
+def test_a_path_in_a_fragment_that_leaves_the_root_is_judged_from_the_fragments_directory(tmp_path):
+    text = _FRONT + _SCOPE + "![d](../d.png)\n\n{{include: part.lgd}}\n\n{{include: sub/part.lgd}}\n\n{{include: sub/deep.lgd}}\n"
+    files = {
+        "part.lgd": "## Part {#part}\n\n![x](../x.png) ![ok](x.png)\n",
+        "sub/part.lgd": "## Sub {#sub}\n\n![x](../x.png)\n",
+        "sub/deep.lgd": "## Deep {#deep}\n\n![x](../../x.png)\n\nSee ![a][r].\n\n[r]: ../../y.png\n",
+    }
+    result = _rooted(tmp_path, text, files)
+    # The document's own once, as before; part.lgd is at the root, so its ../x.png leaves it, and sub/part.lgd's does not.
+    assert _found(result, "path-outside-root") == [
+        ("path-outside-root", "main.lgd", _at(text, "![d]")), ("path-outside-root", "part.lgd", 3),
+        ("path-outside-root", "sub/deep.lgd", 3), ("path-outside-root", "sub/deep.lgd", 7),
+    ]
+    assert "File reference '../x.png' (image) leads out of the document root" in next(
+        d.message for d in result.diagnostics if d.rule == "path-outside-root" and d.file == "part.lgd"
+    )
+    # (The definition of a reference-style image is judged where it is written, in the fragment.)
+
+
+def test_a_path_in_an_attachment_file_that_leaves_the_root_is_judged_from_its_directory(tmp_path):
+    front = _attached(("a", "a.lgd"), ("b", "sub/b.lgd"))
+    text = front + _SCOPE + "See {{attach: a}} and {{attach: b}}.\n"
+    files = {"a.lgd": "## A {#a-sec}\n\n![x](../x.png)\n", "sub/b.lgd": "## B {#b-sec}\n\n![x](../x.png) ![y](../../y.png)\n"}
+    result = _rooted(tmp_path, text, files)
+    assert _found(result, "path-outside-root") == [("path-outside-root", "a.lgd", 3), ("path-outside-root", "sub/b.lgd", 3)]
+    assert "../../y.png" in next(d.message for d in result.diagnostics if d.file == "sub/b.lgd" and d.rule == "path-outside-root")
+
+
 def test_a_definition_of_the_document_that_only_a_fragments_image_uses_is_judged_where_it_is_written():
     # A link reference definition is judged where it is written, once something uses it: here a fragment does.
     text = _FRONT + _SCOPE + "Text.\n\n[r]: /abs.png\n\n{{include: part.lgd}}\n"
@@ -917,11 +1285,11 @@ def test_a_definition_only_pandoc_or_markdown_it_reads_is_judged_where_it_is_wri
 
 
 def test_a_definition_in_a_fragment_that_leaves_the_root_is_judged_as_a_strict_one_is():
-    # (``path-outside-root`` is the document's own pass's: a fragment's path is no path from the document's directory.)
+    # (Judged from the fragment's own directory, the root here, as the document of a parsed string is: #135.)
     text = _FRONT + _SCOPE + "See ![a][r].\n\n{{include: part.lgd}}\n"
     for definition in ("[r]: ../../x\x7f", "[r]: ../../x"):
         result = _run(text, {"part.lgd": f"Text.\n\n{definition}\n"}, document_root="/r")
-        assert _found(result, "path-outside-root", "path-not-relative") == []
+        assert _found(result, "path-outside-root", "path-not-relative") == [("path-outside-root", "part.lgd", 3)]
 
 
 def test_the_first_definition_of_a_label_in_the_order_of_the_splice_is_the_one_judged():

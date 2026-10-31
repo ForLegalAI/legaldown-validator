@@ -53,7 +53,8 @@ are only there (`attachment-id-collision`, `attachment-id-duplicate`, `attachmen
 `attachment-unreferenced`, `translation-authoritative-absent`); it is skipped as a `multi-file case`
 only when an expected diagnostic names another file.
 
-The fixtures of seven rules that read an include fragment — `include-anchor-duplicate`,
+The fixtures of ten rules that read an include fragment or an attachment file — `attachment-anchor-duplicate`,
+`attachment-has-frontmatter`, `attachment-has-h1`, `include-anchor-duplicate`,
 `include-cycle`, `include-file-missing`, `include-has-frontmatter`, `include-has-h1`,
 `include-heading-skip` and `template-fragment-invalid` — are marked Full and span files, and are run all the same: with
 `validate(resolve=file_loader(<the case's directory>))`, asserting the rule, the level, the line
@@ -72,13 +73,13 @@ because they need to open files other than the document itself.
 
 | Group | Rules |
 |---|---|
-| Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`, `supersedes-file-missing`; of these, `attachment-has-frontmatter` and `attachment-has-h1` are reported for an attachment file validated on its own (`validate(fragment=True, fragment_kind="attachment")`, below), and by assembly, but not for an attachment file `validate(resolve=)` reads (see [Include fragments](#include-fragments-122-1611-1612)) |
+| Filesystem-dependent (Full, §17.4) | `amends-file-missing`, `attachment-file-missing`, `supersedes-file-missing`. (`attachment-has-frontmatter` and `attachment-has-h1` are reported for an attachment file `validate(resolve=)` reads, at its line in the file, for one validated on its own (`validate(fragment=True, fragment_kind="attachment")`, below) and by assembly; `attachment-anchor-duplicate` is the combined document's, below; see [Include fragments](#include-fragments-122-1611-1612).) |
 | Bilingual sets (Full, §17.4) | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch`; and `translation-implicit-id` and `translation-authoritative-absent` for the linked files (for the document itself they are Core, and implemented, below) |
 | Rendering (§17.3) | `ref-not-enumerated` |
 
 In practice this means validating a set of files is out of scope: the validator does not
-cross-check attachment file contents or bilingual document sets, nor the combined document of a document and its
-attachment files (the combined document of its include fragments is validated, below). What it reads from another file is the definitions the
+cross-check bilingual document sets (the combined document of a document, its include fragments and its LegalDown
+attachment files is validated, below). What it reads from another file is the definitions the
 amended original (§7.5) and the LegalDown attachment files (§12.4) declare, and, to check them
 ([Include fragments](#include-fragments-122-1611-1612)), the include fragments (§12.2), from beside a
 document that has a path (`legaldown.load`; the CLI) or through `validate(resolve=)`; an
@@ -94,8 +95,9 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
 `legaldown validate --final`); assembly is described below. Two limits apply:
 
 - A template's include fragments and LegalDown attachment files are read for what a template may
-  hold in them and for the definitions of the attachment files, not for the questions they use,
-  so `question-unused` is not reported for a template that has either: a question may be used there.
+  hold in them, and for the questions they use when the combined document is made (below); when it
+  is not, because one was not read or is not a fragment, `question-unused` is not reported for a template
+  that has either: a question may be used there.
 - A LegalDown attachment file or include fragment validated on its own (`validate(fragment=True)`,
   `legaldown validate --fragment`) is checked as a body-only fragment (§12.2, §12.4): no frontmatter,
   title, parties or sides are expected, and a first heading at any level is accepted. What it
@@ -584,8 +586,7 @@ Where this differs from CommonMark, or is read more simply:
       file is read again by itself, from its own source, and the files' definitions are laid end to end in the
       order they are spliced, so that a definition of the document and one of a fragment shadow each other as in a
       splice of their text (`tests/test_combined_document.py` compares the two). A finding in a fragment is at its
-      line there (`path-not-relative`; `path-outside-root` is the document's own pass, which a fragment's
-      definition, strict or not, has never been judged by). A file read twice, a fragment included twice or the
+      line there (`path-not-relative`, and `path-outside-root` from the directory of the file the definition is in). A file read twice, a fragment included twice or the
       document in both passes, is read again once.
     - *Residuals* (each a finding too many or too few, only where noted):
       - A document with no text to read again (built in code, or changed since it was parsed) has the
@@ -1004,7 +1005,7 @@ Decisions the specification leaves open:
   every include paragraph was followed into a fragment, `validate` runs its checks a second time over the
   document with each fragment spliced in at its include (`validator/combined.py`), and the document's findings
   are that pass's, but for the rules only the document's own pass can make (`combined.HOST_ONLY`: the `include-*`
-  rules, `template-fragment-invalid`, `heading-skip`, `path-outside-root`,
+  rules, `template-fragment-invalid`, `heading-skip`, `attachment-has-frontmatter`, `attachment-has-h1`,
   `ldv-check-skipped`), which are taken from it as before. The combined pass runs under the document's own
   mode (unreadable frontmatter) and `final`.
   - *What is spliced.* The combined document is built from the fragments as they were parsed (each file is
@@ -1035,8 +1036,8 @@ Decisions the specification leaves open:
     (`at line 3 of part.lgd`).
   - *What is judged.* `ref-broken`, `term-undefined`, `amend-term-undefined`, `def-unreferenced`,
     `attachment-unreferenced`, `question-unused`, `ref-targets-attachment`, `condition-reference-unsafe`,
-    `definition-circular`, `definition-used-before-declaration`, `anchor-duplicate`, `anchor-autogen-collision`,
-    `def-duplicate-id`, `def-autogen-collision`, `attachment-id-collision`, `amend-def-override`,
+    `definition-circular`, `definition-used-before-declaration`, `anchor-duplicate`, `attachment-anchor-duplicate`,
+    `anchor-autogen-collision`, `def-duplicate-id`, `def-autogen-collision`, `attachment-id-collision`, `amend-def-override`,
     `placeholder-type-inconsistent` and `placeholder-question-mismatch` depend on what is declared elsewhere in the
     document (`combined.WHOLE_DOCUMENT_RULES`): they are judged over the combined document, so a reference into a
     fragment resolves, a term a fragment defines is defined, a definition the other file references is
@@ -1046,9 +1047,9 @@ Decisions the specification leaves open:
     `def-term-variable`, `raw-html`, `date-invalid`, `party-unknown`, `placeholder-unfilled` under `final`, ...): they
     are the new findings in a fragment, which may change an exit status. The two passes agree on the document's
     own parts for these (a test runs both over every case).
-  - *`question-unused`.* A question is unused when nothing in the combined document uses it, the fragments'
-    blanks, conditions and choices included; a LegalDown attachment file is not part of it, so a document with
-    one still has the question treated as possibly used there.
+  - *`question-unused`.* A question is unused when nothing in the combined document uses it, the fragments' and
+    the attachment files' blanks, conditions and choices included; a LegalDown attachment file that is not part of
+    it (not read, or not a fragment) may use it, so then the question is treated as possibly used there.
   - *Templates (§15.3, §15.4).* A unit has the presence it has in its own file (a section extends to the end of
     its file: a block of the document after an include does not take the presence of the fragment's last section)
     together with that of the include paragraphs that brought it in, so a fragment is as present as its include is.
@@ -1077,7 +1078,7 @@ Decisions the specification leaves open:
     combined document is made, as for an include not followed, and the Warning of §17.5 says
     "building the combined document of more than ... blocks or ... lines of fragments". The caps are this
     implementation's own.
-  - *All or nothing.* The combined document is made only when every include paragraph (the document's and the
+  - *All or nothing.* For the includes: the combined document is made only when every include paragraph (the document's and the
     fragments') was followed into a fragment: nothing unread (no loader, a path that leads out of the directory
     with no `document_root`, a file that cannot be read), refused (`include-cycle`, a path finding, a file that is
     not a fragment: frontmatter or a level-1 heading), cut short by a cap (32 deep, 10,000 entries), or left alone in
@@ -1085,26 +1086,59 @@ Decisions the specification leaves open:
     `ref-broken` as it was, and the Warning of §17.5 names the combined-document checks. A partial combined
     document would make `question-unused`, `def-unreferenced` and `condition-reference-unsafe` wrong for what the
     missing fragment holds. When it is made, the Warning no longer names them, and a document with includes that
-    is otherwise skipped nothing has none.
+    is otherwise skipped nothing has none. The attachment files are each on their own (below): one not read leaves
+    the body and the others as they are.
   - *Cost.* The document is validated twice, itself and combined, and the files it imports from (an amended
     original, attachment files; an `import_definitions` callback) are read, and the callbacks called, once. The
     document's own pass is not shortened when a combined document will be made (it is not known until the
     includes are followed, near its end), and the units and markers of the document are not reused, since the
     combined structure reads them differently; so the work is about twice the document's and linear in the
     size of the combined document (bounded, above).
-  - *Not part of it yet.* LegalDown attachment files (§12.4, §15.7.2 step 7 puts them after the body): a
-    `{{ref:}}` into an attachment's section is still `ref-broken`, a definition used only in an attachment is
-    still `def-unreferenced`, an auto-generated identifier is not suffixed against an attachment's heading, and
-    `attachment-anchor-duplicate` is not made; the Warning of §17.5 for attachments says so. The paths of a
-    fragment are judged as far as they need no base: an absolute path or a URI scheme in an image of a fragment
+  - *Attachment files* ([#135](https://github.com/ForLegalAI/legaldown-validator/issues/135); §12.4, §15.7.2 step 7,
+    §16.10). The LegalDown attachment files follow the body, each after the other in the order the attachments are
+    declared, one copy for each entry, spliced as a fragment is (its preamble blocks go on in the last section of
+    the body, its sections follow): a `{{ref:}}` into an attachment's section resolves, a definition used only in an
+    attachment is referenced, a term an attachment uses is defined by the body, an auto-generated identifier is
+    suffixed against an attachment's heading, and an `{{attach:}}` in an attachment satisfies
+    `attachment-unreferenced`. A section identifier an attachment declares again is
+    `attachment-anchor-duplicate` (§16.10), at the later heading in the attachment's file: the combined document's
+    `anchor-duplicate`, named for the place of the later heading, since an attachment is always after the body and
+    the files before it (alternatives, by their `when`, are none). An attachment's presence is its entry's
+    `when` (§15.3), as a fragment's is its include's. An attachment file is spliced when it was read and is a
+    fragment in the sense of §12.2; its shape is checked of the file as it is (`attachment-has-frontmatter` at the
+    first key, `attachment-has-h1` at each level-1 heading, once for each file however often it is attached, and not
+    for a file that is also an include, which is `include-has-*`'s), and a file that has either is not spliced. The
+    combined document is made when the includes were all followed and something is to be spliced, so a document with
+    no include but a readable attachment file has one. An attachment file that holds an include paragraph is not
+    spliced either (its includes are not followed, so what it refers to in them would be taken for missing); it is
+    judged as before and counted among the files not spliced. Unlike the includes, the attachments are no
+    all-or-nothing: each is an appendix of its own, so one not read leaves the body and the others as they are, and
+    the Warning of §17.5 says how many were not spliced ("attachment-anchor-duplicate and the combined-document
+    checks ... for 1 LegalDown attachment file not spliced into the combined document"), and nothing of them
+    when all are in. The attachment files have a budget of their own (the 50,000 blocks and 200,000 lines of
+    *Size*, counted for each entry), which the walk of the includes does not share and they cannot change: past it
+    the attachment file and those after it are not spliced, the combined document of the includes is made all the
+    same, and the Warning says how many were left out for the size, also for a document with no include (not when an include was not followed: that is what the Warning then blames). The
+    Warning names `attachment-has-frontmatter` and `attachment-has-h1` only for the attachment files not read for
+    their shape (not read, or a path refused), not for one whose definitions were not imported but was read. A
+    definition of an attachment file is document-wide (§7.2, §12.4): a use in the body before it is no
+    `definition-used-before-declaration` (nor is one in another attachment; a use in the same attachment, before its own declaration, is). A file that is
+    both included and attached is in both places, and the identifiers of its attachment copy clash with those of the
+    include: `attachment-anchor-duplicate` at the attachment's heading (§16.10), not `include-anchor-duplicate`. The findings in an attachment file are new, like a fragment's, and may change
+    an exit status; the definitions of a spliced attachment file are not imported a second time, so a
+    definition the body and an attachment both declare is `def-duplicate-id` once, at the line of the attachment's
+    `{{def:}}` (it was at the `attachments[i]` key).
+  - *Paths.* An absolute path or a URI scheme in an image of a fragment
     is `path-not-relative` at its line there ("relative to the fragment"; the document's validation never looked at a
     fragment's images before), and a link reference definition of the document that only a fragment's image uses is
     judged where it is written, the other way round too (`path-not-relative` is the combined pass's), a definition
     of either that only pandoc or markdown-it reads as well ([#121](https://github.com/ForLegalAI/legaldown-validator/issues/121),
     above: each file is read again by itself, laid end to end in the order of the splice).
-    `path-outside-root` and the existence of an image are not judged from the fragment's directory (the combined
-    pass reads them from the document's), so an image in a fragment that leaves the root is neither checked nor
-    warned about. `ValidationResult.index` is the document's own (its sections are the
+    `path-outside-root` is judged from the directory of the file the path is written in (§2.3, #135), for a
+    fragment's and an attachment file's image and link reference definition, at its line in that file: `../x.png`
+    in `sub/part.lgd` stays within a root at the document's directory, and `../../x.png` leaves it. The depth of
+    each directory below the root is worked out once, not for each path. The existence of an image is not
+    judged (for the document itself neither). `ValidationResult.index` is the document's own (its sections are the
     document's, paired with `document.sections`). The cap does not bound the blocks a fragment holds, as
     assembly's splice does not: the work is linear in the size of the combined document.
 - **What of a fragment is reported by the document that includes it.** The fragment is not
@@ -1115,9 +1149,9 @@ Decisions the specification leaves open:
   template rules (`TEMPLATE_RULES`), so reporting them through the including template **newly stops its
   assembly** when a fragment has one (§15.7.2 wants a template without Errors); `Template.problems` counts them
   at their line in the fragment. A fragment that is not read (a cycle, a missing include, ...) is not validated. `attachment-has-frontmatter` and `attachment-has-h1` are
-  not reported for an attachment file that `validate(resolve=)` reads either (assembly refuses a
-  template for them, with the file and line); they are reported for the file validated on its own
-  with `fragment_kind="attachment"`.
+  reported for an attachment file that `validate(resolve=)` reads (#135), at their line in the file, as
+  `include-has-*` are of a fragment (and assembly refuses a template for them, with the file and line);
+  they are reported for the file validated on its own with `fragment_kind="attachment"` too.
 - **One implementation.** The findings come from one module that assembly (`Template.problems`),
   `validate(resolve=)` and `validate(fragment=True)` share, so one file is never judged two ways.
   Assembly reports them as it always did, now one for each offender and with the file and line
@@ -1178,7 +1212,7 @@ validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warn
   fragment validated on its own (`validate(fragment=True)`) draws it too, for its own includes
   and images; it is not `host_dependent`.
 - **Strict.** The Warning is made whenever the construct is present and some of what its category asks
-  is not done, also when the files were read (an attachment file is read, and its checks are not all made).
+  is not done, also when the files were read (an attachment file is read, and its existence is not checked).
   Each message lists exactly what was *not* performed in this validation: a check that was made (a fragment
   that was read, the combined document of the includes) is not listed, and a category that is left
   with nothing is not drawn: a document whose includes were all followed and judged draws none for them.
@@ -1186,7 +1220,7 @@ validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warn
 | Category (§17.4) | Construct | Not performed |
 |---|---|---|
 | Includes (§12, §16.11) | an include paragraph | the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document) when the combined document was not put together, which is when an include was not followed (below, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)); with every include followed and nothing else skipped, no Warning. For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the size of the combined document (50,000 blocks or 200,000 lines of fragments spliced in), the combined-document checks. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
-| Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file also `attachment-has-frontmatter`, `attachment-has-h1` and `attachment-anchor-duplicate`, the combined-document checks for the attachment files (a reference into an attachment's section; they are not part of the combined document), and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below) |
+| Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file not read, also `attachment-has-frontmatter` and `attachment-has-h1`; for one not spliced into the combined document (not read, or not a fragment: it has frontmatter, a level-1 heading or an include paragraph, or is past the size of the combined document) `attachment-anchor-duplicate` and the combined-document checks (a reference into an attachment's section), with the count; and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below). With every one read and spliced, only `attachment-file-missing` |
 | Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (for any reason, see below), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
 | Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch`; and `translation-implicit-id` and `translation-authoritative-absent` for the linked files, whose identifiers are not read (the document's own are checked, Core, §17.2) |
 | Declared paths (§17.4) | `supersedes.file` (the object form), an image path | `supersedes-file-missing`; the existence of image paths (§8.7), which has no rule id |
@@ -1268,12 +1302,12 @@ LEGALDOWN_FIXTURES_DIR=../LegalDown/fixtures pytest tests/conformance -q
 ```
 
 Each case's expected rule is asserted at its expected line, where the case gives one (above).
-Cases for the rules above are skipped by name, so the 12 `not implemented` skips reproduce this
+Cases for the rules above are skipped by name, so the 9 `not implemented` skips reproduce this
 table one for one, except `ref-not-enumerated`, which has no fixture. Each fixture document is
 also written back (`serialize`) and validated again, which must report the same diagnostics. The
-run reports 255 passed and 18 skipped (246 and 27 before #116, whose five rules now run, and with them
+run reports 258 passed and 15 skipped (255 and 18 before #135, whose three rules now run; 246 and 27 before #116, whose five rules now run, and with them
 the four cases of several files that expect nothing in another: `attachment-id-collision`, `-duplicate`, `-title-empty` and
-`-unreferenced`; 238 and 35 before #35): twelve are the `not implemented` skips, three are the
+`-unreferenced`; 238 and 35 before #35): nine are the `not implemented` skips, three are the
 implemented amendment rules, skipped as `requires conformance level full`, two are the `multi-file`
 assembly case, which is marked Full (fixtures README, step 4) — `tests/test_assembly.py`
 assembles it with a loader instead — and one is the write-back of the `frontmatter-invalid-yaml`

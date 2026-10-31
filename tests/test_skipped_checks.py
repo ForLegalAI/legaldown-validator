@@ -193,8 +193,16 @@ def test_attachment_files_draw_one_warning_at_the_first():
     for rule in ("attachment-file-missing", "attachment-has-frontmatter", "attachment-has-h1",
                  "attachment-anchor-duplicate", "importing the definitions of 1 LegalDown attachment file (1 has no loader to read it: no `resolve`, and the document has no path)"):
         assert rule in warning.message
+    # One that was read and is spliced into the combined document leaves only the existence of the file (#135).
     (read,) = _warnings(text, resolve=_loader({"a.lgd": "Text.\n"}))
-    assert "importing" not in read.message and "attachment-anchor-duplicate" in read.message
+    assert "importing" not in read.message and "Not performed: attachment-file-missing (" in read.message
+    # ... and one that was read and is not a fragment is judged for its shape (attachment-has-h1) and not spliced.
+    (heading,) = _warnings(text, resolve=_loader({"a.lgd": "# H\n"}))
+    assert "importing" not in heading.message and "attachment-has-h1" not in heading.message
+    assert (
+        "attachment-anchor-duplicate and the combined-document checks (§12.4, such as a reference into an "
+        "attachment's section) for 1 LegalDown attachment file not spliced into the combined document"
+    ) in heading.message
     # A loader that has not the file did not import its definitions either.
     (missing,) = _warnings(text, resolve=lambda _path: None)
     assert "importing the definitions of 1 LegalDown attachment file (1 could not be read)" in missing.message
