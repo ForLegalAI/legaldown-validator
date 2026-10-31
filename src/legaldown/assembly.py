@@ -57,9 +57,11 @@ from .markdown import (
     FENCE_OPEN_RE,
     LINE_ENDING_RE,
     ItemMarkers,
+    advance_column,
     html_block_opening,
     indent_width,
     is_blank,
+    item_marker_at,
 )
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
 from .models import LIST_KINDS, Block, Document, frontmatter_message
@@ -1792,7 +1794,6 @@ def _quoted_end(source: str, at: int) -> int:
 
 # ── Line starts (§15.7.3) ────────────────────────────────────────
 
-_ITEM_MARKER_RE = re.compile(r"[ \t]*(?:[-*+]|[0-9]{1,9}[.)])(?:[ \t]+|$)")  # a bare marker too, as the parser reads it
 _ATX_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 _BLOCK_QUOTE_RE = re.compile(r" {0,3}>")
 _BREAK_RE = re.compile(r" {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
@@ -1832,7 +1833,7 @@ def _construct(content: str, *, in_paragraph: bool) -> str | None:
 
 
 _QUOTE_MARKER_RE = re.compile(r"[ \t]{0,3}>[ \t]?")
-_TEMPLATE_QUOTE_RE = re.compile(r"([ \t]*)>[ \t]?")
+_BLANKS_RE = re.compile(r"[ \t]*")
 _SIMPLE_RE = re.compile(r"(?:[ \t]{0,3}>[ \t]?|[ \t]{0,3}(?:[-+*]|1[.)])[ \t]+)*")
 _PLAINISH_RE = re.compile(r"[ \t>*+\-0-9.)]*")
 _ITEM_UNIT_RE = re.compile(r"[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+")
@@ -1855,26 +1856,6 @@ def _could_begin(text: str) -> bool:
         pos = found.end()
 
 
-def _marker_end(text: str, items: int, limit: int | None, base: int = 0) -> int:
-    """Where the content of *text* begins: after its block quote markers and the
-    *items* list item markers that it starts, never past *limit*. A quote marker that begins
-    the line is up to three columns past the content column *base* of the item that holds it,
-    or past the line's start: further in, it is paragraph text (or code). The parser reads
-    the markers after it as it does the template's, wherever they are."""
-    pos = 0
-    while True:
-        found = _TEMPLATE_QUOTE_RE.match(text, pos)
-        if found is not None and pos == 0 and indent_width(found.group(1)) > base + 3:
-            found = None
-        if found is None and items:
-            found = _ITEM_MARKER_RE.match(text, pos)
-            if found:
-                items -= 1
-        if found is None or (limit is not None and found.end() > limit):
-            return pos
-        pos = found.end()
-
-
 def _item_column(line: str, count: int) -> int:
     """The column where the content of the *count*-th list item that *line* opens begins."""
     column = 0
@@ -1883,20 +1864,47 @@ def _item_column(line: str, count: int) -> int:
     return column
 
 
+class _Entry(NamedTuple):
+    """One container that a line is in, as the layout has it (``_signatures``); *parent* is the one outside it."""
+
+    kind: str  #: ``i`` (a list item), ``q`` (a block quote), or ``cap`` (a quote in ``MAX_QUOTE_DEPTH``, and those it holds)
+    first: int  #: the line it starts on
+    ordinal: int  #: of the items that start on that line, which this is (0 for the first)
+    parent: _Entry | None
+
+
+def _chain(entry: _Entry | None) -> Iterator[_Entry]:
+    """The containers that *entry*, the innermost, is in, inner to outer."""
+    while entry is not None:
+        yield entry
+        entry = entry.parent
+
+
 def _signatures(
     lines: list[str], last: int | None = None
-) -> tuple[defaultdict[int, Counter[str]], dict[int, int], _Layout, tuple[tuple[int, ...], int] | None]:
+) -> tuple[defaultdict[int, Counter[str]], dict[int, _Entry], _Layout, tuple[tuple[int, ...], int] | None]:
     """What the parser reads *lines* as beginning, line by line, of the constructs
     §15.7.3 names: ``item``, ``quote``, ``heading`` (ATX), ``setext`` (for the underline
     of a heading that began on an earlier line), ``code``, ``rule`` and ``html``; and the
-    content column of the list item each line lies in. Only line *last* if it is given,
-    and then also the paragraph it lies in, if that is in list items alone: the content
-    columns of the items around it, outer first, and the line it starts on."""
+    innermost container each line lies in (``_Entry``), as the parser's layout has it, quotes
+    and list items alike. Only line *last* if it is given (no containers then), and then also the
+    paragraph it lies in, if that is in list items alone: the content columns of the items around
+    it, outer first, and the line it starts on."""
     layout = _Layout()
     blocks, sections = _parse_body(lines, layout)
     begun: defaultdict[int, Counter[str]] = defaultdict(Counter)
-    columns: dict[int, int] = {}
+    innermost: dict[int, _Entry] = {}
     leaf: list[tuple[tuple[int, ...], int]] = []
+
+    def push(kind: str, first: int, stop: int) -> None:
+        """The container of *kind* that starts on line *first* holds the lines up to *stop*: outer
+        ones are pushed first."""
+        ordinal = 0
+        if kind == "i":
+            for entry in _chain(innermost.get(first)):
+                ordinal += entry.kind == "i" and entry.first == first
+        for line in range(first, stop):
+            innermost[line] = _Entry(kind, first, ordinal, innermost.get(line))
 
     def mark(start: int, end: int, kind: str) -> None:
         """Record the construct of *kind* on lines ``[start, end)``: where it begins, or for
@@ -1933,21 +1941,23 @@ def _signatures(
                 inside = None if opened is None else (*opened, first)
                 inner_around = around
                 if inside is not None:
-                    column = _item_column(lines[first], inside.count(first))
-                    inner_around = (*around, column)
-                    if last is None:
-                        columns.update(dict.fromkeys(range(first, stop), column))
+                    inner_around = (*around, _item_column(lines[first], inside.count(first)))
+                if last is None:
+                    push("i", first, stop)
                 walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around)
-            if block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
-                children, inner = quote_content(block.text, depth + 1)
-                walk(inner, children, start, depth + 1, None)
+            if block.kind == "quote":
+                if last is None:
+                    push("q" if depth < MAX_QUOTE_DEPTH else "cap", start, end)
+                if depth < MAX_QUOTE_DEPTH:
+                    children, inner = quote_content(block.text, depth + 1)
+                    walk(inner, children, start, depth + 1, None)
 
     for heading in layout.headings:
         mark(heading.start, heading.end, "heading")
     walk(layout.preamble, blocks, 0, 0, ())
     for (_heading, section_blocks), (_span, spans) in zip(sections, layout.sections, strict=True):
         walk(spans, section_blocks, 0, 0, ())
-    return begun, columns, layout, leaf[0] if leaf else None
+    return begun, innermost, layout, leaf[0] if leaf else None
 
 
 class _Tail(NamedTuple):
@@ -1964,7 +1974,7 @@ def _tail(lines: list[str]) -> _Tail:
     """What the parser reads the last of *lines* as beginning, and where its last top-level block
     starts: the lines before that are closed, and later lines cannot change their reading."""
     last = len(lines) - 1
-    begun, _columns, layout, paragraph = _signatures(lines, last)
+    begun, _containers, layout, paragraph = _signatures(lines, last)
     start, kind, top = _last_block(layout)
     return _Tail(begun[last], start, kind, top, paragraph)
 
@@ -1987,18 +1997,102 @@ def _last_block(layout: _Layout) -> tuple[int, str, int]:
     return at, spans[-1][1], top
 
 
+class _Frame(NamedTuple):
+    """Where the content of a template line begins, as the containers that the layout puts it in
+    read it (``_frame``)."""
+
+    prefix: int  #: after its last container marker: a quote's ``>`` and the one space or tab after it, an item's marker and its spacing
+    column: int  #: the column there
+    marks: tuple[tuple[str, int], ...]  #: each marker, in order: its kind (``q``, ``i``) and where it ends
+    keep: int  #: the columns after the last marker that the line's own indentation is, up to the content column of the innermost item it reaches
+    full: bool  #: no item stopped the walk: the line reaches the content column of each one it is in (a quote it only lazily continues does not count)
+
+
+def _frame_missed(line: str) -> None:
+    """``_frame`` could not find a marker that the layout says the template *line* has. It reads the line as far as
+    it could; the tests replace this to count the lines."""
+
+
+def _frame(line: str, slot: int, chain: list[_Entry], rel: dict[tuple[int, int], int]) -> _Frame:
+    """The template *line*, the one at *slot*, read left to right once along the *chain* of containers that
+    the parser's layout puts it in, outer first: where each marker it has is, and the columns it keeps. These
+    are the parser's rules: a quote marker is a ``>`` at most three columns past the content column of its
+    container (further in it is text), and one space or tab after it is syntax (``_Quote.read``); an item starts
+    at its marker, whose content column, *rel*, is stored relative to its container's, and a later line is in it when
+    its indentation reaches that column (``_item_lines``), or is blank. A line that does not (a lazy one) is
+    not in the containers inside, and what it has of them is the indentation left. Columns are counted along
+    the walk, not from the line's start."""
+    pos = col = origin = 0  # where the walk is, and the column where the content of the container it is in begins
+    prefix = column = 0
+    marks: list[tuple[str, int]] = []
+    full = True
+    for entry in chain:
+        if entry.kind == "i":
+            key = (entry.first, entry.ordinal)
+            if entry.first == slot:
+                found = item_marker_at(line, pos, col)
+                if found is None:
+                    _frame_missed(line)
+                    break
+                rel[key] = found.column - origin
+                pos, col, origin = found.end, found.end_column, found.column
+                prefix, column = pos, col
+                marks.append(("i", pos))
+            elif key in rel:
+                target = origin + rel[key]
+                at, reached = pos, col
+                while reached < target and line[at:at + 1] in (" ", "\t"):
+                    reached = advance_column(reached, line[at])
+                    at += 1
+                blank = _BLANKS_RE.match(line, at).end() == len(line)  # type: ignore[union-attr]
+                pos, col = at, reached
+                if reached >= target or blank:  # (an empty line is in every item that is open)
+                    origin = target
+                else:
+                    origin, full = reached, False
+                    break
+            else:
+                _frame_missed(line)
+                break
+        else:
+            stopped = False
+            while not stopped:  # a ``cap`` quote holds the quotes in it, whose markers follow
+                end = _BLANKS_RE.match(line, pos).end()  # type: ignore[union-attr]
+                reached = advance_column(col, line[pos:end])
+                if line[end:end + 1] != ">" or reached - origin > 3:
+                    stopped = True  # a lazy line: nothing deeper is read
+                else:
+                    pos, col = end + 1, reached + 1
+                    origin = col
+                    if line[pos:pos + 1] in (" ", "\t"):  # one optional space, or a tab, which goes whole
+                        origin += 1
+                        col = advance_column(col, line[pos])
+                        pos += 1
+                    prefix, column = pos, col
+                    marks.append(("q", pos))
+                if entry.kind == "q":
+                    break
+            if stopped:
+                break
+    # A line short of an item's column in a quote keeps no indentation: with four columns it would be code.
+    keep = max(0, origin - column) if full or not any(kind == "q" for kind, _ in marks) else 0
+    return _Frame(prefix, column, tuple(marks), keep, full)
+
+
 class _Reading:
     """The template as the parser reads it, each inserted text a word: what every line
-    begins, and the content column of the item it lies in. It is parsed once, when a line
-    first needs it. The lines whose insertion begins their content have the spaces and
-    tabs before it removed here too (§15.7.3), so that the template is read as it is
-    written; those the template put in an item keep its indentation (``_indent``)."""
+    begins, and the containers it lies in. It is parsed once, when a line first needs it.
+    The lines whose insertion begins their content have the spaces and tabs before it
+    removed here too (§15.7.3), so that the template is read as it is written; those the
+    template put in an item keep its indentation (``_indent``)."""
 
     def __init__(self, plains: list[str], checked: list[_Line]) -> None:
         self.plains = plains
         self._checked = checked
         self._begun: defaultdict[int, Counter[str]] | None = None
-        self._columns: dict[int, int] = {}
+        self._containers: dict[int, _Entry] = {}
+        self._rel: dict[tuple[int, int], int] = {}  # the content column of each item, from its container's (``_frame``)
+        self._frames: dict[int, _Frame] = {}
         self._starts: dict[int, tuple[int, bool, str]] = {}
         self._tops: frozenset[int] = frozenset()
 
@@ -2013,49 +2107,65 @@ class _Reading:
         assert self._begun is not None
         return self._begun[slot]
 
-    def column(self, slot: int) -> int:
-        """The content column of the list item that line *slot* lies in; 0 if none."""
-        self.begun(slot)
-        return self._columns.get(slot, 0)
+    def frame(self, slot: int) -> _Frame:
+        """Where the content of line *slot* begins, after its container markers, and the
+        columns of indentation it keeps (``_frame``). A line in an item that started on an
+        earlier line is read after that one, which says where the item's content column is."""
+        found = self._frames.get(slot)
+        if found is None:
+            self.begun(slot)
+            chain = list(reversed(list(_chain(self._containers.get(slot)))))
+            for entry in chain:
+                if entry.kind == "i" and entry.first != slot and (entry.first, entry.ordinal) not in self._rel:
+                    self.frame(entry.first)
+            found = self._frames[slot] = _frame(self.plains[slot], slot, chain, self._rel)
+        return found
 
     def start(self, line: _Line) -> tuple[int, bool, str]:
         """Where the content of *line* begins in the template's reading of it (after
         its quote markers and item markers, never past its first insertion), whether an
         insertion begins it, and the indentation that is kept then (``_indent``)."""
-        begun = self.begun(line.slot)
+        self.begun(line.slot)
         if line.slot not in self._starts:
-            self._starts[line.slot] = self._measure(line, begun)
+            self._starts[line.slot] = self._measure(line)
         return self._starts[line.slot]
 
-    def _measure(self, line: _Line, begun: Counter[str]) -> tuple[int, bool, str]:
+    def _measure(self, line: _Line) -> tuple[int, bool, str]:
         plain = self.plains[line.slot]
-        prefix = _marker_end(plain, begun["item"], line.first, self._columns.get(line.slot, 0))
+        frame = self.frame(line.slot)
+        prefix = frame.prefix if line.first is None else min(frame.prefix, line.first)
         begins = line.first is not None and not plain[prefix:line.first].strip(" \t")
-        return prefix, begins, self._indent(line, prefix, begins, begun)
+        return prefix, begins, self._indent(line, frame, prefix, begins)
 
-    def _indent(self, line: _Line, prefix: int, begins: bool, begun: Counter[str]) -> str:
+    def _indent(self, line: _Line, frame: _Frame, prefix: int, begins: bool) -> str:
         """What the template line's own indentation keeps of the whitespace before an insertion that
-        begins the content: the columns up to the content column of the item it lies in (§15.7.3:
-        "the template line's own indentation"), no more than the line has. A line that starts an item, or
-        holds container markers before the insertion, has none: its markers are its container."""
-        if not begins or prefix or begun["item"] or line.first is None:
+        begins the content: the columns up to the content column of the item it lies in (§15.7.3: "the
+        template line's own indentation"), no more than the line has after its last container marker.
+        A line that starts an item has none: its marker is its container."""
+        if not begins or line.first is None:
             return ""
-        return " " * min(self._columns.get(line.slot, 0), indent_width(line.plain[:line.first]))
+        blanks = advance_column(frame.column, line.plain[prefix:line.first]) - frame.column
+        return " " * min(frame.keep, blanks)
 
     def _read(self) -> None:
-        self._begun, self._columns, layout, _ = _signatures(self.plains)
+        self._begun, self._containers, layout, _ = _signatures(self.plains)
         changed = False
         for line in self._checked:
             if line.first is None or not _PLAINISH_RE.fullmatch(line.plain[:line.first]):
                 continue  # text before the insertion: nothing is removed
-            prefix, begins, keep = self._starts[line.slot] = self._measure(line, self._begun[line.slot])
+            # Measured here, before the strip, and kept: ``line.first`` is an offset in the line as it was. The strip
+            # takes only the blanks past the markers and leaves the ones kept, so the frame of the stripped line has the
+            # same markers and keeps the same.
+            prefix, begins, keep = self._starts[line.slot] = self._measure(line)
             plain = self.plains[line.slot]
             stripped = plain[:prefix] + keep + plain[prefix:].lstrip(" \t") if begins else plain
             if stripped != plain:
                 self.plains[line.slot] = stripped
                 changed = True
         if changed:
-            self._begun, self._columns, layout, _ = _signatures(self.plains)
+            self._begun, self._containers, layout, _ = _signatures(self.plains)
+            self._rel.clear()
+            self._frames.clear()
         self._tops = frozenset(
             [h.start for h in layout.headings] + [sp.start for container in layout.containers() for sp in container]
         )
@@ -2225,26 +2335,35 @@ def _line_starts(lines: list[_Line], plains: list[str]) -> None:
 def _simple_start(line: _Line, reading: _Reading) -> str | None:
     """The checked *line* when the parser need not be asked: what it begins cannot start a
     block, and the markers before the insertion are the template's own. None if it must be
-    read. Only the template's ``-``, ``+``, ``*``, ``1.``, ``1)`` and ``>`` are known to be
+    read. Without a quote, only the template's ``-``, ``+``, ``*``, ``1.``, ``1)`` are known to be
     markers without asking the parser; any other run of item markers is, if the parser reads
-    the template line as beginning that many items. All this holds if the output is as the template
-    reads it, not while a line in the block differs from it (``_line_starts``)."""
+    the template line as beginning that many items. With one, the parser's reading of the template
+    says which ``>`` and which markers are the line's (``_Reading.frame``): a ``>`` far in is text.
+    All this holds if the output is as the template reads it, not while a line in the block
+    differs from it (``_line_starts``)."""
     text, first = line.text, line.first
     if first is None:
         return None if _could_begin(text) else text
     head = line.plain[:first]
     if not _PLAINISH_RE.fullmatch(head):
         return None if _could_begin(text) else text  # text precedes the insertion: nothing is removed
-    prefix = _SIMPLE_RE.match(head).end()  # type: ignore[union-attr]
-    if head[prefix:].strip(" \t"):
-        run = _ITEM_RUN_RE.fullmatch(head)
-        if run is None or reading.begun(line.slot)["item"] != len(_ITEM_UNIT_RE.findall(head)):
-            return None
-        prefix = len(head)
     keep = ""
-    if not prefix and head:  # only whitespace before the insertion: indentation
-        keep = reading.start(line)[2]
+    if ">" in head:
+        prefix, begins, keep = reading.start(line)
+        if not begins:
+            return None
+    else:
+        prefix = _SIMPLE_RE.match(head).end()  # type: ignore[union-attr]
+        if head[prefix:].strip(" \t"):
+            run = _ITEM_RUN_RE.fullmatch(head)
+            if run is None or reading.begun(line.slot)["item"] != len(_ITEM_UNIT_RE.findall(head)):
+                return None
+            prefix = len(head)
+        if not prefix and head:  # only whitespace before the insertion: indentation
+            keep = reading.start(line)[2]
     content = text[prefix:].lstrip(" \t")
+    if not content and prefix:
+        return text[:prefix]  # (the indentation kept for content holds nothing here)
     return text[:prefix] + keep + content if not _could_begin(content) else None
 
 
@@ -2260,20 +2379,20 @@ def _line_start(
     plain = reading.plains[line.slot]
     begun = reading.begun(line.slot)
     prefix, begins, keep = reading.start(line)
-    base = reading.column(line.slot)
+    frame = reading.frame(line.slot)
     content = text[prefix:]
     if begins:
         content = keep + content.lstrip(" \t")
     candidate = text[:prefix] + content
     if not content.strip(" \t"):
-        return candidate, None
+        return (text[:prefix] if begins and prefix else candidate), None  # (indentation kept for content holds nothing)
     if not (_surely_markers(candidate[:prefix], begun, perturbed) and _always_begins(candidate[prefix:], plain[prefix:])):
-        tail = _kept(candidate, before, begun, plain, prefix, base, perturbed)
+        tail = _kept(candidate, before, begun, plain, prefix, frame, perturbed)
         if tail is not None:
             return candidate, tail
     # A line the template placed in an item stays in it when its indentation goes.
-    column = len(keep) if begins else base if not prefix and not begun["item"] else 0
-    return _fix(candidate, prefix, before, begun, plain, column, base, perturbed)
+    column = len(keep) if begins else frame.keep if frame.full and not begun["item"] else 0
+    return _fix(candidate, prefix, before, begun, plain, column, frame, perturbed)
 
 
 def _surely_markers(markers: str, begun: Counter[str], perturbed: bool) -> bool:
@@ -2298,21 +2417,44 @@ def _always_begins(content: str, template: str) -> bool:
 
 
 def _kept(
-    line: str, before: list[str], template: Counter[str], plain: str, prefix: int, base: int, perturbed: bool
+    line: str, before: list[str], template: Counter[str], plain: str, prefix: int, frame: _Frame, perturbed: bool
 ) -> _Tail | None:
     """How the parser reads *line* after the output lines *before*, if it begins no construct that
     *template* (what the parser reads the template line, *plain*, as beginning) does not. *prefix*:
-    where the template's content begins, after its container markers; *base*: the content column
-    of the item that holds the line; *perturbed*: see ``_line_starts``. Where the output is as the
-    template reads it, a form that no longer begins a quote or an item that the template line
-    begins has lost one of its markers, and is none of ours."""
+    where the template's content begins, after its container markers, and *frame*: how it has them
+    (``_Reading.frame``);
+    *perturbed*: see ``_line_starts``. Where the output is as the template reads it, a form that no
+    longer begins a quote or an item that the template line begins has lost one of its markers, and
+    is none of ours."""
     tail = _tail([*before, line])
     if not perturbed and any(tail.begun[kind] < template[kind] for kind in ("quote", "item")):
         return None
     # The content is read after the markers that the output has: where a template marker is
     # text in the output (a ``3.`` that no item holds), what follows it may begin a block.
-    content = line[_marker_end(line, tail.begun["item"], prefix, base):]
-    return None if tail.begun - template or _free(content, plain[prefix:]) else tail
+    content = line[_content_start(frame, line, tail.begun["item"], prefix):]
+    was = plain[_content_start(frame, plain, template["item"], prefix):]
+    return None if tail.begun - template or _free(content, was) else tail
+
+
+def _content_start(frame: _Frame, text: str, items: int, limit: int) -> int:
+    """Where the content begins in *text*, a line that starts *items* of the items that the template line does:
+    after the markers of every quote and of those items, not those after the first that it does not start, and
+    never past *limit*, where the template's own text ends; then after the indentation up to the content column of
+    the items it is in, if it reaches them (``_Frame.keep``)."""
+    end = 0
+    for kind, at in frame.marks:
+        if at > limit:
+            return end
+        if kind == "i":
+            if not items:
+                return end
+            items -= 1
+        end = at
+    column = frame.column
+    while frame.full and column < frame.column + frame.keep and text[end:end + 1] in (" ", "\t"):
+        column = advance_column(column, text[end])
+        end += 1
+    return end
 
 
 def _free(content: str, template: str) -> bool:
@@ -2325,7 +2467,7 @@ def _free(content: str, template: str) -> bool:
 
 
 def _fix(
-    candidate: str, prefix: int, before: list[str], template: Counter[str], plain: str, column: int, base: int,
+    candidate: str, prefix: int, before: list[str], template: Counter[str], plain: str, column: int, frame: _Frame,
     perturbed: bool,
 ) -> tuple[str, _Tail | None]:
     """*candidate* with the first form that begins nothing new: its content without leading
@@ -2352,7 +2494,7 @@ def _fix(
     forms = [form for form in forms if form is not None]
     tail = None
     for form in forms:
-        tail = _kept(head + form, before, template, plain, prefix, base, perturbed)
+        tail = _kept(head + form, before, template, plain, prefix, frame, perturbed)
         if tail is not None:
             return head + form, tail
     return head + (forms[-1] if forms else body), None

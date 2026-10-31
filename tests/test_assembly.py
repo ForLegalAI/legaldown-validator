@@ -553,6 +553,92 @@ class TestLineStartsInContext:
     def test_a_quote_marker_is_judged_by_its_column_past_what_holds_it(self, body, answer, written):
         assert self._assembled(body, {"name": answer}) == written
 
+    @pytest.mark.parametrize(("body", "answer", "written"), [
+        # An item in a block quote keeps its indentation after the quote's marker, as the template has it
+        # (#122: "> y" put the line outside the item, which pandoc reads from the template line).
+        ("> - a\n>\n>   {{placeholder: name}}\n", "y", "> - a\n>\n>   y\n"),
+        ("> - a\n>\n>   {{placeholder: name}}\n", "# h", "> - a\n>\n>   \\# h\n"),
+        ("- > - a\n  >\n  >   {{placeholder: name}}\n", "y", "- > - a\n  >\n  >   y\n"),
+        ("- > - a\n  >\n  >   {{placeholder: name}}\n", "# h", "- > - a\n  >\n  >   \\# h\n"),
+        ("> 1. a\n>\n>    {{placeholder: name}}\n", "2. b", "> 1. a\n>\n>    2\\. b\n"),
+        ("# h\n> - a\n>\n>   {{placeholder: name}}\n", "y", "# h\n> - a\n>\n>   y\n"),
+        ("> - > - a\n>   >\n>   >   {{placeholder: name}}\n", "# h", "> - > - a\n>   >\n>   >   \\# h\n"),
+        ("> -      a\n>\n>   {{placeholder: name}}\n", "# h", "> -      a\n>\n>   \\# h\n"),  # a marker spaced by five
+        ("> - a\n>\n>   {{placeholder: name}}\n>       code\n", "y", "> - a\n>\n>   y\n>       code\n"),
+        # More indentation than the item's content column goes, as outside a quote; four more would be code.
+        ("> - a\n>\n>      {{placeholder: name}}\n", "y", "> - a\n>\n>   y\n"),
+        ("> - a\n>\n>      {{placeholder: name}}\n", "# h", "> - a\n>\n>   \\# h\n"),
+        ("> - a\n>   b\n>       {{placeholder: name}}\n", "y", "> - a\n>   b\n>   y\n"),
+        # An item with no content holds none: the line after it is the quote's.
+        ("> 1.\n>\n>    {{placeholder: name}}\n", "y", "> 1.\n>\n> y\n"),
+        # A tab after the marker, and one in the item's indentation, reach the next tab stop.
+        (">\t- a\n>\n>\t  {{placeholder: name}}\n", "y", ">\t- a\n>\n>\t  y\n"),
+        ("> \t- a\n>\n>   \t{{placeholder: name}}\n", "y", "> \t- a\n>\n>     y\n"),
+        ("> \t- a\n>\n>   \t{{placeholder: name}}\n", "# h", "> \t- a\n>\n>     \\# h\n"),
+        ("> 1. a\n>\n>\t{{placeholder: name}}\n", "y", "> 1. a\n>\n>\ty\n"),
+        # The same in quotes deeper than the quote reader follows (eight), and in more than it reads (sixteen).
+        ("> " * 10 + "- a\n" + "> " * 10 + "\n" + "> " * 10 + "  {{placeholder: name}}\n", "y",
+         "> " * 10 + "- a\n" + "> " * 10 + "\n" + "> " * 10 + "  y\n"),
+        ("> " * 10 + "- a\n" + "> " * 10 + "\n" + "> " * 10 + "  {{placeholder: name}}\n", "# h",
+         "> " * 10 + "- a\n" + "> " * 10 + "\n" + "> " * 10 + "  \\# h\n"),
+        ("> " * 10 + "- a\n" + "> " * 10 + "\n" + "> " * 10 + "  {{placeholder: name}}\n", "> q",
+         "> " * 10 + "- a\n" + "> " * 10 + "\n" + "> " * 10 + "  \\> q\n"),
+        ("> " * 20 + "{{placeholder: name}}\n", "# h", "> " * 20 + "\\# h\n"),
+        # A lazy line is not in the quote, so its indentation goes no further than the outer item's column.
+        ("- > - a\n    {{placeholder: name}}\n", "y", "- > - a\n  y\n"),
+    ])
+    def test_an_item_in_a_quote_keeps_its_indentation(self, body, answer, written):
+        assert self._assembled(body, {"name": answer}) == written
+
+    @pytest.mark.parametrize(("body", "answer", "written"), [
+        # A quote marker is a marker up to three columns past the content column of what holds it, and text
+        # further in: the markers and spaces after the far one are the line's content (#122).
+        ("> > a\n>      > {{placeholder: name}}\n", "> q", "> > a\n>      > > q\n"),
+        ("> > a\n>      > {{placeholder: name}}\n", "# h", "> > a\n>      > # h\n"),
+        ("> a\n>      >   {{placeholder: name}} more\n", "b", "> a\n>      >   b more\n"),
+        ("> a\n>    > {{placeholder: name}}\n", "# h", "> a\n>    > \\# h\n"),
+        ("> a\n>     > {{placeholder: name}}\n", "> q", "> a\n>     > > q\n"),
+        ("> a\n>    >   {{placeholder: name}}\n", "2. b", "> a\n>    > 2\\. b\n"),
+        # The same without a quote: spaces after text are the line's.
+        ("text\n2.   {{placeholder: name}}\n", "y", "text\n2.   y\n"),
+        ("text\n2.   {{placeholder: name}}\n", "# h", "text\n2.   # h\n"),
+        # A marker spaced by five is an item whose content is indented code; what follows holds the item's column.
+        ("-      a\n\n  {{placeholder: name}}\n", "y", "-      a\n\n  y\n"),
+        ("-      a\n\n  {{placeholder: name}}\n", "# h", "-      a\n\n  \\# h\n"),
+        ("1.     a\n\n   {{placeholder: name}}\n", "2. b", "1.     a\n\n   2\\. b\n"),
+    ])
+    def test_a_quote_marker_far_in_is_text_and_what_follows_it_is_kept(self, body, answer, written):
+        assert self._assembled(body, {"name": answer}) == written
+
+    @pytest.mark.parametrize(("body", "written"), [
+        # The item's indentation of a deleted line's successor stays, in a quote; a line that is code in the item
+        # stays so after a deletion in front of it.
+        ("> - a\n>\n>   {{choose: x, true=\"\", false=\"T\"}}\n>   {{placeholder: name}}\n", "> - a\n>\n> \n>   \\# h\n"),
+        ("> - a\n>\n{{choose: x, true=\"\", false=\"T\"}}\n>   {{placeholder: name}}\n", "> - a\n>\n> \\# h\n"),
+        ("> a\n{{choose: x, true=\"\", false=\"T\"}}\n>      >   {{placeholder: name}}\n", "> a\n>      >   # h\n"),
+        ("> - a\n>\n{{choose: x, true=\"\", false=\"T\"}}\n>       # h\n", "> - a\n>\n>       # h\n"),
+    ])
+    def test_a_line_after_a_deleted_one_is_read_in_the_containers_of_its_quote(self, body, written):
+        assert self._assembled(body, {"x": True, "name": "# h"}, _BOOL + _TEXT) == written
+
+    @pytest.mark.parametrize(("body", "answer", "written"), [
+        # A line short of the item's column (lazy) keeps no indentation in a quote: after a deleted line left
+        # bare ``>``, four columns would make code of it (pandoc reads item text).
+        ('> -    a\n>   {{choose: x, true="", false="T"}}\n>     {{placeholder: name}} more\n', "y",
+         "> -    a\n> \n> y more\n"),
+        ('> -    a\n>   {{choose: x, true="", false="T"}}\n>     {{placeholder: name}}\n', "y",
+         "> -    a\n> \n> y\n"),
+        ('> -    a\n>   {{choose: x, true="", false="T"}}\n>     {{placeholder: name}} more\n', "# h",
+         "> -    a\n> \n> \\# h more\n"),
+        # Only the template's own markers are markers: an answer that is a number makes none of its text.
+        ("> a\n> {{placeholder: name}}. more\n", "2", "> a\n> 2. more\n"),
+        ("> - a\n>\n>   {{placeholder: name}}. more\n", "2", "> - a\n>\n>   2\\. more\n"),
+        ("- {{placeholder: name}}. more\n", "2", "- 2\\. more\n"),
+        ('> {{choose: x, true="", false="T"}}\n> {{placeholder: name}}. more\n', "2", "> \n> 2\\. more\n"),
+    ])
+    def test_a_lazy_line_in_a_quote_and_a_number_that_is_an_answer(self, body, answer, written):
+        assert self._assembled(body, {"name": answer, "x": True}, _BOOL + _TEXT) == written
+
     def test_a_marker_in_an_item_is_one_as_far_in_as_the_item_is(self):
         body = "- 1. Terms\n     > {{placeholder: name}} x\n"
         assert self._assembled(body, {"name": "> q"}) == "- 1. Terms\n     > \\> q x\n"

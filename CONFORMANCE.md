@@ -1377,7 +1377,22 @@ Assembly edits the template's source and so inherits a few limits of the parser'
 
 - The line-start check (§15.7.3) reads the output with the parser, line by line, against the
   template line read the same way, so a marker is judged in the container that holds it (`> 2. x`,
-  a lazy line, a line after a deleted one). It cannot give a backslash a position where the
+  a lazy line, a line after a deleted one). The containers of a template line come from the parser's
+  layout (the quotes and list items it is in, one inside the other, as the parser read them), and
+  one pass along the line finds where each has its marker and its content: a quote's `>` is a marker
+  up to three columns past the content column of what holds it, and further in it is text, so
+  the spaces and `>` after it are the line's content; a line in an item that reaches its content
+  column keeps that indentation after the quote's marker (`> - a` over `>   {{x}}` gives `>   y`, and
+  a heading answer `>   \# h`); a tab that straddles a column is taken whole, as the parser takes
+  it. A quote nested more deeply than the parser reads into blocks (`MAX_QUOTE_DEPTH`) has its
+  markers taken by the same three-column rule. (Beyond eight nested quotes the parser's own
+  reading of a lazy line, which stops following nested quotes there, differs from its reading of
+  the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts list items and quotes together,
+  and a quote past it is read as one text: the items inside it are not in the layout, so a line in
+  one is read as in the quote alone (an item in sixteen nested items, then `> - a` and `>   {{x}}`:
+  the line is taken out of its item; known, and as before). A line short of an item's content column
+  that a quote holds (a lazy line) keeps no indentation after its marker, and neither does a line
+  that an empty phrase leaves with only a quote's marker. The check cannot give a backslash a position where the
   template's own markers, left bare by an empty phrase, begin the construct (`text` over
   `- {{choose:}}` with an empty phrase: the bare `-` underlines `text`; `- - - {{choose:}}`: a
   thematic break; a bare `> 2. ` that holds no paragraph for the lazy lines after it to continue, so
