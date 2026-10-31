@@ -466,7 +466,7 @@ def test_an_image_destination_is_read_as_before_but_across_no_blank_line_and_wit
     where the old code read across a blank line, which ends the paragraph for every renderer, the new reads none."""
     seen = Counter()
     for text in _paths_inputs():
-        link = markdown.scan_inline_link(text, 0, permissive=True)
+        link = markdown.scan_inline_link(text, 0, reading=markdown.Reading.PANDOC)
         new = _span(link)
         # ``strict`` is whether the specification reads it too, told by the same pass: else it holds what only pandoc reads.
         strict = markdown.scan_inline_link(text, 0)
@@ -643,6 +643,94 @@ def test_an_inline_link_is_one_as_markdown_it_reads_it():
     assert read > 20_000
 
 
+@needs_markdown_it
+def test_an_inline_link_is_one_as_markdown_it_reads_it_when_read_as_markdown_it():
+    """The same texts, those with a backslash before a character that is no punctuation too (``Reading.MDIT``): a tab, a
+    line break, a control character and DEL go on a destination, a space ends it before the backslash."""
+    read = paired = 0
+    for body in _random_texts([token for token in _TOKENS if token not in ("\r", "[", "](", "]")], 30_000, 9, seed=1136):
+        text = f"[a]({body}"
+        if PARAGRAPH_END_RE.search(text) or text.endswith("\\"):
+            continue
+        assert (markdown.scan_inline_link(text, 3, reading=markdown.Reading.MDIT) is not None) == _links_by_markdown_it(text), repr(text)
+        read += 1
+        paired += BACKSLASH_PAIR_RE.search(text) is not None
+    assert read > 20_000 and paired > 1_000
+
+
+@pytest.mark.parametrize(
+    ("text", "reading", "found"),
+    [
+        # A bare destination: where it ends, and what a backslash is.
+        ("(a\x7fb)", markdown.Reading.SPEC, None), ("(a\x7fb)", markdown.Reading.PANDOC, "a\x7fb"),
+        ("(a\x7fb)", markdown.Reading.MDIT, None),
+        ("(a\x01b)", markdown.Reading.PANDOC, "a\x01b"), ("(a\x01b)", markdown.Reading.MDIT, None),
+        ("(a\\\x7fb)", markdown.Reading.SPEC, None), ("(a\\\x7fb)", markdown.Reading.PANDOC, "a\\\x7fb"),
+        ("(a\\\x7fb)", markdown.Reading.MDIT, "a\\\x7fb"), ("(a\\\x01b)", markdown.Reading.MDIT, "a\\\x01b"),
+        ("(a\\\tb)", markdown.Reading.SPEC, None), ("(a\\\tb)", markdown.Reading.PANDOC, None),
+        ("(a\\\tb)", markdown.Reading.MDIT, "a\\\tb"),
+        ("(a\\\nb)", markdown.Reading.SPEC, None), ("(a\\\nb)", markdown.Reading.PANDOC, None),
+        ("(a\\\nb)", markdown.Reading.MDIT, "a\\\nb"),
+        ("(a\\ b)", markdown.Reading.SPEC, None), ("(a\\ b)", markdown.Reading.MDIT, None),
+        ('(a\\ "t")', markdown.Reading.SPEC, "a\\"), ('(a\\ "t")', markdown.Reading.PANDOC, "a\\"),
+        ('(a\\ "t")', markdown.Reading.MDIT, None), ("(a\\ )", markdown.Reading.MDIT, None),
+        ("(a\\ )", markdown.Reading.SPEC, "a\\"),
+        # ``<…>``: a backslash before a line break.
+        ("(<a\\\nb>)", markdown.Reading.SPEC, None), ("(<a\\\nb>)", markdown.Reading.PANDOC, "a\\\nb"),
+        ("(<a\\\nb>)", markdown.Reading.MDIT, "a\\\nb"), ("(<a\\ b>)", markdown.Reading.MDIT, "a\\ b"),
+        ("(<a\\>b>)", markdown.Reading.SPEC, "a\\>b"), ("(<a\\>b>)", markdown.Reading.MDIT, "a\\>b"),
+        # A title glued to ``<…>``.
+        ('(<a>"t")', markdown.Reading.SPEC, None), ('(<a>"t")', markdown.Reading.PANDOC, "a"),
+        ('(<a>"t")', markdown.Reading.MDIT, None),
+    ],
+)
+def test_the_destination_of_an_inline_link_as_each_reading_reads_it(text, reading, found):
+    link = markdown.scan_inline_link(text, 0, reading=reading)
+    assert (None if link is None else text[link.start:link.stop]) == found
+
+
+@pytest.mark.parametrize(
+    ("text", "reading", "found"),
+    [
+        # In a definition a line break is the end of the destination for every reading (markdown-it too).
+        ("[a]: x\\\ny", markdown.Reading.MDIT, "x\\"), ("[a]: x\\\ny", markdown.Reading.SPEC, "x\\"),
+        ("[a]: <x\\\ny>", markdown.Reading.MDIT, None), ("[a]: <x\\\ny>", markdown.Reading.PANDOC, "x\\\ny"),
+        ("[a]: x\x7fy", markdown.Reading.PANDOC, "x\x7fy"), ("[a]: x\x7fy", markdown.Reading.SPEC, None),
+        ("[a]: x\\\ty", markdown.Reading.MDIT, "x\\\ty"), ("[a]: x\\\ty", markdown.Reading.PANDOC, None),
+        ("[a]: x\\ ", markdown.Reading.SPEC, "x\\"), ("[a]: x\\ ", markdown.Reading.MDIT, None),
+    ],
+)
+def test_the_destination_of_a_definition_as_each_reading_reads_it(text, reading, found):
+    read = markdown._read_definition(text, 0, reading)
+    assert (None if read is None else read[1]) == found
+
+
+@pytest.mark.parametrize(
+    ("text", "reading", "title"),
+    [
+        # markdown-it takes a backslash that ends a bare destination's line with the line break: no title below.
+        ('[a]: x\\\n"t"', markdown.Reading.SPEC, "t"), ('[a]: x\\\n"t"', markdown.Reading.PANDOC, "t"),
+        ('[a]: x\\\n"t"', markdown.Reading.MDIT, ""), ('[a]: x\\\\\n"t"', markdown.Reading.MDIT, "t"),
+        ('[a]: x\\\\\\\n"t"', markdown.Reading.MDIT, ""), ('[a]: x\\ "t"', markdown.Reading.MDIT, None),
+    ],
+)
+def test_the_title_of_a_definition_as_each_reading_reads_it(text, reading, title):
+    read = markdown._read_definition(text, 0, reading)
+    assert (None if read is None else read[2]) == title
+
+
+@pytest.mark.parametrize("label", ["\u00a0", "\u3000", "\x0b", "\x1c", "\x85", " \u00a0 "])
+def test_a_label_of_a_readings_white_space_is_blank_to_it(label):
+    text = f"[{label}]: x"
+    blank = {
+        markdown.Reading.SPEC: label.strip(" \t\n") == "",
+        markdown.Reading.PANDOC: all(c in " \u00a0\u3000\x0b" for c in label),
+        markdown.Reading.MDIT: label.isspace(),
+    }
+    for reading in markdown.READINGS:
+        assert (markdown._read_definition(text, 0, reading) is None) == blank[reading], (label, reading)
+
+
 #: Where pandoc (``-f commonmark``) deviates, and the specification and markdown-it do not (CONFORMANCE.md):
 #: it reads a title directly after ``<…>``, and keeps a control character or DEL in a bare destination.
 _PANDOC_DEVIATIONS = ['[a](<b>"t")', "[a](b\x7fc)", "[a](b\x01c)", "[a](b\x1fc)"]
@@ -657,7 +745,7 @@ def test_pandoc_reads_a_link_where_the_specification_reads_none(text):
     ).stdout
     assert '"t":"Link"' in pandoc.replace(" ", "")
     assert markdown.scan_inline_link(text, 3) is None
-    assert markdown.scan_inline_link(text, 3, permissive=True) is not None
+    assert markdown.scan_inline_link(text, 3, reading=markdown.Reading.PANDOC) is not None
 
 
 @needs_markdown_it

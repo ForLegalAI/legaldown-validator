@@ -475,6 +475,30 @@ def test_link_destinations_and_titles_are_read_in_linear_time(shape):
     assert _seconds(lambda: core._inline_html(text, lex(text))) < 3.0
 
 
+@pytest.mark.parametrize(("lines", "closer"), [(32_000, ""), (4_000, "===")], ids=["paragraph", "setext heading"])
+def test_the_images_of_one_long_text_are_placed_in_linear_time_when_a_reading_reads_a_definition(lines, closer):
+    """A definition that only pandoc reads (a DEL) makes the lines of the text the images lie on matter to it
+    (#121): the line of each image is worked on from the last, not counted again from the first (#94)."""
+    def run(definition: str) -> float:
+        document = _document(f"{definition}\n\n" + "![a][r] word word word\n" * lines + closer)
+        return _seconds(validate, document)
+
+    base, read = run("[r]: ok.png"), run("[r]: ok.png\x7f")
+    assert read < max(5 * base, 0.5) + 0.5, (base, read)  # ~0.2 s each now; counting from the first took minutes
+
+
+@pytest.mark.parametrize("title", ['"![i][b]"', '"![i](/etc/t.png)"'], ids=["reference image", "inline image"])
+def test_many_titles_with_images_that_a_reading_reads_as_text_cost_the_lines_they_take(title):
+    """``[NBSP]: x "![i][b]"`` is a definition to the specification and a line of text to pandoc and markdown-it, whose
+    images in it are judged (#121): each is found at its line and among the lines the model has as definitions
+    in work that does not grow with the lines before it (the time at four times the lines is not sixteen times)."""
+    def run(count: int) -> float:
+        return _seconds(validate, _document(f'[\u00a0]: x {title}\n' * count + "\n[b]: ok.png"))
+
+    small, large = run(4_000), run(16_000)
+    assert large < 8 * small + 1.0 and large < 20.0, (small, large)  # ~0.3 s and ~1.4 s now; the quadratic scan took 12 s
+
+
 # ── Unclosed declarations, processing instructions and CDATA sections (#111) ──
 
 _UNCLOSED_HTML = {

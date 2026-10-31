@@ -17,7 +17,7 @@ needs_pandoc = pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc
 #: A blank line or a quote line ends the paragraph a link is in.
 PARAGRAPH_END_RE = re.compile(r"\n[ \t]*(?:\n|>)")
 #: markdown-it reads a backslash before any character as an escape pair, not only before punctuation (cmark and
-#: pandoc do not): the images it alone reads that way are not judged (CONFORMANCE.md, #121).
+#: pandoc do not): the model does not read that link, which the path rules do (``Reading.MDIT``, #121).
 BACKSLASH_PAIR_RE = re.compile(r"\\(?![!-/:-@\[-`{-~])")
 #: What markdown-it normalizes in a destination that looks like a URL with a scheme (``b:[r]<`` is ``b:r<``).
 URL_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]{1,31}:")

@@ -402,7 +402,8 @@ the image, or the key (the entry of a list). An empty path is `attachment-file-m
   (a link after a literal `!`), a link or autolink (valid, §8.7), `<img src>` (that is `raw-html`),
   and a reference-style image whose label no definition has. A reference-style image (`![a][r]`, `![a][]` or
   `![a]` with `[r]: path`, [#92](https://github.com/ForLegalAI/legaldown-validator/issues/92)) names its file
-  by the first definition of its label (`collect_link_definitions`): the definition's destination is read as an
+  by the first definition of its label (`collect_link_definitions`, and the others that pandoc and markdown-it read,
+  [below](#three-readings)): the definition's destination is read as an
   image's is, and checked **once, where it is written** (the line of `[r]: path`, in an item or a quote too),
   however many images name it; a definition no image names is no file reference. As in CommonMark a label that
   follows the text decides (`![a][r]` with only `[a]` defined is no image), `![a][]` and `![a]` take the text as
@@ -537,28 +538,93 @@ Where this differs from CommonMark, or is read more simply:
     two line breaks end the paragraph, so `[a](\n\n<b>)` is none. A line break may now precede the `<…>` of a link
     or the `)` that ends it (`raw-html` no longer reads `[a](\n<b>)` as a tag), a title may hold `\"` or `\)`,
     and a title directly after `<…>` makes the `<b>` a tag, as it is the text of no link.
-  - **The path checks read permissively and take the union of the readings** (`scan_inline_link(permissive=True)`,
-    for `path-not-relative` and `path-outside-root`): a rule that keeps a document from naming a file outside its
-    root must cover everything *any* supported renderer reads as an image, as the insertion boundary
-    over-approximates (§15.7.3). So an image is also `![b](/etc/passwd\x7f)` (a DEL or other control character in a
-    bare destination, which then ends only at a space, a tab or an LF) and `![a](</etc/passwd>"t")` (a title glued to
-    `<…>`), which pandoc renders (below) and the specification and markdown-it do not. The link says whether the
-    specification reads it too (`InlineLink.strict`, from the same pass): if it does not, the offset is also a
-    reference-style image to the specification (`![r](x\x7f)` is `![r]` and text), and the definition `![r]` names
-    is judged too.
-    Two gaps remain, each a missed `path-not-relative` or `path-outside-root`, both
-    [#121](https://github.com/ForLegalAI/legaldown-validator/issues/121): a definition only pandoc reads
-    (`[r]: /etc/passwd\x7f`, a control character or DEL in its bare destination, which is paragraph text to the model,
-    the specification and markdown-it) is not judged when `![a][r]` names it; and markdown-it reads a backslash before
-    *any* character as an escape pair, so `![a](/etc/passwd\ "t)` (a space after the backslash) is an image to it
-    alone, and is not judged either.
+  - <a id="three-readings"></a>**The path checks read three ways and judge what any of them displays**
+    ([#113](https://github.com/ForLegalAI/legaldown-validator/issues/113),
+    [#121](https://github.com/ForLegalAI/legaldown-validator/issues/121)). A rule that keeps a document from naming
+    a file outside its root must cover everything *any* supported renderer displays as an image, as the insertion
+    boundary over-approximates (§15.7.3), and the supported renderers are pandoc (`-f commonmark`) and
+    markdown-it as well as the specification, which the model is. They read a destination and a label otherwise
+    (`markdown.Reading`: `SPEC`, `PANDOC`, `MDIT`):
+
+    | | specification (the model) | pandoc `-f commonmark` | markdown-it |
+    |---|---|---|---|
+    | a bare destination ends at | a space, a control character, DEL | a space, a tab or an LF only | as the specification |
+    | a backslash is a pair before | ASCII punctuation | punctuation, a control character or DEL (the backslash is dropped), and an LF in `<…>` (kept) | any character but a space (an LF only in an inline link): `a\<TAB>b` is one destination, `a\ b` ends at the backslash |
+    | a title glued to `<…>` | no | yes | no |
+    | label white space | space, tab, line breaks | Unicode space separators (Zs, U+3000 and a no-break space among them) and `\t\n\v\f\r` | `str.isspace()` (U+001C–U+001F, U+0085, U+2028, U+2029 too) |
+    | label case fold | `casefold` | NFC, then `casefold` (`é` and `e` with an accent are one label, the `ΐ` of U+0390 is not its upper case's three code points) | `lower().upper()` (`ı` is `I`) |
+
+    - *Inline images.* `scan_inline_link(reading=)` reads a link as each does. pandoc's reading covers the
+      specification's (`InlineLink.strict` tells whether it is the same link), and markdown-it's is read again
+      only in a text that holds a backslash before a space, a tab, a line break, a control character or DEL.
+      `Image.readers` says which readings read an image with a path: the readings that agree are one image, the
+      others are an image each at the same place, so an image the readings read with different destinations
+      (`![a](/etc/y\<0x01>z)`: pandoc drops the backslash) is one finding for each distinct wrong destination. If
+      the specification does not read it, the offset is also a reference-style image to the specification
+      (`![r](x\x7f)` is `![r]` and text), and the definition `![r]` names is judged too. (pandoc reads its input as
+      NFC, so the path it displays is NFC too: `![a](\u212a:/x)`, the Kelvin sign, is `K:/x`, a drive.)
+    - *Definitions.* The model keeps the specification's. For pandoc and markdown-it the body of a document is
+      parsed once more by the same parser under their reading (`markdown.definitions_read_as`, a context variable
+      read by `split_link_definitions` alone, and by `parser.quote_content`, which keeps no content read so), so that
+      the setext headings, list items, block quotes and tables that decide what a definition is are the parser's;
+      what is made of it is plain data (`validator/path_definitions.py`) before the context ends. The reparse
+      is made only for a reading, and a document, where it can differ: the text holds `]:` and, for pandoc, a
+      control character or DEL or a backslash before a line break, for markdown-it a backslash before a space, a
+      tab, a line break, a control character or DEL, and some text holds `![`. At most two more parses of a file,
+      however many images it has; linear in the size of the document.
+    - *Which are judged.* Each reading has its own first definition of each label, by its own key
+      (`markdown.label_key`): what a reading's image names is the first definition *it* reads, so that
+      `[r]: /etc/p\x7f` before `[r]: ok.png` is judged (pandoc and markdown-it display the first) and swapped it is
+      not, and a definition the specification reads that no other renderer displays (the second here, when the
+      specification does not read the first) is judged as it always was. A definition is judged **once**, at its
+      line, however many readings name it (once for each path they read it as); one no image names, a later
+      duplicate and a definition that is none to every reading (a table cell, an ATX heading's text) are not.
+      The finding is at the definition's line in its own file, in order with the others of the block by line.
+    - *In the combined document* (§16.11, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)) each
+      file is read again by itself, from its own source, and the files' definitions are laid end to end in the
+      order they are spliced, so that a definition of the document and one of a fragment shadow each other as in a
+      splice of their text (`tests/test_combined_document.py` compares the two). A finding in a fragment is at its
+      line there (`path-not-relative`; `path-outside-root` is the document's own pass, which a fragment's
+      definition, strict or not, has never been judged by). A file read twice, a fragment included twice or the
+      document in both passes, is read again once.
+    - *Residuals* (each a finding too many or too few, only where noted):
+      - A document with no text to read again (built in code, or changed since it was parsed) has the
+        specification's reading alone: a paragraph that holds a definition only pandoc or markdown-it would read
+        is text to it, and is not judged. Validating the file written from it judges it.
+      - The pandoc reading is *pandoc's definitions on a document the model reads block for block as pandoc does*:
+        it inherits the model's documented block-level differences (a lazy line, a line that is a tag alone, and
+        for markdown-it a setext underline under a lone label, `[a]:` and `===`).
+      - A table is the model's (GFM's): `[r]: /etc/x\x7f` as the first line of a table of one cell, with a delimiter
+        row under it, is a table cell to the model and a definition to a renderer without tables, and a line without
+        a pipe after a table is a row to the model, GFM, markdown-it and `pandoc -f commonmark` and a *definition* to
+        `pandoc -f gfm`, which is not a supported reading: an image of it is not judged.
+      - The title of a definition. Where a reading reads text and the model a definition and its title (markdown-it
+        ends `[a]: x\ "![i](/etc/p.png)"` at the backslash, so the line is a paragraph with an image), the text is
+        read for images under that reading, at its own lines, as the lines of the reading's paragraphs that the model
+        has as definitions. Where the model has text and a reading a definition with a title, that reading's
+        reference-style images in the title are none (an image of `![i][b]` in `[a]: x\x01 "![i][b]"` is
+        markdown-it's, not pandoc's), but an *inline* image in it is judged: it is displayed by the
+        specification's reading, which is text there. The whole text of the reading's paragraph or heading is read, and
+        the images that begin on a line the model has as a definition are judged (one that begins in a title and ends
+        below it too); the others are the model's own. A residual (too many findings): the lines of a setext heading's
+        text in a quote or an item are joined, so a reference-style image in the title of a definition that a reading
+        reads there is still that reading's.
+      - A label of white space the specification does not take as blank (`[<NBSP>]: x`, U+3000, and for markdown-it
+        U+001C–U+001F, U+0085, U+2028) makes the line text to pandoc and markdown-it, and the next line a line of
+        its paragraph, not a definition (`_read_definition` checks it by each reading's own white space).
+      - A destination of an inline image in a setext heading is the model's text, whose lines are joined with a
+        space: `<a\<LF>b>` is judged as `a\ b`, as `a` and `b` are on one line there. The rules read the
+        structure of a path, which a space for a break does not change.
+      - NFC: pandoc reads U+1FEF (Greek varia) as a backtick and the model does not.
+      - A definition with `{{` in it is paragraph text, as above: never judged by a reading, for the destination is
+        not final until the directive is filled in.
   - **pandoc (`commonmark`) deviates in two places, accepted**: it reads `[a](<b>"t")` as a link (a title glued
     to the `>`), and it keeps a control character or DEL in a bare destination (`[a](b\x7fc)`, `[a](b\x01c)`), where
     the specification (§6.3 "does not include ASCII control characters") and markdown-it read no link. This package
-    follows the specification, but for the path checks. (`test_pandoc_reads_a_link_where_the_specification_and_markdown_it_read_none`
-    holds them to what pandoc does.) markdown-it reads a backslash
-    before *any* character as a pair, not only before punctuation, and breaks a paragraph at a `>` line; these
-    are its own.
+    follows the specification, but for the path checks, which read all three ([above](#three-readings);
+    `test_pandoc_reads_a_link_where_the_specification_and_markdown_it_read_none` holds them to what pandoc does).
+    markdown-it reads a backslash before *any* character as a pair, not only before punctuation, and breaks a
+    paragraph at a `>` line; these are its own.
   - **The `insertion-boundary` rule for a link reference definition (§15.7.3) is not this reading: assembly
     judges it** ([#129](https://github.com/ForLegalAI/legaldown-validator/issues/129)). Whether an answer could
     create, change or complete a definition is not predicted from the template's text, which is the assembler's
@@ -1033,7 +1099,9 @@ Decisions the specification leaves open:
     fragment are judged as far as they need no base: an absolute path or a URI scheme in an image of a fragment
     is `path-not-relative` at its line there ("relative to the fragment"; the document's validation never looked at a
     fragment's images before), and a link reference definition of the document that only a fragment's image uses is
-    judged where it is written, the other way round too (`path-not-relative` is the combined pass's).
+    judged where it is written, the other way round too (`path-not-relative` is the combined pass's), a definition
+    of either that only pandoc or markdown-it reads as well ([#121](https://github.com/ForLegalAI/legaldown-validator/issues/121),
+    above: each file is read again by itself, laid end to end in the order of the splice).
     `path-outside-root` and the existence of an image are not judged from the fragment's directory (the combined
     pass reads them from the document's), so an image in a fragment that leaves the root is neither checked nor
     warned about. `ValidationResult.index` is the document's own (its sections are the

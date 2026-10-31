@@ -33,6 +33,7 @@ from .markdown import (
     ItemMarkers,
     LinkDefinitionSource,
     NestedContent,
+    Reading,
     closes_fence,
     dedent,
     fence_end,
@@ -43,6 +44,7 @@ from .markdown import (
     is_blank,
     item_content_column,
     item_marker_at,
+    link_definitions_reading,
     nested_content,
     paragraph_text,
     split_link_definitions,
@@ -1995,7 +1997,6 @@ def _parse_body(
 
 # ── Public API ────────────────────────────────────────────────────
 
-@lru_cache(maxsize=512)
 def quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], tuple[_BlockSpan, ...]]:
     """The blocks a block quote holds whose content is *text* — a quote
     block's text, one line per source line (``_read_quote``) — each with
@@ -2004,7 +2005,16 @@ def quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], tuple[_
     lifted into block fields. *depth*:
     how many list items and quotes the content is in (``_parse_list``).
     Cached, as the validator reads a quote's blocks more than once: the
-    blocks are shared, not to be changed."""
+    blocks are shared, not to be changed. Not while the definitions are read as another
+    reading than the specification's (``markdown.definitions_read_as``): the cache neither
+    gives nor keeps what is read so."""
+    if link_definitions_reading() is not Reading.SPEC:
+        return _read_quote_content(text, depth)
+    return _cached_quote_content(text, depth)
+
+
+@lru_cache(maxsize=512)
+def _cached_quote_content(text: str, depth: int) -> tuple[tuple[Block, ...], tuple[_BlockSpan, ...]]:
     return _read_quote_content(text, depth)
 
 

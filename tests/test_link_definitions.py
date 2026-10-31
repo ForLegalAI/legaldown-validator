@@ -1138,8 +1138,8 @@ def test_definitions_are_only_looked_for_when_an_image_is(monkeypatch):
     from legaldown import definitions
 
     calls = []
-    real = definitions.locate_link_definitions
-    monkeypatch.setattr(definitions, "locate_link_definitions", lambda document: calls.append(1) or real(document))
+    real = definitions.iter_link_definitions
+    monkeypatch.setattr(definitions, "iter_link_definitions", lambda document: calls.append(1) or real(document))
     validate(parse(FRONTMATTER + "# A\n\n[x]: u\n\nText [x] and a [link](here).\n"))
     assert calls == []
     validate(parse(FRONTMATTER + "# A\n\n[x]: u\n\n![a][x] and ![b][x]\n\n- ![c][x]\n"))
@@ -1154,6 +1154,21 @@ def test_a_text_is_scanned_once_for_its_inline_and_its_reference_images(monkeypa
     monkeypatch.setattr(paths_module, "_closing_brackets", lambda view: seen.append(view) or real(view))
     validate(parse(FRONTMATTER + "# A\n\n![a](x.png) ![b][r] ![c]\n\n[r]: y.png\n"))
     assert len(seen) == 1
+
+
+def test_iter_link_definitions_gives_every_definition_in_document_order():
+    from legaldown.definitions import iter_link_definitions
+
+    document = parse(FRONTMATTER + "[a]: /p\n\n# A\n\n[b]: /one\n\n- text\n\n  [a]: /two\n  [d]: /three\n\n> [B]: /later\n")
+    found = list(iter_link_definitions(document))
+    assert [(each.definition.label, each.definition.target) for each in found] == [
+        ("a", "/p"), ("b", "/one"), ("a", "/two"), ("d", "/three"), ("B", "/later")
+    ]
+    assert [(each.section, each.block, each.ordinal) for each in found] == [(None, 0, 0), (0, 0, 0), (0, 1, 0), (0, 1, 1), (0, 2, 0)]
+    # The first of each label is ``locate_link_definitions``'.
+    assert {key: each.definition.target for key, each in locate_link_definitions(document).items()} == {
+        "a": "/p", "b": "/one", "d": "/three"
+    }
 
 
 def test_locate_link_definitions_gives_the_blocks_and_where_they_are():

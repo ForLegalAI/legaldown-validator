@@ -605,6 +605,27 @@ _ORACLE_CASES += [
 ]
 
 
+_ORACLE_CASES += [
+    # A definition that only pandoc or markdown-it reads (#121), across the boundary of a fragment, in both orders:
+    # the document's image names the fragment's, and the fragment's the document's.
+    (_FRONT + _SCOPE + "See ![a][r].\n\n{{include: a.lgd}}\n", {"a.lgd": "Text.\n\n[r]: /etc/p\x7f\n"}),
+    (_FRONT + _SCOPE + "{{include: a.lgd}}\n\n[r]: /etc/q\x01\n", {"a.lgd": "See ![a][r].\n"}),
+    (_FRONT + _SCOPE + "[r]: /etc/p\x7f\n\n{{include: a.lgd}}\n", {"a.lgd": "See ![a][r].\n\n[r]: /etc/q\n"}),
+    (_FRONT + _SCOPE + "{{include: a.lgd}}\n\nSee ![a][r].\n\n[r]: /etc/q\n", {"a.lgd": "[r]: /etc/p\\\tx\n\n## S\n"}),
+    # First wins in the order of the splice: the fragment's definition that only they read comes before the document's
+    # that all read, and the other way round, and each in the fragment's own text.
+    (_FRONT + _SCOPE + "{{include: a.lgd}}\n\n[r]: /etc/q\n\n![a][r]\n", {"a.lgd": "[r]: ok.png\n\n[r]: /etc/p\x7f\n"}),
+    (_FRONT + _SCOPE + "{{include: a.lgd}}\n\n[r]: ok.png\n\n![a][r]\n", {"a.lgd": "[r]: /etc/p\x7f\n\n[r]: /etc/q\n"}),
+    (_FRONT + _SCOPE + "![a][r]\n\n{{include: a.lgd}}\n\n{{include: b.lgd}}\n", {"a.lgd": "[r]: ok.png\n", "b.lgd": "[r]: /etc/p\x7f\n"}),
+    # A definition read under a setext underline of the fragment, and a label matched by one reading.
+    (_FRONT + _SCOPE + "{{include: a.lgd}}\n\nSee ![a][r].\n", {"a.lgd": "[r]: /etc/p\x7f\n---\n\n## S\n\ntext\n"}),
+    (_FRONT + _SCOPE + "{{include: a.lgd}}\n\nSee ![a][a b].\n", {"a.lgd": "[a\u3000b]: /etc/p\n\n## S\n"}),
+    # The same fragment twice, and a fragment in a fragment.
+    (_FRONT + _SCOPE + "{{include: a.lgd}}\n\n{{include: a.lgd}}\n\nSee ![a][r].\n", {"a.lgd": "Lead.\n\n[r]: /etc/p\x7f\n\n## S\n"}),
+    (_FRONT + _SCOPE + "{{include: a.lgd}}\n\nSee ![a][r].\n", {"a.lgd": "{{include: b.lgd}}\n", "b.lgd": "[r]: /etc/p\x01\n\n## S\n"}),
+]
+
+
 @pytest.mark.parametrize(("text", "files"), _ORACLE_CASES)
 def test_the_combined_pass_equals_validating_the_spliced_text(text, files, monkeypatch):
     """The differential test: the text of the fragments spliced in and validated as one document says the same
@@ -624,9 +645,11 @@ def test_the_combined_pass_equals_validating_the_spliced_text(text, files, monke
     oracle = validate(parse(_splice(text, files)))
 
     def counted(diagnostics):
-        # (A line of the spliced text is no line of any file: a message that names one is as it is in each.)
+        # (A line of the spliced text is no line of any file: a message that names one is as it is in each, and a path
+        # is relative to the file it is in: the fragment's own, which the spliced text has none of.)
         return Counter(
-            (d.rule, d.level, re.sub(r" at line \d+( of \S+)?", "", d.message)) for d in diagnostics if d.rule not in HOST_ONLY
+            (d.rule, d.level, re.sub(r"relative to the fragment", "relative to the document", re.sub(r" at line \d+( of \S+)?", "", d.message)))
+            for d in diagnostics if d.rule not in HOST_ONLY
         )
 
     assert counted(combined.diagnostics) == counted(oracle.diagnostics)
@@ -879,6 +902,56 @@ def test_a_definition_of_the_document_that_only_a_fragments_image_uses_is_judged
     text = _FRONT + _SCOPE + "See ![a][r].\n\n{{include: part.lgd}}\n"
     result = _run(text, {"part.lgd": "Text.\n\n[r]: /abs.png\n"})
     assert _found(result, "path-not-relative") == [("path-not-relative", "part.lgd", 3)]
+
+
+def test_a_definition_only_pandoc_or_markdown_it_reads_is_judged_where_it_is_written_across_a_fragment():
+    # The document's image names the fragment's definition (a DEL in its bare destination), and the other way round.
+    text = _FRONT + _SCOPE + "See ![a][r].\n\n{{include: part.lgd}}\n"
+    result = _run(text, {"part.lgd": "Text.\n\n[r]: /etc/p\x7f\n"})
+    assert _found(result, "path-not-relative") == [("path-not-relative", "part.lgd", 3)]
+    assert "relative to the fragment" in next(d.message for d in result.diagnostics if d.rule == "path-not-relative")
+    text = _FRONT + _SCOPE + "Text.\n\n[r]: /etc/p\x7f\n\n{{include: part.lgd}}\n"
+    result = _run(text, {"part.lgd": "See ![a][r].\n"})
+    assert _found(result, "path-not-relative") == [("path-not-relative", "main.lgd", _at(text, "[r]:"))]
+    assert "relative to the document" in next(d.message for d in result.diagnostics if d.rule == "path-not-relative")
+
+
+def test_a_definition_in_a_fragment_that_leaves_the_root_is_judged_as_a_strict_one_is():
+    # (``path-outside-root`` is the document's own pass's: a fragment's path is no path from the document's directory.)
+    text = _FRONT + _SCOPE + "See ![a][r].\n\n{{include: part.lgd}}\n"
+    for definition in ("[r]: ../../x\x7f", "[r]: ../../x"):
+        result = _run(text, {"part.lgd": f"Text.\n\n{definition}\n"}, document_root="/r")
+        assert _found(result, "path-outside-root", "path-not-relative") == []
+
+
+def test_the_first_definition_of_a_label_in_the_order_of_the_splice_is_the_one_judged():
+    files = {"a.lgd": "[r]: ok.png\n", "b.lgd": "[r]: /etc/p\x7f\n"}
+    text = _FRONT + _SCOPE + "![a][r]\n\n{{include: a.lgd}}\n\n{{include: b.lgd}}\n"
+    assert _found(_run(text, files), "path-not-relative") == []
+    text = _FRONT + _SCOPE + "![a][r]\n\n{{include: b.lgd}}\n\n{{include: a.lgd}}\n"
+    assert _found(_run(text, files), "path-not-relative") == [("path-not-relative", "b.lgd", 1)]
+    # The document's own comes first when it is first, and a fragment's that it comes before is not judged.
+    text = _FRONT + _SCOPE + "[r]: ok.png\n\n![a][r]\n\n{{include: b.lgd}}\n"
+    assert _found(_run(text, files), "path-not-relative") == []
+
+
+def test_the_definitions_of_each_file_are_read_again_once_however_often_it_is_included(monkeypatch):
+    from legaldown.markdown import Reading
+    from legaldown.validator import path_definitions
+
+    readings: list[Reading] = []
+    real = path_definitions.definitions_read_as
+
+    def counted(reading):
+        readings.append(reading)
+        return real(reading)
+
+    monkeypatch.setattr(path_definitions, "definitions_read_as", counted)
+    text = _FRONT + _SCOPE + "[r]: /etc/p\x7f\n\n![a][r]\n\n{{include: part.lgd}}\n\n{{include: part.lgd}}\n"
+    result = _run(text, {"part.lgd": "Lead.\n\n[s]: /etc/q\x7f\n\n![a][s]\n"})
+    # The document and the fragment, each once for the one reading a DEL differs in, for the two passes together.
+    assert readings == [Reading.PANDOC, Reading.PANDOC]
+    assert [d.file for d in result.diagnostics if d.rule == "path-not-relative"].count("part.lgd") == 1
 
 
 def test_the_importers_are_called_once_for_each_file_however_often_the_document_is_read():

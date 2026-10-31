@@ -2203,7 +2203,7 @@ def _check(
 
     # The images that name their file by a link reference definition (#92, #104):
     # the definition's path is judged once, where it is written.
-    reference_images = ReferenceImages(document)
+    reference_images = ReferenceImages(document, where, combined)
 
     # Every {{ref:}}, {{term:}}, and {{attach:}}: (target, presence, in a
     # drafting note, line), for reference safety (§15.4).
@@ -2592,7 +2592,7 @@ def _check(
     )
     _check_raw_html(document, lex_fragment, result, where)
     check_heading_images(document, lex_fragment, file_references, where, reference_images)
-    reference_images.check(file_references, where)
+    reference_images.check(file_references)
     file_references.finish()
     # A fragment on its own is asked what a template's fragment must hold, when its host is
     # one (§15.3, §16.12); the shape of its own text was checked at the start.
@@ -2668,6 +2668,7 @@ def _check(
     if included.combined is not None:
         included.combined.template = template
         included.combined.imports = imports
+        included.combined.definition_reads = reference_images.reads
         whole = _check(
             included.combined.document, final, resolve, import_definitions, import_attachment_definitions, mode,
             document_root, combined=included.combined,
