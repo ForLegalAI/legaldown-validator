@@ -18,7 +18,10 @@ join paragraphs are the ones that assembly removes (``regions``). ``tests/test_d
 oracles for both. A region of more combinations than ``CAP`` (three text insertions are over it) or more work
 than ``WORK_CAP`` (its lines and insertions, for each assembly), and every region once the validation has used
 ``BUDGET`` of work, is judged by the conservative rule instead: every insertion in it is reported, if a
-definition can begin in it at all. This is the one module that reads the assembler's private parts, so that it
+definition can begin in it at all. A region of text insertions is first assembled once for each combination of
+its decisions (at most ``DECISION_CAP``), with a sentinel for every text answer, and is clean if every label in
+the output is dead (``_dead``): then no answer, and nothing after the label, can make it a definition (#137).
+This is the one module that reads the assembler's private parts, so that it
 is the one to change when assembly does.
 """
 from __future__ import annotations
@@ -35,7 +38,7 @@ import yaml
 
 from ..definitions import nested_blocks
 from ..directives import Directive, lex
-from ..markdown import is_blank, is_drafting_marker, label_end
+from ..markdown import is_blank, is_drafting_marker, label_end, skip_blanks
 from ..markers import MARKER_RE
 from ..models import Document
 from ..parser import parse
@@ -55,6 +58,11 @@ if TYPE_CHECKING:
 CAP = 4096
 WORK_CAP = 24576
 BUDGET = 240000
+#: The most combinations of decisions (the answers to the choices and conditions of a region) that one region is
+#: assembled with, for every text answer the sentinel, to show that no label in it can be a definition (``_dead``).
+DECISION_CAP = 64
+#: The text answer of that assembly: a character that no template holds (a region that holds it is enumerated).
+SENTINEL = "\x01"
 REGION_WORK = 100
 #: What each question that the template declares costs besides: reading its YAML (about 0.45 ms).
 DECLARATION_WORK = 20
@@ -596,7 +604,23 @@ class _Assembler:
         weight = (
             sum(map(len, lines)) + sum(map(len, context))
         ) // 80 + end - start + len(context) + len(insertions) + 2
-        if len(TEXT_WITNESSES) ** len(texts) > CAP:  # (over the cap whatever the places: none is read for its witnesses)
+        # A region costs ``fixed`` besides, once: it is paid with the first assembly of it, whichever that is.
+        fixed = REGION_WORK + DECLARATION_WORK * (len(declared) - len(undeclared))
+        # The cutoff (#137) tries the decisions alone: a typed question has its first answer, a text its sentinel.
+        deciding = {
+            name: values for name, values in keys.items()
+            if len(values) > 1 and name not in texts and not _typed(declared[name])
+        }
+        decisions = 1
+        for values in deciding.values():
+            decisions *= len(values)
+        cost = decisions * weight + fixed
+        too_many = len(TEXT_WITNESSES) ** len(texts) > CAP  # (over the cap whatever the places)
+        cutoff = (
+            bool(texts) and decisions <= DECISION_CAP and cost <= WORK_CAP
+            and SENTINEL not in "".join([*context, *lines]) and not any(map(_hopeless, lines))
+        )
+        if too_many and not cutoff:
             return everything, True
         for name, occ in zip(names, insertions, strict=True):
             if name in texts:
@@ -604,24 +628,49 @@ class _Assembler:
         size = 1
         for values in keys.values():
             size *= len(values)
-        work = size * weight + REGION_WORK + DECLARATION_WORK * (len(declared) - len(undeclared))
-        if size > CAP or work > WORK_CAP:
-            return everything, True
         shape = (
             tuple(lines), tuple(context), tuple(names), tuple((name, repr(each)) for name, each in declared.items()),
             tuple((name, tuple(keys[name])) for name in texts),
         )
+
+        def template() -> Any:
+            return self._template(
+                self._mini(start, end, context, insertions, names, {n: d for n, d in declared.items() if n not in undeclared}),
+                undeclared,
+            )
+
         if shape not in self.memo:
             # The work is spent before the template is made (that is, the YAML of its questions is not written
             # for a region that is past what is left), and spent whether or not the first answers decide it.
-            if work > self.left[0]:
-                return everything, True
-            self.left[0] -= work
-            text = self._mini(start, end, context, insertions, names, {n: d for n, d in declared.items() if n not in undeclared})
-            try:
-                self.memo[shape] = self._enumerate(text, keys, {name for name in names if name is not None}, undeclared)
-            except Exception:  # noqa: BLE001 - the assembler cannot read the region: the conservative rule judges it
-                self.memo[shape] = None
+            mini, charged = None, False
+            if cutoff and cost <= self.left[0]:
+                self.left[0] -= cost
+                fixed, charged = 0, True
+                try:
+                    mini = template()
+                    if mini is None:
+                        self.memo[shape] = None
+                    elif self._settled(mini, deciding, {
+                        **{name: values[0] for name, values in keys.items() if name not in texts and name not in deciding},
+                        **dict.fromkeys(texts, SENTINEL),
+                    }):
+                        self.memo[shape] = frozenset()
+                except Exception:  # noqa: BLE001 - the assembler cannot read the region: the conservative rule judges it
+                    self.memo[shape] = None
+            if shape not in self.memo:
+                work = size * weight + fixed
+                if too_many or size > CAP or work > WORK_CAP or work > self.left[0]:
+                    if charged:  # (the cutoff was paid for: once for each shape)
+                        self.memo[shape] = None
+                    return everything, True
+                self.left[0] -= work
+                try:
+                    mini = mini or template()
+                    self.memo[shape] = None if mini is None else self._enumerate(
+                        mini, keys, {name for name in names if name is not None}
+                    )
+                except Exception:  # noqa: BLE001 - the assembler cannot read the region: the conservative rule judges it
+                    self.memo[shape] = None
         flagged = self.memo[shape]
         if flagged is None:
             return everything, True
@@ -689,18 +738,40 @@ class _Assembler:
         line = lines[occ.line - start]
         return [*TEXT_WITNESSES, *_parentheses(line[:occ.start], line[occ.end:])]
 
-    def _enumerate(
-        self, text: str, keys: dict[str, list], insertions: set[str], undeclared: dict[str, dict]
-    ) -> frozenset[str] | None:
-        """The *insertions* of the mini template *text* of which changing the answer alone changes a definition, over
-        every combination of the answers to its *keys*; or None if the assembler finds a problem in the region. An
-        insertion is decided by the first combination that shows it, and the region once all are."""
-        assembly = self.assembly
-        mini = assembly._read(text, None)
+    def _template(self, text: str, undeclared: dict[str, dict]) -> Any:
+        """The mini template *text* as the assembler reads it, with the questions of one answer declared in code;
+        or None if the assembler finds a problem in the region. (Reading it is dear: a region is read once.)"""
+        mini = self.assembly._read(text, None)
         if mini.problems:
             return None
         # The questions with one answer are declared here, not in the template (reading their YAML is dear).
         mini.declared.update(undeclared)
+        return mini
+
+    def _assemble(self, mini: Any, chosen: dict, fixed: dict) -> list[str] | None:
+        """The lines of the output when the answers are *chosen* and *fixed*; None where an answer is missing."""
+        answers = self.assembly._Answers(ChainMap(chosen, fixed), mini.declared)
+        decision = self.assembly._decide(mini, answers, inline=True)
+        if decision.missing:
+            return None
+        return [line.text for line in self.assembly._emit(mini.main, decision.removed[""], answers)]
+
+    def _settled(self, mini: Any, deciding: dict[str, list], fixed: dict) -> bool:
+        """Whether no definition can be read in the region whatever its text answers: for every combination of the
+        answers to the *deciding* questions, with the others *fixed* (the texts answered by ``SENTINEL``, a typed
+        question by its first answer: it is read no further than its ``{{``), every label in the output is dead
+        (``_all_dead``). The output is the template's text up to the first answer, which is all that ``_dead``
+        reads of it."""
+        for combo in product(*deciding.values()):
+            lines = self._assemble(mini, dict(zip(deciding, combo, strict=True)), fixed)
+            if lines is not None and not _all_dead(lines):
+                return False
+        return True
+
+    def _enumerate(self, mini: Any, keys: dict[str, list], insertions: set[str]) -> frozenset[str]:
+        """The *insertions* of the mini template *mini* of which changing the answer alone changes a definition, over
+        every combination of the answers to its *keys*. An insertion is decided by the first combination that
+        shows it, and the region once all are."""
         # A question with one answer does not vary: it is fixed in the answers, and in no combination.
         names = [name for name, values in keys.items() if len(values) > 1]
         fixed = {name: values[0] for name, values in keys.items() if len(values) == 1}
@@ -709,14 +780,12 @@ class _Assembler:
         def read(combo: tuple[int, ...]) -> tuple | None:
             """The definitions read when the answers are *combo*: None where an answer is missing."""
             if combo not in seen:
-                chosen = {name: keys[name][at] for name, at in zip(names, combo, strict=True)}
-                answers = assembly._Answers(ChainMap(chosen, fixed), mini.declared)
-                decision = assembly._decide(mini, answers, inline=True)
-                if decision.missing:
+                lines = self._assemble(mini, {name: keys[name][at] for name, at in zip(names, combo, strict=True)}, fixed)
+                if lines is None:
                     seen[combo] = None
                 else:
                     # (Step 8 only collapses blank lines, which separate the same however many there are.)
-                    output = "\n".join(line.text for line in assembly._emit(mini.main, decision.removed[""], answers))
+                    output = "\n".join(lines)
                     if output not in self.reads:
                         self.reads[output] = _definitions(output)
                     seen[combo] = self.reads[output]
@@ -858,6 +927,89 @@ def _witnesses(kind: str, directive: Directive) -> list:
             return list(amounts)
         return [{field: each, code: "EUR" if kind == "money" else "MO"} for each in amounts]
     return list(TEXT_WITNESSES)
+
+
+def _typed(declaration: dict) -> bool:
+    """Whether the question *declaration* declares is a typed one: its answers differ by their digits only, and
+    assemble to a ``{{date:}}``, ``{{money:}}`` or ``{{duration:}}``."""
+    return declaration.get("type") in ("date", "money", "duration")
+
+
+def _dead(line: str, at: int) -> bool:
+    """Whether the link reference definition that the ``[`` at ``line[at]`` could open is none, whatever follows
+    the template's text of its line: the label is closed on the line (``label_end``), a template ``:`` follows
+    it, and after it, on the line and before the first answer (``SENTINEL``) or ``{{``, there are a bare
+    destination (no ``<``, no parentheses, no backslash, no control character), a blank, and a character that
+    opens no title. A label closed by a ``]`` that an answer could follow with a colon is not dead.
+
+    Proof, of every branch of ``markdown._read_definition``, under all three readings: ``skip_line_space`` after
+    the colon stops at the first character of the run, on the line; ``_scan_destination`` reads exactly the
+    run, which ends at the blank; ``skip_line_space`` stops at the character that is no opener, on the same line,
+    so that the title is none, and the destination's line is not ended by it: None. Nothing after that
+    character was read, so no answer in the slots and no line after it changes that. A label that is not at the
+    start of a paragraph is not read at all. ``tests/test_definition_hazards`` holds the oracle of it."""
+    close = label_end(line, at)
+    if close is None:
+        return False
+    after = line[close + 1:close + 2]
+    if after != ":":
+        return after != SENTINEL
+    rest = line[close + 2:]
+    rest = rest[:min([n for n in (rest.find(SENTINEL), rest.find("{{")) if n >= 0], default=len(rest))]
+    i = skip_blanks(rest, 0)
+    if i == len(rest) or rest[i] == "<":
+        return False
+    j = i
+    while j < len(rest) and rest[j] not in " \t":
+        if rest[j] in "()\\" or rest[j] <= " " or rest[j] == "\x7f":
+            return False
+        j += 1
+    if j == len(rest):
+        return False
+    k = skip_blanks(rest, j)
+    return k < len(rest) and rest[k] not in "\"'("
+
+
+def _hopeless(line: str) -> bool:
+    """Whether the *line* of the template, if a label begins it, is certainly no dead label (``_dead``) in any
+    output, from its text up to its first ``{{`` alone: the cutoff is not tried for a region that holds one. It
+    only decides whether to try, never that a region is clean. What follows that text is unknown, unless it is
+    nothing (the line's end) or a ``{{placeholder:}}`` (an answer, or a typed value: both end what ``_dead``
+    reads), and a marker ``{when=}`` at the end of the line is not in the output."""
+    found = _LABEL_START_RE.match(line)
+    if found is None or "{when=" in line or "{#" in line:
+        return False
+    cut = line.find("{{")
+    head = line if cut < 0 else line[:cut]
+    ends = cut < 0 or line.startswith("{{placeholder:", cut)  # (nothing more than the head is read)
+    close = label_end(head, found.end() - 1)
+    if close is None:
+        return cut < 0  # (an answer may be in the label, and close it)
+    if head[close + 1:close + 2] != ":":
+        return False
+    rest = head[close + 2:]
+    i = skip_blanks(rest, 0)
+    if i == len(rest):
+        return ends
+    if rest[i] == "<":
+        return True
+    j = i
+    while j < len(rest) and rest[j] not in " \t":
+        if rest[j] in "()\\" or rest[j] <= " " or rest[j] == "\x7f":
+            return True
+        j += 1
+    k = skip_blanks(rest, j)
+    return ends if k == len(rest) else rest[k] in "\"'("
+
+
+def _all_dead(lines: list[str]) -> bool:
+    """Whether every label that opens a line of the assembled *lines* is dead (``_dead``): a candidate is each
+    ``[`` that a definition could begin with, which is more than the definitions there are."""
+    for line in lines:
+        found = _LABEL_START_RE.match(line)
+        if found is not None and not _dead(line, found.end() - 1):
+            return False
+    return True
 
 
 def _definitions(output: str) -> tuple[tuple[str, str, str], ...]:

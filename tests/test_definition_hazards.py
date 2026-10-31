@@ -23,6 +23,7 @@ import datetime
 import itertools
 import random
 import re
+import time
 from collections import Counter
 from functools import partial
 
@@ -30,9 +31,10 @@ import pytest
 from helpers_renderers import markdown_it, needs_markdown_it
 
 from legaldown import parse
-from legaldown.assembly import _Answers, _decide, _emit, _finish, _read
+from legaldown.assembly import _Answers, _decide, _emit, _escape, _finish, _read
 from legaldown.definitions import nested_blocks
 from legaldown.directives import lex
+from legaldown.markdown import Reading, _read_definition
 from legaldown.positions import Locator
 from legaldown.template import parse_template
 from legaldown.validator import hazards, templates, validate
@@ -59,7 +61,11 @@ _INSERTIONS = {
     "c1": ('{{choose: c1, true="", false="z"}}', "choice"), "c2": ('{{choose: c2, true="\\"", false="(t)"}}', "choice"),
     "c3": ('{{choose: c3, true="\'t\'", false=")"}}', "choice"),
     "c8": ('{{choose: c8, true=":", false=" is"}}', "choice"),  # a phrase that supplies the colon of a label
+    "p4": ("{{placeholder: p4}}", "text"), "p5": ("{{placeholder: p5}}", "text"),
+    "c4": ('{{choose: c4, true="30", false="60"}}', "choice"), "c5": ('{{choose: c5, true="\'t\'", false=")"}}', "choice"),
 }
+#: The insertions that only ``gen_option`` holds: the other generators hold the ones above (their shapes are fixed).
+_OPTION_ONLY = ("p4", "p5", "c4", "c5")
 #: Text that a definition's paragraph may hold (the kinds of lines of the issue and of real templates).
 _FIXED = [
     "[a]: u", "[a]:", '"t"', '"t', 't"', "(t)", "x", " ", "[b]: v", "(as amended)", "2. ", "[Option A]: The Seller shall pay",
@@ -92,7 +98,7 @@ def _content(rng, pool, heading=False):
 def _hold(rng, max_text):
     """The insertions a template holds: 1 to 4 of the kinds above, at most *max_text* of them text (a text
     question is 16 witnesses: the whole-document product is the size of their product)."""
-    held = rng.sample(sorted(_INSERTIONS), rng.randint(1, 4))
+    held = rng.sample(sorted(set(_INSERTIONS) - set(_OPTION_ONLY)), rng.randint(1, 4))
     texts = [key for key in held if _INSERTIONS[key][1] == "text"]
     for key in texts[max_text:]:
         held.remove(key)
@@ -278,7 +284,58 @@ def gen_cond(rng, max_text=2):
     return _template(out, rng)
 
 
-GENERATORS = {"real": gen_real, "fz2": gen_fz2, "nest": gen_nest, "cond": gen_cond}
+_OPTION_FIXED = [
+    "The Seller shall pay", "The Buyer", "Pay", "pay", "to", "at", "within", "days", "(the \"Price\")", "(net)",
+    "u", '"t"', '"t', 't"', "(t)", "'t'", ">", ":", "x", "u((", "))", "<u v>", "more\"", " \"t", "s.r.o.", "Smith & Co.",
+    "\\] A", "{when=q}",
+]
+_OPTION_CHOOSES = [
+    '{{choose: c1, true="Seller", false="Buyer"}}', '{{choose: c2, true="", false="z"}}',
+    '{{choose: c3, true="\\"", false="(t)"}}', '{{choose: c8, true=":", false=" is"}}',
+    '{{choose: c4, true="30", false="60"}}', '{{choose: c5, true="\'t\'", false=")"}}',
+]
+_OPTION_TYPED = ["{{placeholder: d1}}", "{{placeholder: m1, currency=EUR}}", "{{placeholder: u1, unit=MO}}"]
+
+
+def gen_option(rng, max_text=4):
+    """``[Option X]:`` paragraphs (#137): fixed words, choices (phrases empty, a quote, a colon), typed placeholders
+    and 1 to *max_text* text blanks, in any order; in an item or a quote; a second line; a conditional marker;
+    labels with an escaped bracket or over two lines; several paragraphs, some apart by a blank line, some not."""
+    texts = [f"{{{{placeholder: p{n}}}}}" for n in range(1, 6)]
+    rng.shuffle(texts)
+    pool = texts[:rng.randint(1, max_text)]
+    out = []
+    for _ in range(rng.randint(1, 3)):
+        label = rng.choice(["[Option A]", "[Option B]", "[a]", "[Option \\] A]", "[Option\nA]", "[Effective Date]", "[gdpr]"])
+        colon = rng.choice([":", ":", ":", "", '{{choose: c8, true=":", false=" is"}}'])
+        lead = rng.random() < 0.5  # (a label line that begins with fixed words, as the issue's do)
+        parts = [rng.choice(["The Seller shall pay", "The Buyer shall", "Pay the"])] if lead else []
+        for _ in range(rng.randint(3, 7) if lead else rng.randint(1, 6)):
+            roll = rng.random()
+            if pool and roll < (0.6 if lead else 0.35):
+                parts.append(pool.pop())
+            elif roll < 0.5:
+                parts.append(rng.choice(_OPTION_CHOOSES))
+            elif roll < 0.58:
+                parts.append(rng.choice(_OPTION_TYPED))
+            else:
+                parts.append(rng.choice(_OPTION_FIXED))
+        line = label + colon + rng.choice([" ", " ", ""]) + rng.choice([" ", " ", " ", ""]).join(parts)
+        prefix = rng.choice(["", "", "", "- ", "> ", "1. "])
+        lines = [prefix + line]
+        if rng.random() < 0.3:
+            pad = " " * len(prefix) if prefix != "> " else "> "
+            lines.append(pad + rng.choice(['"t"', '"{{placeholder: p1}}"', "x", "(t)", "more", "[b]: v", '"t']))
+        if rng.random() < 0.15:
+            lines[-1] += " {when=q}"
+        out += lines
+        if rng.random() < 0.7:
+            out.append("")
+    out += ["", *pool] if pool else []
+    return _template(out, rng)
+
+
+GENERATORS = {"real": gen_real, "fz2": gen_fz2, "nest": gen_nest, "cond": gen_cond, "option": gen_option}
 
 
 # ── The whole-document reference: the product of the witnesses ────
@@ -452,9 +509,9 @@ def run_witness_oracle(generator, count, seed, parser=None, **search):
 
 
 #: How many templates each generator gives the suite: the shapes of ``fz2`` are cheap and rarely hazards.
-_COUNT = {"real": 40, "fz2": 120, "nest": 20, "cond": 14}
+_COUNT = {"real": 40, "fz2": 120, "nest": 20, "cond": 14, "option": 4}
 #: And the templates of the end-to-end oracle, which has fewer hazards.
-_ASSEMBLED = {"real": 80, "fz2": 240, "nest": 60, "cond": 30}
+_ASSEMBLED = {"real": 80, "fz2": 240, "nest": 60, "cond": 30, "option": 30}
 
 
 def small(generator):
@@ -467,7 +524,7 @@ def small(generator):
 def test_random_answers_change_no_definition_that_the_witnesses_do_not(name):
     seen, found, misses = run_witness_oracle(small(GENERATORS[name]), _COUNT[name], seed=1291, bases=6, alternatives=6)
     assert not misses, misses[:2]
-    assert seen > 10 and found > 0, (seen, found)
+    assert seen > min(10, _COUNT[name] // 2) and found > 0, (seen, found)
 
 
 @needs_markdown_it
@@ -530,9 +587,11 @@ def run_locality_oracle(generator, count, seed):
 
 @pytest.mark.parametrize("name", GENERATORS)
 def test_the_verdicts_of_the_regions_are_those_of_the_whole_document(name):
-    seen, found, mismatches, fallbacks, largest = run_locality_oracle(small(GENERATORS[name]), _COUNT[name], seed=1301)
+    # (``option`` has two text blanks: the product of three is too large; with two, the cutoff decides more of its regions)
+    generator = partial(GENERATORS[name], max_text=2) if name == "option" else small(GENERATORS[name])
+    seen, found, mismatches, fallbacks, largest = run_locality_oracle(generator, _COUNT[name], seed=1301)
     assert not mismatches, mismatches[:2]
-    assert seen > 10 and found > 0, (seen, found)
+    assert seen > min(10, _COUNT[name] // 2) and found > 0, (seen, found)
     assert fallbacks <= max(1, seen // 5)  # three text questions in a paragraph (``fz2`` asks one thrice) are over the cap
     assert largest <= 30, largest  # a region is a paragraph and what assembly can join to it, not a section
 
@@ -614,9 +673,19 @@ def test_an_answer_that_changes_the_definitions_of_an_assembled_template_is_repo
     assembled document, whatever the others are answered, the validator reports the insertion. The templates are
     those of the generators: sections (conditional ones), lists, quotes, drafting notes between blocks, titles,
     labels that end the line, ``2. …`` lines, bare-marker items, typed placeholders and condition markers."""
-    assembled, found, missed = assembled_hazards(small(GENERATORS[name]), _ASSEMBLED[name], seed=1294)
+    # (``option`` has up to four text blanks: no product of them is made here, and the cutoff decides its regions)
+    generator = partial(GENERATORS[name], max_text=4) if name == "option" else small(GENERATORS[name])
+    assembled, found, missed = assembled_hazards(generator, _ASSEMBLED[name], seed=1294)
     assert not missed, missed[:2]
     assert assembled > 15 and found > 0, (assembled, found)
+
+
+def test_no_definition_is_read_at_a_label_that_is_dead_whatever_completes_it():
+    """The lemma of the dead-label cutoff (#137): where ``_dead`` holds, ``_read_definition`` reads nothing, under
+    the three readings, whatever the answers in the slots and the lines after it are."""
+    dead, holes = run_lemma_oracle(3000, seed=1371)
+    assert dead > 300, dead
+    assert holes == 0
 
 
 def test_the_generators_reach_what_they_are_for():
@@ -636,12 +705,131 @@ def test_the_generators_reach_what_they_are_for():
             seen[f"{name}-raw"] += bool(re.search(r"^(?:```|~~~|<!--|    code)$|^<!--$", body, re.M))
             seen[f"{name}-empty-first"] += bool(re.search(r"^ *(?:[-*]|[0-9]+\.)$", body, re.M))
             seen[f"{name}-after-label"] += bool(re.search(r"\]\{\{", body))
+            seen[f"{name}-blanks"] += any(  # a label line with three blanks after two fixed words
+                re.match(r"[ >*+\-0-9.]*\[[^\]\n]*\]: [A-Za-z]+ [A-Za-z]+ ", line) and line.count("{{placeholder: p") >= 3
+                for line in body.splitlines()
+            )
     assert seen["real-note"] and seen["real-marker"] and seen["real-quote"] and seen["real-nested"], seen
     assert seen["nest-bare"] and seen["nest-nested"] and seen["nest-note"] and seen["nest-marker"], seen
     assert seen["cond-section"] > 20 and seen["cond-note"] and seen["cond-nested"] and seen["cond-quote"], seen
     assert seen["fz2-quote"] and seen["fz2-note"] and seen["fz2-marker"], seen
     assert seen["real-after-label"] + seen["nest-after-label"] + seen["cond-after-label"] > 5, seen
+    assert seen["option-blanks"] > 3 and seen["option-marker"] and seen["option-quote"] and seen["option-after-label"], seen
     assert seen["real-raw"] and seen["fz2-raw"] and seen["cond-raw"] and seen["nest-empty-first"], seen
+
+
+# ── Oracle 1b: random answers against the validator ───────────────
+
+
+def random_vs_validator(generator, count, seed, bases=8, alternatives=8):
+    """Random answers against the verdicts of the validator's regions, where the cutoff (#137) may decide them: a
+    question of which random answers change the definitions read, in a template whose region the validator judged
+    clean, is a hole (a region that fell back reports every insertion, so it covers them). Returns ``(templates,
+    hazards found by random answers, templates with a region the cutoff decided, holes)``."""
+    rng = random.Random(seed)
+    seen = found = cut = 0
+    holes = []
+    settled = hazards._Assembler._settled
+    decided = [0]
+
+    def counting(self, *args, **kwargs):
+        verdict = settled(self, *args, **kwargs)
+        decided[0] += verdict
+        return verdict
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(hazards._Assembler, "_settled", counting)
+        for _ in range(count):
+            source = generator(rng)
+            template = _read(source, None)
+            if template.problems:
+                continue
+            seen += 1
+            before = decided[0]
+            questions, _fell_back, _size = region_verdicts(source)
+            cut += decided[0] > before
+            by_random, _other = random_hazards(source, rng, None, bases=bases, alternatives=alternatives)
+            # Only the questions that insertions ask are judged (a condition's question is the region's context).
+            main = template.main
+            by_random &= {occ.directive.positional for occ in main.occurrences if occ.line not in main.notes}
+            found += len(by_random)
+            if by_random - questions:
+                holes.append((sorted(by_random - questions), sorted(questions), body_of(source)))
+    return seen, found, cut, holes
+
+
+_COUNT_RANDOM = {"real": 12, "fz2": 30, "nest": 6, "cond": 5, "option": 30}
+
+
+@pytest.mark.parametrize("name", GENERATORS)
+def test_random_answers_change_no_definition_in_a_region_the_validator_judged_clean(name):
+    seen, found, cut, holes = random_vs_validator(
+        partial(GENERATORS[name], max_text=4), _COUNT_RANDOM[name], seed=1337, bases=4, alternatives=4
+    )
+    assert not holes, holes[:2]
+    assert seen > min(5, _COUNT_RANDOM[name] // 2), seen
+    if name == "option":
+        assert found > 0 and cut > 5, (found, cut)  # (the cutoff decided some of the templates, and there were hazards)
+
+
+# ── The lemma of the cutoff ───────────────────────────────────────
+
+_LEMMA_TOKENS = [
+    "x", "u", " ", " ", "  ", "\t", '"', "'", "(", ")", "<", ">", ":", "\\", "&", "#", "-", "=", ".", "[", "]", "{{", "}}",
+    "*", "`", "_", "|", "\x7f", "\x00", "The", "Seller", "https://x", "u((", "))", '"t"', "(t)", "'t'", "\\]", "\\(",
+    "<u v>", "{{date: 2024-01-01}}", "s.r.o.", "&amp;",
+]
+_LEMMA_ANSWERS = [
+    "x", " ", '"', "'", "(", ")", ">", "<", ":", "\\", "&", "#", "-", "=", ".", "[", "]", "{", "}", "*", "\t", "\xa0",
+    "1", "/", "!", "`", "_", "|", "~", "\x01", "((", "))", ": u", ' "t"', "t)", 't"', "\n",
+]
+_LEMMA_LABELS = ["[a]", "[Option A]", "[Option \\] A]", "[a\\]b]", "[]", "[ a ]", "[a[b]", "[" + "a" * 1000 + "]"]
+
+
+def _lemma_answer(rng):
+    while True:
+        answer = "".join(rng.choice(_LEMMA_ANSWERS) for _ in range(rng.randint(1, 7)))
+        if answer == answer.strip(" \t") and "\n" not in answer:
+            return answer
+
+
+def run_lemma_oracle(count, seed, completions=20):
+    """Of *count* random lines that begin a label, those that ``hazards._dead`` calls dead are completed *completions*
+    times (a random answer, escaped as assembly escapes it, for each sentinel; and up to two lines after it) and
+    read by ``_read_definition`` under the three readings. Returns ``(dead lines, definitions read)``: the lemma
+    of ``_dead`` is that no definition is read."""
+    rng = random.Random(seed)
+    dead = holes = 0
+    for _ in range(count):
+        label = rng.choice(_LEMMA_LABELS)
+        colon = rng.choice([":", ":", ":", "", hazards.SENTINEL, " :"])
+        parts, slots = [], 0
+        for _ in range(rng.randint(1, 8)):
+            if rng.random() < 0.3 and slots < 4:
+                parts.append(hazards.SENTINEL)
+                slots += 1
+            else:
+                parts.append(rng.choice(_LEMMA_TOKENS))
+        line = rng.choice(["", "", "- ", "> ", "1. ", "  "]) + label + colon + "".join(parts)
+        found = hazards._LABEL_START_RE.match(line)
+        if found is None or not hazards._dead(line, found.end() - 1):
+            continue
+        dead += 1
+        at = found.end() - 1
+        for _ in range(completions):
+            pieces = line.split(hazards.SENTINEL)
+            text = pieces[0]
+            for piece in pieces[1:]:
+                text += _escape(_lemma_answer(rng), piece) + piece
+            tail = "".join(
+                "\n" + "".join(rng.choice([*_LEMMA_TOKENS, '"', "'", ")", " "]) for _ in range(rng.randint(0, 6)))
+                for _ in range(rng.randint(0, 2))
+            )
+            holes += any(
+                _read_definition(text + tail, at, reading) is not None
+                for reading in (Reading.SPEC, Reading.MDIT, Reading.PANDOC)
+            )
+    return dead, holes
 
 
 # ── Pins ──────────────────────────────────────────────────────────
@@ -659,6 +847,7 @@ def reported(body, **options):
 
 def test_the_caps_are_pinned():
     assert (hazards.CAP, hazards.WORK_CAP, hazards.BUDGET) == (4096, 24576, 240000)
+    assert (hazards.DECISION_CAP, hazards.SENTINEL) == (64, "\x01")
     assert len(TEXT_WITNESSES) == 31
 
 
@@ -698,18 +887,143 @@ def test_two_text_blanks_alone_and_with_a_condition_or_a_choice_are_judged_not_o
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("body", "count"),
     [
-        "[Option A]: The Seller shall pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n",
-        "[gdpr]: https://x\nThe Seller shall pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n",
-        "[Option A]: The Seller shall pay {{placeholder: p1}} to {{placeholder: p1}} and {{placeholder: p2}}.\n",
+        ("[gdpr]: https://x\nThe Seller shall pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n", 3),
+        # The label's line does not hold a destination word, a blank and a word that opens no title before its first
+        # blank (or typed value): the cutoff cannot show that no answer makes it a definition.
+        ("[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} to {{placeholder: p3}}.\n", 3),
+        ("[Option A]: Pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n", 3),
+        ("[Option A]: (The) Seller shall pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n", 3),
+        ("[Effective Date]: {{placeholder: d1}} is the date {{placeholder: p1}} and {{placeholder: p2}} and {{placeholder: p3}}.\n", 4),
+        ("[Option\nA]: The Seller shall pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n", 3),
+        ("[a]: u{{placeholder: p1}} x {{placeholder: p2}} {{placeholder: p3}}\n", 3),
+        ("[a]: u {{placeholder: p1}} {{placeholder: p2}} {{placeholder: p3}}\n", 3),
+        ('[a]: u "t {{placeholder: p1}} {{placeholder: p2}} {{placeholder: p3}}\n', 3),
+        # (A label that the cutoff tries and cannot show dead: a choice may give the title its opener.)
+        ('[Option A]: The {{choose: c2, true="\\"", false="z"}} pay {{placeholder: p1}} {{placeholder: p2}} {{placeholder: p3}}\n', 4),
+        # (And one in another line of the region.)
+        ("[Option A]: The Seller shall pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n[b]: v\n", 3),
     ],
 )
-def test_three_text_blanks_in_a_paragraph_a_definition_begins_are_over_reported_and_told_how_to_stop(body):
-    """The accepted over-flag: three answers are more combinations than are tried. The author writes `\\[` if the
-    bracket is text, or puts a blank line after the definition."""
+def test_three_text_blanks_in_a_paragraph_a_definition_begins_are_over_reported_and_told_how_to_stop(body, count):
+    """The accepted over-flag: three answers are more combinations than are tried, and the label's line is not one
+    that no answer can make a definition. The author writes `\\[` if the bracket is text, or puts a blank line after
+    the definition."""
     found = reported(body)
-    assert len(found) == 3 and all("too many answers" in message and "write '\\['" in message for _l, message in found)
+    assert len(found) == count and all("too many answers" in m and "write '\\['" in m for _l, m in found), found
+
+
+_BLANKS = "{{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}"
+_CHOICE_1 = '{{choose: c1, true="Seller", false="Buyer"}}'
+_CHOICE_2 = '{{choose: c2, true="30", false="60"}}'
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # The label's line holds a destination word, a blank and a word that opens no title before its first blank:
+        # no answer, and nothing after the line, can make it a definition (the dead-label cutoff, #137).
+        f"[Option A]: The Seller shall pay {_BLANKS}.\n",
+        "[Option A]: The Seller shall pay {{placeholder: p1}} to {{placeholder: p1}} and {{placeholder: p2}}.\n",
+        f"[Option A]: The {_CHOICE_1} shall pay {{{{placeholder: p1}}}} to {{{{placeholder: p2}}}} within {_CHOICE_2} days.\n",
+        f"[Option A]: The {_CHOICE_1} shall pay {_BLANKS} by {{{{placeholder: p4}}}} within {_CHOICE_2} days.\n",
+        f"[Option A]: {{{{choose: c1, true=\"The Seller\", false=\"The Buyer\"}}}} shall pay {_BLANKS}.\n",
+        f'[Option A]: {{{{choose: c1, true="", false="Seller"}}}} shall pay {_BLANKS}.\n',
+        f"- [Option A]: The Seller shall pay {_BLANKS}. {{when=q}}\n",
+        f"> [Option A]: The Seller shall pay {_BLANKS}.\n",
+        f"[Option \\] A]: The Seller shall pay {_BLANKS}.\n",
+        "[Option A]: The Seller shall pay {{placeholder: m1, currency=EUR}} to {{placeholder: p1}} at {{placeholder: p2}} "
+        "by {{placeholder: p3}}\n",
+        f"> [!DRAFTING]\n> n\n[Option A]: The Seller shall pay {_BLANKS}.\n",
+        f"-\n  [Option A]: The Seller shall pay {_BLANKS}.\n",
+        f"1. [Option A]: The Seller shall pay {_BLANKS}.\n   [Option B]: The Buyer shall pay {_BLANKS}.\n",
+    ],
+)
+def test_three_text_blanks_after_a_destination_word_and_a_word_are_judged_clean_by_the_cutoff(body):
+    found = reported(body)
+    assert found == [], found
+
+
+def test_fifty_option_paragraphs_of_three_blanks_are_clean_in_one_assembly_each(monkeypatch):
+    """Each paragraph is assembled once for each combination of its decisions, and not for its text answers."""
+    emitted = _count(monkeypatch, "_emit")
+    body = "".join(f"[Option {n}]: The Seller shall pay {_BLANKS} for item {n}.\n\n" for n in range(50))
+    start = time.perf_counter()
+    assert reported(body) == []
+    assert time.perf_counter() - start < 5.0  # (0.09 s now)
+    assert emitted[0] == 50
+    emitted[0] = 0
+    mixed = "".join(
+        f"[Option {n}]: The {_CHOICE_1} shall pay {{{{placeholder: p1}}}} to {{{{placeholder: p2}}}} within {_CHOICE_2} days.\n\n"
+        for n in range(50)
+    )
+    assert reported(mixed) == []
+    assert emitted[0] == 50 * 4  # (two choices)
+
+
+def _count(monkeypatch, name, owner=None):
+    """A list of one number, the calls of ``assembly.<name>`` (or of the attribute of *owner*) from now on."""
+    from legaldown import assembly
+
+    owner = owner or assembly
+    calls, wrapped = [0], getattr(owner, name)
+
+    def counted(*args, **kwargs):
+        calls[0] += 1
+        return wrapped(*args, **kwargs)
+
+    monkeypatch.setattr(owner, name, counted)
+    return calls
+
+
+def test_a_region_the_cutoff_cannot_settle_is_charged_once_for_each_shape(monkeypatch):
+    """The cutoff is paid for with the first region of a shape that it is tried on; the verdict, fallen back or not,
+    is the shape's: a thousand of them are not a budget (the distinct paragraphs after them are tried)."""
+    settled = _count(monkeypatch, "_settled", hazards._Assembler)
+    monkeypatch.setattr(hazards, "BUDGET", 2000)
+    tried = '[Option A]: The {{choose: c2, true="\\"", false="z"}} pay {{placeholder: p1}} {{placeholder: p2}} {{placeholder: p3}}\n\n'
+    later = "".join(f"[x{n}]: u {{{{placeholder: p1}}}} and more {n}\n\n" for n in range(5))
+    found = reported(tried * 200 + later)
+    assert settled[0] == 1
+    assert len(found) == 200 * 4 and all("too many answers" in message for _line, message in found)
+
+
+def test_a_region_whose_label_cannot_be_dead_does_not_pay_for_the_cutoff(monkeypatch):
+    """``[a]: u {{placeholder: p1}}`` has a destination word and a blank, and then an answer: the cutoff is not
+    tried, and the budget is spent as it was before it (#137)."""
+    settled = _count(monkeypatch, "_settled", hazards._Assembler)
+    emitted = _count(monkeypatch, "_emit")
+    body = "".join(f"[a{n}]: u {{{{placeholder: p1}}}} nine words here and there for {n}\n\n" for n in range(40))
+    found = reported(body)
+    assert found == []
+    assert settled[0] == 0 and emitted[0] == 40 * len(TEXT_WITNESSES)  # (no assembly for the cutoff)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[a]: u {{placeholder: p1}}\n",
+        '[a]{{choose: c8, true=":", false=" is"}} u{{placeholder: p1}} more"\n',
+        '[a]: u "t {{placeholder: p1}} {{placeholder: p2}}\n',
+    ],
+)
+def test_a_label_the_cutoff_cannot_show_dead_is_still_a_hazard_not_a_fallback(body):
+    found = reported(body)
+    assert found and not any("too many" in message for _line, message in found), found
+
+
+def test_a_template_with_the_sentinel_is_enumerated_not_cut(monkeypatch):
+    """A template that holds the sentinel is judged by the witnesses, as before: two blanks are tried (and clean), and
+    three are the conservative rule's."""
+    settled = []
+    real = hazards._Assembler._settled
+    monkeypatch.setattr(hazards._Assembler, "_settled", lambda self, *args: settled.append(1) or real(self, *args))
+    assert reported("[Option A]: The Seller\x01 shall pay {{placeholder: p1}} to {{placeholder: p2}}.\n") == []
+    found = reported(f"[Option A]: The Seller\x01 shall pay {_BLANKS}.\n")
+    assert len(found) == 3 and all("too many answers" in message for _line, message in found)
+    assert settled == []
+    assert reported(f"[Option A]: The Seller shall pay {_BLANKS}.\n") == [] and settled == [1]
 
 
 def test_three_text_blanks_in_a_paragraph_no_definition_begins_in_are_not_reported():
