@@ -537,14 +537,17 @@ def _test(condition: str, questions: Any) -> Condition | None:
 
 
 def _read_body(
-    path: str, body: str, document: Document, questions: Any, *, template: bool
+    path: str, body: str, document: Document, questions: Any, *, template: bool,
+    layout: _Layout | None = None, markers: list | None = None,
 ) -> _Source:
+    """The body *body* of *document*. A caller that has them gives the *layout* the parser made of the body's
+    lines and the document's ``find_markers``, which are not made again."""
     lines = body.split("\n")
     if lines[-1] == "":
         lines.pop()  # the last line's ending, not a line -- as parse reads it
-    layout = _layout(lines)
+    layout = layout or _layout(lines)
     found: dict[tuple[int | None, int], list] = {}
-    for marker in find_markers(document, cache(lex)):
+    for marker in find_markers(document, cache(lex)) if markers is None else markers:
         if marker.placed(template) and marker.marker is not None:
             found.setdefault((marker.section, marker.block), []).append(marker)
     source = _Source(path, lines, _section_units(layout, document, lines, questions), set(), [], [])

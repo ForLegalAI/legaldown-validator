@@ -559,30 +559,92 @@ Where this differs from CommonMark, or is read more simply:
     holds them to what pandoc does.) markdown-it reads a backslash
     before *any* character as a pair, not only before punctuation, and breaks a paragraph at a `>` line; these
     are its own.
-  - The `insertion-boundary` rule for a link reference definition (§15.7.3) is not this reading: it flags an
-    insertion where a label, a destination or a title *could* be once it is filled in, over a destination of any
-    non-blank characters or a `<…>` (which may hold blanks) and a title with no escapes, and an unterminated
-    `](x {{p}}` still counts. It also flags an insertion (`{{placeholder:}}`, `{{choose:}}`, no other directive)
-    in the title's place, after the destination and its blanks (`[a]: u {{placeholder: p}}`,
-    `[a]: <x y> {{placeholder: p}}`). The longer of the readings of the definition wins, so no verdict that the
-    bare reading drew is lost (`_InsertionScan._reference_end`, checked against regular expressions at every
-    offset), in linear time. An ATX heading and a table cell hold no definition: there the rule reads a
-    definition as it did before #119 (a bare destination and a closed title), so `# [a]: {{placeholder: p}}`
-    and the same in a table cell are still flagged, and `# [a]: u {{placeholder: p}}` is not: verdicts
-    that existed before #119, kept as they were. (A setext heading's text can hold one: CommonMark takes the
-    definitions out of a paragraph before it reads the underline.) The rule is an over-approximation, per line
-    as §15.7.3 is: a line that continues a paragraph, which is no definition (`Text`, then
-    `[a]: u {{placeholder: p}}`), is read like any other and is flagged. The one place it is not per line is
-    a setext heading's text that spans more than one line: the parser joins its lines with spaces, so an
-    insertion anywhere in it may go unseen (#129: `[a]: u {{placeholder: p}}`, `Text`, `===`; `Text`,
-    `[a]: u {{placeholder: p}}`, `===`; `- [a]: u {{placeholder: p}}`, `  Text`, `  ===`;
-    `[a]: u`, `[b]: <x {{placeholder: p}} y>`, `more`, `===`). It still does not flag an insertion
-    after a closed title (`[a]: u "t" {{choose: q}}`, a `{{choose:}}` phrase that is empty) or before one
-    (`[a]: u {{choose: q}} "t"`), one that an answer could turn into a title with the quote after it
-    (`[a]: u {{placeholder: p}}"`), one in a destination on the next line, one in a setext heading's text of
-    more than one line (above), or one on a line with text after the definition (`[Note]: {{placeholder: p}} shall
-    pay.`), the last being pinned
-    as it was ([#129](https://github.com/ForLegalAI/legaldown-validator/issues/129)).
+  - **The `insertion-boundary` rule for a link reference definition (§15.7.3) is not this reading: assembly
+    judges it** ([#129](https://github.com/ForLegalAI/legaldown-validator/issues/129)). Whether an answer could
+    create, change or complete a definition is not predicted from the template's text, which is the assembler's
+    reading written a second time; each region of the body that holds an insertion and a `]:` is assembled by the
+    real assembler over a finite set of *witness* answers, and an insertion is reported when changing only its
+    answer changes the definitions (label, destination and title, in order) that the parser reads in the
+    assembled region (`validator/hazards.py`, the one module that reads the assembler's private parts).
+    - *Witnesses.* Every text insertion is tried with all of 31 strings (`TEXT_WITNESSES`), whatever is around it:
+      two plain words and a whole title each way (`"t"`, `'t'`, `(t)`); a title's opener, a closer and both
+      together, alone and with text (a title with nothing in it is none: `()`); a destination's closer `>`, alone,
+      with a title's opener and with a whole title; the colon, alone, with a destination and with a destination
+      and a title, for a label that ends before the insertion; and a destination with a title's opener and with a
+      whole title (`x (t`). The parentheses of a bare destination nest (to 32), so it is also tried with as many `)`
+      as the template leaves open before it on its line, alone and with a title, and as many `(` as it closes after
+      it (`annex((v{{p}}` with `))`, `{{p}}x))` with `((`); the sources of directives are not text there, and the
+      parentheses of the phrases of a choice count. Assembly escapes `\`, `` ` ``, `*`, `_`, `[`, `]`, `<`, `|` and
+      `{` in an answer, and in the phrase of a choice, so a label and the `<` of a destination always come from the
+      template, and an answer can only be a destination, close or open a title or the parentheses of a destination,
+      or make a label a definition with its colon; a text answer is never empty. Each insertion is a question of its
+      own, so a question asked in two places is tried with answers it cannot have (more combinations than it has,
+      never fewer). A `{{choose:}}` is tried with every phrase, a date, a money amount and a duration with two
+      values, and the conditions whose markers are in the region with every value (a `{{choose:}}` of one of those
+      questions is that question). A fragment is judged with the questions of the document that includes it, as
+      assembly reads it. Three oracles hold the claims (`tests/test_definition_hazards.py`): random answers over a
+      wide alphabet (parentheses in runs, colons) change no definition that the product of the witnesses does not;
+      the verdict of each region is the verdict of the whole document over that product; and templates assembled
+      through the public API with adversarial answers are reported wherever the definitions read from the output
+      change.
+    - *Regions.* A definition lies within a paragraph, which ends at a blank line (not one in code or raw HTML), at
+      a list item's marker and at an ATX heading. What assembly removes or makes empty (a drafting note, a
+      conditional unit, a line of nothing but choices, an empty `{{choose:}}` that leaves a bare marker, §15.7.2)
+      is in the region it lies in, with its blank lines, and the lines that follow it and cannot end a paragraph
+      (text, the marker of an item numbered other than 1, a bare marker), and, after blank lines, those that are
+      indented, are in the region too; a region inside list items is assembled behind the opening lines of the items
+      that hold it. A conditional section is in a region only where its heading directly follows a line. A region is
+      read only where a definition can begin in it (`_may_hold`): a `[` that opens a line, after container markers
+      and any `{{choose:}}` (its phrase may be empty; a phrase cannot supply a bracket), and, later, the end of a
+      label with a colon, or with an insertion or a choice, whose answer or phrase may begin with the colon
+      (`[Annex]{{choose: c, true=":", false=" is"}} https://x {{placeholder: p}}`). A table row holds no
+      definition, and prose with `]:` in it begins none, so neither is read or reported, whatever the answers.
+    - *Caps, and the conservative rule.* Work is counted in lines and characters: an assembly costs the lines and the
+      insertions of its region, a line's worth for each 80 characters of it, and two more; and a region 100
+      besides, and 20 for each question that it declares as a template of its own (a question with one answer does not
+      vary, and is not declared; a region in which no insertion has more than one answer is clean, and is not read).
+      A region of more than `CAP` = 4096 combinations of answers, or of more than `WORK_CAP` = 24576 work,
+      and every region once a validation has used `BUDGET` = 240000 (some five seconds, the document and the
+      fragments it includes together) are not tried: every insertion in the region is reported, with a message that
+      says why and tells the author to write `\[` if the bracket is text, or to put a blank line after the
+      definition. That is an over-flag, and accepted: it is for paragraphs that a definition begins in (a line-start
+      `[label]:`, or an insertion for its colon) and no others. Measured, in a paragraph that begins `[label]:` and a
+      sentence of nine words: one text blank is tried in 5 ms, two in 0.14 s (0.3 s with a choice, 0.5 s with a
+      condition on the item); three or more are over the cap in every paragraph (25 of 25, with a condition and a
+      choice too: 31 answers cubed is 29791), and so are two text blanks with two choices (`The {{choose}} shall pay
+      {{p1}} to {{p2}} within {{choose}} days`: 3844 combinations of a long line). The budget is some 1000 different
+      paragraphs of one line and one text blank, or 40 of two, or 11 of two with a choice: past it the rest are
+      reported (of 60 paragraphs of two blanks, 20 are; of 1200 of one, 64). The same paragraph is assembled once,
+      however often it occurs. Five text blanks in one paragraph, or one question asked in more than a thousand
+      lines of a paragraph, are over the cap whatever the budget; and so is a paragraph of 300 KB (it took 107 s to try
+      four of them): the characters are counted. A region in which no insertion can vary (each has one answer) is judged clean without being read. A file or a
+      region the assembler cannot read is judged by the conservative rule too (every insertion in a paragraph in which
+      a label begins a line, read as the main path reads a label; drafting notes and code end a paragraph; and the
+      serialized reading is tried if the one as written cannot be). A document with no `]:` and no `]` before an insertion or a choice
+      is not read for definitions at all.
+    - *What is reported, and what is not.* `[label]: {{placeholder: p}}`, `[a]: u {{placeholder: p}}` (the title's
+      place), `[a]: <x {{placeholder: p}} y>`, `[a]: u "t" {{choose: q}}` with an empty phrase, `[a]:` and
+      `{{placeholder: p}}` on the next line, `[a]: u` and `"{{placeholder: p}}"` on the next line (a drafting
+      note between them too), and `{{choose: q}}` on the line above a definition, whose empty phrase joins its
+      neighbours: write `\[` if the bracket is text, or put a blank line after the definition. Not reported:
+      `[Option A]: The Seller shall pay {{placeholder: p}}.`, `[Note]: {{placeholder: p}} shall pay.`, a typed
+      `[Effective Date]: {{placeholder: start}}`, `"Buyer" {{def: buyer}} means {{placeholder: p}}` or
+      `(a) {{placeholder: p}}` after a definition, `(as amended) {{placeholder: p}}`, `[a]: u {{placeholder: p}}
+      "t"` (a text answer is never a title), an option or clause list with drafting notes, and an ATX heading or a
+      table cell, which hold no definition (the rule before #129 reported `# [a]: {{placeholder: p}}` and the same
+      in a cell).
+    - *Known limits.* The check is as right as assembly is, and judges by the model's parser: markdown-it reads a
+      definition with a directive in it (`[{{date: 2024-01-01}}]: y`) and the model keeps it as text, and an
+      empty title with text after it (`[a]: u` and `"":x`) it reads as no definition, which cmark and the model do
+      not. The assembler leaves a `{{placeholder:}}` in a *section's* heading unfilled, ATX or setext, as §4.2 asks
+      ([#12](https://github.com/ForLegalAI/legaldown-validator/issues/12)), so `[a]: u {{placeholder: p}}` over
+      `===` is not reported; once it fills them the verdict changes, and the oracles prove the new one. A condition that holds the region but whose
+      marker is outside it is not known: an insertion that no assembly reaches (under `{when=q}` inside a section
+      under `{when=!q}`) is judged as if it were. A document of more different definition paragraphs than the budget
+      allows (above) is reported where it ends: a numbered clause list of thousands of clauses with a few
+      definitions in it is not, as only the regions that a definition can begin in are read. A model without a
+      source map (built in code, or changed after it was parsed) is judged as `serialize` writes it, and the
+      findings have no line.
 - The differential test (`tests/test_link_definitions_differential.py`) compares the definitions and the blocks
   with pandoc (`commonmark`) and markdown-it-py over generated documents. They disagree with each other in a few
   places: pandoc leaves a title or destination on a lazy continuation line (`1. [a]: /u`, then `  "t"`) out of the

@@ -16,7 +16,7 @@ from functools import partial
 from typing import Any
 
 from ..directives import PLACEHOLDER_TYPE_PARAMS, Directive, Lexed, is_escaped, mask_directives
-from ..markdown import DRAFTING_MARKER, DraftingNotes, find_all, is_drafting_marker, scan_destination
+from ..markdown import DRAFTING_MARKER, DraftingNotes, find_all, is_drafting_marker
 from ..models import Block, Document
 from ..positions import Locator
 from .helpers import is_positive_numeric, is_valid_iso_date, is_valid_money_amount
@@ -351,15 +351,6 @@ _AFTER_INSERTION = frozenset(".,;:)!?\"'”’»/-")
 _COMBINING = "&<\\"
 # A line's container markers: block quote markers, then a list item marker.
 _CONTAINER_RE = re.compile(r"(?:[ \t]*>[ \t]?)*(?:[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)?")
-_NON_BLANK_RE = re.compile(r"\S")
-# A link reference definition's destination, after its ``]:`` (``_InsertionScan._reference_end``), and
-# the blanks that set a title off from it.
-_REFERENCE_DESTINATION_RE = re.compile(r"[ \t]*(\S*)")
-_REFERENCE_BLANKS_RE = re.compile(r"[ \t]+")
-# The blanks that follow an insertion in the title's place.
-_BLANKS_RE = re.compile(r"[ \t]*")
-# What closes a title by what opens it.
-_TITLE_CLOSERS = {'"': '"', "'": "'", "(": ")"}
 
 
 def template_text(text: str, directives: list[Directive]) -> str:
@@ -377,37 +368,20 @@ class _InsertionScan:
     quadratic (#94).
 
     *directives* are all the directives lexed from *text*, and *template* is
-    ``template_text(text, directives)``. *definitions* is whether *text* can hold a link
-    reference definition: an ATX heading's or a table cell's cannot (a setext heading's can,
-    for CommonMark takes definitions out of a paragraph before it reads an underline), and a
-    definition there is read as it was before #119 (a bare destination, a closed title, no
-    title slot). The rule is per line (§15.7.3): a line that continues a paragraph, which is no
-    definition, is read as any other."""
+    ``template_text(text, directives)``. What an answer could do to a link
+    reference definition is not judged here, but by assembling (``hazards``)."""
 
-    def __init__(self, text: str, template: str, directives: list[Directive], definitions: bool = True) -> None:
+    def __init__(self, text: str, template: str, directives: list[Directive]) -> None:
         self.text = text
         self.template = template
-        self._definitions = definitions
         self._newlines = find_all(text, "\n")
         self._directive_ends = {directive.end for directive in directives}
-        # Where an insertion begins and ends: only an insertion, filled in, could be a title.
-        self._insertions = {
-            directive.start: directive.end
-            for directive in directives
-            if directive.name in _INSERTIONS and not directive.malformed
-        }
         self._blanks = _merged(template, " ", "\t")
         self._combining = _merged(template, *_COMBINING)
         self._destination_starts = find_all(template, "](")  # it cannot overlap itself
         self._closing_parentheses = find_all(template, ")")
-        # Where a link reference definition's label and title end, found when a line asks for the first time.
-        self._found: dict[str, list[int]] = {")": self._closing_parentheses}
-        # Per line, which the insertions of a line share: where its content
-        # begins, what its link reference definition covers, and whether
-        # what follows that on the line is blank.
+        # Per line, which the insertions of a line share: where its content begins.
         self._content_starts: dict[int, int] = {}
-        self._references: dict[int, int] = {}
-        self._blank_after: dict[tuple[int, int], bool] = {}
 
     def _line_content(self, line_start: int) -> int:
         """Where the content of the line at *line_start* begins: after its
@@ -415,78 +389,6 @@ class _InsertionScan:
         if line_start not in self._content_starts:
             self._content_starts[line_start] = _CONTAINER_RE.match(self.text, line_start).end()
         return self._content_starts[line_start]
-
-    def _closers(self, closer: str) -> list[int]:
-        """The offsets of *closer* in the template, found once."""
-        if closer not in self._found:
-            self._found[closer] = find_all(self.template, closer)
-        return self._found[closer]
-
-    def _reference_end(self, content_start: int) -> int:
-        """Where the link reference definition at *content_start* ends, or -1. It is the text
-        `` {0,3}\\[[^\\]]+\\]:[ \\t]*``, a destination and an optional title. The destination is the
-        longer of two readings: the bare ``\\S*`` and, if it begins with ``<``, the ``<…>`` that
-        ``markdown.scan_destination`` reads (it may hold blanks, §6.3). After it comes a closed
-        title, which the blanks before it set off and the next ``"``, ``'`` or ``)`` closes, on a
-        later line too; or, where an answer could be a title, the blanks, the insertions
-        (``{{placeholder:}}``, ``{{choose:}}``; no other directive) and the blanks between
-        and after them. The last two only for text that can hold a definition (*definitions*);
-        else the definition is as it was before #119. (A pinned over-approximation, not
-        CommonMark's §4.7; it was a regular expression, which an unclosed label or title ran to
-        the end of the text for at each line, #113. Each closer is found by bisect now.)"""
-        if content_start not in self._references:
-            self._references[content_start] = self._read_reference(content_start)
-        return self._references[content_start]
-
-    def _read_reference(self, at: int) -> int:
-        template = self.template
-        bracket = at
-        while bracket < at + 4 and template.startswith(" ", bracket):
-            bracket += 1
-        if bracket - at > 3 or not template.startswith("[", bracket):
-            return -1
-        # The label ends at the first ``]`` after the ``[``, and is not empty: ``[]x]:`` is none.
-        brackets = self._closers("]")
-        found = bisect_left(brackets, bracket + 1)
-        if found == len(brackets) or brackets[found] < bracket + 2 or not template.startswith(":", brackets[found] + 1):
-            return -1
-        destination = _REFERENCE_DESTINATION_RE.match(template, brackets[found] + 2)
-        end = self._after_title(destination.end())
-        # A ``<…>`` destination may hold blanks (§6.3). (The longer reading wins: no verdict that the definition
-        # drew before is lost.)
-        if (
-            self._definitions
-            and template.startswith("<", destination.start(1))
-            and (angle := scan_destination(template, destination.start(1)))
-        ):
-            end = max(end, self._after_title(angle[2]))
-        return end
-
-    def _after_title(self, end: int) -> int:
-        """Where the definition whose destination ends at *end* ends: past its title, which the blanks before it
-        set off and the next ``"``, ``'`` or ``)`` closes, on a later line too; past the insertions and blanks
-        where an answer could be a title; else *end*."""
-        template = self.template
-        blanks = _REFERENCE_BLANKS_RE.match(template, end)
-        if blanks and (delimiter := _TITLE_CLOSERS.get(template[blanks.end():blanks.end() + 1])):
-            closers = self._closers(delimiter)
-            found = bisect_left(closers, blanks.end() + 1)
-            if found < len(closers):
-                return closers[found] + 1
-        elif self._definitions and blanks and blanks.end() in self._insertions:
-            at = blanks.end()
-            while at in self._insertions:
-                at = _BLANKS_RE.match(template, self._insertions[at]).end()
-            return at
-        return end
-
-    def _blank_from(self, reference_end: int, line_end: int) -> bool:
-        """Whether the template is blank from *reference_end* to *line_end*, found once for the
-        insertions of a line (a blank run after the definition is not read again for each)."""
-        key = (reference_end, line_end)
-        if key not in self._blank_after:
-            self._blank_after[key] = _NON_BLANK_RE.search(self.template, reference_end, line_end) is None
-        return self._blank_after[key]
 
     def problem(self, insertion: Directive) -> str | None:
         """Why *insertion* — a ``{{placeholder:}}`` or ``{{choose:}}`` in the
@@ -527,16 +429,6 @@ class _InsertionScan:
                 or after in _AFTER_INSERTION
             ):
                 return f"'{after}' directly after it"
-        reference_end = self._reference_end(content_start)
-        # A definition is the whole line; text after it on the line makes the
-        # line a paragraph's. (One a later line follows is still a definition:
-        # a paragraph keeps its lines.)
-        if (
-            reference_end >= 0
-            and start < reference_end
-            and self._blank_from(reference_end, line_end)
-        ):
-            return "it is in a link reference definition"
         # The last ``](`` before it, with no ``)`` between.
         last_destination = bisect_right(self._destination_starts, start - 2) - 1
         if last_destination >= 0 and self._destination_starts[last_destination] >= line_start:
@@ -681,6 +573,10 @@ def check_template_body(
     *,
     template: bool,
     where: Locator | None = None,
+    boundaries: bool = True,
+    markers: list | None = None,
+    combined: Any = None,
+    cache: dict | None = None,
 ) -> BodyScan:
     """Report what §16.12 checks in the body of a document: drafting notes
     (drafting-note-unrecognized, drafting-note-def), a blank or choice in a
@@ -688,10 +584,15 @@ def check_template_body(
     (insertion-boundary), and, in a *template*, the Core parts of
     template-fragment-invalid. Return what it met (``BodyScan``): the
     document's drafting notes, each with its line, and its includes. *where*
-    gives the lines."""
+    gives the lines. *boundaries*: whether to judge what an answer could do to a link
+    reference definition, which assembles (``hazards``): not for a caller that discards
+    the findings. *markers* are ``find_markers(document, lex_fragment)``, when the caller has them. *combined*:
+    *document* is the woven document of that ``Combined``, and the files are judged as they are (``hazards``);
+    *cache* keeps their judgements for the other pass."""
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
-    from ..definitions import find_definition_anchors, fragment_kinds, quote_ranges
+    from ..definitions import find_definition_anchors, quote_ranges, text_fragments
+    from .hazards import check_definition_hazards  # hazards -> templates
     from .units import include_key, paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
@@ -708,10 +609,7 @@ def check_template_body(
         for directive in lexed.directives:
             if directive.name in _INSERTIONS and not directive.malformed:
                 scan = scan or _InsertionScan(
-                    section.title,
-                    template_text(section.title, lexed.directives),
-                    lexed.directives,
-                    definitions=where is not None and where.setext_section(heading),
+                    section.title, template_text(section.title, lexed.directives), lexed.directives
                 )
                 line = where.heading(heading) if where is not None else None
                 _check_insertion(scan, directive, result, line)
@@ -736,7 +634,7 @@ def check_template_body(
             elif quote.is_drafting_note:
                 all_notes.append((quote, line))
         notes = DraftingNotes(ranges)
-        for index, (fragment, kind) in enumerate(fragment_kinds(block)):
+        for index, fragment in enumerate(text_fragments(block)):
             lexed = lex_fragment(fragment)
             scan = None  # the fragment's, for its first insertion
             in_note = index in notes
@@ -772,12 +670,7 @@ def check_template_body(
                 # A drafting note is removed before anything is inserted
                 # (§15.7.2 step 2), so a blank in one is never filled.
                 if directive.name in _INSERTIONS and not in_note:
-                    scan = scan or _InsertionScan(
-                        fragment,
-                        template_text(fragment, lexed.directives),
-                        lexed.directives,
-                        definitions=_holds_definitions(kind, where, block_section, block_index, index),
-                    )
+                    scan = scan or _InsertionScan(fragment, template_text(fragment, lexed.directives), lexed.directives)
                     _check_insertion(scan, directive, result, line)
             # The insertions inside a term are those between its anchor and its directive. The
             # lexer emits directives in source order, so they are a slice of all, found by
@@ -801,20 +694,14 @@ def check_template_body(
                         f"from it, must be the same in every assembled document (§15.5).",
                         line=find(block_section, block_index, directive.source, index, directive.start),
                     )
+    if boundaries:
+        check_definition_hazards(
+            document, result, where=where, template=template, markers=markers,
+            combined=combined, cache=cache,
+        )
     if template:
         _check_fragments(document, [(i.path, i.line) for i in includes if i.path and not i.in_note], result, where)
     return BodyScan(all_notes, includes)
-
-
-def _holds_definitions(kind: str, where: Locator | None, section: int | None, block: int, fragment: int) -> bool:
-    """Whether the text of a fragment, in a block of *kind*, can hold a link reference definition: not a
-    table cell, nor an ATX heading's text (a setext heading's can: the definition is taken out of the
-    paragraph before the underline is read, §4.7). A heading written in code is an ATX one."""
-    if kind == "table":
-        return False
-    if kind == "heading":
-        return where is not None and where.setext_fragment(section, block, fragment)
-    return True
 
 
 def _check_insertion(scan: _InsertionScan, insertion: Directive, result: _Recorder, line: Line = None) -> None:

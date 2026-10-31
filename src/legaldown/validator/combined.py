@@ -200,14 +200,6 @@ class CombinedLocator:
         place, local = self._combined.section_origin[section]
         return place.spot(place.where.heading(local))
 
-    def setext_section(self, section: int) -> bool:
-        place, local = self._combined.section_origin[section]
-        return place.where.setext_section(local)
-
-    def setext_fragment(self, section: int | None, index: int, fragment: int) -> bool:
-        place, local, block = self._combined.of_block(section, index)
-        return place.where.setext_fragment(local, block, fragment)
-
     def block(self, section: int | None, index: int) -> int | None:
         place, local, block = self._combined.of_block(section, index)
         return place.spot(place.where.block(local, block))

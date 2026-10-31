@@ -16,11 +16,12 @@ import time
 
 import pytest
 
+from legaldown import assembly, markdown, positions
 from legaldown import directives as directives_module
-from legaldown import markdown, positions
-from legaldown.directives import lex, mask_directives
+from legaldown import parser as parser_module
+from legaldown.directives import lex
 from legaldown.parser import parse
-from legaldown.validator import circular, core, paths, templates, validate
+from legaldown.validator import circular, core, hazards, paths, templates, validate
 from legaldown.validator import conditions as conditions_module
 from legaldown.validator import units as units_module
 from legaldown.validator.conditions import ALWAYS
@@ -191,14 +192,12 @@ def test_headings_of_one_title_under_conditions_get_their_suffixes():
 
 
 def test_blanks_on_one_line_share_one_index(monkeypatch):
-    references = _Counter(monkeypatch, templates._InsertionScan, "_read_reference")
     scans = _Counter(monkeypatch, templates, "_InsertionScan")
     containers = _CountedPattern(monkeypatch, templates, "_CONTAINER_RE")
     result = validate(_document("{{placeholder: a}}" * 2000, _QUESTIONS))
     assert result.diagnostics == []
     assert scans.calls == 1  # one index for the paragraph, however many blanks
     assert containers.calls == 1  # its line's container markers are read once
-    assert references.calls == 1
 
 
 def test_blanks_on_one_line_in_a_time_budget():
@@ -206,7 +205,7 @@ def test_blanks_on_one_line_in_a_time_budget():
     assert _seconds(validate, document) < 3.0  # 0.8 s now; the old checks took minutes
 
 
-# ── Link reference definitions of the insertion boundary, and link destinations (#113) ──
+# ── Link reference definitions of the insertion boundary (#129), and link destinations (#113) ──
 
 _REFERENCE_LINES = {
     "unclosed labels": "[a {{placeholder: a}}\n",
@@ -214,22 +213,185 @@ _REFERENCE_LINES = {
     "unclosed quoted titles": '[a]: u "{{placeholder: a}}\n',
     "unclosed single-quoted titles": "[a]: u '{{placeholder: a}}\n",
     "empty labels": "[]: u {{placeholder: a}}\n",
-    "angle destinations with blanks": "[a]: <x {{placeholder: a}} y>\n",  # #119
-    "title slots": "[a]: u {{placeholder: a}}\n",  # #119
-    "unclosed angle destinations": "[a]: <x {{placeholder: a}} y\n",  # #119
+    "angle destinations with blanks": "[a]: <x {{placeholder: a}} y>\n",
+    "title slots": "[a]: u {{placeholder: a}}\n",
+    "unclosed angle destinations": "[a]: <x {{placeholder: a}} y\n",
 }
 
 
 @pytest.mark.parametrize("shape", _REFERENCE_LINES)
-def test_a_label_or_title_with_no_closer_is_not_read_to_the_end_at_each_line(shape):
-    """The pattern for a link reference definition read an unclosed label or title to the end of the text, at every
-    line: 5 s for 20000 of them, 6 s for the parenthesis titles. Each closer is found by bisect now."""
-    text = _REFERENCE_LINES[shape] * 20000
-    lexed = lex(text)
-    scan = templates._InsertionScan(text, mask_directives(text, lexed.directives), lexed.directives)
-    insertions = [directive for directive in lexed.directives if directive.name == "placeholder"]
-    assert len(insertions) == 20000
-    assert _seconds(lambda: [scan.problem(insertion) for insertion in insertions]) < 1.0  # 0.1 s now
+def test_a_label_or_title_with_no_closer_costs_no_more_than_a_line_each(shape):
+    """Twenty thousand insertions in lines of one paragraph: the paragraph is one region of far more combinations of
+    answers than are tried (``hazards.CAP``), so it is judged by the conservative rule, in one pass; and where
+    no line has a ``]:`` (the first shape) nothing but the lines is read. The old pattern read an unclosed label
+    or title to the end of the text at every line: 5 s for 20000 of them."""
+    document = _document(_REFERENCE_LINES[shape] * 20000, _QUESTIONS)
+    limit = 2.0 if shape == "unclosed labels" else 3.0  # 0.6 s and 1.5 s now
+    assert _seconds(validate, document) < limit
+
+
+def test_the_insertions_of_a_paragraph_that_is_too_large_to_try_are_not_assembled(monkeypatch):
+    """The cap is by combinations: nothing is assembled for a region over it, however many lines it has."""
+    assembled = _Counter(monkeypatch, hazards._Assembler, "_enumerate")
+    result = validate(_document("[a]: u {{placeholder: a}}\n" * 3000, _QUESTIONS))
+    assert assembled.calls == 0
+    assert len([d for d in result.diagnostics if d.rule == "insertion-boundary"]) == 3000
+
+
+def test_the_body_is_read_once_and_with_the_layout_and_the_markers_the_parser_and_the_validator_made(monkeypatch):
+    """The regions are small templates, each read for itself; the body is read once, and is not laid out again by
+    ``_read_body`` (the parser's layout is the document's), nor are its markers found again."""
+    found = []
+    real_find = assembly.find_markers
+    monkeypatch.setattr(
+        assembly, "find_markers",
+        lambda document, *args: found.append(sum(len(s.blocks) for s in document.sections)) or real_find(document, *args),
+    )
+    large = []
+
+    def counting(owner):
+        real = owner._layout
+
+        def layout(lines):
+            if len(lines) > 100:
+                large.append(len(lines))
+            return real(lines)
+
+        monkeypatch.setattr(owner, "_layout", layout)
+
+    counting(assembly)
+    counting(parser_module)
+    works = _Counter(monkeypatch, hazards._Assembler, "__init__")
+    validate(_document("[a]: u {{placeholder: a}}\n\n" * 500, _QUESTIONS))
+    assert works.calls == 1
+    assert large == []
+    assert max(found) <= 2  # the regions' (a section of one or two blocks); the body's are the validator's
+
+
+def test_a_document_with_no_label_is_not_read_for_definitions(monkeypatch):
+    works = _Counter(monkeypatch, hazards._Assembler, "__init__")
+    validate(_document("[a {{placeholder: a}}\n\nPay {{placeholder: a}}: now\n" * 500, _QUESTIONS))
+    assert works.calls == 0  # no line holds ``]:``: only the lines are looked at
+
+
+def test_many_separate_definitions_are_assembled_by_shape_and_within_the_budget(monkeypatch):
+    """The same paragraph a thousand times is assembled once; paragraphs that differ are assembled one after
+    another until the document's budget (of work: the lines of each assembly) is spent, and the rest are judged by
+    the conservative rule."""
+    emitted = _Counter(monkeypatch, assembly, "_emit")
+    result = validate(_document("[x]: u {{placeholder: a}}\n\n" * 2000, _QUESTIONS))
+    assert 0 < emitted.calls <= len(hazards.TEXT_WITNESSES)  # (decided by the first answers that show it)
+    assert len([d for d in result.diagnostics if d.rule == "insertion-boundary"]) == 2000
+    emitted.calls = 0
+    monkeypatch.setattr(hazards, "BUDGET", 1500)
+    body = "".join(f"[Option {n}]: pay {{{{placeholder: a}}}}.\n\n" for n in range(600))
+    result = validate(_document(body, _QUESTIONS))
+    tried = 1500 // (31 * 4 + 100 + 20)  # 31 answers, each a line, an insertion and two for an assembly; and a region's
+    assert emitted.calls == tried * 31
+    # The first paragraphs are tried and clean; the rest are over-reported (the conservative rule).
+    assert len([d for d in result.diagnostics if d.rule == "insertion-boundary"]) == 600 - tried
+
+
+def test_a_large_table_and_a_large_paragraph_are_bounded_by_the_work_not_by_the_lines(monkeypatch):
+    """A table of four thousand rows is one region, and no definition can begin in it: it is not assembled, and
+    nothing is reported. A paragraph of four thousand lines that a definition begins is one too, of more work than
+    the cap allows: it is not assembled either, and is judged by the conservative rule, in time."""
+    emitted = _Counter(monkeypatch, assembly, "_emit")
+    table = "| Item | Amount |\n|---|---|\n" + "".join(f"| [Fee]: base{n} | {{{{placeholder: a}}}} |\n" for n in range(4000))
+    start = time.perf_counter()
+    result = validate(_document(table, _QUESTIONS))
+    assert time.perf_counter() - start < 3.0  # 0.4 s now
+    assert [d for d in result.diagnostics if d.rule == "insertion-boundary"] == []
+    paragraph = "[x]: u\n" + "".join(f"Line {n} has {{{{placeholder: a}}}} in it.\n" for n in range(4000))
+    start = time.perf_counter()
+    result = validate(_document(paragraph, _QUESTIONS))
+    assert time.perf_counter() - start < 3.0  # 0.3 s now
+    assert len([d for d in result.diagnostics if d.rule == "insertion-boundary"]) == 4000
+    assert emitted.calls == 0
+
+
+def test_a_long_region_costs_its_lines_for_each_assembly():
+    """Five or more assemblies of a hundred lines are about 500 of the document's work; of four thousand lines, more than
+    a region's (16384): the conservative rule judges the paragraph."""
+    short = "[x]: u\n" + "Plain.\n" * 50 + "Pay {{placeholder: a}} now.\n" + "Plain.\n" * 49
+    long = "[x]: u\n" + "Plain.\n" * 2000 + "Pay {{placeholder: a}} now.\n" + "Plain.\n" * 1999
+    assert not [d for d in validate(_document(short, _QUESTIONS)).diagnostics if d.rule == "insertion-boundary"]
+    assert len([d for d in validate(_document(long, _QUESTIONS)).diagnostics if d.rule == "insertion-boundary"]) == 1
+
+
+_QUESTIONS_P1 = "questions:\n  p1:\n    type: text\n"
+_CHOOSE_QUESTIONS = "questions:\n  p1:\n    type: text\n" + "".join(f"  c{n}:\n    type: boolean\n" for n in range(1, 7))
+
+
+def _choices(count: int) -> str:
+    return " ".join(f'{{{{choose: c{n}, true="a", false="b"}}}}' for n in range(1, count + 1))
+
+
+def test_the_work_of_a_region_is_counted_in_its_characters_too(monkeypatch):
+    """A paragraph with a line of 300 KB, six choices and a text blank is 31 x 64 combinations of 300 KB each: it is
+    far over what a region may cost, and is judged by the conservative rule without being assembled (it took
+    107 s for four of them)."""
+    emitted = _Counter(monkeypatch, assembly, "_emit")
+    words = " ".join(["word"] * 50000)
+    body = "\n\n".join(f"[a{k}]: u\nx {_choices(6)} {{{{placeholder: p1}}}} {words}" for k in range(4))
+    document = _document(body, _CHOOSE_QUESTIONS)
+    assert _seconds(validate, document) < 8.0  # 0.3 s now
+    assert emitted.calls == 0
+    one = _document(f"[a]: u\nx {_choices(6)} {{{{placeholder: p1}}}} " + " ".join(["word"] * 60000), _CHOOSE_QUESTIONS)
+    assert _seconds(validate, one) < 8.0
+
+
+def test_questions_with_one_answer_are_not_combinations_and_a_line_of_choices_is_read_in_linear_time():
+    """A fragment (its questions are its host's) of 8000 choices of one phrase each: none varies, so none is
+    enumerated (the combinations had 8000 members each, for 8000 insertions: quadratic); and 32000 on one line are
+    read for a label once (the line was cut at each, again quadratic)."""
+    lines = "[a]: u\n" + '{{choose: zz, a="w"}}\n' * 8000
+    assert _seconds(lambda: validate(parse(lines), fragment=True)) < 4.0  # 0.5 s now
+    one = "[a]: u " + '{{choose: zz, a="w"}}' * 32000 + "\n"
+    assert _seconds(lambda: validate(parse(one), fragment=True)) < 6.0
+
+
+def test_questions_that_the_template_would_declare_are_charged_and_one_answer_ones_are_not(monkeypatch):
+    """Twelve paragraphs of 3000 choices each, every one its own question with its own phrase (a 3.2 MB fragment
+    with 9000 each took 55 s: the template declared them, 0.45 ms each of YAML). They do not vary, so a region of
+    them is clean without being read; and with a text blank among them, they are declared in code and not charged:
+    each region is tried, and the blank, which is the definition's title, is reported."""
+    body = "\n\n".join(
+        f"[a{r}]: u\n" + "\n".join(f'{{{{choose: z{r}x{n}, k{n}="w{n}"}}}}' for n in range(3000)) for r in range(12)
+    )
+    start = time.perf_counter()
+    result = validate(parse(body), fragment=True)
+    assert time.perf_counter() - start < 12.0  # 3 s now
+    assert [d for d in result.diagnostics if d.rule == "insertion-boundary"] == []
+    emitted = _Counter(monkeypatch, assembly, "_emit")
+    mixed = "\n\n".join(
+        f"[a{r}]: u {{{{placeholder: p1}}}}\n" + "\n".join(f'{{{{choose: z{r}x{n}, k{n}="w{n}"}}}}' for n in range(150))
+        for r in range(12)
+    )
+    start = time.perf_counter()
+    result = validate(_document(mixed, _QUESTIONS_P1), fragment=False)
+    assert time.perf_counter() - start < 12.0
+    assert emitted.calls <= 12 * 31  # (the regions that are tried are tried with 31 answers)
+    found = [d for d in result.diagnostics if d.rule == "insertion-boundary"]
+    assert [d.message.split("'")[1] for d in found] == ["{{placeholder: p1}}"] * 12  # one in each region, none a choice
+    assert not any("too many" in d.message for d in found)  # and tried: none is the conservative rule's
+
+
+def test_many_separate_definitions_in_a_time_budget():
+    document = _document("[x]: u {{placeholder: a}}\n\n" * 2000, _QUESTIONS)
+    assert _seconds(validate, document) < 5.0  # 1 s now
+    document = _document("[a]: u " + "{{placeholder: a}} " * 3000, _QUESTIONS)
+    assert _seconds(validate, document) < 2.0  # three thousand insertions on one line: 0.2 s now
+
+
+@pytest.mark.parametrize("line", ["[a]: u {{placeholder: a}}\n", "[a {{placeholder: a}}\n"], ids=["fallback", "prefilter"])
+def test_a_document_of_definitions_is_validated_in_linear_time(line):
+    """Double the input, at most about double the time (the least of three runs each)."""
+    small = _document(line * 10000, _QUESTIONS)
+    large = _document(line * 20000, _QUESTIONS)
+    first = min(_seconds(validate, small) for _ in range(3))
+    second = min(_seconds(validate, large) for _ in range(3))
+    assert second < 3.5 * first + 0.2, (first, second)
 
 
 class _CountingPlaces(dict):
@@ -256,13 +418,9 @@ class _CountingPlaces(dict):
         return super().__iter__()
 
 
-@pytest.mark.parametrize(
-    "item", ["- # T {{placeholder: a}}\n", "- [a]: u {{placeholder: a}}\n"], ids=["heading, no diagnostic", "definition, a diagnostic"]
-)
-def test_the_leaf_of_each_fragment_of_a_long_list_is_found_without_a_scan_of_its_items(monkeypatch, item):
-    """The form of a heading in a list item (ATX or setext, #119), and the line of a diagnostic in an item, looked
-    up the item's leaf among those of the list: 8 s for 16000 headings, 10 s for 16000 diagnostics. A map made
-    once for the list finds it now. Counted, so that the test does not depend on the speed of the machine: the
+def test_the_leaf_of_each_fragment_of_a_long_list_is_found_without_a_scan_of_its_items(monkeypatch):
+    """The line of a diagnostic in an item looked up the item's leaf among those of the list: 10 s for 16000
+    diagnostics. A map made once for the list finds it now. Counted, so that the test does not depend on the speed of the machine: the
     leaves read are the number of items, a few times, not its square."""
     reads = [0]
     read_leaves = positions.Locator._read_leaves
@@ -274,41 +432,19 @@ def test_the_leaf_of_each_fragment_of_a_long_list_is_found_without_a_scan_of_its
         return leaves
 
     monkeypatch.setattr(positions.Locator, "_read_leaves", counting)
+    item = "- &{{placeholder: a}}\n"  # a diagnostic (insertion-boundary) at each item
     items = 4000
     result = validate(_document(item * items, _QUESTIONS))
-    assert len(result.diagnostics) == (items if "[a]" in item else 0)
+    assert len(result.diagnostics) == items
     assert 0 < reads[0] <= 4 * items, reads[0]  # 1 or 2 per item now; the scan made 8,000,000
     monkeypatch.undo()
     document = _document(item * 16000, _QUESTIONS)
     assert _seconds(validate, document) < 6.0  # 2.5 s now; the scan took 10 s
 
 
-def test_an_angle_destination_with_no_closer_is_read_once_to_the_end_of_its_line():
-    text = "[a]: <" + "x " * 200_000 + "{{placeholder: a}}\n"  # 400000 characters
-    lexed = lex(text)
-    scan = templates._InsertionScan(text, mask_directives(text, lexed.directives), lexed.directives)
-    assert _seconds(lambda: [scan.problem(directive) for directive in lexed.directives]) < 1.0  # 0.2 s now
-
-
-def test_a_definition_line_and_its_trailing_blanks_are_read_once_for_the_insertions_it_holds(monkeypatch):
-    reads = _Counter(monkeypatch, templates._InsertionScan, "_read_reference")
-    real = templates._NON_BLANK_RE
-
-    class CountingSearch:
-        calls = 0
-
-        def search(self, *args):
-            CountingSearch.calls += 1
-            return real.search(*args)
-
-    monkeypatch.setattr(templates, "_NON_BLANK_RE", CountingSearch())
-    text = "[a]: " + "{{placeholder: a}}" * 3000 + " " * 20000 + "\n"
-    lexed = lex(text)
-    scan = templates._InsertionScan(text, mask_directives(text, lexed.directives), lexed.directives)
-    problems = [scan.problem(directive) for directive in lexed.directives]
-    assert reads.calls == 1  # where the definition ends, once
-    assert CountingSearch.calls == 1  # and that the blanks after it end the line, once
-    assert problems.count("it is in a link reference definition") == 3000
+def test_an_angle_destination_with_no_closer_is_read_to_the_end_of_its_line_once_per_answer():
+    text = "[a]: <" + "x " * 50_000 + "{{placeholder: a}}\n"  # 100000 characters, a region of sixteen assemblies
+    assert _seconds(validate, _document(text, _QUESTIONS)) < 5.0  # 0.9 s now
 
 
 _LINKS = {
