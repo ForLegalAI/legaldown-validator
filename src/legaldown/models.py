@@ -166,9 +166,9 @@ LIST_KINDS = ("ordered_list", "unordered_list")
 #: Block kinds whose text is a paragraph's, lines and all: a ``paragraph``
 #: and the ``definition``, ``ref`` and ``term`` paragraphs the parser reads
 #: out of one. Those three split the paragraph over their fields (a
-#: ``definition``'s term is in ``term``, a ``ref``'s or ``term``'s text in
-#: ``prefix``, ``target`` and ``suffix``); ``block_fragments`` reads the text
-#: of any of them. Each is one unit a condition may attach to: a marker that ends
+#: ``definition``'s term is in ``term``; a ``ref``'s or ``term``'s text is in
+#: ``prefix`` and ``suffix``, around the directive whose identifier is
+#: ``target``); ``block_fragments`` reads the text of any of them. Each is one unit a condition may attach to: a marker that ends
 #: its text conditions the block as a whole (§5.7), where in a list it would
 #: condition the item it ends. A ``link_definition`` holds no text and is not
 #: one. The validator reads this tuple itself, so a tool that edits or compares
