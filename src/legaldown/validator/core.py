@@ -1545,7 +1545,7 @@ def _check(
                 # Skipped itself, after an entry that strips alike, which is read instead (#133).
                 what = f"is skipped ({each.itself}), and {what.removeprefix('is ')}"
             if each.skipped and each.kept is not None:
-                # the entry that repeats it is skipped, and one written before that strips alike is read (#133)
+                # the entry that repeats it is skipped, and one that strips alike, before or after it, is read (#133)
                 stays = f", the entry at line {by.line} is skipped ({each.skipped}){_key_read(each.kept.line)}"
             elif each.skipped:
                 stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"

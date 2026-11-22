@@ -182,6 +182,19 @@ def test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_after_it():
         (4, "error", "The translations key `fr` is written again: this entry is ignored, the entry at line 5 is "
          "skipped (its value is empty), and the entry at line 6 is the one read."),
     ]
+    # the entry that repeats it is named when it is not the skipped one, which names the entry read in turn
+    front = "translations:\n  a: x\n  a: y\n  a: ''\n  ' a': z\n"
+    found = [(d.line, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (4, "The translations key `a` is written again at line 5: this entry is ignored."),
+        (5, "The translations key `a` is written again: this entry is ignored, the entry at line 6 is skipped (its "
+         "value is empty), and the entry at line 7 is the one read."),
+    ]
+    front = "translations:\n  a: x\n  a: ''\n  ' a': z\n"
+    assert [d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE] == [
+        "The translations key `a` is written again: this entry is ignored, the entry at line 5 is skipped (its value "
+        "is empty), and the entry at line 6 is the one read."
+    ]
     # the same with a key read as the same text, and in field_types
     front = "field_types:\n  1: a\n  '1': ''\n  ' 1': b\n"
     ((_line, _level, message),) = [(d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]

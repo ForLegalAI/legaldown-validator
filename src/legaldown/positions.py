@@ -314,8 +314,9 @@ def read_maps(
             last, last_text = found[-1]
             keeps = kept.get(last.key, [])
             # A slot whose last entry is skipped, after a slot that strips alike and that the model keeps: the
-            # entry it would have replaced is read instead (#133). A skipped slot before the one kept is replaced
-            # by it anyway, and a blank `translations` entry is no collision then (#116).
+            # entry it would have replaced is read instead, and that last entry is reported (#133). A skipped last
+            # entry before the slot kept is replaced by it anyway, and is no collision itself then (#116); the
+            # entries of its slot before it are still reported below.
             loses = bool(reasons[slot]) and bool(keeps) and order[keeps[-1][0]] < order[slot]
             if loses:  # two slots, as above
                 why = _why(str(slot), str(keeps[-1][0]))
@@ -325,11 +326,13 @@ def read_maps(
             skipped = reasons[slot]
             by = last if skipped else stays[last.key]  # the entry the model keeps for the key, else the last written
             for place, (entry, text) in enumerate(found[:-1]):
-                # A key written again is named by the entry that repeats it, unless that is skipped.
+                # A key written again is named by the entry that repeats it, unless that is the skipped last entry
+                # (or, when the model keeps no entry of the key, any entry of a slot whose last is skipped).
                 again = next((each for each, _text in found[place + 1:] if each.resolved == entry.resolved), None)
                 why = "repeated" if again else _why(text, last_text)
+                named = again if again and (not skipped or (keeps and again is not last)) else by
                 if _judged(entry):
-                    ignored.append(Ignored(entry, again if again and not skipped else by, why, skipped, stays.get(entry.key)))
+                    ignored.append(Ignored(entry, named, why, skipped if named is last else "", stays.get(entry.key)))
         maps[name] = StrippedMap(stays, tuple(sorted(ignored, key=lambda each: (each.entry.line, each.entry.start))))
     return maps
 
