@@ -221,6 +221,133 @@ def test_a_host_that_is_not_a_template_leaves_no_template_only_check_for_the_fra
     assert [(d.rule, d.host_dependent) for d in said.diagnostics] == [("condition-invalid", False)]
 
 
+# ── A question no host can declare as the fragment uses it (#148) ──
+
+def _decision_rows(result):
+    return [
+        (d.rule, d.line, d.host_dependent) for d in result.diagnostics if d.rule in ("choose-invalid", "condition-invalid")
+    ]
+
+
+def test_a_question_used_as_a_boolean_and_as_a_choice_is_one_finding_of_the_fragments_own():
+    source = '## T {#t when=len}\n\nFor {{choose: len, a="x", b="y"}}.\n'
+    result = validate(parse(source), fragment=True, fragment_kind="include")
+    assert [(d.rule, d.level, d.line, d.host_dependent) for d in result.diagnostics] == [
+        ("choose-invalid", "error", 3, False)
+    ]
+    message = result.diagnostics[0].message
+    assert "the condition 'len' on the heading 'T' (line 1)" in message
+    assert "as a choice question" in message and "as a boolean question" in message
+    assert "no including document can declare it both ways" in message
+    # A complete document is validated as before: each use names an undeclared question.
+    assert _decision_rows(validate(parse(source))) == [("choose-invalid", 3, False), ("condition-invalid", 1, False)]
+
+
+UNDECLARABLE = [
+    # A condition without a value is a boolean's; a {{choose:}} of other answers a choice's.
+    ('## A {#a when=q}\n\nX {{choose: q, a="1", b="2"}}.\n', "choose-invalid", 3),
+    ('## A {#a when=!q}\n\nX {{choose: q, a="1", b="2"}}.\n', "choose-invalid", 3),
+    ('X {{choose: q, a="1", b="2"}}.\n\n## A {#a when=q}\n', "condition-invalid", 3),
+    ('Intro. {when=q}\n\nX {{choose: q, a="1", b="2"}}.\n', "choose-invalid", 3),
+    # A condition with a value is a choice's; a {{choose:}} of true and false a boolean's.
+    ('## A {#a when=q:a}\n\n## B {#b when=!q}\n', "condition-invalid", 3),
+    ('## A {#a when=!q:a}\n\nX {{choose: q, true="1", false="2"}}.\n', "choose-invalid", 3),
+    ('X {{choose: q, false="2", true="1"}}.\n\n## A {#a when=q:a}\n', "condition-invalid", 3),
+    ('X {{choose: q, a="1", b="2"}} {{choose: q, true="1", false="2"}}.\n', "choose-invalid", 1),
+    # A choice whose answers two uses disagree on.
+    ('X {{choose: q, a="1", b="2"}}.\n\nY {{choose: q, a="1", c="2"}}.\n', "choose-invalid", 3),
+    ('## A {#a when=q:c}\n\nX {{choose: q, a="1", b="2"}}.\n', "choose-invalid", 3),
+    ('X {{choose: q, a="1", b="2"}}.\n\n## A {#a when=!q:c}\n', "condition-invalid", 3),
+    # In a drafting note a {{choose:}} is validated all the same (§15.6).
+    ('## A {#a when=q}\n\n> [!DRAFTING]\n> Or {{choose: q, a="1", b="2"}}.\n', "choose-invalid", 4),
+    # A blank's id is a value question's (§15.2): the finding is the decision use's, wherever the blank is.
+    ("## A {#a when=q}\n\nX {{placeholder: q}}.\n", "condition-invalid", 1),
+    ('X {{placeholder: q}} {{choose: q, a="1", b="2"}}.\n', "choose-invalid", 1),
+    ('X {{choose: q, true="1", false="2"}}.\n\n> [!DRAFTING]\n> Or {{placeholder: q, type=text}}.\n', "choose-invalid", 1),
+    # One use that no declaration allows at all.
+    ('X {{choose: q, a="1"}}.\n', "choose-invalid", 1),
+    ('X {{choose: q}}.\n', "choose-invalid", 1),
+    ('X {{choose: q, true="1", maybe="2"}}.\n', "choose-invalid", 1),
+    ('X {{choose: q, yes="1", no="2"}}.\n', "choose-invalid", 1),
+    ('X {{choose: Bad Id, a="1", b="2"}}.\n', "choose-invalid", 1),
+    ('X {{choose: a="1", b="2"}}.\n', "choose-invalid", 1),
+    ("## A {#a when=q:yes}\n", "condition-invalid", 1),
+    ("## A {#a when=yes}\n", "condition-invalid", 1),
+]
+
+
+@pytest.mark.parametrize(("source", "rule", "line"), UNDECLARABLE)
+@pytest.mark.parametrize("kind", ["include", "attachment"])
+def test_a_question_no_host_can_declare_as_the_fragment_uses_it_is_the_fragments_own(source, rule, line, kind):
+    result = _fragment(source, fragment_kind=kind)
+    assert _decision_rows(result) == [(rule, line, False)], result.diagnostics
+    (finding,) = (d for d in result.diagnostics if d.rule == rule)
+    assert "no including document can declare" in finding.message
+
+
+COMPATIBLE = [
+    # One boolean declaration gives all of these.
+    '## A {#a when=q}\n\n## B {#b when=!q}\n\nX {{choose: q, true="1", false="2"}} {{choose: q, false="3", true="4"}}.\n',
+    # One choice declaration of a and b (and maybe more) gives all of these.
+    '## A {#a when=q:a}\n\n## B {#b when=!q:b}\n\nX {{choose: q, a="1", b="2"}} {{choose: q, b="3", a="4"}}.\n',
+    '## A {#a when=q:a}\n\n## B {#b when=q:c}\n',
+    'X {{choose: q, a="1", b="2"}}.\n\n## A {#a when=!q:b}\n',
+    # A blank of another id is no use of the question.
+    '## A {#a when=q}\n\nX {{placeholder: r}}.\n',
+]
+
+
+@pytest.mark.parametrize("source", COMPATIBLE)
+def test_uses_one_declaration_allows_stay_host_dependent(source):
+    result = _fragment(source)
+    rows = _decision_rows(result)
+    assert rows and all(host_dependent for _rule, _line, host_dependent in rows), result.diagnostics
+    assert all("not a declared" in d.message or "must name a declared" in d.message for d in result.diagnostics)
+    # Each use is reported, as a complete document reports it.
+    complete = validate(parse(source))
+    assert [(d.rule, d.line) for d in complete.diagnostics if d.rule != "frontmatter-absent"] == [
+        (rule, line) for rule, line, _host_dependent in rows
+    ]
+
+
+def test_only_the_question_no_host_can_declare_is_the_fragments_own_and_only_once():
+    source = (
+        '## A {#a when=q}\n\n## B {#b when=r:x}\n\n'
+        'X {{choose: q, a="1", b="2"}} {{choose: r, x="1", z="2"}}.\n\n'
+        '## C {#c when=q:a}\n\nY {{choose: q, true="1", false="2"}}.\n'
+    )
+    assert _decision_rows(_fragment(source)) == [
+        ("choose-invalid", 5, False),  # q: the first use no declaration allows with the heading A
+        ("choose-invalid", 5, True),  # r: a choice of x and z gives every use
+        ("condition-invalid", 3, True),
+    ]
+
+
+def test_each_choose_that_names_no_question_id_is_reported_at_its_own_line():
+    # Two such uses have no question in common: neither leaves the other unreported.
+    for source in (
+        'X {{choose: a="1", b="2"}}.\n\nY {{choose: c="1", d="2"}}.\n',
+        'X {{choose: Bad Id, a="1", b="2"}}.\n\nY {{choose: Bad Id, a="1", b="2"}}.\n',
+    ):
+        assert _decision_rows(_fragment(source)) == [("choose-invalid", 1, False), ("choose-invalid", 3, False)]
+
+
+def test_a_long_choose_is_quoted_short_where_another_use_names_it():
+    phrase = "word " * 40
+    source = f'X {{{{choose: q, a="{phrase}", b="{phrase}"}}}}.\n\n## A {{#a when=q}}\n'
+    (finding,) = _fragment(source).diagnostics
+    assert finding.rule == "condition-invalid" and phrase not in finding.message
+    assert "'{{choose: q, a=\"word word" in finding.message and "...' (line 1)" in finding.message
+
+
+def test_a_host_that_is_not_a_template_still_has_each_use_reported_as_before():
+    # Nobody declares the question: each use is the fragment's own, as it was.
+    source = '## T {#t when=len}\n\nFor {{choose: len, a="x", b="y"}}.\n'
+    said = _fragment(source, template=False)
+    assert _decision_rows(said) == [("choose-invalid", 3, False), ("condition-invalid", 1, False)]
+    assert all("not a declared" in d.message or "must name a declared" in d.message for d in said.diagnostics)
+
+
 def test_template_is_only_meaningful_for_a_fragment():
     document = parse("## Scope\n")
     for value in (True, False):
@@ -565,6 +692,12 @@ def test_the_cli_exits_zero_for_a_fragment_with_only_host_dependent_findings(wri
     assert capsys.readouterr().out.count("(host-dependent)") == 3
     assert main(["validate", "--fragment", "--strict", str(path)]) == EXIT_OK
     assert main(["validate", str(path)]) == EXIT_DIAGNOSTICS  # as a complete document
+
+
+def test_the_cli_exits_one_for_a_fragment_using_a_question_no_host_can_declare(write, capsys):
+    path = write("part.lgd", '## T {#t when=len}\n\nFor {{choose: len, a="x", b="y"}}.\n')
+    assert main(["validate", "--fragment", str(path)]) == EXIT_DIAGNOSTICS
+    assert "(host-dependent)" not in capsys.readouterr().out
 
 
 def test_the_cli_exits_one_for_a_fragment_with_an_intrinsic_finding(write, capsys):

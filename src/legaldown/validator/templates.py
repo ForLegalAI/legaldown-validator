@@ -508,14 +508,22 @@ def choose_problem(directive: Directive, questions: Any) -> str | None:
 
 
 def check_choose(
-    directive: Directive, questions: Any, result: _Recorder, *, host_declares: bool = True
+    directive: Directive, questions: Any, result: _Recorder, *, host_declares: bool = True,
+    undeclarable: str | None = None,
 ) -> None:
     """Report a ``{{choose:}}`` that does not list exactly the answers of a
     declared decision question (choose-invalid, §15.5), and any ``{{`` in
     its phrases, which is literal text (brace-stray). *host_declares*: False
     when no other document declares questions for it, so naming one that is not
-    declared is its own fault."""
+    declared is its own fault. *undeclarable*: for a question that is not declared
+    and that no host can declare as the document uses it (#148), the message of
+    the finding to make in place of the host-dependent one, or ``""`` for none
+    here (it is made at another use)."""
     for depends, problem in _choose_issues(directive, questions):
+        if depends is not None and undeclarable is not None:
+            if undeclarable:
+                result.error("choose-invalid", undeclarable)
+            continue
         result.error("choose-invalid", problem, depends=depends if host_declares else None)
     for offset in range(2, len(directive.source) - 1):
         if directive.source.startswith("{{", offset) and not is_escaped(directive.source, offset):
