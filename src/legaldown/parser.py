@@ -97,6 +97,34 @@ class _StrDateSafeLoader(yaml.SafeLoader):
         self.merges: dict[yaml.Node, tuple[list[tuple[yaml.Node, yaml.Node]], list[yaml.Node]]] = {}
         #: The tag YAML resolved each scalar to, for those ``_read_as_written`` reads as text.
         self.resolved: dict[yaml.Node, str] = {}
+        #: Where each mapping key written as an alias (``*k``) is, by the id of its entry: the entry, and the
+        #: start and end index of the alias. The reader gives an alias its anchor's node, whose marks are the
+        #: anchor's, so this is taken from the alias event as the key is composed (#133).
+        self.alias_keys: dict[int, tuple[tuple[yaml.Node, yaml.Node], int, int]] = {}
+        #: For each mapping that merges keys in: its merge entries (``<<``), in the order written (#133).
+        self.merge_keys: dict[yaml.Node, list[tuple[yaml.Node, yaml.Node]]] = {}
+
+    def compose_mapping_node(self, anchor: Any) -> yaml.MappingNode:
+        # PyYAML's own (6.0.4), but for the alias keys it notes: in place rather than around it, as a wrapper
+        # would add a frame to each level of nesting, which the reader reads by recursion.
+        start_event = self.get_event()
+        tag = start_event.tag
+        if tag is None or tag == "!":
+            tag = self.resolve(yaml.MappingNode, None, start_event.implicit)
+        node = yaml.MappingNode(tag, [], start_event.start_mark, None, flow_style=start_event.flow_style)
+        if anchor is not None:
+            self.anchors[anchor] = node
+        while not self.check_event(yaml.MappingEndEvent):
+            alias = self.peek_event() if self.check_event(yaml.AliasEvent) else None
+            item_key = self.compose_node(node, None)
+            item_value = self.compose_node(node, item_key)
+            entry = (item_key, item_value)
+            node.value.append(entry)
+            if alias is not None:
+                self.alias_keys[id(entry)] = (entry, alias.start_mark.index, alias.end_mark.index)
+        end_event = self.get_event()
+        node.end_mark = end_event.end_mark
+        return node
 
     def flatten_mapping(self, node: yaml.MappingNode) -> None:
         # The reader reads a `=` key as text; the tag it resolved to is kept (a `'='` key is text from the start).
@@ -339,7 +367,7 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
         breaks = line_breaks(block)
         keys = {(): 1, **frontmatter_keys(node, breaks, 2)}
         stripped = stripped_nodes(node)
-        written = written_maps(node, block, breaks, 2, stripped)
+        written = written_maps(node, block, breaks, 2, stripped, loader)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)

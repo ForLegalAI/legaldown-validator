@@ -283,7 +283,11 @@ The last two are a **Warning**, in every mapping: the specification does not for
 code a Warning, `language-code-invalid`, and says nothing of a padded `field_types` key, which no other rule sees
 as the reader strips it), and a rule of this implementation's own does not fail a document that the specification
 accepts. The first is an Error. A `translations` entry that is blank once stripped is skipped before it can replace
-a sibling (#116), so it draws nothing; a blank `field_types` description is a declaration, and does. Keys that YAML
+a sibling (#116), so it draws nothing when it is written before the entry the model keeps (`' fr': ''`, `fr: a`),
+which takes its place anyway; written after it (`fr: a`, `' fr': ''`, or `' fr': a.md`, `fr: ''`), it loses to the
+earlier entry, which is not what "the last stays" says, so it is a Warning at its own line that names the entry read
+(#133). The same holds of a `field_types` entry that the model skips (a null or empty value); a blank `field_types`
+description is a declaration, and replaces its sibling as any other. Keys that YAML
 resolves equal but that are written differently (`~` and `null`, `1` and `01`, `true` and `True`) are two text
 keys the model keeps both of, and draw nothing outside a `default`.
 

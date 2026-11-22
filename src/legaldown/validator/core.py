@@ -1534,12 +1534,17 @@ def _check(
     # document it accepts. Judged against the model, not for one edited since it was parsed.
     if not mode.empty_metadata:
         for map_name, each in where.ignored():
-            if (each.by.key in getattr(document.metadata, map_name)) == bool(each.skipped):
+            if (each.entry.key in getattr(document.metadata, map_name)) != (each.kept is not None):
                 continue
             entry, by = each.entry, each.by
-            again = f" at line {by.line}" if by.start != entry.start else ""  # an aliased key is one node
+            again = f" at line {by.line}" if by.start != entry.start else ""
             what = _key_clause(each.why, by.written, "" if each.skipped else again)
-            if each.skipped:
+            if each.itself:
+                what += f", and is skipped ({each.itself})"  # after an entry that strips alike (#133)
+            if each.skipped and each.kept is not None:
+                # the entry that repeats it is skipped, and one written before that strips alike is read (#133)
+                stays = f", the entry at line {by.line} is skipped ({each.skipped}){_key_read(each.kept.line)}"
+            elif each.skipped:
                 stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"
             elif each.why != "repeated" and again:
                 stays = _key_read(by.line)
