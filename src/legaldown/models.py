@@ -163,16 +163,15 @@ class Block:
 
 LIST_KINDS = ("ordered_list", "unordered_list")
 
-#: Block kinds whose text is a paragraph's, lines and all: a ``paragraph``
-#: and the ``definition``, ``ref`` and ``term`` paragraphs the parser reads
-#: out of one. Those three split the paragraph over their fields (a
-#: ``definition``'s term is in ``term``; a ``ref``'s or ``term``'s text is in
-#: ``prefix`` and ``suffix``, around the directive whose identifier is
-#: ``target``); ``block_fragments`` reads the text of any of them. Each is one unit a condition may attach to: a marker that ends
-#: its text conditions the block as a whole (§5.7), where in a list it would
-#: condition the item it ends. A ``link_definition`` holds no text and is not
-#: one. The validator reads this tuple itself, so a tool that edits or compares
-#: documents block by block can use it (``legaldown.grammar.PARAGRAPH_KINDS``).
+#: Block kinds whose text is a paragraph's: a ``paragraph`` and the
+#: ``definition``, ``ref`` and ``term`` paragraphs the parser reads out of one,
+#: which keep part of it in fields of their own (``term``, ``definition_id``,
+#: ``target``). As a section's own block, each is one unit a condition may
+#: attach to: a marker at the end of its text (of a ``ref``'s or ``term``'s
+#: ``suffix``) conditions the block as a whole (§5.7); in the preamble only in
+#: a template. In a list item the marker conditions the item instead. A
+#: ``link_definition`` holds no text and is not one. The validator reads this
+#: tuple itself (``legaldown.grammar.PARAGRAPH_KINDS``).
 PARAGRAPH_KINDS = ("paragraph", "definition", "ref", "term")
 
 
