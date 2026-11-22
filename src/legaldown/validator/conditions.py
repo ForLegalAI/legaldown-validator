@@ -140,7 +140,10 @@ def _use_type(use: DecisionUse) -> tuple[str | None, str]:
         return "boolean", ""
     if len(answers) >= 2 and not any(_id_problem(answer) for answer in answers):
         return "choice", ""
-    listed = f"{', '.join(use.answers)} as the answers" if use.answers else "no answer"
+    listed = (
+        f"{', '.join(use.answers)} as the answers" if len(use.answers) > 1
+        else f"{use.answers[0]} as the only answer" if use.answers else "no answer"
+    )
     return None, (
         f"lists {listed} to '{question}': a boolean question's are true and false, and a choice "
         f"question's are at least two values, none of them a word YAML reads as a boolean or null, so no "
