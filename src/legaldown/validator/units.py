@@ -20,11 +20,9 @@ from typing import Any
 from ..directives import Directive, Lexed, is_escaped, lex
 from ..markdown import comment_closers, comment_end, find_all, strip_comments
 from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
-from ..models import PARAGRAPH_KINDS, Block, Document
+from ..models import LIST_KINDS, PARAGRAPH_KINDS, Block, Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 from .patterns import MAX_SECTION_LEVEL
-
-_LISTS = ("ordered_list", "unordered_list")
 
 
 def is_include_only(text: str, directives: list[Directive]) -> bool:
@@ -259,7 +257,7 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex)
                     misplaced = _PREAMBLE_ANCHOR
                 elif template_only:
                     misplaced = _PREAMBLE_CONDITION
-                elif section is None and block.kind in _LISTS and marker.condition:
+                elif section is None and block.kind in LIST_KINDS and marker.condition:
                     misplaced = _PREAMBLE_ITEM
                 elif section is None and not include_only:
                     misplaced = _ANYWHERE
@@ -332,7 +330,7 @@ class Units:
         (section, block, the item's number), a paragraph (section, block,
         None), or None for a block that carries no condition."""
         kind = self._blocks[0 if section is None else section + 1][block].kind
-        if kind in _LISTS:
+        if kind in LIST_KINDS:
             items = self._fragment_items(section, block, fragment)
             return (section, block, items[-1]) if items else None
         if kind in PARAGRAPH_KINDS:
@@ -360,7 +358,7 @@ class Units:
         block: its sections, and the list items its item is nested in
         (§15.3)."""
         presence = ALWAYS if section is None else self._section_presence[section]
-        if self._blocks[0 if section is None else section + 1][block].kind not in _LISTS:
+        if self._blocks[0 if section is None else section + 1][block].kind not in LIST_KINDS:
             return presence
         for item in self._fragment_items(section, block, fragment)[:-1]:
             presence |= self._own_conditions.get((section, block, item), ALWAYS)
