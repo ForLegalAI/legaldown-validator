@@ -156,7 +156,7 @@ def test_a_repeat_names_the_entry_that_repeats_it_not_the_one_the_model_keeps():
     assert diagnostic.message == "The translations key `fr` is written again at line 5: this entry is ignored."
 
 
-def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
+def test_the_entry_is_skipped_only_if_it_is_the_last_of_its_key():
     # `1`, `1` and `"1": ""`: one key to the model, whose last entry is blank, so none is kept.
     front = 'translations:\n  1: x\n  1: y\n  "1": ""\n'
     assert parse(_source(front)).metadata.translations == {}
