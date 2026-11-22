@@ -1116,6 +1116,8 @@ def test_a_region_whose_label_cannot_be_dead_does_not_pay_for_the_cutoff(monkeyp
         # The examples of #144: before, 3 and 4 fallbacks; the next line continues the paragraph.
         (f"[Option A]: The Seller shall pay {_BLANKS}.\n[b]: https://x\n", 0),
         (f"[Option A]: The Seller shall pay {_BLANKS}.\n[Option B]: {{{{placeholder: p4}}}} shall pay.\n", 0),
+        (f"- The Seller agrees.\n  [Option B]: {_BLANKS}.\n", 0),
+        (f"- a\n  - [Option A]: The Seller shall pay {_BLANKS}.\n    and then\n    [Option B]: {{{{placeholder: p4}}}} shall pay.\n", 0),
         # Not a continuation: a blank line, a quote, raw HTML before it.
         (f"[Option A]: The Seller shall pay {_BLANKS}.\n\n[b]: https://x {{{{placeholder: p4}}}}\n", 1),
         (f"[Option A]: The Seller shall pay {_BLANKS}.\n> [Option B]: {{{{placeholder: p4}}}} shall pay.\n", 4),
@@ -1170,7 +1172,9 @@ def test_a_label_after_a_heading_or_a_rule_opens_a_paragraph_and_does_not_pay_fo
     assert hazards._may_open(["The Seller", "[b]: v"], 1) is False
     assert hazards._may_open(["# Fees", "[b]: v"], 1) and hazards._may_open(["x", "> [b]: v"], 1)
     assert not hazards._may_open(["- [a]: The u", "  [b]: v"], 1) and hazards._may_open(["> [a]: u", "[b]: v"], 1)
-    assert hazards._may_open(["    code", "[b]: v"], 1) and hazards._may_open(["<div>", "[b]: v"], 1, raw=True)
+    assert hazards._may_open(["<div>", "[b]: v"], 1, raw=True)
+    assert not hazards._may_open(["- The Seller agrees.", "  [b]: v"], 1)
+    assert not hazards._may_open(["  - x", "    and then", "    [b]: v"], 2)
 
 
 def test_reading_the_paragraphs_of_an_assembly_is_charged(monkeypatch):

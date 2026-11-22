@@ -103,6 +103,8 @@ _VALUE_OPENINGS = ("{{date:", "{{money:", "{{duration:")
 #: A line that continues the paragraph before it in every reading: blanks, then text that begins no block in any
 #: context (not a quote's ``>``, a list item's marker, a heading, a fence, a rule, raw HTML or a table), nor an answer.
 _CONTINUATION_RE = re.compile(r"[ \t]*[^ \t>\-*+0-9#=`~<|_\x01]")
+#: The list item markers a line opens with (``_may_open``).
+_ITEM_MARKERS_RE = re.compile(r"^(?:[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+)+")
 #: A directive on a line, in the text that an insertion is read with.
 _DIRECTIVE_RE = re.compile(r"\{\{[^\n]*?\}\}")
 #: A line's list item markers and the blanks after them: how an item's marker line is repeated in the context.
@@ -1053,11 +1055,11 @@ def _may_open(lines: list[str], number: int, raw: bool = False) -> bool:
     unless it follows a line of text and continues it (``_CONTINUATION_RE``). ``_continued`` says so of the output;
     here it is a guess, which only decides whether the cutoff is tried. *raw*: the line before is in code or raw
     HTML."""
-    before = lines[number - 1] if number else ""
-    if number == 0 or raw or before.startswith(("    ", "\t")):
+    if number == 0 or raw:
         return True
-    # (After a blank line, indented code, a heading, a rule, a fence, raw HTML, a table row or a quote it opens one;
-    # after text, or an item's or a paragraph's label, not.)
+    # (After a blank line, a heading, a rule, a fence, raw HTML, a table row or a quote it opens one; after text, or
+    # a label, alone or after an item's markers, not.)
+    before = _ITEM_MARKERS_RE.sub("", lines[number - 1], count=1)
     label = _LABEL_START_RE.match(before)
     text = _CONTINUATION_RE.match(before) is not None or (label is not None and ">" not in label.group())
     return not text or _CONTINUATION_RE.match(lines[number]) is None
