@@ -67,7 +67,7 @@ from .positions import (
     document_shape,
     frontmatter_keys,
     line_breaks,
-    metadata_snapshot,
+    metadata_fields_snapshot,
     read_maps,
     repeated_keys,
     stripped_nodes,
@@ -133,6 +133,7 @@ class _StrDateSafeLoader(yaml.SafeLoader):
                 self.resolved[key] = key.tag
         # Once: flattening deletes the merge keys, and it recurses into each source through this method.
         if any(key.tag == _MERGE_TAG for key, _value in node.value):
+            self.merge_keys[node] = [entry for entry in node.value if entry[0].tag == _MERGE_TAG]
             self.merges[node] = (
                 [entry for entry in node.value if entry[0].tag != _MERGE_TAG],
                 [value for key, value in node.value if key.tag == _MERGE_TAG],
@@ -384,6 +385,8 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
             loader.merges,
             loader.resolved,
             set(stripped.values()),
+            loader.alias_keys,
+            loader.merge_keys,
         )
     except FrontmatterError as exc:
         if not keep_error:
@@ -2170,7 +2173,7 @@ def parse(
         keys=front.keys,
         maps=front.maps,
         repeats=front.repeats,
-        metadata_seen=list(metadata_snapshot(document.metadata)) if front.repeats else [],
+        metadata_seen=metadata_fields_snapshot(document.metadata, front.repeats) if front.repeats else {},
         layout=layout,
         shape=document_shape(document),
         starts=None if written == source else written_line_starts(written),

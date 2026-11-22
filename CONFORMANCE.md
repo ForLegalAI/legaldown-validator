@@ -251,20 +251,26 @@ JSON (`["weird key"]`), a typed key of a question's `default` as it is written i
 that it is not taken for a position), a sequence entry by its position in the YAML sequence (`[1]`), and a merged mapping as
 `x.<<` (`x.<<[0]` in a list of sources). A key in a step of the path is cut after 40 characters (`…`), so that a long key is not
 copied into every finding under it, and a character that cannot be written out, as a lone surrogate that `"\ud800"` makes,
-is escaped; letters stay as they are written. A path longer than 80 characters keeps its end (`…k298.k299`), and a key
-named in a message, in this check and in that of `translations` and `field_types`, is cut after 80 characters (`…`). A key written
-as nothing is shown as `''`.
+is escaped; letters stay as they are written. A path longer than 80 characters keeps its end and says where the
+mapping starts (`` `…k298.k299` (the mapping at line 302, column 601)``), so that two long paths that end alike are
+told apart (#133), and a key named in a message, in this check and in that of `translations` and `field_types`, is
+cut after 80 characters (`…`). A key written as nothing (an empty YAML key, which YAML reads as null) is shown as
+`(empty)`, without backticks, so that it is not taken for the key `''`, an empty string written in quotes, which is
+shown as written (#133).
 
 `translations` and `field_types` are judged apart, with their own wording, as the model reads their keys as text,
 stripped, and keeps the last of the keys it reads as one (in the order the model holds them: `fr: a`, `' fr': b`,
 `fr: c` keeps the entry at the second line, not the last written). Each entry that does not stay is reported at its
 own line, and the finding names the line of the one that does (for a key written again, the entry that repeats it,
 in the same key as read); when the model keeps none, because the last entry written has an empty or blank key or a
-null, empty or blank value, the finding says which. (In the other mappings, a key written again names the line of
+null, empty or blank value, the finding says which; when that last entry is skipped and an entry written before it
+that strips alike is read instead (`fr: a`, `' fr': b`, `' fr': ''`), the finding names both, the entry skipped
+and the entry read (#133). (In the other mappings, a key written again names the line of
 the key that repeats it, and a key read as the same names the line of the one the model holds.) The keys are shown as they are written in the source (quotes and escapes
-included, between backticks), so that `1` and `"1"` differ; an aliased key (`&k fr`, then `*k`) is one node for the
-YAML reader, which keeps no position for the alias, so it is at its anchor's line, and the finding does not name that
-line again. Three cases:
+included, between backticks), so that `1` and `"1"` differ. An aliased key (`&k fr`, then `*k`) is one node for the
+YAML reader, which keeps no position for the alias; the parser takes it from the alias as it is read, so each entry
+is at its own line, with its own text (`*k`), in every mapping (#133): `&k fr`, `' fr'`, `*k` is an Error at the
+anchor, written again at the alias, and a Warning at the alias, the same key as `' fr'` once stripped. Three cases:
 
 - **The same YAML key written twice** (`fr` and `fr`, or `fr` and `"fr"`): invalid YAML, which a strict loader
   fails as `frontmatter-invalid-yaml`, and this implementation's YAML reader, like PyYAML, reads as the last.
@@ -299,9 +305,16 @@ How the rule reads the YAML:
   in a source is reported at the source (`x.<<`), and so is one in a source of `translations` or `field_types`
   (`translations.<<`), whose own entries stay with the check above. Only the entries of a source that reach the
   mapping are judged: one that the mapping's own key, or a source that wins over it, takes the place of is never
-  read, and neither is its value. A `<<` written twice in one mapping is not reported as such: the reader merges
-  both, and the model may drop entries there; that is merge precedence, not a repeat, and is not reported. A repeat
-  inside a source is, when the source's entry is the one held. Which entry is held is read off the mapping as the
+  read, and neither is its value. In `translations` and `field_types`, an entry merged in that the model reads as
+  one with another only once stripped (`translations: {<<: *b, ' fr': b.lgd}`, where `b` holds `fr`) is a key YAML
+  keeps apart and the model drops: it is reported with the map's own entries, at the line where it is written in
+  the source, naming the entry read (#133); merged keys that are one key to YAML, or one once read as text
+  (`1` and `'1'`), are merge precedence there as everywhere. A repeat inside a source is reported when the source's
+  entry is the one held.
+- **A `<<` written twice in one mapping** is the same YAML key written again, which a strict reader rejects: an
+  Error at each `<<` but the last, naming the one after it (#133). The message does not say that an entry is
+  ignored: PyYAML merges both, and which source's entry of a key is held follows the precedence above. One `<<`
+  with a list of sources is the form YAML allows. Which entry is held is read off the mapping as the
   YAML reader flattened it, not worked out, because PyYAML releases differ. PyYAML 6.0.4, which the package
   requires, reads a list of sources first to last, and keeps the first entry it met of a key whose text is the same
   Python string object: in CPython that is a one-character key (`a`) or an entry an alias brings in twice. For other
@@ -311,15 +324,21 @@ How the rule reads the YAML:
   reported, as the model never holds it.
 - **A mapping shared through an alias is reported once**, under the first path that reaches it, at the line where it
   is written, whereas the check of `translations` and `field_types` judges it under each map that holds it. A key
-  node shared by two mappings (`{&k a: 1, *k : 2}`) is reported in each, at the anchor's line. An aliased key is
-  at its anchor's line even when the anchor is written in another mapping: the YAML reader gives an alias no position
-  of its own.
+  written as an alias is reported where the alias is written, even when the anchor is in another mapping (#133):
+  the YAML reader gives an alias its anchor's node and no position of its own, so the parser notes the alias's
+  place as it reads the mapping. `{&k a: 1, *k : 2, *k : 3}` is an Error at `&k a` and at the first `*k`, each
+  naming the entry after it.
 - **`translations` and `field_types` written twice at the root** are a repeat of the root mapping: the one dropped
   is reported as `frontmatter`, and the one read, by the check above.
-- **The findings describe the source text.** A document whose metadata was changed after it was parsed draws none
-  of them (the parser keeps the objects of the metadata it built and the size of each list, dict and model, which the
-  validator compares; it reads no value, so a number of any size is no matter), as one built from a dict has no
-  source map. This is deliberately cautious: any edit of the metadata, however small, suppresses all of them.
+- **The findings describe the source text.** Each is judged against the field of the metadata it is under, the
+  top-level key of its path (`sides` for `sides[0].parties[1]`, `title` for `title` written twice, the key itself
+  for one in a source merged into the root), and a document whose field was changed after it was parsed draws none
+  of the findings under that field (#133): the parser keeps the objects of each such field it built and the size of
+  each list, dict and model, which the validator compares; it reads no value, so a number of any size is no matter.
+  An edit of another field leaves them be (`metadata.title = "new"` drops the finding of `title` written twice, not
+  the one in `sides`). A finding under a key that is no field of the model, which it does not read, depends on the
+  metadata alone: replacing `document.metadata` drops every finding, as one built from a dict has no source map.
+  The comparison stays cautious within a field: any edit of it, however small, suppresses all the findings under it.
 - **A pair of an `!!omap` or `!!pairs` may have a sequence or a mapping as its key**, which no dict holds: it is
   never a repeat, and the document is read as before.
 - **Frontmatter that cannot be read** is `frontmatter-invalid-yaml` alone. A key that cannot be held in a dict (a
