@@ -174,7 +174,7 @@ def _measure_problem(
     return None
 
 
-def _id_problem(value: str) -> str | None:
+def id_problem(value: str) -> str | None:
     """Why *value* cannot be a question id or choice value id (§15.2)."""
     if not IDENTIFIER_RE.fullmatch(value):
         return "must match [a-z][a-z0-9-]*"
@@ -188,7 +188,7 @@ def _choices_problem(choices: Any) -> str | None:
     if not isinstance(choices, dict) or len(choices) < 2:
         return "must declare at least two choices, as a map of value id to label"
     for value, label in choices.items():
-        problem = _id_problem(str(value))
+        problem = id_problem(str(value))
         if problem:
             return f"value id '{value}' {problem}"
         if not isinstance(label, str) or not label.strip():
@@ -226,7 +226,7 @@ def check_questions(
     declared = questions if isinstance(questions, dict) else {}
     for qid, declaration in declared.items():
         line = line_of("questions", qid)
-        problem = _id_problem(str(qid))
+        problem = id_problem(str(qid))
         if problem:
             invalid(f"Question id '{qid}' {problem} (§15.2).")
         qtype = question_type(declared, qid)
@@ -508,14 +508,22 @@ def choose_problem(directive: Directive, questions: Any) -> str | None:
 
 
 def check_choose(
-    directive: Directive, questions: Any, result: _Recorder, *, host_declares: bool = True
+    directive: Directive, questions: Any, result: _Recorder, *, host_declares: bool = True,
+    undeclarable: str | None = None,
 ) -> None:
     """Report a ``{{choose:}}`` that does not list exactly the answers of a
     declared decision question (choose-invalid, §15.5), and any ``{{`` in
     its phrases, which is literal text (brace-stray). *host_declares*: False
     when no other document declares questions for it, so naming one that is not
-    declared is its own fault."""
+    declared is its own fault. *undeclarable*: for a question that is not declared
+    and that no host can declare as the document uses it (#148), the message of
+    the finding to make in place of the host-dependent one, or ``""`` for none
+    here (it is made at another use)."""
     for depends, problem in _choose_issues(directive, questions):
+        if depends is not None and undeclarable is not None:
+            if undeclarable:
+                result.error("choose-invalid", undeclarable)
+            continue
         result.error("choose-invalid", problem, depends=depends if host_declares else None)
     for offset in range(2, len(directive.source) - 1):
         if directive.source.startswith("{{", offset) and not is_escaped(directive.source, offset):

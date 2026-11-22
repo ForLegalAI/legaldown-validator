@@ -62,7 +62,7 @@ from .markdown import (
     item_marker_at,
 )
 from .markers import MARKER_RE, Marker, format_marker, parse_marker
-from .models import LIST_KINDS, Block, Document, frontmatter_message
+from .models import LIST_KINDS, PARAGRAPH_KINDS, Block, Document, frontmatter_message
 from .parser import (
     FRONTMATTER_RE,
     LIST_ITEM_RE,
@@ -385,8 +385,8 @@ _DESCRIBE = _describer()
 
 # The parsed block kinds, by what assembly does with them.
 _KINDS = {
-    "paragraph": "paragraph", "definition": "paragraph", "ref": "paragraph", "term": "paragraph",
-    "ordered_list": "list", "unordered_list": "list",
+    **dict.fromkeys(PARAGRAPH_KINDS, "paragraph"),
+    **dict.fromkeys(LIST_KINDS, "list"),
     "quote": "quote", "code": "code", "table": "table", "rule": "rule", "html": "html",
     # No text and no unit (§4.7, #92): its lines are left as they are.
     "link_definition": "link_definition",

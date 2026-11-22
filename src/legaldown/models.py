@@ -163,6 +163,17 @@ class Block:
 
 LIST_KINDS = ("ordered_list", "unordered_list")
 
+#: Block kinds whose text is a paragraph's: a ``paragraph`` and the
+#: ``definition``, ``ref`` and ``term`` paragraphs the parser reads out of one,
+#: which keep part of it in fields of their own (``term``, ``definition_id``,
+#: ``target``). As a section's own block, each is one unit a condition may
+#: attach to: a marker at the end of its text (of a ``ref``'s or ``term``'s
+#: ``suffix``) conditions the block as a whole (§5.7); in the preamble only in
+#: a template. In a list item the marker conditions the item instead. A
+#: ``link_definition`` holds no text and is not one. The validator reads this
+#: tuple itself (``legaldown.grammar.PARAGRAPH_KINDS``).
+PARAGRAPH_KINDS = ("paragraph", "definition", "ref", "term")
+
 
 def list_items(block: Block) -> list[ListItem]:
     """A list's items, each a ``ListItem`` — one written as a string, as a

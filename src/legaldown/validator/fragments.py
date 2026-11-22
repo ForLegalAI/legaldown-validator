@@ -352,7 +352,7 @@ def fragment_findings(
             document, lex_fragment, _Recorder(), template=False, where=fragment.where, boundaries=False
         )
         found += content_findings(
-            document, fragment.where, scan, find_markers(document, lex_fragment), kind
+            document, fragment.where, scan, find_markers(document, lex_fragment, where=fragment.where), kind
         )
     return found
 

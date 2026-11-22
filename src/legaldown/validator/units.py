@@ -13,19 +13,17 @@ import posixpath
 import re
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import accumulate
 from typing import Any
 
 from ..directives import Directive, Lexed, is_escaped, lex
 from ..markdown import comment_closers, comment_end, find_all, strip_comments
 from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
-from ..models import Block, Document
+from ..models import LIST_KINDS, PARAGRAPH_KINDS, Block, Document
+from ..positions import Locator
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 from .patterns import MAX_SECTION_LEVEL
-
-_PARAGRAPHS = ("paragraph", "definition", "ref", "term")
-_LISTS = ("ordered_list", "unordered_list")
 
 
 def is_include_only(text: str, directives: list[Directive]) -> bool:
@@ -62,6 +60,18 @@ class FoundMarker:
     template_only: bool
     #: Its offset in its text.
     offset: int = 0
+    #: Where it is written in the source the document was parsed from (#150): ``(start, end)``, offsets
+    #: in the text given to ``parse`` (for ``load``, the file's text, a byte-order mark included), in code
+    #: points, *end* exclusive: ``source[start:end]`` is the marker as written, which is ``self.source``
+    #: but for a comment or code span in it, which ``self.source`` blanks, and a ``|`` in a table cell,
+    #: written ``\|``. None when the document has no ``layout()``: it was built in code, or changed since
+    #: it was parsed (as ``layout()``, an edit that keeps every text's length is not told apart); and when
+    #: its block's source does not hold it as its text does (``Locator.marker_span``). Not compared: it
+    #: says where the marker is, not what it is.
+    span: tuple[int, int] | None = field(default=None, compare=False)
+    #: The file line, counted from 1, that it is written on, as ``SourceLayout`` counts lines; None
+    #: with no span.
+    line: int | None = field(default=None, compare=False)
 
     def placed(self, template: bool) -> bool:
         """True if the marker is in a marker position: its #id and condition
@@ -212,18 +222,23 @@ def iter_include_paragraphs(
             yield section, index, directive
 
 
-def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex) -> list[FoundMarker]:
+def find_markers(
+    document: Document, lex_fragment: Callable[[str], Lexed] = lex, *, where: Locator | None = None
+) -> list[FoundMarker]:
     """Every marker and look-alike in the document's body text, outside code,
     comments, directives, and escapes (§11.4), with its place: placed or not.
     ``FoundMarker.placed(template)`` says which of them apply.
 
     *lex_fragment* reads a text's directives; by default, the package lexer.
+    *where*: a ``Locator`` of *document* the caller already has, to read the
+    markers' ``span`` with; else one is built for the first marker.
     """
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> units would otherwise be a cycle.
     from ..definitions import block_fragments
 
     found: list[FoundMarker] = []
+    # Built for the first marker, when the caller gave none: most blocks hold none.
     for section, block_index, block in document.iter_indexed_blocks():
         for fragment_index, (fragment, position) in enumerate(block_fragments(block)):
             if "{" not in fragment or ("#" not in fragment and "when=" not in fragment):
@@ -246,7 +261,7 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex)
                 template_only = bool(
                     section is None
                     and at_end
-                    and block.kind in _PARAGRAPHS
+                    and block.kind in PARAGRAPH_KINDS
                     and marker
                     and marker.condition
                     and not marker.identifier
@@ -260,16 +275,21 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex)
                     misplaced = _PREAMBLE_ANCHOR
                 elif template_only:
                     misplaced = _PREAMBLE_CONDITION
-                elif section is None and block.kind in _LISTS and marker.condition:
+                elif section is None and block.kind in LIST_KINDS and marker.condition:
                     misplaced = _PREAMBLE_ITEM
                 elif section is None and not include_only:
                     misplaced = _ANYWHERE
                 else:
                     misplaced = ""
+                if where is None:
+                    where = Locator(document)
+                written = where.marker_span(section, block_index, fragment_index, m.start(), fragment[m.start():m.end()])
                 found.append(
                     FoundMarker(
                         m.group(0), marker, section, block_index, fragment_index,
                         misplaced, include_only, template_only, m.start(),
+                        None if written is None else written[:2],
+                        None if written is None else written[2],
                     )
                 )
     return found
@@ -333,10 +353,10 @@ class Units:
         (section, block, the item's number), a paragraph (section, block,
         None), or None for a block that carries no condition."""
         kind = self._blocks[0 if section is None else section + 1][block].kind
-        if kind in _LISTS:
+        if kind in LIST_KINDS:
             items = self._fragment_items(section, block, fragment)
             return (section, block, items[-1]) if items else None
-        if kind in _PARAGRAPHS:
+        if kind in PARAGRAPH_KINDS:
             return section, block, None
         return None
 
@@ -361,7 +381,7 @@ class Units:
         block: its sections, and the list items its item is nested in
         (§15.3)."""
         presence = ALWAYS if section is None else self._section_presence[section]
-        if self._blocks[0 if section is None else section + 1][block].kind not in _LISTS:
+        if self._blocks[0 if section is None else section + 1][block].kind not in LIST_KINDS:
             return presence
         for item in self._fragment_items(section, block, fragment)[:-1]:
             presence |= self._own_conditions.get((section, block, item), ALWAYS)

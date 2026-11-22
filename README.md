@@ -454,15 +454,20 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   combined document); the skips after it are reported.
 - A finding that the including document may settle is reported with the rule id and the level it has
   in a complete document, and has `host_dependent` set: a `{{party:}}`, `{{side:}}` or `{{attach:}}`
-  it does not declare, a condition or `{{choose:}}` on a question it does not declare
+  identifier it does not declare, a condition or `{{choose:}}` on a question it does not declare
   (`condition-invalid`, `choose-invalid`), a `{{ref:}}` to an identifier or a `{{term:}}` that the
   fragment itself does not hold (`ref-broken`, `term-undefined`), and a definition it declares and does
   not reference (`def-unreferenced`: the host may). Set those aside while the host is not known; take
   them seriously when the fragment is validated in it.
 - Anything else is the fragment's own and is not marked: a malformed directive, a target that is not
-  an identifier (`{{ref: Bad Id}}`), a `{{ref:}}` with no target, a malformed condition, a heading that
-  skips a level, and so on. A `{{ref:}}` to a section or anchor of the fragment itself, and a
-  `{{term:}}` of its own `{{def:}}`, resolve and are not reported.
+  an identifier (`{{ref: Bad Id}}`, `{{attach: Sched A}}`), a `{{ref:}}`, `{{term:}}` or `{{attach:}}`
+  with no target, a malformed condition, a heading that skips a level, and so on. So is a question it
+  uses in ways no one declaration allows (#148): as a boolean (`when=q`) and as a choice (`when=q:v`, or
+  a `{{choose:}}` of other answers than `true` and `false`), as a choice of different answers, or as a
+  blank (`{{placeholder: q}}`) as well. That is one `condition-invalid` or `choose-invalid`, at the use
+  where no declaration can be had, naming the use it disagrees with; the question's other uses are not
+  reported. A `{{ref:}}` to a section or anchor of the fragment itself, and a `{{term:}}` of its own
+  `{{def:}}`, resolve and are not reported.
 - A fragment that has frontmatter draws `include-has-frontmatter` (§16.11), at the line of its first
   key (the opening `---` when it has none), and a level-1 heading draws `include-has-h1`, at the
   heading, each an Error. Its metadata is then not read at all, and the lines of everything else are
@@ -808,7 +813,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 | `KNOWN_DIRECTIVES`, `DIRECTIVE_PARAMS`, `PLACEHOLDER_TYPE_PARAMS` | The directive vocabulary and the parameters each defines (§11) |
 | `IDENTIFIER_RE`, `RESERVED_VALUE_TYPES`, `VALID_DOC_TYPES`, `PARTY_TYPES`, `KNOWN_CURRENCIES`, `ISO_639_1_CODES`, `DELIMITER_PAIRS` | Identifier format (§5.3), reserved value-type names, document types, party types, ISO 4217 codes, ISO 639-1 codes (§3.2), accepted definition delimiters (§7.2) |
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
-| `LIST_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; the deepest heading level (5); how deep the parser reads quotes and lists |
+| `LIST_KINDS`, `PARAGRAPH_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; block kinds whose text is a paragraph's (`paragraph`, `definition`, `ref`, `term`: as a section's own block, a marker at the end of one conditions the block as a whole, §5.7); the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
 | `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`, `INCLUDE_LIMIT_RULE`, `FRONTMATTER_KEY_DUPLICATE_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5), the Error of assembly for a document whose includes nest or run past the limits (`"ldv-include-limit"`, #118), and the one for a frontmatter key that another replaces (`"ldv-frontmatter-key-duplicate"`, #126, #131) |
 | `slugify_identifier(value, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term text, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
@@ -835,7 +840,7 @@ for _section, _index, block in document.iter_blocks():
 | `lex`, `Lexed`, `Directive`, `iter_directives`, `is_escaped`, `format_value` | The directive lexer (§11.4) and its inverse. A `Directive`'s `positional_span` and `param_spans` are where each value is written, quotes included, so `text[start:end]` is what to replace to change it; `Lexed.literals` are the comments and code spans the lexer skipped, as `(kind, start, end)` |
 | `iter_document_directives(document)` → `DirectiveLocation(section, block, fragment, directive)`, `collect_source_directives` | Every directive in a document's body, in order, read as `validate` reads it: `fragment` indexes `block_fragments(block)`, and is `None` for a `{{ref:}}`, `{{term:}}` or `{{def:}}` the parser lifted into a block's fields (a definition's comes before its text); the `{{ref:}}` and `{{term:}}` targets of a document |
 | `Marker`, `MARKER_RE`, `parse_marker`, `format_marker`, `is_look_alike` | Anchor and condition markers (§5.7, §15.3) |
-| `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`) |
+| `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`). `offset` is where it is in its fragment's text; `span` is where it is written in the source, and `line` its file line (below) |
 | `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `text_fragments`, `list_items`, `item_text` | Where a block's text is, and a list's items |
 | `collect_definitions(document)` → `DefinitionRef`, `definition_lookup`, `id_term` | The definitions a document declares in its own source (§7), in document order, each with where it is; `definition_lookup(refs)` is their id-to-term map as `validate` builds `result.index.definition_lookup` (but for definitions imported from other files); `collect_definitions` leaves out a `{{def:}}` in a drafting note (§15.6); `id_term(id)` is the term an empty one reads as |
 | `collect_link_definitions(document)` → `{label: LinkDefinition(url, title)}`, `normalize_label(label)` | The link reference definitions of a document (`link_definition` blocks, CommonMark §4.7), in an item or a quote too, by label, the first of each label winning: the key is `normalize_label(label)`, the label with each run of whitespace one space and case-folded, so look a label up with `definitions[normalize_label("Foo  Bar")]`. `url` and `title` are raw as the block holds them (backslash escapes and character references not decoded); `title` is `""` for none. Derived on each call; a definition with a directive in it is paragraph text and is none. `locate_link_definitions(document)` → `{label: PlacedLinkDefinition(section, block, ordinal, definition)}` is the same map with the `link_definition` blocks themselves and where each is: the section (`None`: the preamble) and index of its top-level block, and its `ordinal` among that block's definitions, nested ones included, in document order |
@@ -858,6 +863,32 @@ for a document built in code, or changed since it was parsed. A span covers the 
 which the item before holds). For text you hold apart from its file — an editor's field —
 `body_layout(text)` is the same `SourceLayout` of that text read as a body alone, with lines counted
 from 1 at its start and no frontmatter (a `---` first line is a thematic break there).
+
+A `FoundMarker` of a parsed document has `span`, `(start, end)`: where the marker is written, as
+offsets into the text given to `parse` (for `load`, the file's text) — counted in characters (code
+points), a byte-order mark and each CRLF as written, `end` exclusive — so `source[start:end]` is the
+marker as written, a marker after a paragraph's line break, in a list item or in a block quote
+included, and each of two markers spelled alike has its own. `FoundMarker.source` is the marker as the
+validator reads it, a comment or code span in it blanked; in a table cell the span holds a `|` as the
+cell writes it, `\|`. `line` is the file line it is on. Both are `None` when `document.layout()` is:
+for a document built in code, or changed since it was parsed so that it no longer fits its source
+(like `layout()`, they describe the source as parsed: an edit that keeps the length of every text is
+not told apart, so parse again after editing); and for a marker the source writes otherwise than its
+block's text holds it: in a block holding the same spelling in fenced code, which the text blanks, in a
+table whose rows have cells past the header's width, which the table drops.
+Heading markers are not among them: `document.layout()` gives a heading's `marker_line`.
+
+```python
+from pathlib import Path
+from legaldown import parse
+from legaldown.syntax import find_markers
+
+source = Path("contract.lgd").read_bytes().decode("utf-8")  # as load reads it: line endings as written
+for found in find_markers(parse(source)):
+    if found.span and found.placed(template=False):
+        start, end = found.span
+        print(found.line, source[start:end])
+```
 
 ```python
 document = load("contract.lgd")

@@ -67,8 +67,8 @@ def old_find_markers(document, lex_fragment=lex):
     _PREAMBLE_ANCHOR = units_module._PREAMBLE_ANCHOR
     _PREAMBLE_CONDITION = units_module._PREAMBLE_CONDITION
     _PREAMBLE_ITEM = units_module._PREAMBLE_ITEM
-    _PARAGRAPHS = units_module._PARAGRAPHS
-    _LISTS = units_module._LISTS
+    _PARAGRAPHS = ("paragraph", "definition", "ref", "term")  # pinned: as of 0.4.0
+    _LISTS = ("ordered_list", "unordered_list")
 
     found = []
     for section, block_index, block in document.iter_indexed_blocks():

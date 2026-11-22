@@ -105,12 +105,31 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   declare, a `{{ref:}}` or `{{term:}}` it does not hold) is still reported, with the rule id and
   level it has in a complete document, but with `Diagnostic.host_dependent` set: only the including
   document can settle it. So is a definition it declares and does not reference
-  (`def-unreferenced`), which the host may reference. A fragment cannot tell
+  (`def-unreferenced`), which the host may reference. A target that is no identifier (§5.2, §5.6,
+  §7.2), such as `{{ref: Bad Id}}`, `{{term: INVALID}}` or `{{attach: Sched A}}` (#147), or no
+  target at all, names nothing any host can declare, so its `ref-broken`, `term-undefined` or
+  `attach-undeclared` is the fragment's own and is not marked. A fragment cannot tell
   whether its host is a template, so it is one exactly when it holds a condition or a `{{choose:}}`,
   unless `validate(template=)` (`legaldown validate --fragment --template` / `--no-template`) says
   so: a blank or a drafting note is legal in any document. A host that is no template declares no
   question, so a condition or a `{{choose:}}` naming one is then the fragment's own
-  `condition-invalid` or `choose-invalid`, not `host_dependent`. What §15.3 asks of a template's
+  `condition-invalid` or `choose-invalid`, not `host_dependent`. Nor is a question the fragment uses
+  in ways no one declaration allows ([#148](https://github.com/ForLegalAI/legaldown-validator/issues/148)):
+  as a boolean (a condition without a value, `when=q` or `when=!q`, or a `{{choose:}}` of exactly
+  `true` and `false`) and as a choice (`when=q:v`, or a `{{choose:}}` of other answers); as a choice
+  of other answers by two `{{choose:}}`, or with a value a `{{choose:}}` does not list; as a decision
+  question and as a blank (`{{placeholder: q}}`, whose id is a value question's, §15.2); or in a way
+  no declaration allows at all (a `{{choose:}}` of fewer than two answers, an answer or value YAML
+  reads as a boolean or null, a question id that is none). That is one finding of the fragment's own,
+  at the first use none can be declared for (for a blank, at the question's first decision use: a blank
+  of an undeclared id in the body draws nothing of its own; one in a heading is not checked against
+  questions, in a complete document either, and is no use), under that use's rule (`condition-invalid` or
+  `choose-invalid`, as a complete document declaring the question for the earlier use reports it there;
+  for a blank, a complete document declaring a decision question reports `placeholder-question-mismatch`
+  at the blank instead)
+  and naming the use it disagrees with; its other uses are not reported (but each use that names no question,
+  or no question id, such as `{{choose: Bad Id, …}}` or `when=yes`, is reported at its own line). Uses one declaration allows
+  stay `host_dependent`. What §15.3 asks of a template's
   fragment is asked in this mode only when `template=True` says the host is a template (below).
   `legaldown validate --fragment` marks the host-dependent findings in its text output, counts them apart in its
   summary, and its exit status ignores them. Rule ids and levels are unchanged, and without `fragment=True` nothing is
@@ -277,8 +296,13 @@ How the rule reads the YAML:
   (`translations.<<`), whose own entries stay with the check above. Only the entries of a source that reach the
   mapping are judged: one that the mapping's own key, or a source that wins over it, takes the place of is never
   read, and neither is its value. A `<<` written twice in one mapping is not reported as such: the reader merges
-  both, the later's entries over the earlier's, and the model may drop entries there; that is merge precedence,
-  not a repeat, and is not reported. A repeat inside a source is, when the source's entry is the one held.
+  both, and the model may drop entries there; that is merge precedence, not a repeat, and is not reported. A repeat
+  inside a source is, when the source's entry is the one held. Which entry is held is read off the mapping as the
+  YAML reader flattened it, not worked out, because PyYAML releases differ. PyYAML 6.0.4, which the package
+  requires, reads a list of sources first to last, and keeps the first entry it met of a key whose text is the same
+  Python string object: in CPython that is a one-character key (`a`) or an entry an alias brings in twice. For other
+  keys, the last entry stays (`x: {<<: {a: 1, a: 2}}` holds `a: 1`; `x: {<<: {fee: 1, fee: 2}}` holds `fee: 2`).
+  The finding follows what the reader holds, so it names the entry that is dropped either way.
 - **A dropped entry is ignored whole:** a repeat inside the value of a key that a later one replaces is not
   reported, as the model never holds it.
 - **A mapping shared through an alias is reported once**, under the first path that reaches it, at the line where it
@@ -800,7 +824,8 @@ The block is still the frontmatter, so the document is not `frontmatter-absent`,
 heading must still be level 1 (`heading-skip`, §4.1). Its metadata is read as empty, so nothing
 is reported for want of what it might have declared (`title-missing`, `sides-absent`,
 `sides-minimum`, `parties-minimum`, `issuer-side-required`), and nothing that needs those
-declarations is reported either: `party-unknown`, `side-unknown`, `attach-undeclared`,
+declarations is reported either: `party-unknown`, `side-unknown`, `attach-undeclared` (where
+its target is an identifier: no frontmatter declares `{{attach: Sched A}}` or `{{attach:}}`, #147),
 `ref-targets-attachment`, `amend-term-undefined`, `amend-term-unresolvable`, and
 `condition-invalid` and `choose-invalid` where they name a question that is not declared (a
 malformed condition, or the wrong form for a declared question, is not). What the body decides

@@ -24,7 +24,7 @@ GRAMMAR = [
     "VALID_PLACEHOLDER_TYPES", "DURATION_UNITS", "VALID_DURATION_UNITS", "KNOWN_CURRENCIES",
     "ISO_639_1_CODES",
     "DELIMITER_PAIRS",
-    "LIST_KINDS", "MAX_SECTION_LEVEL", "MAX_QUOTE_DEPTH", "MAX_LIST_DEPTH",
+    "LIST_KINDS", "PARAGRAPH_KINDS", "MAX_SECTION_LEVEL", "MAX_QUOTE_DEPTH", "MAX_LIST_DEPTH",
     "VALUE_QUESTION_TYPES", "DECISION_QUESTION_TYPES", "QUESTION_TYPES",
     "DRAFTING_MARKER", "FINAL_CHECK_RULES",
     "IMPLEMENTATION_RULE_PREFIX", "SKIPPED_RULE", "INCLUDE_LIMIT_RULE", "FRONTMATTER_KEY_DUPLICATE_RULE",
@@ -97,6 +97,7 @@ IMPLEMENTATION = {
     "is_look_alike": "legaldown.markers",
     "parse_marker": "legaldown.markers",
     "LIST_KINDS": "legaldown.models",
+    "PARAGRAPH_KINDS": "legaldown.models",
     "item_text": "legaldown.models",
     "list_items": "legaldown.models",
     "FRONTMATTER_RE": "legaldown.parser",
@@ -505,3 +506,29 @@ def test_find_markers_reads_with_the_package_lexer_by_default():
     # A heading's marker is not body text; a code span's is literal.
     assert [f.source for f in found] == ["{#b}", "{#d when=}", "{#e}"]
     assert [f.source for f in found if f.placed(False)] == ["{#e}"]
+
+
+def test_the_paragraph_kinds_are_the_ones_the_validator_reads_as_paragraphs():
+    # #149: a host that edits or compares documents block by block needs
+    # exactly the set the validator uses, not a copy of a private tuple.
+    from legaldown.validator import units
+
+    assert grammar.PARAGRAPH_KINDS is units.PARAGRAPH_KINDS
+    assert isinstance(grammar.PARAGRAPH_KINDS, tuple)
+    assert grammar.PARAGRAPH_KINDS == ("paragraph", "definition", "ref", "term")
+    assert not hasattr(units, "_PARAGRAPHS")
+    assert not hasattr(units, "_LISTS")
+    blocks = (
+        "Plain. {when=vat}\n\n\"Fee\" {{def: fee}} means x. {when=vat}\n\n"
+        "See {{ref: a}}. {when=vat}\n\n{{term: a}} {when=vat}\n\n| h |\n|---|\n| c {when=vat} |\n"
+    )
+    kinds = [*grammar.PARAGRAPH_KINDS, "table"]
+    # In the preamble, a condition at the end of a block's text is a
+    # paragraph's, placed in a template, exactly for these kinds (§5.7).
+    document = parse("---\ntitle: T\n---\n\n" + blocks + "\n# A\n\nText.\n")
+    found = [(document.preamble[each.block].kind, each.template_only) for each in find_markers(document)]
+    assert found == [(kind, kind != "table") for kind in kinds]
+    # In a section it conditions the block as a whole; in a table cell it is literal text.
+    document = parse("---\ntitle: T\n---\n\n# A\n\n" + blocks)
+    found = [(document.sections[0].blocks[each.block].kind, each.placed(False)) for each in find_markers(document)]
+    assert found == [(kind, kind != "table") for kind in kinds]

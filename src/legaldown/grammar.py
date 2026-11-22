@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from .definitions import DELIMITER_PAIRS
 from .directives import DIRECTIVE_PARAMS, KNOWN_DIRECTIVES, PLACEHOLDER_TYPE_PARAMS
-from .models import LIST_KINDS
+from .models import LIST_KINDS, PARAGRAPH_KINDS
 from .parser import MAX_LIST_DEPTH, MAX_QUOTE_DEPTH
 from .specification import SPEC_VERSION
 from .validator.conditions import ALWAYS, Condition, Presence, condition_problem, exclusive, parse_condition
@@ -81,6 +81,7 @@ __all__ = [
     "DELIMITER_PAIRS",
     # Structure and limits
     "LIST_KINDS",
+    "PARAGRAPH_KINDS",
     "MAX_SECTION_LEVEL",
     "MAX_QUOTE_DEPTH",
     "MAX_LIST_DEPTH",

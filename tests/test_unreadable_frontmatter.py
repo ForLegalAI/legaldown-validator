@@ -196,6 +196,13 @@ def test_what_the_frontmatter_declares_is_not_reported_as_undeclared(body):
     assert [r for r, *_ in _rows(document)] == ["frontmatter-invalid-yaml"]
 
 
+@pytest.mark.parametrize("target", ["{{attach: Sched A}}", "{{attach:}}"])
+def test_an_attach_target_that_is_no_identifier_is_reported_all_the_same(target):
+    # No frontmatter declares 'Sched A' (§5.6, #147), or an empty id, readable or not.
+    document = _kept(f"---\n*x*\n---\n\n# Scope\n\nSee {target}.\n")
+    assert [r for r, *_ in _rows(document)] == ["frontmatter-invalid-yaml", "attach-undeclared"]
+
+
 def test_every_such_use_at_once_yields_only_the_error():
     body = "\n\n".join(_DECLARED[:4])
     document = _kept(f"---\n*x*\n---\n\n# Scope\n\n{body}\n\n## Sub {{#sub when=q:a}}\n\nText.\n")
