@@ -92,13 +92,14 @@ def condition_problem(text: str, questions: Any) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class DecisionUse:
-    """A use of a decision question that the document does not declare, which a
-    fragment's host would declare (§12.2): a valid condition on it (§15.3), or a
-    well-formed ``{{choose:}}`` of it (§15.5)."""
+    """A use of a question that the document does not declare, which a fragment's
+    host would declare (§12.2): a valid condition on it (§15.3), a well-formed
+    ``{{choose:}}`` of it (§15.5), or a well-formed ``{{placeholder:}}`` of it, whose
+    id is a value question's (§15.2)."""
 
     question: str
     #: How a message about another use names this one: ``the condition 'q' on the
-    #: heading 'T'``, or the ``{{choose:}}`` as written, quoted.
+    #: heading 'T'``, or the ``{{choose:}}`` or ``{{placeholder:}}`` as written, quoted.
     what: str
     line: Line
     #: What the caller knows the use by (``undeclarable``).
@@ -106,12 +107,18 @@ class DecisionUse:
     condition: Condition | None = None
     #: The answers a ``{{choose:}}`` lists a phrase for, as written; None for a condition.
     answers: tuple[str, ...] | None = None
+    #: Whether it is a ``{{placeholder:}}``: its question is a value question, which is never
+    #: reported here (its finding is that of the decision use it disagrees with, ``undeclarable``).
+    blank: bool = False
 
 
 def _use_type(use: DecisionUse) -> tuple[str | None, str]:
-    """The type *use* needs its question declared with, ``"boolean"`` or ``"choice"``, and
-    ``""``; or None, and why no declaration gives it what it needs (verb first)."""
+    """The type *use* needs its question declared with, ``"boolean"``, ``"choice"`` or
+    ``"value"`` (a blank's), and ``""``; or None, and why no declaration gives it what it
+    needs (verb first)."""
     question = use.question
+    if use.blank:
+        return "value", ""
     problem = _id_problem(question)
     if problem:
         if not question:
@@ -141,9 +148,20 @@ def _use_type(use: DecisionUse) -> tuple[str | None, str]:
     )
 
 
+_AS = {"boolean": "a boolean question", "choice": "a choice question", "value": "a blank, whose id is a value question's"}
+
+
 def _at(use: DecisionUse) -> str:
     line = use.line() if callable(use.line) else use.line
     return f" (line {line})" if line else ""
+
+
+def _both_ways(use: DecisionUse, kind: str, other: DecisionUse, other_kind: str) -> str:
+    """Why no declaration gives *use* and *other* the types they need (verb first)."""
+    return (
+        f"uses '{use.question}' as {_AS[kind]}, but {other.what}{_at(other)} uses it as {_AS[other_kind]}: "
+        f"no including document can declare it both ways (§15.2)"
+    )
 
 
 @dataclass(slots=True)
@@ -163,10 +181,7 @@ class _Declarable:
         (verb first, naming one it disagrees with); None when one does, and *use* is then met."""
         question = use.question
         if kind != self.kind:
-            return (
-                f"uses '{question}' as a {kind} question, but {self.first.what}{_at(self.first)} uses it as a "
-                f"{self.kind} one: no including document can declare it both ways (§15.2)"
-            )
+            return _both_ways(use, kind, self.first, self.kind)
         if kind != "choice":
             return None
         if use.answers is not None:
@@ -201,9 +216,10 @@ def undeclarable(uses: Iterable[DecisionUse]) -> tuple[dict[Any, str], set[str]]
     """The uses of questions that no declaration gives what they need (§15.2, §15.3, §15.5),
     with the uses before them in *uses* (in document order) (#148): a boolean question for a
     condition without a value and for a ``{{choose:}}`` of exactly true and false, a choice
-    question with that value or those answers for the others. A fragment's host cannot declare
-    such a question, so it is the fragment's own finding, made once, at the first use none
-    gives what it needs: the key of each such use, and why (verb first, naming an earlier use
+    question with that value or those answers for the others, a value question for a blank.
+    A fragment's host cannot declare such a question, so it is the fragment's own finding, made
+    once, at the first use none gives what it needs (or, when that is a blank, at the first use
+    of the question, a decision use): the key of each such use, and why (verb first, naming an earlier use
     it disagrees with, if any); and the questions it settles, whose other uses are not
     reported. A use naming no question, or what can be no question id, is one of its own: it
     is reported, and settles nothing (two such uses have nothing in common)."""
@@ -211,16 +227,21 @@ def undeclarable(uses: Iterable[DecisionUse]) -> tuple[dict[Any, str], set[str]]
     settled: set[str] = set()
     met: dict[str, _Declarable] = {}
     for use in uses:
-        if use.question in settled:
-            continue
+        if use.question in settled or (use.blank and _id_problem(use.question)):
+            continue  # a blank's id that is no question id is question-invalid, whatever is declared
         kind, problem = _use_type(use)
+        at = use
         if kind is not None:
             declarable = met.setdefault(use.question, _Declarable(use, kind))
             conflict = declarable.conflict(use, kind)
             if conflict is None:
                 continue
+            if use.blank:
+                # A blank has no finding here: the decision use it disagrees with has.
+                at = declarable.first
+                conflict = _both_ways(at, declarable.kind, use, kind)
             problem = conflict
-        findings[use.key] = problem
+        findings[at.key] = problem
         if not _id_problem(use.question):
             settled.add(use.question)
     return findings, settled

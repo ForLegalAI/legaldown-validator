@@ -461,7 +461,11 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   them seriously when the fragment is validated in it.
 - Anything else is the fragment's own and is not marked: a malformed directive, a target that is not
   an identifier (`{{ref: Bad Id}}`), a `{{ref:}}` with no target, a malformed condition, a heading that
-  skips a level, and so on. A `{{ref:}}` to a section or anchor of the fragment itself, and a
+  skips a level, and so on. So is a question it uses in ways no one declaration allows (#148): as a
+  boolean (`when=q`) and as a choice (`when=q:v`, or a `{{choose:}}` of other answers than `true` and
+  `false`), as a choice of different answers, or as a blank (`{{placeholder: q}}`) as well. That is one
+  `condition-invalid` or `choose-invalid`, at the use where no declaration can be had, naming the use it
+  disagrees with; the question's other uses are not reported. A `{{ref:}}` to a section or anchor of the fragment itself, and a
   `{{term:}}` of its own `{{def:}}`, resolve and are not reported.
 - A fragment that has frontmatter draws `include-has-frontmatter` (§16.11), at the line of its first
   key (the opening `---` when it has none), and a level-1 heading draws `include-has-h1`, at the

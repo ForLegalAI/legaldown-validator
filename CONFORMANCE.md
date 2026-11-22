@@ -114,10 +114,12 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   in ways no one declaration allows ([#148](https://github.com/ForLegalAI/legaldown-validator/issues/148)):
   as a boolean (a condition without a value, `when=q` or `when=!q`, or a `{{choose:}}` of exactly
   `true` and `false`) and as a choice (`when=q:v`, or a `{{choose:}}` of other answers); as a choice
-  of other answers by two `{{choose:}}`, or with a value a `{{choose:}}` does not list; or in a way
+  of other answers by two `{{choose:}}`, or with a value a `{{choose:}}` does not list; as a decision
+  question and as a blank (`{{placeholder: q}}`, whose id is a value question's, §15.2); or in a way
   no declaration allows at all (a `{{choose:}}` of fewer than two answers, an answer or value YAML
   reads as a boolean or null, a question id that is none). That is one finding of the fragment's own,
-  at the first use none can be declared for, under that use's rule (`condition-invalid` or
+  at the first use none can be declared for (for a blank, at the question's first decision use: a blank
+  of an undeclared id draws nothing of its own), under that use's rule (`condition-invalid` or
   `choose-invalid`, as a complete document declaring the question for the earlier use reports it there)
   and naming the use it disagrees with; its other uses are not reported (but each `{{choose:}}` that names
   no question, or no question id, is reported at its own line). Uses one declaration allows

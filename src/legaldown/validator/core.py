@@ -996,8 +996,9 @@ def _undeclarable_questions(
     declaration allows (``undeclarable``, #148): by the key of each use to report, why; and
     the questions they settle. A key is ``("condition", i)`` for the i-th of *conditions* (where each is in the document:
     *orders*), ``("choose", section, block, fragment, start)`` for a ``{{choose:}}``. Only a
-    valid condition and a well-formed ``{{choose:}}`` are uses: what is wrong with the others is
-    their own finding whatever is declared."""
+    valid condition, a well-formed ``{{choose:}}`` and a well-formed body ``{{placeholder:}}``
+    (which is never reported here) are uses: what is wrong with the others is their own finding
+    whatever is declared."""
     from ..definitions import text_fragments  # see the import note in _validate
 
     uses: list[tuple[tuple[int, ...], DecisionUse]] = []
@@ -1011,15 +1012,20 @@ def _undeclarable_questions(
         for fragment_index, fragment in enumerate(text_fragments(block)):
             for directive in lex_fragment(fragment).directives:
                 question = directive.positional or ""
-                if directive.name != "choose" or directive.malformed or question_type(questions, question) is not None:
+                if (
+                    directive.name not in ("choose", "placeholder")
+                    or directive.malformed
+                    or question_type(questions, question) is not None
+                ):
                     continue
+                choose = directive.name == "choose"
                 uses.append((
                     (-1 if section_index is None else section_index, block_index, fragment_index, directive.start),
                     DecisionUse(
                         question, f"'{_shortened(directive.source)}'",
                         partial(where.find, section_index, block_index, directive.source, fragment_index, directive.start),
-                        ("choose", section_index, block_index, fragment_index, directive.start),
-                        answers=tuple(directive.params),
+                        (directive.name, section_index, block_index, fragment_index, directive.start),
+                        answers=tuple(directive.params) if choose else None, blank=not choose,
                     ),
                 ))
     uses.sort(key=lambda entry: entry[0])
@@ -1152,7 +1158,11 @@ def validate(
         has in a complete document, but marked ``Diagnostic.host_dependent``:
         a finding to set aside when the host is not known, and to take
         seriously once the fragment is validated in it. What is wrong with the
-        fragment itself is not marked. Frontmatter in the fragment is
+        fragment itself is not marked; so is a question it uses in ways no one
+        declaration allows (as a boolean and as a choice, as a choice of
+        different answers, or as a blank too, #148): one condition-invalid or
+        choose-invalid at the use where none can be had, in place of its uses'
+        host-dependent findings. Frontmatter in the fragment is
         include-has-frontmatter (§16.11) and a level-1 heading include-has-h1
         (attachment-has-frontmatter and attachment-has-h1 for an attachment
         file, *fragment_kind*); the metadata is then not read, so nothing is

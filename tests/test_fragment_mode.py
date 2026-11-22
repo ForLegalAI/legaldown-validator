@@ -237,7 +237,7 @@ def test_a_question_used_as_a_boolean_and_as_a_choice_is_one_finding_of_the_frag
     ]
     message = result.diagnostics[0].message
     assert "the condition 'len' on the heading 'T' (line 1)" in message
-    assert "as a choice question" in message and "as a boolean one" in message
+    assert "as a choice question" in message and "as a boolean question" in message
     assert "no including document can declare it both ways" in message
     # A complete document is validated as before: each use names an undeclared question.
     assert _decision_rows(validate(parse(source))) == [("choose-invalid", 3, False), ("condition-invalid", 1, False)]
@@ -260,6 +260,10 @@ UNDECLARABLE = [
     ('X {{choose: q, a="1", b="2"}}.\n\n## A {#a when=!q:c}\n', "condition-invalid", 3),
     # In a drafting note a {{choose:}} is validated all the same (§15.6).
     ('## A {#a when=q}\n\n> [!DRAFTING]\n> Or {{choose: q, a="1", b="2"}}.\n', "choose-invalid", 4),
+    # A blank's id is a value question's (§15.2): the finding is the decision use's, wherever the blank is.
+    ("## A {#a when=q}\n\nX {{placeholder: q}}.\n", "condition-invalid", 1),
+    ('X {{placeholder: q}} {{choose: q, a="1", b="2"}}.\n', "choose-invalid", 1),
+    ('X {{choose: q, true="1", false="2"}}.\n\n> [!DRAFTING]\n> Or {{placeholder: q, type=text}}.\n', "choose-invalid", 1),
     # One use that no declaration allows at all.
     ('X {{choose: q, a="1"}}.\n', "choose-invalid", 1),
     ('X {{choose: q}}.\n', "choose-invalid", 1),
@@ -288,6 +292,8 @@ COMPATIBLE = [
     '## A {#a when=q:a}\n\n## B {#b when=!q:b}\n\nX {{choose: q, a="1", b="2"}} {{choose: q, b="3", a="4"}}.\n',
     '## A {#a when=q:a}\n\n## B {#b when=q:c}\n',
     'X {{choose: q, a="1", b="2"}}.\n\n## A {#a when=!q:b}\n',
+    # A blank of another id is no use of the question.
+    '## A {#a when=q}\n\nX {{placeholder: r}}.\n',
 ]
 
 
