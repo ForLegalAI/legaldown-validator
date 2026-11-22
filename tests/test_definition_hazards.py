@@ -1249,6 +1249,9 @@ def test_reading_the_paragraphs_of_an_assembly_is_charged(monkeypatch):
         # In one conditional unit, the lines go together: the label continues the paragraph.
         (f"## S {{when=q}}\n\n[Option A]: The Seller shall pay {_BLANKS}.\n[Option B]: {{{{placeholder: p4}}}} shall pay.\n", 0, 1),
         (f"[Option A]: The Seller shall pay {_BLANKS}.\n[b]: https://x\nand more. {{when=q}}\n", 0, 1),
+        # A bare marker before it: the label may begin the paragraph.
+        ('- {{choose: c1, true="", false="z"}}\n[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at '
+         "{{placeholder: p3}}.\n", 4, 0),
         # A conditional paragraph before it, removed, leaves the label at a paragraph's start.
         ("Text {when=q}\n\n[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at {{placeholder: p3}}.\n", 3, 0),
     ],

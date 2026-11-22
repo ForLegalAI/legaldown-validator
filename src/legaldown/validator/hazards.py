@@ -710,7 +710,7 @@ class _Assembler:
         is asked of it (``_may_open``), from the line that is before it there: a drafting note is removed (§15.7.2
         step 2), so the line before the note; and a line that may vanish without it (nothing but choices whose phrases
         may be empty, deleted by step 5, or a conditional unit's that does not hold it too) may leave it after a blank
-        line or the region's start."""
+        line or the region's start, and one of markers and such choices may leave a bare marker before it."""
         lines = self.source.lines
         before = line - 1
         while before >= start and before in self.source.notes:
@@ -718,6 +718,9 @@ class _Assembler:
         if before < start or before in self.choice_only or not self.covering.get(before, set()) <= self.covering.get(
             line, set()
         ):
+            return True
+        # (A line of markers and choices alone may be a bare marker, or an empty quote line: it ends the paragraph.)
+        if before in self.by_line and self.assembly._BARE_MARKERS_RE.fullmatch(MARKER_RE.sub("", self._bare(before))):
             return True
         return _may_open([lines[before], lines[line]], 1, before in self.solid)
 
