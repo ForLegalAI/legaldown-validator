@@ -85,9 +85,8 @@ def test_a_blank_entry_after_an_earlier_one_that_strips_alike_is_reported(front,
     # says, so the blank entry is reported at its line, naming the entry read.
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
     assert (diagnostic.level, diagnostic.line) == ("warning", 5)
-    assert diagnostic.message.endswith(
-        f"once stripped, and is skipped ({reason}): this entry is ignored, and the entry at line 4 is the one read."
-    )
+    assert f"` is skipped ({reason}), and the same key as " in diagnostic.message
+    assert diagnostic.message.endswith("once stripped: this entry is ignored, and the entry at line 4 is the one read.")
 
 
 def test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_before_it():
@@ -98,8 +97,8 @@ def test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_before_it():
     assert found == [
         (5, "error", "The translations key `' fr'` is written again: this entry is ignored, the entry at line 6 is "
          "skipped (its value is empty), and the entry at line 4 is the one read."),
-        (6, "warning", "The translations key `' fr'` is the same key as `fr` once stripped, and is skipped (its value "
-         "is empty): this entry is ignored, and the entry at line 4 is the one read."),
+        (6, "warning", "The translations key `' fr'` is skipped (its value is empty), and the same key as `fr` once "
+         "stripped: this entry is ignored, and the entry at line 4 is the one read."),
     ]
     # judged against the model: once it no longer holds the key, neither is said
     document = parse(_source(front))

@@ -249,7 +249,8 @@ a `<<` merges in. The finding names the mapping, `frontmatter` for the root and 
 names as `parties[0]` and `questions.my-q.default`, a key that is no plain name between brackets and escaped as
 JSON (`["weird key"]`), a typed key of a question's `default` as it is written in the source between braces (`{1}`, so
 that it is not taken for a position), a sequence entry by its position in the YAML sequence (`[1]`), and a merged mapping as
-`x.<<` (`x.<<[0]` in a list of sources). A key in a step of the path is cut after 40 characters (`…`), so that a long key is not
+`x.<<` (`x.<<[0]` in a list of sources, and `x.<<#2` for the sources of the second `<<` of a mapping that writes
+more than one, #133). A key in a step of the path is cut after 40 characters (`…`), so that a long key is not
 copied into every finding under it, and a character that cannot be written out, as a lone surrogate that `"\ud800"` makes,
 is escaped; letters stay as they are written. A path longer than 80 characters keeps its end and says where the
 mapping starts (`` `…k298.k299` (the mapping at line 302, column 601)``), so that two long paths that end alike are
@@ -291,8 +292,9 @@ as the reader strips it), and a rule of this implementation's own does not fail 
 accepts. The first is an Error. A `translations` entry that is blank once stripped is skipped before it can replace
 a sibling (#116), so it draws nothing when it is written before the entry the model keeps (`' fr': ''`, `fr: a`),
 which takes its place anyway; written after it (`fr: a`, `' fr': ''`, or `' fr': a.md`, `fr: ''`), it loses to the
-earlier entry, which is not what "the last stays" says, so it is a Warning at its own line that names the entry read
-(#133). The same holds of a `field_types` entry that the model skips (a null or empty value); a blank `field_types`
+earlier entry, which is not what "the last stays" says, so it is a Warning at its own line that says it is skipped and
+names the entry read (`` The translations key `' fr'` is skipped (its value is empty), and the same key as `fr` once
+stripped: this entry is ignored, and the entry at line 3 is the one read.``, #133). The same holds of a `field_types` entry that the model skips (a null or empty value); a blank `field_types`
 description is a declaration, and replaces its sibling as any other. Keys that YAML
 resolves equal but that are written differently (`~` and `null`, `1` and `01`, `true` and `True`) are two text
 keys the model keeps both of, and draw nothing outside a `default`.
@@ -326,7 +328,7 @@ How the rule reads the YAML:
   is written, whereas the check of `translations` and `field_types` judges it under each map that holds it. A key
   written as an alias is reported where the alias is written, even when the anchor is in another mapping (#133):
   the YAML reader gives an alias its anchor's node and no position of its own, so the parser notes the alias's
-  place as it reads the mapping. `{&k a: 1, *k : 2, *k : 3}` is an Error at `&k a` and at the first `*k`, each
+  place as it reads the mapping (with PyYAML's own composition of a mapping, which a test holds to PyYAML's). `{&k a: 1, *k : 2, *k : 3}` is an Error at `&k a` and at the first `*k`, each
   naming the entry after it.
 - **`translations` and `field_types` written twice at the root** are a repeat of the root mapping: the one dropped
   is reported as `frontmatter`, and the one read, by the check above.
@@ -339,6 +341,9 @@ How the rule reads the YAML:
   the one in `sides`). A finding under a key that is no field of the model, which it does not read, depends on the
   metadata alone: replacing `document.metadata` drops every finding, as one built from a dict has no source map.
   The comparison stays cautious within a field: any edit of it, however small, suppresses all the findings under it.
+  A frontmatter that shares a collection (an alias to a mapping or a sequence, a `<<` source) may hold one mapping
+  under more than one field (`base: &b {...}` and `<<: *b`), so its findings are judged against the whole metadata,
+  as before #133: any edit of it suppresses them all.
 - **A pair of an `!!omap` or `!!pairs` may have a sequence or a mapping as its key**, which no dict holds: it is
   never a repeat, and the document is read as before.
 - **Frontmatter that cannot be read** is `frontmatter-invalid-yaml` alone. A key that cannot be held in a dict (a

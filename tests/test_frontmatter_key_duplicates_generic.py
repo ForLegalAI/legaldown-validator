@@ -332,16 +332,16 @@ def test_a_key_written_twice_among_two_merges_is_judged_as_the_reader_orders_the
     assert _beyond_merges("x:\n  <<: {k: 1}\n  <<: {k: 2, k: 3}\n") == []
     # the earlier source's entry is held, so what its value repeats is read
     assert [m for _l, _lvl, m in _beyond_merges("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {k: 1}\n")] == [
-        "The `x.<<.k` key `a` is written again at line 3: this entry is ignored."
+        "The `x.<<#1.k` key `a` is written again at line 3: this entry is ignored."
     ]
     # a longer key goes the other way: the later source's entries are over the earlier's, and a key repeated
     # inside the later source is a repeat there
     ((line, level, message),) = _beyond_merges("x:\n  <<: {key: 1}\n  <<: {key: 2, key: 3}\n")
-    assert (line, level) == (4, "error") and message.startswith("The `x.<<` key `key` is written again at line 4")
+    assert (line, level) == (4, "error") and message.startswith("The `x.<<#2` key `key` is written again at line 4")
     assert _beyond_merges("x:\n  <<: {key: {a: 1, a: 2}}\n  <<: {key: 1}\n") == []
     # but a key only the earlier source has still is
     assert [m for _l, _lvl, m in _beyond_merges("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {j: 1}\n")] == [
-        "The `x.<<.k` key `a` is written again at line 3: this entry is ignored."
+        "The `x.<<#1.k` key `a` is written again at line 3: this entry is ignored."
     ]
 
 
@@ -349,7 +349,7 @@ def test_a_list_of_sources_and_a_second_merge_are_judged_as_the_reader_holds_the
     # PyYAML 6.0.4 reads a list of sources first to last. A one-character key is merged once: the first source's
     # `a` is held, over the second source's and over a second `<<`.
     front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}}]\n  <<: {a: 1}\n"
-    assert [m.split(" key ")[0] for _l, _lvl, m in _beyond_merges(front)] == ["The `x.<<[0].a`"]
+    assert [m.split(" key ")[0] for _l, _lvl, m in _beyond_merges(front)] == ["The `x.<<#1[0].a`"]
     front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}}]\n"
     assert [m.split(" key ")[0] for _l, _lvl, m in _found(front)] == ["The `x.<<[0].a`"]
     # A longer key: the last source's entry is held, and a second `<<` over both.
@@ -574,12 +574,35 @@ def test_an_edit_of_another_field_leaves_the_findings_under_a_field_be():
     assert lines() == [8]  # `x` is no field of the model: only replacing the metadata drops it
     document.metadata = type(document.metadata)()
     assert lines() == []
-    # a finding in a source merged into the root is under the key it repeats
-    document = parse(_source("<<: {title: a, title: b}\nversion: '1'\n"))
-    document.metadata.version = "2"
-    assert lines() == [2]
-    document.metadata.title = "new"
-    assert lines() == []
+    # A frontmatter that shares a collection (an alias, a `<<` source) may hold a mapping under more than one field:
+    # its findings are judged against the whole metadata, as before #133.
+    for front in ("<<: {title: a, title: b}\nversion: '1'\n", "base: &b {subtitle: A, subtitle: B}\n<<: *b\n",
+                  "x: &x {a: 1, a: 2}\nsides: [*x]\nversion: '1'\n"):
+        document = parse(_source(front))
+        assert len(lines()) == 1
+        document.metadata.version = "2"
+        assert lines() == [], front
+
+
+def test_two_sources_of_two_merge_keys_are_told_apart():
+    # #133: each `<<` of a mapping that writes more than one is numbered in the path.
+    found = _beyond_merges("x: {<<: {a: 1, a: 2}, <<: {b: 1, b: 2}}\n")
+    assert [message.split(" key ")[0] for _l, _lvl, message in found] == ["The `x.<<#1`", "The `x.<<#2`"]
+    found = _beyond_merges("x:\n  <<: [{a: 1, a: 2}]\n  <<: [{bb: 1}, {bb: 1, bb: 2}]\n")
+    assert [message.split(" key ")[0] for _l, _lvl, message in found] == ["The `x.<<#1[0]`", "The `x.<<#2[1]`"]
+
+
+def test_paths_that_are_cut_alike_in_one_run_each_name_their_own_mapping():
+    # #133: the subject of a cut path is worked out for each mapping, not once for its text.
+    long = "a" * 50
+    front = f"{long}:\n  {'b' * 50}X:\n    k: 1\n    k: 2\n  {'b' * 50}Y:\n    k: 1\n    k: 2\n"
+    first, second = _found(front)
+    assert "(the mapping at line 4, column 5)" in first[2] and "(the mapping at line 7, column 5)" in second[2]
+
+
+def test_a_merge_key_written_twice_in_translations_names_the_map_as_its_check_does():
+    ((_line, _level, message),) = _found("translations:\n  <<: {fr: a}\n  <<: {de: b}\n")
+    assert message.startswith("The translations key `<<` is written again at line 4")
 
 
 def test_a_metadata_that_refers_to_itself_or_shares_much_is_judged_in_linear_time():
@@ -689,3 +712,34 @@ def test_two_long_paths_that_end_alike_are_told_apart():
     assert "(the mapping at line 66, column 63) key `a`" in second[2]
     # a short path says nothing more
     assert "(the mapping" not in _found("x: {a: 1, a: 2}\n")[0][2]
+
+
+# ── the parser's composer is PyYAML's ──
+
+@pytest.mark.parametrize("text", [
+    "a: 1\nb: {c: [1, {d: 2}], &k e: f}\n*k : g\n",
+    "x: &m\n  <<: [{a: 1}, {b: 2}]\n  !!str c: !custom d\ny: *m\n? [1, 2]\n: {}\n",
+    "!!omap\n- a: 1\n- b: 2\n",
+    "? \n: 1\n'': 2\n",
+])
+def test_the_parsers_mapping_composer_builds_what_pyyamls_builds(text):
+    # #133: the loader writes PyYAML's `compose_mapping_node` out to note where an alias key is; a release of PyYAML
+    # that composes a mapping otherwise shows here.
+    def shape(node, seen):
+        if id(node) in seen:
+            return ("alias", seen[id(node)])
+        seen[id(node)] = len(seen)
+        marks = (node.start_mark.index, node.end_mark.index, node.tag, type(node).__name__)
+        if isinstance(node, yaml.MappingNode):
+            return (*marks, node.flow_style, tuple((shape(k, seen), shape(v, seen)) for k, v in node.value))
+        if isinstance(node, yaml.SequenceNode):
+            return (*marks, node.flow_style, tuple(shape(each, seen) for each in node.value))
+        return (*marks, node.value, node.style)
+
+    ours = parser._StrDateSafeLoader(text)
+    theirs = yaml.SafeLoader(text)
+    try:
+        assert shape(ours.get_single_node(), {}) == shape(theirs.get_single_node(), {})
+    finally:
+        ours.dispose()
+        theirs.dispose()

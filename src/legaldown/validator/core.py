@@ -38,7 +38,7 @@ from ..markdown import (
     strip_comments,
 )
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
-from ..positions import Locator
+from ..positions import STRIPPED_MAPS, Locator
 from ..specification import SPEC_VERSION, parse_version
 from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
@@ -1542,7 +1542,8 @@ def _check(
             again = f" at line {by.line}" if by.start != entry.start else ""
             what = _key_clause(each.why, by.written, "" if each.skipped else again)
             if each.itself:
-                what += f", and is skipped ({each.itself})"  # after an entry that strips alike (#133)
+                # Skipped itself, after an entry that strips alike, which is read instead (#133).
+                what = f"is skipped ({each.itself}), and {what.removeprefix('is ')}"
             if each.skipped and each.kept is not None:
                 # the entry that repeats it is skipped, and one written before that strips alike is read (#133)
                 stays = f", the entry at line {by.line} is skipped ({each.skipped}){_key_read(each.kept.line)}"
@@ -1562,19 +1563,22 @@ def _check(
     # under the same rule and levels. `translations` and `field_types` are left to #126; a path names the mapping.
     # A key written over one merged in (`<<`) replaces it, as YAML says, and is no repeat.
     if not mode.empty_metadata:
-        paths: dict[str, str] = {}  # the path of each mapping, shown once
+        paths: dict[tuple[str, int | None, int | None], str] = {}  # the path of each mapping, shown once
         for each in where.repeats():
             at = "" if each.by_line is None else f" at line {each.by_line}"
             report = result.error if each.why in ("repeated", "merge") else result.warning
-            if each.path not in paths:
+            mapping = (each.path, each.mapping_line, each.mapping_column)
+            if mapping not in paths:
                 # A long path keeps its end, which names the mapping, and says where the mapping starts, so that
-                # two whose paths end alike are told apart (#133).
+                # two whose paths end alike are told apart (#133). `translations` and `field_types` are named as
+                # their own check names them (a `<<` written twice there).
                 if len(each.path) <= _SHOWN_WIDTH:
-                    paths[each.path] = _shown(each.path) if each.path else "frontmatter"
+                    plain = each.path in STRIPPED_MAPS
+                    paths[mapping] = each.path if plain else _shown(each.path) if each.path else "frontmatter"
                 else:
                     cut = _shown("…" + each.path[1 - _SHOWN_WIDTH:])
-                    paths[each.path] = f"{cut} (the mapping at line {each.mapping_line}, column {each.mapping_column})"
-            subject = paths[each.path]
+                    paths[mapping] = f"{cut} (the mapping at line {each.mapping_line}, column {each.mapping_column})"
+            subject = paths[mapping]
             if each.why == "merge":
                 # `<<` written again: the reader merges both, so no entry is ignored as such (#133).
                 message = (

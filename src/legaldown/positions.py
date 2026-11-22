@@ -343,7 +343,8 @@ class Repeated:
     same, #133). *by_written* and *by_line* are the key that repeats it, or the one the model holds. An aliased
     key is where its alias is written (#133). *field* is the top-level frontmatter key the mapping is under (the
     key itself in the root), whose part of the model the finding describes (``Locator.repeats``, #133), None
-    if it is no text; *mapping_line* and *mapping_column* are where the mapping starts, which tells two mappings
+    if it is no text or if the frontmatter shares a collection (an alias, a ``<<`` source), when it may be held
+    under more than one field and is judged against the whole metadata; *mapping_line* and *mapping_column* are where the mapping starts, which tells two mappings
     apart whose paths are cut alike (#133)."""
 
     path: str
@@ -403,15 +404,23 @@ def metadata_unchanged(metadata: Any, snapshot: list[Any]) -> bool:
     return next(held, held) is held
 
 
-def metadata_fields_snapshot(metadata: Any, repeats: Sequence[Repeated]) -> dict[str | None, list[Any]]:
+#: The key of ``metadata_fields_snapshot`` that holds the snapshot of the whole metadata (no field is a number).
+WHOLE_METADATA = 0
+
+
+def metadata_fields_snapshot(metadata: Any, repeats: Sequence[Repeated]) -> dict[str | int | None, list[Any]]:
     """What ``Locator.repeats`` compares to tell whether the findings *repeats* still describe *metadata*
-    (#133): under None, the metadata object itself, and for each field of it that a finding is under
-    (``Repeated.field``), ``metadata_snapshot`` of that field's value. A finding under a key that is no field of
-    the model (a key it does not read) depends on the metadata object alone."""
+    (#133): under None, the metadata object itself; for each field of it that a finding is under
+    (``Repeated.field``), ``metadata_snapshot`` of that field's value; and under ``WHOLE_METADATA``, when a
+    finding is under no one field (``Repeated.field`` None), that of the whole metadata. A finding under a key
+    that is no field of the model (a key it does not read) depends on the metadata object alone."""
     names = {each.name for each in dataclasses.fields(metadata)} if dataclasses.is_dataclass(metadata) else set()
-    seen: dict[str | None, list[Any]] = {None: [metadata]}
+    seen: dict[str | int | None, list[Any]] = {None: [metadata]}
     for each in repeats:
-        if each.field in names and each.field not in seen:
+        if each.field is None:
+            if WHOLE_METADATA not in seen:
+                seen[WHOLE_METADATA] = list(metadata_snapshot(metadata))
+        elif each.field in names and each.field not in seen:
             seen[each.field] = list(metadata_snapshot(getattr(metadata, each.field)))
     return seen
 
@@ -442,8 +451,9 @@ def _segment(slot: Any, key: yaml.Node, block: str) -> str:
 def _path_text(path: tuple[Any, ...] | None, block: str) -> str:
     """The path of a mapping as text. A path is the steps from the root, each linked to the one before it, so
     that a step is made for a mapping or sequence entered, not for each entry: ``(before, step)``, a step being
-    ``("k", slot, key)``, ``("i", position)`` for a sequence entry or ``("m", position)`` for a source of a merge,
-    whose position is None unless the sources are a list."""
+    ``("k", slot, key)``, ``("i", position)`` for a sequence entry or ``("m", position, merge)`` for a source of a
+    merge, whose position is None unless the sources are a list, and *merge* the number of its ``<<`` (from 1)
+    when the mapping writes more than one, None otherwise (``x.<<#2[0]``, #133)."""
     steps = []
     while path is not None:
         path, (kind, *step) = path
@@ -452,7 +462,8 @@ def _path_text(path: tuple[Any, ...] | None, block: str) -> str:
         elif kind == "i":
             steps.append(f"[{step[0]}]")
         else:
-            steps.append(".<<" if step[0] is None else f".<<[{step[0]}]")
+            number = "" if len(step) < 2 or step[1] is None else f"#{step[1]}"
+            steps.append(f".<<{number}" if step[0] is None else f".<<{number}[{step[0]}]")
     return "".join(reversed(steps)).removeprefix(".")
 
 
@@ -521,12 +532,15 @@ def repeated_keys(
                 held.add(id(entry))
         return held
 
+    # A collection reached twice (an alias, a `<<` source) is part of more than one field of the model.
+    shared = bool(merges)
     Item = tuple[yaml.Node, "tuple[Any, ...] | None", "yaml.Node | None"]  # node, path, mapping it is merged into
     containers = (yaml.MappingNode, yaml.SequenceNode)
     stack: list[Item] = [(root, None, None)]
     while stack:
         node, path, owner = stack.pop()
         if (id(node), id(owner) if owner else 0) in seen or (owner and (id(node), 0) in seen):
+            shared = True
             continue
         seen.add((id(node), id(owner) if owner else 0))
         children: list[Item] = []
@@ -570,10 +584,14 @@ def repeated_keys(
                             found.append(repeat)
                 if isinstance(group[-1][1], containers):
                     children.append((group[-1][1], (path, ("k", slot, group[-1][0])), None))
-            for source in sources:
+            for number, source in enumerate(sources, 1):
+                merge = number if len(sources) > 1 else None  # which `<<`, when it is written more than once
                 for index, each in enumerate(source.value) if isinstance(source, yaml.SequenceNode) else [(None, source)]:
-                    children.append((each, (path, ("m", index)), owner))
+                    children.append((each, (path, ("m", index, merge)), owner))
         stack.extend(reversed(children))
+    if shared:
+        # What a finding describes may be held under other fields as well: it is judged against the whole metadata.
+        return tuple(dataclasses.replace(each, field=None) for each in found)
     return tuple(found)
 
 
@@ -745,7 +763,7 @@ class SourceMap:
     #: The keys of the other frontmatter mappings that a later key replaces (``repeated_keys``, #131), and,
     #: when there are any, ``metadata_fields_snapshot`` of the metadata as parsed: they describe its source text.
     repeats: tuple[Repeated, ...] = ()
-    metadata_seen: dict[str | None, list[Any]] = field(default_factory=dict, compare=False, repr=False)
+    metadata_seen: dict[str | int | None, list[Any]] = field(default_factory=dict, compare=False, repr=False)
     #: The offset of each line of ``lines`` in the source as given to ``parse`` (``line_starts``, #150):
     #: given by ``parse`` when that source starts with a byte-order mark or ends a line at CR, so that
     #: ``lines`` joined with LF is not it; else worked out from ``lines`` once asked for.
@@ -1027,10 +1045,14 @@ class Locator:
         metadata, seen = self._document.metadata, self._map.metadata_seen
         if seen.get(None, [None])[0] is not metadata:
             return []
-        fresh: dict[str, bool] = {}
+        fresh: dict[str | int, bool] = {}
 
         def unchanged(name: str | None) -> bool:
-            if name is None or name not in seen:
+            if name is None:
+                if WHOLE_METADATA not in fresh:
+                    fresh[WHOLE_METADATA] = metadata_unchanged(metadata, seen.get(WHOLE_METADATA, []))
+                return fresh[WHOLE_METADATA]
+            if name not in seen:
                 return True  # under no field of the model
             if name not in fresh:
                 fresh[name] = metadata_unchanged(getattr(metadata, name), seen[name])
