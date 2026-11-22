@@ -20,11 +20,10 @@ from typing import Any
 from ..directives import Directive, Lexed, is_escaped, lex
 from ..markdown import comment_closers, comment_end, find_all, strip_comments
 from ..markers import MARKER_RE, Marker, is_look_alike, parse_marker
-from ..models import Block, Document
+from ..models import PARAGRAPH_KINDS, Block, Document
 from .conditions import ALWAYS, Condition, Presence, condition_problem, parse_condition
 from .patterns import MAX_SECTION_LEVEL
 
-_PARAGRAPHS = ("paragraph", "definition", "ref", "term")
 _LISTS = ("ordered_list", "unordered_list")
 
 
@@ -246,7 +245,7 @@ def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex)
                 template_only = bool(
                     section is None
                     and at_end
-                    and block.kind in _PARAGRAPHS
+                    and block.kind in PARAGRAPH_KINDS
                     and marker
                     and marker.condition
                     and not marker.identifier
@@ -336,7 +335,7 @@ class Units:
         if kind in _LISTS:
             items = self._fragment_items(section, block, fragment)
             return (section, block, items[-1]) if items else None
-        if kind in _PARAGRAPHS:
+        if kind in PARAGRAPH_KINDS:
             return section, block, None
         return None
 

@@ -67,7 +67,7 @@ def old_find_markers(document, lex_fragment=lex):
     _PREAMBLE_ANCHOR = units_module._PREAMBLE_ANCHOR
     _PREAMBLE_CONDITION = units_module._PREAMBLE_CONDITION
     _PREAMBLE_ITEM = units_module._PREAMBLE_ITEM
-    _PARAGRAPHS = units_module._PARAGRAPHS
+    _PARAGRAPHS = units_module.PARAGRAPH_KINDS
     _LISTS = units_module._LISTS
 
     found = []
