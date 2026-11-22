@@ -715,13 +715,14 @@ Where this differs from CommonMark, or is read more simply:
       those before any raw HTML, code, quote or table in it (an answer may end an HTML comment, and what follows is
       read anew), and a line continues it if it and the lines between begin with no `>`, list marker, digit, `#`, `=`,
       `` ` ``, `~`, `<`, `|`, `_` or answer. A value that a typed placeholder assembles to (`{{date: …}}`,
-      `{{money: …}}`, `{{duration: …}}`) opens no title, written or rendered, so it may be the character after the
+      `{{money: …}}`, `{{duration: …}}`, with a date or a number as its value) opens no title, written or rendered, so it may be the character after the
       destination's blank (`[a]: u {{placeholder: d1}} {{p1}} …` is clean, #144); in the destination's place it is
       not read past. The cutoff is
       not tried, and costs nothing, for a region in which a line begins with a label that cannot be dead from its
       text up to the first `{{` (`[a]: u {{p}}`: a destination, a blank, then an answer), unless the line continues
       the text before it: the line before is the one assembly leaves there, past a drafting note it removes, and a
-      label after a line that may vanish (nothing but choices whose phrases may be empty, a conditional unit), a
+      label after a line that may vanish without it (nothing but choices whose phrases may be empty, a conditional
+      unit that does not hold the label too), a
       blank line, a heading, a rule, a fence, raw HTML, a table row or a quote may begin a paragraph (#144). So
       `[Option A]: The Seller shall pay {{p1}} to {{p2}} at {{p3}}.`, a drafting note, then `[b]: v {{p4}}` is
       clean. It is charged like the

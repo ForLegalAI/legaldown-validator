@@ -1189,6 +1189,7 @@ def test_a_typed_value_after_a_destination_and_a_blank_makes_a_label_dead_and_no
         assert not hazards._dead(f"[a]: u{value} \x01", 0)
         assert not hazards._dead(f"[a]: {value} x \x01", 0)
     assert not hazards._dead("[a]: u {{ref: x}} \x01", 0) and not hazards._dead("[a]: u \x01", 0)
+    assert not hazards._dead('[a]: u {{date: "t"}} \x01', 0)  # (a value that is none may be written as it is)
     assert hazards._hopeless("[a]: u {{placeholder: n}}")
     assert not hazards._hopeless("[a]: u {{placeholder: n}}", typed=True)
     assert hazards._hopeless("[a]: u{{placeholder: n}}", typed=True)
@@ -1229,6 +1230,11 @@ def test_reading_the_paragraphs_of_an_assembly_is_charged(monkeypatch):
         (f"[Option A]: The Seller shall pay {_BLANKS}.\n> [!DRAFTING]\n> n\n[b]: v {{{{placeholder: p4}}}}\n", 0, 1),
         # With a blank line after the note it begins a paragraph, and the hazard is reported.
         (f"[Option A]: The Seller shall pay {_BLANKS}.\n> [!DRAFTING]\n> n\n\n[b]: v {{{{placeholder: p4}}}}\n", 1, 1),
+        # In one conditional unit, the lines go together: the label continues the paragraph.
+        (f"## S {{when=q}}\n\n[Option A]: The Seller shall pay {_BLANKS}.\n[Option B]: {{{{placeholder: p4}}}} shall pay.\n", 0, 1),
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n[b]: https://x\nand more. {{when=q}}\n", 0, 1),
+        # A conditional paragraph before it, removed, leaves the label at a paragraph's start.
+        ("Text {when=q}\n\n[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at {{placeholder: p3}}.\n", 3, 0),
     ],
 )
 def test_the_line_before_a_label_is_the_one_assembly_leaves(monkeypatch, body, count, tried):

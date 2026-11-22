@@ -99,7 +99,7 @@ _LABEL_START_RE = re.compile(r"^[ \t>*+\-0-9.)]*\[", re.M)
 _LABEL_END_RE = re.compile(r"\](?::|\{\{)")
 #: How a value that a typed placeholder assembles to begins (``assembly._value_directive``), and a value written in
 #: the template: what a label's line holds there opens no title (``_dead``).
-_VALUE_OPENINGS = ("{{date:", "{{money:", "{{duration:")
+_VALUE_RE = re.compile(r"\{\{(?:date: [0-9]{4}-[0-9]{2}-[0-9]{2}|money: [0-9]|duration: [0-9])")
 #: A line that continues the paragraph before it in every reading: blanks, then text that begins no block in any
 #: context (not a quote's ``>``, a list item's marker, a heading, a fence, a rule, raw HTML or a table), nor an answer.
 _CONTINUATION_RE = re.compile(r"[ \t]*[^ \t>\-*+0-9#=`~<|_\x01]")
@@ -344,13 +344,16 @@ class _Assembler:
         # The question of each condition by the line of its marker, which the region that holds the line asks.
         self.tests = sorted((unit.marker_line, unit.test.question) for unit in self.source.units if unit.test)
         self.heading_starts = set(self.source.headings)
-        # The lines that may be gone from an output: a conditional unit's, and those of nothing but choices.
-        self.vanishing: set[int] = {
-            line for unit in self.source.units for line in range(unit.start, unit.end)
-        } | {
+        # The lines of nothing but choices, which are deleted when their phrases are empty (step 5).
+        self.choice_only: set[int] = {
             line for line in self.by_line
             if line not in self.tables and not is_blank(self.source.lines[line]) and is_blank(self._bare(line))
         }
+        # The conditional units that hold each line, by their number: a line goes with them.
+        self.covering: dict[int, set[int]] = {}
+        for number, unit in enumerate(self.source.units):
+            for line in range(unit.start, unit.end):
+                self.covering.setdefault(line, set()).add(number)
         self.left = [BUDGET] if budget is None else budget  # the work that the validation may still use
         self.memo: dict[tuple, frozenset[str] | None] = {}  # by the region's shape: the questions of the hazards
 
@@ -399,10 +402,7 @@ class _Assembler:
             if unit.start not in headings or (unit.start and not is_blank(lines[unit.start - 1])):
                 removable.update(range(unit.start, unit.end))
                 extents.append((unit.start, unit.end))
-        vanishing = {
-            line for line in self.by_line
-            if line not in self.tables and not is_blank(lines[line]) and is_blank(self._bare(line))
-        }
+        vanishing = self.choice_only
         removable |= vanishing
         extents += _runs(vanishing)
         # A line of a quote's markers and choices only is an empty quote line if the phrases are empty, which ends the
@@ -708,15 +708,18 @@ class _Assembler:
     def _opens(self, start: int, line: int) -> bool:
         """Whether *line* of the region that begins at *start* may begin a paragraph in some output, as ``_hopeless``
         is asked of it (``_may_open``), from the line that is before it there: a drafting note is removed (§15.7.2
-        step 2), so the line before the note; and a line that may vanish (nothing but choices whose phrases may be
-        empty, deleted by step 5, or a conditional unit's) may leave it after a blank line or the region's start."""
+        step 2), so the line before the note; and a line that may vanish without it (nothing but choices whose phrases
+        may be empty, deleted by step 5, or a conditional unit's that does not hold it too) may leave it after a blank
+        line or the region's start."""
         lines = self.source.lines
         before = line - 1
         while before >= start and before in self.source.notes:
             before -= 1
-        if before < start or before in self.solid or before in self.vanishing:
+        if before < start or before in self.choice_only or not self.covering.get(before, set()) <= self.covering.get(
+            line, set()
+        ):
             return True
-        return _may_open([lines[before], lines[line]], 1)
+        return _may_open([lines[before], lines[line]], 1, before in self.solid)
 
     def _mini(self, start: int, end: int, context: list[str], insertions: list, names: list, declared: dict) -> str:
         """The region as a template of its own: the *context*, then its lines with the question of each
@@ -1007,7 +1010,7 @@ def _dead(line: str, at: int) -> bool:
     character was read, so no answer in the slots and no line after it changes that. A label that is not at the
     start of a paragraph is not read at all. ``tests/test_definition_hazards`` holds the oracle of it.
 
-    That character may be the ``{{`` of a value (``_VALUE_OPENINGS``: a typed placeholder assembles to one, #144):
+    That character may be the ``{{`` of a value (``_VALUE_RE``: a typed placeholder assembles to one, #144):
     as written it is a ``{``, and rendered it is a date, an amount or a duration, which begin with a digit, a letter
     or a currency's sign; neither opens a title, and the model keeps a definition with ``{{`` in it as text. A value
     in the destination's place is not read past: rendered, it may hold no blank."""
@@ -1031,7 +1034,7 @@ def _dead(line: str, at: int) -> bool:
         return False
     k = skip_blanks(rest, j)
     if k == len(rest):
-        return whole.startswith(_VALUE_OPENINGS, k)
+        return _VALUE_RE.match(whole, k) is not None
     return rest[k] not in "\"'("
 
 
@@ -1042,7 +1045,7 @@ def _hopeless(line: str, typed: bool = False) -> bool:
     nothing (the line's end) or a ``{{placeholder:}}`` (an answer, or a typed value: both end what ``_dead``
     reads), and a marker ``{when=}`` at the end of the line is not in the output. A typed value (*typed*: that
     first ``{{`` is a date, money or duration placeholder) after a destination and a blank opens no title
-    (``_VALUE_OPENINGS``): that label is dead, not hopeless (#144)."""
+    (``_VALUE_RE``): that label is dead, not hopeless (#144)."""
     found = _LABEL_START_RE.match(line)
     if found is None or "{when=" in line or "{#" in line:
         return False
