@@ -20,7 +20,8 @@ than ``WORK_CAP`` (its lines and insertions, for each assembly), and every regio
 ``BUDGET`` of work, is judged by the conservative rule instead: every insertion in it is reported, if a
 definition can begin in it at all. A region of text insertions is first assembled once for each combination of
 its decisions (at most ``DECISION_CAP``), with a sentinel for every text answer, and is clean if every label in
-the output is dead (``_dead``): then no answer, and nothing after the label, can make it a definition (#137).
+the output is dead (``_dead``): then no answer, and nothing after the label, can make it a definition (#137). A
+label on a line that continues a paragraph is none (``_continued``, #144).
 This is the one module that reads the assembler's private parts, so that it
 is the one to change when assembly does.
 """
@@ -40,8 +41,8 @@ from ..definitions import nested_blocks
 from ..directives import Directive, lex
 from ..markdown import is_blank, is_drafting_marker, label_end, skip_blanks
 from ..markers import MARKER_RE
-from ..models import Document
-from ..parser import parse
+from ..models import PARAGRAPH_KINDS, Document
+from ..parser import _layout, parse
 from ..positions import Locator
 from .patterns import IDENTIFIER_RE, VALID_PLACEHOLDER_TYPES
 from .result import _Recorder
@@ -94,6 +95,12 @@ _VALUES = ("12", "3")
 #: what ends its label, with the colon or an insertion that could be one after it.
 _LABEL_START_RE = re.compile(r"^[ \t>*+\-0-9.)]*\[", re.M)
 _LABEL_END_RE = re.compile(r"\](?::|\{\{)")
+#: How a value that a typed placeholder assembles to begins (``assembly._value_directive``), and a value written in
+#: the template: what a label's line holds there opens no title (``_dead``).
+_VALUE_OPENINGS = ("{{date:", "{{money:", "{{duration:")
+#: A line that continues the paragraph before it in every reading: blanks, then text that begins no block in any
+#: context (not a quote's ``>``, a list item's marker, a heading, a fence, a rule, raw HTML or a table), nor an answer.
+_CONTINUATION_RE = re.compile(r"[ \t]*[^ \t>\-*+0-9#=`~<|_\x01]")
 #: A directive on a line, in the text that an insertion is read with.
 _DIRECTIVE_RE = re.compile(r"\{\{[^\n]*?\}\}")
 #: A line's list item markers and the blanks after them: how an item's marker line is repeated in the context.
@@ -307,7 +314,6 @@ class _Assembler:
     ) -> None:
         # The assembler imports the validator, and so this module: imported when used.
         from .. import assembly
-        from ..parser import _layout
 
         self.assembly = assembly
         if declared is None:
@@ -616,9 +622,18 @@ class _Assembler:
             decisions *= len(values)
         cost = decisions * weight + fixed
         too_many = len(TEXT_WITNESSES) ** len(texts) > CAP  # (over the cap whatever the places)
+        # The typed placeholders, by line and column: the value each assembles to opens no title (``_hopeless``).
+        typed = {
+            (occ.line, occ.start) for occ, name in zip(insertions, names, strict=True)
+            if name is not None and _typed(declared[name])
+        }
         cutoff = (
             bool(texts) and decisions <= DECISION_CAP and cost <= WORK_CAP
-            and SENTINEL not in "".join([*context, *lines]) and not any(map(_hopeless, lines))
+            and SENTINEL not in "".join([*context, *lines])
+            and not any(
+                _hopeless(line, (start + number, line.find("{{")) in typed)
+                for number, line in enumerate(lines) if _may_open(lines, number)
+            )
         )
         if too_many and not cutoff:
             return everything, True
@@ -628,9 +643,11 @@ class _Assembler:
         size = 1
         for values in keys.values():
             size *= len(values)
+        # (Whether the region is under a heading is part of its shape: a list item's marker is no marker in the
+        # preamble, ``_mini``, and the same lines there and in a section are read apart, #144.)
         shape = (
             tuple(lines), tuple(context), tuple(names), tuple((name, repr(each)) for name, each in declared.items()),
-            tuple((name, tuple(keys[name])) for name in texts),
+            tuple((name, tuple(keys[name])) for name in texts), self._under(start),
         )
 
         def template() -> Any:
@@ -693,11 +710,14 @@ class _Assembler:
                 at = high
             lines[number - start] = "".join([*pieces, line[at:]])
         front = "---\n" + yaml.safe_dump({"title": "x", "questions": declared}, sort_keys=False) + "---\n\n"
-        # A marker is in a marker position in a section, and not in the preamble (§5.7): the region has the heading
-        # it is under, unless it is the heading.
+        return front + ("# x\n\n" if self._under(start) else "") + "\n".join([*context, *lines]) + "\n"
+
+    def _under(self, start: int) -> bool:
+        """Whether the region that begins at line *start* is under a heading, and is not the heading: the mini
+        template has one then (``_mini``). A marker is in a marker position in a section, and not in the preamble
+        (§5.7): a list item's ``{when=}`` there is text."""
         headings = self.source.headings
-        under = bool(headings) and headings[0] <= start and start not in self.heading_starts
-        return front + ("# x\n\n" if under else "") + "\n".join([*context, *lines]) + "\n"
+        return bool(headings) and headings[0] <= start and start not in self.heading_starts
 
     def _declaration(self, question: str) -> dict | None:
         """The declaration of decision question *question* as the mini template repeats it, or None."""
@@ -760,8 +780,8 @@ class _Assembler:
         """Whether no definition can be read in the region whatever its text answers: for every combination of the
         answers to the *deciding* questions, with the others *fixed* (the texts answered by ``SENTINEL``, a typed
         question by its first answer: it is read no further than its ``{{``), every label in the output is dead
-        (``_all_dead``). The output is the template's text up to the first answer, which is all that ``_dead``
-        reads of it."""
+        (``_all_dead``), or continues a paragraph (``_continued``). The output is the template's text up to the first
+        answer, which is all that ``_dead`` reads of it, and its lines, which are every output's."""
         for combo in product(*deciding.values()):
             lines = self._assemble(mini, dict(zip(deciding, combo, strict=True)), fixed)
             if lines is not None and not _all_dead(lines):
@@ -947,15 +967,20 @@ def _dead(line: str, at: int) -> bool:
     run, which ends at the blank; ``skip_line_space`` stops at the character that is no opener, on the same line,
     so that the title is none, and the destination's line is not ended by it: None. Nothing after that
     character was read, so no answer in the slots and no line after it changes that. A label that is not at the
-    start of a paragraph is not read at all. ``tests/test_definition_hazards`` holds the oracle of it."""
+    start of a paragraph is not read at all. ``tests/test_definition_hazards`` holds the oracle of it.
+
+    That character may be the ``{{`` of a value (``_VALUE_OPENINGS``: a typed placeholder assembles to one, #144):
+    as written it is a ``{``, and rendered it is a date, an amount or a duration, which begin with a digit, a letter
+    or a currency's sign; neither opens a title, and the model keeps a definition with ``{{`` in it as text. A value
+    in the destination's place is not read past: rendered, it may hold no blank."""
     close = label_end(line, at)
     if close is None:
         return False
     after = line[close + 1:close + 2]
     if after != ":":
         return after != SENTINEL
-    rest = line[close + 2:]
-    rest = rest[:min([n for n in (rest.find(SENTINEL), rest.find("{{")) if n >= 0], default=len(rest))]
+    whole = line[close + 2:]
+    rest = whole[:min([n for n in (whole.find(SENTINEL), whole.find("{{")) if n >= 0], default=len(whole))]
     i = skip_blanks(rest, 0)
     if i == len(rest) or rest[i] == "<":
         return False
@@ -967,15 +992,19 @@ def _dead(line: str, at: int) -> bool:
     if j == len(rest):
         return False
     k = skip_blanks(rest, j)
-    return k < len(rest) and rest[k] not in "\"'("
+    if k == len(rest):
+        return whole.startswith(_VALUE_OPENINGS, k)
+    return rest[k] not in "\"'("
 
 
-def _hopeless(line: str) -> bool:
+def _hopeless(line: str, typed: bool = False) -> bool:
     """Whether the *line* of the template, if a label begins it, is certainly no dead label (``_dead``) in any
     output, from its text up to its first ``{{`` alone: the cutoff is not tried for a region that holds one. It
     only decides whether to try, never that a region is clean. What follows that text is unknown, unless it is
     nothing (the line's end) or a ``{{placeholder:}}`` (an answer, or a typed value: both end what ``_dead``
-    reads), and a marker ``{when=}`` at the end of the line is not in the output."""
+    reads), and a marker ``{when=}`` at the end of the line is not in the output. A typed value (*typed*: that
+    first ``{{`` is a date, money or duration placeholder) after a destination and a blank opens no title
+    (``_VALUE_OPENINGS``): that label is dead, not hopeless (#144)."""
     found = _LABEL_START_RE.match(line)
     if found is None or "{when=" in line or "{#" in line:
         return False
@@ -999,17 +1028,60 @@ def _hopeless(line: str) -> bool:
             return True
         j += 1
     k = skip_blanks(rest, j)
-    return ends if k == len(rest) else rest[k] in "\"'("
+    if k == len(rest):
+        return ends and not (typed and j < len(rest))
+    return rest[k] in "\"'("
+
+
+def _may_open(lines: list[str], number: int) -> bool:
+    """Whether line *number* of the template's *lines* may begin a paragraph, as ``_hopeless`` is asked of it:
+    unless it follows a line of text and continues it (``_CONTINUATION_RE``). ``_continued`` says so of the output;
+    here it is a guess, which only decides whether the cutoff is tried."""
+    if number == 0 or is_blank(lines[number - 1]) or lines[number - 1].lstrip(" \t").startswith(">"):
+        return True
+    return _CONTINUATION_RE.match(lines[number]) is None
 
 
 def _all_dead(lines: list[str]) -> bool:
     """Whether every label that opens a line of the assembled *lines* is dead (``_dead``): a candidate is each
-    ``[`` that a definition could begin with, which is more than the definitions there are."""
-    for line in lines:
+    ``[`` that a definition could begin with, which is more than the definitions there are, but for the lines that
+    continue a paragraph whose first line is no definition (``_continued``, asked only when a candidate is not
+    dead)."""
+    live = []
+    for number, line in enumerate(lines):
         found = _LABEL_START_RE.match(line)
         if found is not None and not _dead(line, found.end() - 1):
-            return False
-    return True
+            live.append(number)
+    if not live:
+        return True
+    continued = _continued(lines)
+    return all(number in continued for number in live)
+
+
+def _continued(lines: list[str]) -> set[int]:
+    """The lines of the assembled *lines* that can begin no definition, whatever the text answers (``SENTINEL``
+    here) are, because they continue a paragraph (#144). A definition cannot interrupt a paragraph (CommonMark
+    §4.7): the definitions of one are read from its first line on, one after the other, and a line that is no
+    definition ends them. So a line of a paragraph after its first is no candidate, if it and every line between
+    continue the paragraph in every reading (``_CONTINUATION_RE``); the first line is a candidate, and dead or no
+    ``[`` there means that no definition is read in the paragraph at all.
+
+    It holds if every output has the paragraph that the parser reads in this one. An answer is not empty, holds no
+    line break and begins no block (assembly's line-start check, §15.7.3), and escapes ``|``, so blank lines, line
+    starts and tables are the same in every output; what an answer can still change is where an HTML block ends
+    (``-->`` in it ends a comment), and with it what follows, so an output with raw HTML or code in it (or a quote,
+    whose blocks the layout does not give) has no such line, nor one with a table."""
+    spans = _spans(_layout(lines))
+    if any(span.kind in ("code", "html", "quote", "table") for span in spans):
+        return set()
+    found: set[int] = set()
+    for span in spans:
+        if span.kind in PARAGRAPH_KINDS:
+            for number in range(span.start + 1, span.end):
+                if _CONTINUATION_RE.match(lines[number]) is None:
+                    break
+                found.add(number)
+    return found
 
 
 def _definitions(output: str) -> tuple[tuple[str, str, str], ...]:
