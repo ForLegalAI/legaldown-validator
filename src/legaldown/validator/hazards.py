@@ -344,6 +344,13 @@ class _Assembler:
         # The question of each condition by the line of its marker, which the region that holds the line asks.
         self.tests = sorted((unit.marker_line, unit.test.question) for unit in self.source.units if unit.test)
         self.heading_starts = set(self.source.headings)
+        # The lines that may be gone from an output: a conditional unit's, and those of nothing but choices.
+        self.vanishing: set[int] = {
+            line for unit in self.source.units for line in range(unit.start, unit.end)
+        } | {
+            line for line in self.by_line
+            if line not in self.tables and not is_blank(self.source.lines[line]) and is_blank(self._bare(line))
+        }
         self.left = [BUDGET] if budget is None else budget  # the work that the validation may still use
         self.memo: dict[tuple, frozenset[str] | None] = {}  # by the region's shape: the questions of the hazards
 
@@ -636,7 +643,8 @@ class _Assembler:
             and SENTINEL not in "".join([*context, *lines])
             and not any(
                 _hopeless(line, (start + number, line.find("{{")) in typed)
-                for number, line in enumerate(lines) if _may_open(lines, number, start + number - 1 in self.solid)
+                for number, line in enumerate(lines)
+                if start + number not in self.source.notes and self._opens(start, start + number)
             )
         )
         if too_many and not cutoff:
@@ -696,6 +704,19 @@ class _Assembler:
         if flagged is None:
             return everything, True
         return [name in flagged for name in names], False
+
+    def _opens(self, start: int, line: int) -> bool:
+        """Whether *line* of the region that begins at *start* may begin a paragraph in some output, as ``_hopeless``
+        is asked of it (``_may_open``), from the line that is before it there: a drafting note is removed (§15.7.2
+        step 2), so the line before the note; and a line that may vanish (nothing but choices whose phrases may be
+        empty, deleted by step 5, or a conditional unit's) may leave it after a blank line or the region's start."""
+        lines = self.source.lines
+        before = line - 1
+        while before >= start and before in self.source.notes:
+            before -= 1
+        if before < start or before in self.solid or before in self.vanishing:
+            return True
+        return _may_open([lines[before], lines[line]], 1)
 
     def _mini(self, start: int, end: int, context: list[str], insertions: list, names: list, declared: dict) -> str:
         """The region as a template of its own: the *context*, then its lines with the question of each

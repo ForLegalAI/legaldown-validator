@@ -340,6 +340,31 @@ def gen_option(rng, max_text=4):
 
 GENERATORS = {"real": gen_real, "fz2": gen_fz2, "nest": gen_nest, "cond": gen_cond, "option": gen_option}
 
+#: What may lie between an ``[Option A]:`` paragraph's first line and a label line after it: something assembly
+#: removes (a drafting note, a line of choices that may be empty, a conditional paragraph), with or without blank
+#: lines around it, or text.
+_BETWEEN = [
+    ["> [!DRAFTING]", "> n"], ["> [!DRAFTING]", "> n", ""], ["", "> [!DRAFTING]", "> n"], ["", "> [!DRAFTING]", "> n", ""],
+    ['{{choose: c1, true="", false="Recitals."}}'], ['{{choose: c1, true="", false="z"}}', ""],
+    ["", "Text {when=q}", ""], ["and more"], [],
+]
+_AFTER = [
+    "[b]: v {{placeholder: p4}}", '[b]: v "{{placeholder: p4}}"', "[Option B]: {{placeholder: p4}} shall pay.",
+    "[b]: https://x", "[b]:", '[b]: {{choose: c2, true="\\"", false="(t)"}}', "  [b]: v {{placeholder: p4}}",
+    "> [b]: v {{placeholder: p4}}", "- [b]: v {{placeholder: p4}}",
+]
+
+
+def gen_joined(rng, max_text=4):
+    """A dead ``[Option A]:`` line of text blanks, then what assembly removes (``_BETWEEN``), then a label line
+    (``_AFTER``) and maybe the next one: the line before a label is not the one in the output (#144)."""
+    blanks = [f"{{{{placeholder: p{n}}}}}" for n in range(1, rng.randint(2, min(3, max_text)) + 1)]
+    first = rng.choice(["[Option A]: The Seller shall pay ", "[a]: u ", "The Seller shall pay "]) + " to ".join(blanks) + "."
+    lines = [first, *rng.choice(_BETWEEN), rng.choice(_AFTER)]
+    if rng.random() < 0.3:
+        lines += [*rng.choice(_BETWEEN), rng.choice(_AFTER)]
+    return _template(lines, rng)
+
 
 # ── The whole-document reference: the product of the witnesses ────
 
@@ -776,6 +801,15 @@ def random_vs_validator(generator, count, seed, bases=8, alternatives=8):
 _COUNT_RANDOM = {"real": 12, "fz2": 30, "nest": 6, "cond": 5, "option": 30}
 
 
+def test_random_answers_change_no_definition_where_assembly_joins_a_label_to_a_dead_paragraph():
+    """What assembly removes before a label line (a note, an empty choice, a conditional paragraph) decides whether
+    it continues a paragraph: random answers change no definition in a region the validator judged clean, the cutoff
+    decided some of them, and there were hazards (#144)."""
+    seen, found, cut, holes = random_vs_validator(gen_joined, 60, seed=1442, bases=4, alternatives=4)
+    assert not holes, holes[:2]
+    assert seen > 40 and found > 5 and cut > 10, (seen, found, cut)
+
+
 @pytest.mark.parametrize("name", GENERATORS)
 def test_random_answers_change_no_definition_in_a_region_the_validator_judged_clean(name):
     seen, found, cut, holes = random_vs_validator(
@@ -1183,6 +1217,26 @@ def test_reading_the_paragraphs_of_an_assembly_is_charged(monkeypatch):
     assert hazards._all_dead(["[a]: The u \x01", "[b]: v"], lambda: charged.append(1) or True) and charged == [1]
     assert hazards._all_dead(["[a]: The u \x01"], lambda: charged.append(1) or True) and charged == [1]  # (all dead: none)
     assert not hazards._all_dead(["[a]: The u \x01", "[b]: v"], lambda: False)  # (past the budget: not settled)
+
+
+@pytest.mark.parametrize(
+    ("body", "count", "tried"),
+    [
+        # A line of choices that may be empty: the label after it may open the paragraph, and is hopeless.
+        ('{{choose: c1, true="", false="Recitals."}}\n[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at '
+         "{{placeholder: p3}}.\n", 4, 0),
+        # A drafting note is removed: the label after it continues the paragraph before it, and is no candidate.
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n> [!DRAFTING]\n> n\n[b]: v {{{{placeholder: p4}}}}\n", 0, 1),
+        # With a blank line after the note it begins a paragraph, and the hazard is reported.
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n> [!DRAFTING]\n> n\n\n[b]: v {{{{placeholder: p4}}}}\n", 1, 1),
+    ],
+)
+def test_the_line_before_a_label_is_the_one_assembly_leaves(monkeypatch, body, count, tried):
+    """``_opens``: a note is skipped, and a line that may vanish lets the label open a paragraph (#144)."""
+    settled = _count(monkeypatch, "_settled", hazards._Assembler)
+    found = reported(body)
+    assert len(found) == count, found
+    assert settled[0] == tried
 
 
 _PREAMBLE_HAZARD = 'x {when=q}\n- {{choose: c1, true="", false="z"}}\n  [a]: u {{placeholder: p1}} {when=q}\n'

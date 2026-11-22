@@ -719,7 +719,12 @@ Where this differs from CommonMark, or is read more simply:
       destination's blank (`[a]: u {{placeholder: d1}} {{p1}} …` is clean, #144); in the destination's place it is
       not read past. The cutoff is
       not tried, and costs nothing, for a region in which a line begins with a label that cannot be dead from its
-      text up to the first `{{` (`[a]: u {{p}}`: a destination, a blank, then an answer). It is charged like the
+      text up to the first `{{` (`[a]: u {{p}}`: a destination, a blank, then an answer), unless the line continues
+      the text before it: the line before is the one assembly leaves there, past a drafting note it removes, and a
+      label after a line that may vanish (nothing but choices whose phrases may be empty, a conditional unit), a
+      blank line, a heading, a rule, a fence, raw HTML, a table row or a quote may begin a paragraph (#144). So
+      `[Option A]: The Seller shall pay {{p1}} to {{p2}} at {{p3}}.`, a drafting note, then `[b]: v {{p4}}` is
+      clean. It is charged like the
       witnesses (`WORK_CAP`, the budget), once for each shape of region, whether it settles it or not. Measured, in a paragraph that begins `[label]:` and a
       sentence of nine words: one text blank is tried in 5 ms, two in 0.14 s (0.3 s with a choice, 0.5 s with a
       condition on the item); three or more fall back only when the label's line, after the colon, does not hold a
