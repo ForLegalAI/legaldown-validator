@@ -222,19 +222,23 @@ def iter_include_paragraphs(
             yield section, index, directive
 
 
-def find_markers(document: Document, lex_fragment: Callable[[str], Lexed] = lex) -> list[FoundMarker]:
+def find_markers(
+    document: Document, lex_fragment: Callable[[str], Lexed] = lex, *, where: Locator | None = None
+) -> list[FoundMarker]:
     """Every marker and look-alike in the document's body text, outside code,
     comments, directives, and escapes (§11.4), with its place: placed or not.
     ``FoundMarker.placed(template)`` says which of them apply.
 
     *lex_fragment* reads a text's directives; by default, the package lexer.
+    *where*: a ``Locator`` of *document* the caller already has, to read the
+    markers' ``span`` with; else one is built for the first marker.
     """
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> units would otherwise be a cycle.
     from ..definitions import block_fragments
 
     found: list[FoundMarker] = []
-    where: Locator | None = None  # built for the first marker: most blocks hold none
+    # Built for the first marker, when the caller gave none: most blocks hold none.
     for section, block_index, block in document.iter_indexed_blocks():
         for fragment_index, (fragment, position) in enumerate(block_fragments(block)):
             if "{" not in fragment or ("#" not in fragment and "when=" not in fragment):

@@ -800,3 +800,23 @@ def test_the_cli_refuses_both_template_flags(write, capsys):
         main(["validate", "--fragment", "--template", "--no-template", str(path)])
     assert exit_.value.code == 2
     assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_an_attach_target_that_is_no_id_references_no_attachment():
+    # A malformed target references no entry, not even one declared with that malformed id (#147).
+    source = (
+        "---\ntitle: T\nattachments:\n  - id: Sched A\n    title: S\n    file: s.pdf\n---\n\n"
+        "# A\n\nSee {{attach: Sched A}}.\n"
+    )
+    rules = [d.rule for d in validate(parse(source)).diagnostics]
+    assert "attachment-unreferenced" in rules
+    assert "attach-undeclared" in rules
+
+
+def test_an_undeclared_attach_target_is_quoted_as_written():
+    source = "## A {#a}\n\nSee {{attach:  annex }}.\n"
+    [message] = [
+        d.message for d in validate(parse(source), fragment=True, fragment_kind="include").diagnostics
+        if d.rule == "attach-undeclared"
+    ]
+    assert "'{{attach:  annex }}'" in message

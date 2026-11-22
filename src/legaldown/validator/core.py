@@ -1480,7 +1480,7 @@ def _check(
     # ── Templates and the presence of units (§15.1, §15.3) ──
     # Markers are found first: only a template gives a preamble paragraph's
     # condition its place (§5.7).
-    markers = find_markers(document, lex_fragment) if combined is None else combined.markers()
+    markers = find_markers(document, lex_fragment, where=where) if combined is None else combined.markers()
     if combined is not None:
         template = combined.template  # the document's own: §15.1, as the assembler decides it
     else:
@@ -1954,6 +1954,10 @@ def _check(
             )
 
     def marker_line(found: FoundMarker) -> int | None:
+        # The line find_markers read off the source (#150), so that a diagnostic and a host's
+        # chip agree; a search where it has none (a combined document has no source map).
+        if found.line is not None:
+            return found.line
         return where.find(found.section, found.block, found.source, found.fragment, found.offset)
 
     for found in markers:
@@ -2420,7 +2424,6 @@ def _check(
                         at=(-1 if section_index is None else section_index, block_index, fragment_index, directive.start),
                     )
                 elif name == "attach":
-                    referenced_attachments.add(value)
                     if not value:
                         # Whatever the host declares, a reference with no target is wrong.
                         result.error("attach-undeclared", f"'{directive.source}' has no target.", line=line)
@@ -2432,12 +2435,16 @@ def _check(
                             f"Attachment reference '{directive.source}' names no attachment id: "
                             "an id must match [a-z][a-z0-9-]*.", line=line,
                         )
-                    elif value not in attachment_ids:
-                        result.error(
-                            "attach-undeclared",
-                            f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.", line=line,
-                            depends=Depends.FRONTMATTER,
-                        )
+                    else:
+                        # Only a target that can be an id references an attachment: one that is
+                        # none references no entry, not even one declared with that malformed id.
+                        referenced_attachments.add(value)
+                        if value not in attachment_ids:
+                            result.error(
+                                "attach-undeclared",
+                                f"Attachment reference '{directive.source}' references undeclared attachment id.",
+                                line=line, depends=Depends.FRONTMATTER,
+                            )
         for target, line in ref_targets:
             if target in result.index.section_lookup:
                 continue

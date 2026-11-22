@@ -174,7 +174,7 @@ def _measure_problem(
     return None
 
 
-def _id_problem(value: str) -> str | None:
+def id_problem(value: str) -> str | None:
     """Why *value* cannot be a question id or choice value id (§15.2)."""
     if not IDENTIFIER_RE.fullmatch(value):
         return "must match [a-z][a-z0-9-]*"
@@ -188,7 +188,7 @@ def _choices_problem(choices: Any) -> str | None:
     if not isinstance(choices, dict) or len(choices) < 2:
         return "must declare at least two choices, as a map of value id to label"
     for value, label in choices.items():
-        problem = _id_problem(str(value))
+        problem = id_problem(str(value))
         if problem:
             return f"value id '{value}' {problem}"
         if not isinstance(label, str) or not label.strip():
@@ -226,7 +226,7 @@ def check_questions(
     declared = questions if isinstance(questions, dict) else {}
     for qid, declaration in declared.items():
         line = line_of("questions", qid)
-        problem = _id_problem(str(qid))
+        problem = id_problem(str(qid))
         if problem:
             invalid(f"Question id '{qid}' {problem} (§15.2).")
         qtype = question_type(declared, qid)

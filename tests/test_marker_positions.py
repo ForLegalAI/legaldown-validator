@@ -215,3 +215,24 @@ def test_a_look_alike_running_over_a_cell_end_does_not_hide_a_cells_marker():
     [found] = _check(source)
     assert found.source == "{#a|b}"
     assert _written(source, found) == "{#a\\|b}"
+
+
+def test_a_marker_diagnostic_is_on_the_line_find_markers_gives():
+    # The validator reports a marker at the line find_markers read off the source (#150).
+    from legaldown import validate
+
+    source = "# A\n\n> quoted {#z}\n\nText\nover lines {#bad_id}\n\n- a\n\t- b {#x when=Q}\n"
+    document = parse(source)
+    lines = {found.line for found in find_markers(document)}
+    reported = {d.line for d in validate(document).diagnostics if d.rule in ("anchor-misplaced", "anchor-format")}
+    assert reported and reported <= lines
+
+
+def test_find_markers_reads_spans_with_a_given_locator():
+    from legaldown.positions import Locator
+
+    source = "# A\n\nText {#a}\nmore {#b}\n"
+    document = parse(source)
+    given = find_markers(document, where=Locator(document))
+    assert [found.span for found in given] == [found.span for found in find_markers(document)]
+    assert all(source[s:e] == found.source for found in given for s, e in [found.span])

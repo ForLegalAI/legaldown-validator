@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .result import Depends, Line
-from .templates import _id_problem, question_type
+from .templates import id_problem, question_type
 
 _CONDITION_RE = re.compile(r"(!?)([a-z][a-z0-9-]*)(?::([a-z][a-z0-9-]*))?")
 
@@ -119,7 +119,7 @@ def _use_type(use: DecisionUse) -> tuple[str | None, str]:
     question = use.question
     if use.blank:
         return "value", ""
-    problem = _id_problem(question)
+    problem = id_problem(question)
     if problem:
         if not question:
             return None, "names no question, so no including document can declare one for it (§15.5)"
@@ -128,7 +128,7 @@ def _use_type(use: DecisionUse) -> tuple[str | None, str]:
         value = use.condition.value if use.condition is not None else None
         if value is None:
             return "boolean", ""
-        problem = _id_problem(value)
+        problem = id_problem(value)
         if problem:
             return None, (
                 f"tests the answer '{value}' of '{question}', which {problem}: it can be no choice's value, "
@@ -138,7 +138,7 @@ def _use_type(use: DecisionUse) -> tuple[str | None, str]:
     answers = set(use.answers)
     if answers == {"true", "false"}:
         return "boolean", ""
-    if len(answers) >= 2 and not any(_id_problem(answer) for answer in answers):
+    if len(answers) >= 2 and not any(id_problem(answer) for answer in answers):
         return "choice", ""
     listed = (
         f"{', '.join(use.answers)} as the answers" if len(use.answers) > 1
@@ -230,7 +230,7 @@ def undeclarable(uses: Iterable[DecisionUse]) -> tuple[dict[Any, str], set[str]]
     settled: set[str] = set()
     met: dict[str, _Declarable] = {}
     for use in uses:
-        if use.question in settled or (use.blank and _id_problem(use.question)):
+        if use.question in settled or (use.blank and id_problem(use.question)):
             continue  # a blank's id that is no question id is question-invalid, whatever is declared
         kind, problem = _use_type(use)
         at = use
@@ -245,7 +245,7 @@ def undeclarable(uses: Iterable[DecisionUse]) -> tuple[dict[Any, str], set[str]]
                 conflict = _both_ways(at, declarable.kind, use, kind)
             problem = conflict
         findings[at.key] = problem
-        if not _id_problem(use.question):
+        if not id_problem(use.question):
             settled.add(use.question)
     return findings, settled
 
