@@ -835,7 +835,7 @@ for _section, _index, block in document.iter_blocks():
 | `lex`, `Lexed`, `Directive`, `iter_directives`, `is_escaped`, `format_value` | The directive lexer (§11.4) and its inverse. A `Directive`'s `positional_span` and `param_spans` are where each value is written, quotes included, so `text[start:end]` is what to replace to change it; `Lexed.literals` are the comments and code spans the lexer skipped, as `(kind, start, end)` |
 | `iter_document_directives(document)` → `DirectiveLocation(section, block, fragment, directive)`, `collect_source_directives` | Every directive in a document's body, in order, read as `validate` reads it: `fragment` indexes `block_fragments(block)`, and is `None` for a `{{ref:}}`, `{{term:}}` or `{{def:}}` the parser lifted into a block's fields (a definition's comes before its text); the `{{ref:}}` and `{{term:}}` targets of a document |
 | `Marker`, `MARKER_RE`, `parse_marker`, `format_marker`, `is_look_alike` | Anchor and condition markers (§5.7, §15.3) |
-| `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`) |
+| `find_markers(document)`, `FoundMarker`, `is_include_only` | Every marker and look-alike in a document's body, placed or not; `FoundMarker.placed(template)` says which apply (`validate` gives the placed ones as `result.index.placed_markers`). `offset` is where it is in its fragment's text; `span` is where it is written in the source, and `line` its file line (below) |
 | `Fragment`, `ListFragment`, `block_fragments`, `list_fragments`, `text_fragments`, `list_items`, `item_text` | Where a block's text is, and a list's items |
 | `collect_definitions(document)` → `DefinitionRef`, `definition_lookup`, `id_term` | The definitions a document declares in its own source (§7), in document order, each with where it is; `definition_lookup(refs)` is their id-to-term map as `validate` builds `result.index.definition_lookup` (but for definitions imported from other files); `collect_definitions` leaves out a `{{def:}}` in a drafting note (§15.6); `id_term(id)` is the term an empty one reads as |
 | `collect_link_definitions(document)` → `{label: LinkDefinition(url, title)}`, `normalize_label(label)` | The link reference definitions of a document (`link_definition` blocks, CommonMark §4.7), in an item or a quote too, by label, the first of each label winning: the key is `normalize_label(label)`, the label with each run of whitespace one space and case-folded, so look a label up with `definitions[normalize_label("Foo  Bar")]`. `url` and `title` are raw as the block holds them (backslash escapes and character references not decoded); `title` is `""` for none. Derived on each call; a definition with a directive in it is paragraph text and is none. `locate_link_definitions(document)` → `{label: PlacedLinkDefinition(section, block, ordinal, definition)}` is the same map with the `link_definition` blocks themselves and where each is: the section (`None`: the preamble) and index of its top-level block, and its `ordinal` among that block's definitions, nested ones included, in document order |
@@ -858,6 +858,24 @@ for a document built in code, or changed since it was parsed. A span covers the 
 which the item before holds). For text you hold apart from its file — an editor's field —
 `body_layout(text)` is the same `SourceLayout` of that text read as a body alone, with lines counted
 from 1 at its start and no frontmatter (a `---` first line is a thematic break there).
+
+A `FoundMarker` of a parsed document has `span`, `(start, end)`: where the marker is written, as
+offsets into the text given to `parse` (for `load`, the file's text) — counted in characters (code
+points), a byte-order mark and each CRLF as written, `end` exclusive — so `source[start:end]` is the
+marker as written, a marker after a paragraph's line break, in a list item or in a block quote
+included, and each of two markers spelled alike has its own. `FoundMarker.source` is the marker as the
+validator reads it, a comment or code span in it blanked; in a table cell the span holds a `|` as the
+cell writes it, `\|`. `line` is the file line it is on. Both are `None` when `document.layout()` is:
+for a document built in code, or changed since it was parsed. Heading markers are not among them:
+`document.layout()` gives a heading's `marker_line`.
+
+```python
+source = Path("contract.lgd").read_text(encoding="utf-8", newline="")  # line endings as written
+for found in find_markers(parse(source)):
+    if found.span and found.placed(template=False):
+        start, end = found.span
+        print(found.line, source[start:end])
+```
 
 ```python
 document = load("contract.lgd")

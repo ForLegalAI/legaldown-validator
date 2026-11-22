@@ -2104,7 +2104,8 @@ def parse(
     """
     # A byte-order mark is an encoding artifact, not content. Lines end at
     # LF, CR, or CRLF (CommonMark), and nowhere else.
-    source = LINE_ENDING_RE.sub("\n", (source or "").removeprefix("\ufeff"))
+    written = source or ""
+    source = LINE_ENDING_RE.sub("\n", written.removeprefix("\ufeff"))
     _check_frontmatter_option(on_frontmatter_error)
     front = _split_frontmatter(source, keep_error=on_frontmatter_error == "keep")
     lines = front.body.split("\n")
@@ -2143,6 +2144,7 @@ def parse(
         metadata_seen=list(metadata_snapshot(document.metadata)) if front.repeats else [],
         layout=layout,
         shape=document_shape(document),
+        written=None if written == source else written,
     )
     return document
 

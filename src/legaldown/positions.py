@@ -12,6 +12,7 @@ import json
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from itertools import accumulate
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import yaml
@@ -617,6 +618,22 @@ class SourceMap:
     #: when there are any, ``metadata_snapshot`` of the metadata as parsed: they describe its source text.
     repeats: tuple[Repeated, ...] = ()
     metadata_seen: list[Any] = field(default_factory=list, compare=False, repr=False)
+    #: The source as given to ``parse``, when it is not ``lines`` joined with LF: it starts with a byte-order
+    #: mark or ends a line at CR (#150). None when it is.
+    written: str | None = field(default=None, compare=False, repr=False)
+    #: The offset in that source of each line of ``lines`` (``line_starts``), once asked for.
+    starts: list[int] | None = field(default=None, compare=False, repr=False)
+
+    def line_starts(self) -> list[int]:
+        """The offset of each of ``lines`` in the source as given to ``parse``, in characters (code
+        points): a byte-order mark, and a CRLF line ending, count as they are written there."""
+        if self.starts is None:
+            if self.written is None:
+                self.starts = list(accumulate((len(line) + 1 for line in self.lines[:-1]), initial=0))
+            else:
+                first = 1 if self.written.startswith("\ufeff") else 0
+                self.starts = [first, *(m.end() for m in LINE_ENDING_RE.finditer(self.written, first))]
+        return self.starts
 
     def fits(self, document: Document) -> bool:
         """True if *document* still has the shape it was parsed with."""
@@ -782,6 +799,14 @@ def _count(text: str, needle: str) -> int:
     return count
 
 
+def _occurrences(text: str, needle: str) -> Iterator[int]:
+    """Where *needle* starts in *text*, each place, escaped or not, overlapping ones too."""
+    at = text.find(needle)
+    while at >= 0:
+        yield at
+        at = text.find(needle, at + 1)
+
+
 def _nth(lines: list[str], needle: str, n: int) -> int | None:
     """The index in *lines* of the unescaped occurrence *n* (from 0) of
     *needle*, or None."""
@@ -811,6 +836,8 @@ class _Leaf:
     #: leading anchor, a ``{{ref:}}``, a ``{{term:}}``): the directive's
     #: offset in the paragraph's one text, else None.
     lifted: int | None = None
+    #: The block's kind.
+    kind: str = ""
 
 
 class Locator:
@@ -827,6 +854,8 @@ class Locator:
         self._leaves: dict[tuple[int | None, int], tuple[list[_Leaf] | None, dict[int, _Leaf]]] = {}
         self._definition_lines: dict[tuple[int | None, int], list[int]] = {}
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
+        # Per leaf, by its id, the marker candidates in its texts and in its lines (``_candidates_in``).
+        self._marker_places: dict[int, tuple[dict[str, list[tuple[int, int]]], dict[str, list[tuple[int, int, int]]]]] = {}
 
     def start(self) -> int | None:
         """The document's first line."""
@@ -924,6 +953,69 @@ class Locator:
             return self._map.find(leaf.start, leaf.end, needle, leaf.texts, text, base + offset, 0, self._cache)
         return self._map.find(start, end, needle, [], None, 0, nth, self._cache)
 
+    def marker_span(
+        self, section: int | None, index: int, fragment: int, offset: int, needle: str
+    ) -> tuple[int, int, int] | None:
+        """Where the marker or look-alike *needle* (as its fragment holds it), at *offset* in fragment
+        *fragment* of a top-level block's ``block_fragments``, is written in the source: ``(start, end,
+        line)``, its offsets in the source as given to ``parse`` (code points, *end* exclusive) and its
+        file line, counted from 1 (#150). A marker is on one line, and a block's texts hold each line's
+        text as written; so the candidates for markers (``MARKER_RE``) in the texts of the block that holds
+        the fragment, and those in its lines, are the same, in the same order: the marker is the candidate
+        of its rank among those spelled alike, a literal one and a placed one apart. None without a source
+        map, when the document no longer fits it, and when the texts and the lines disagree (a fenced code
+        block holding the same spelling, which its text blanks; a table cell past the header's width).
+        In a table cell, a ``|`` is written ``\\|``, which the span covers."""
+        if self._map is None:
+            return None
+        leaf = self._leaf_for(section, index, fragment)
+        if leaf is None:
+            return None
+        text, base = leaf.places[fragment]
+        in_texts, in_lines = self._candidates_in(leaf)
+        if needle in in_texts:
+            texts, lines = in_texts[needle], in_lines.get(needle, [])
+        elif "\n" in needle:
+            return None  # a comment blanked in it holds a line break: it is on two lines
+        else:
+            # A comment or code span blanked in it holds a brace, so it is no candidate as written: it is
+            # looked for as it is, in this one block.
+            texts = [(number, at) for number, each in enumerate(leaf.texts) for at in _occurrences(each, needle)]
+            lines = [
+                (number, at, at + len(needle))
+                for number, each in enumerate(self._map.lines[leaf.start - 1:leaf.end - 1])
+                for at in _occurrences(each, needle)
+            ]
+        rank = bisect.bisect_left(texts, (text, base + offset))
+        if len(texts) != len(lines) or rank == len(texts) or texts[rank] != (text, base + offset):
+            return None
+        number, (column, end) = leaf.start + lines[rank][0], lines[rank][1:]
+        start = self._map.line_starts()[number - 1]
+        return start + column, start + end, number
+
+    def _candidates_in(
+        self, leaf: _Leaf
+    ) -> tuple[dict[str, list[tuple[int, int]]], dict[str, list[tuple[int, int, int]]]]:
+        """The candidates for markers in *leaf*, read once for it, by their spelling: in its texts, where
+        each is (text, offset); in its lines, where each is (line from 0, start, end) — a table cell's
+        spelled as the cell reads it."""
+        from .markers import MARKER_RE
+
+        key = id(leaf)
+        if key not in self._marker_places:
+            assert self._map is not None
+            in_texts: dict[str, list[tuple[int, int]]] = {}
+            for number, text in enumerate(leaf.texts):
+                for match in MARKER_RE.finditer(text):
+                    in_texts.setdefault(match.group(), []).append((number, match.start()))
+            in_lines: dict[str, list[tuple[int, int, int]]] = {}
+            for number, line in enumerate(self._map.lines[leaf.start - 1:leaf.end - 1]):
+                for match in MARKER_RE.finditer(line):
+                    spelled = match.group().replace("\\|", "|") if leaf.kind == "table" else match.group()
+                    in_lines.setdefault(spelled, []).append((number, match.start(), match.end()))
+            self._marker_places[key] = (in_texts, in_lines)
+        return self._marker_places[key]
+
     def definition(self, section: int | None, index: int, ordinal: int) -> int | None:
         """The first line of the link reference definition (#92) with *ordinal*
         (``definitions.PlacedLinkDefinition``) among the ``link_definition`` blocks
@@ -1007,7 +1099,7 @@ class Locator:
                     leaves.append(leaf)
                 elif own:
                     places = {count + k: (k, 0) for k in range(len(own))}
-                    leaves.append(_Leaf(first, last, own, places))
+                    leaves.append(_Leaf(first, last, own, places, kind=block.kind))
                 count += len(own)
         except ValueError:
             return None  # items or quote content that no longer match the source
