@@ -376,6 +376,11 @@ def _check_duration_unit(unit: str, result: _Recorder) -> None:
 _MARKDOWN_RE = re.compile(r"\*\*|__|\+\+|`|(?<!\w)\*(?!\s)")
 
 
+def _shortened(source: str) -> str:
+    """*source* as a message quotes a directive that may run long: its first 60 characters."""
+    return source if len(source) <= 60 else source[:57] + "..."
+
+
 def _check_directive_arguments(
     directive: Directive, result: _Recorder, *, effective_type: str | None = None
 ) -> bool:
@@ -391,9 +396,7 @@ def _check_directive_arguments(
     if directive.malformed:
         # An unclosed directive runs to the end of its line — often the whole
         # paragraph — so only its start is quoted.
-        source = directive.source
-        if len(source) > 60:
-            source = source[:57] + "..."
+        source = _shortened(directive.source)
         result.error(
             "directive-malformed",
             f"Malformed {{{{{name}:}}}} directive ({directive.malformed}): '{source}'.",
@@ -988,10 +991,10 @@ def _undeclarable_questions(
     questions: Any,
     where: Locator,
     lex_fragment: Callable[[str], Lexed],
-) -> dict[str, tuple[Any, str]]:
-    """The questions that *document*, a fragment, does not declare and uses in ways no one
-    declaration allows (``undeclarable``, #148), each with the key of the use to report it at
-    and why: ``("condition", i)`` for the i-th of *conditions* (where each is in the document:
+) -> tuple[dict[Any, str], set[str]]:
+    """The uses of questions that *document*, a fragment, does not declare, which no one
+    declaration allows (``undeclarable``, #148): by the key of each use to report, why; and
+    the questions they settle. A key is ``("condition", i)`` for the i-th of *conditions* (where each is in the document:
     *orders*), ``("choose", section, block, fragment, start)`` for a ``{{choose:}}``. Only a
     valid condition and a well-formed ``{{choose:}}`` are uses: what is wrong with the others is
     their own finding whatever is declared."""
@@ -1013,7 +1016,7 @@ def _undeclarable_questions(
                 uses.append((
                     (-1 if section_index is None else section_index, block_index, fragment_index, directive.start),
                     DecisionUse(
-                        question, f"'{directive.source}'",
+                        question, f"'{_shortened(directive.source)}'",
                         partial(where.find, section_index, block_index, directive.source, fragment_index, directive.start),
                         ("choose", section_index, block_index, fragment_index, directive.start),
                         answers=tuple(directive.params),
@@ -2189,7 +2192,7 @@ def _check(
     asked_in_notes: set[str] = set()
 
     # Every condition in a condition position (§15.3): on what, as written,
-    # and its line; and, of each, where it is in the document (for ``undeclared``).
+    # and its line; and, of each, where it is in the document (for ``undeclared_findings``).
     conditions: list[tuple[str, str, int | None]] = []
     condition_orders: list[tuple[int, ...]] = []
     for index, section in enumerate(document.sections):
@@ -2207,12 +2210,12 @@ def _check(
             conditions.append((f"attachment '{att.id}'", att.when, where.key("attachments", index, "when")))
             condition_orders.append((-2, index))
     # The questions a fragment uses that no host can declare as it uses them (#148): each is the
-    # fragment's own finding, made once, at the use where no declaration can be had, in place of
-    # the host-dependent findings of its uses.
-    undeclared = (
+    # fragment's own finding, made once, at the use where no declaration can be had (by its key),
+    # in place of the host-dependent findings of its uses (the questions settled).
+    undeclared_findings, undeclared_questions = (
         _undeclarable_questions(document, conditions, condition_orders, questions, where, lex_fragment)
         if mode.fragment and host_declares and not untemplated and (conditions or "choose" in body_directives)
-        else {}
+        else ({}, set())
     )
 
     # The images that name their file by a link reference definition (#92, #104):
@@ -2392,14 +2395,12 @@ def _check(
                         )
                     result.index.values.fields.append((value, ftype))
                 elif name == "choose" and not untemplated:
-                    own = undeclared.get(directive.positional or "")
+                    own = undeclared_findings.get(("choose", section_index, block_index, fragment_index, directive.start))
                     with result.at(line):
                         check_choose(
                             directive, questions, result, host_declares=host_declares,
-                            undeclarable=None if own is None else (
-                                f"'{directive.source}' {own[1]}."
-                                if own[0] == ("choose", section_index, block_index, fragment_index, directive.start)
-                                else ""
+                            undeclarable=f"'{directive.source}' {own}." if own is not None else (
+                                "" if (directive.positional or "") in undeclared_questions else None
                             ),
                         )
                 elif name == "include":
@@ -2481,12 +2482,13 @@ def _check(
         issue = condition_issue(text, questions)
         if issue:
             depends, problem = issue
-            own = undeclared.get(parse_condition(text).question) if depends is not None else None
-            if own is not None:
-                # No host can declare the question as the fragment uses it (#148): one finding, its own.
-                if own[0] == ("condition", key):
-                    result.error("condition-invalid", f"The condition '{text}' on {place} {own[1]}.", line=line)
+            if depends is not None and ("condition", key) in undeclared_findings:
+                # No host can declare the question as the fragment uses it (#148): the finding is its own.
+                own = undeclared_findings[("condition", key)]
+                result.error("condition-invalid", f"The condition '{text}' on {place} {own}.", line=line)
                 continue
+            if depends is not None and parse_condition(text).question in undeclared_questions:
+                continue  # reported once, at another use
             result.error(
                 "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
                 line=line, depends=depends if host_declares else None,

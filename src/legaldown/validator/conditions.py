@@ -197,17 +197,21 @@ class _Declarable:
         return None
 
 
-def undeclarable(uses: Iterable[DecisionUse]) -> dict[str, tuple[Any, str]]:
-    """The questions that no declaration gives what their *uses* (in document order) need
-    (§15.2, §15.3, §15.5): a boolean question for a condition without a value and for a
-    ``{{choose:}}`` of exactly true and false, a choice question with that value or those
-    answers for the others (#148). Each is the key of the first use at which none does, and
-    why (verb first, naming an earlier use it disagrees with, if any). A fragment's host
-    cannot declare such a question, so it is the fragment's own finding, made once there."""
-    found: dict[str, tuple[Any, str]] = {}
+def undeclarable(uses: Iterable[DecisionUse]) -> tuple[dict[Any, str], set[str]]:
+    """The uses of questions that no declaration gives what they need (§15.2, §15.3, §15.5),
+    with the uses before them in *uses* (in document order) (#148): a boolean question for a
+    condition without a value and for a ``{{choose:}}`` of exactly true and false, a choice
+    question with that value or those answers for the others. A fragment's host cannot declare
+    such a question, so it is the fragment's own finding, made once, at the first use none
+    gives what it needs: the key of each such use, and why (verb first, naming an earlier use
+    it disagrees with, if any); and the questions it settles, whose other uses are not
+    reported. A use naming no question, or what can be no question id, is one of its own: it
+    is reported, and settles nothing (two such uses have nothing in common)."""
+    findings: dict[Any, str] = {}
+    settled: set[str] = set()
     met: dict[str, _Declarable] = {}
     for use in uses:
-        if use.question in found:
+        if use.question in settled:
             continue
         kind, problem = _use_type(use)
         if kind is not None:
@@ -216,8 +220,10 @@ def undeclarable(uses: Iterable[DecisionUse]) -> dict[str, tuple[Any, str]]:
             if conflict is None:
                 continue
             problem = conflict
-        found[use.question] = use.key, problem
-    return found
+        findings[use.key] = problem
+        if not _id_problem(use.question):
+            settled.add(use.question)
+    return findings, settled
 
 
 _BOOLEAN_ANSWERS = (True, False)

@@ -119,7 +119,8 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   reads as a boolean or null, a question id that is none). That is one finding of the fragment's own,
   at the first use none can be declared for, under that use's rule (`condition-invalid` or
   `choose-invalid`, as a complete document declaring the question for the earlier use reports it there)
-  and naming the use it disagrees with; its other uses are not reported. Uses one declaration allows
+  and naming the use it disagrees with; its other uses are not reported (but each `{{choose:}}` that names
+  no question, or no question id, is reported at its own line). Uses one declaration allows
   stay `host_dependent`. What §15.3 asks of a template's
   fragment is asked in this mode only when `template=True` says the host is a template (below).
   `legaldown validate --fragment` marks the host-dependent findings in its text output, counts them apart in its

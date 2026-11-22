@@ -317,6 +317,23 @@ def test_only_the_question_no_host_can_declare_is_the_fragments_own_and_only_onc
     ]
 
 
+def test_each_choose_that_names_no_question_id_is_reported_at_its_own_line():
+    # Two such uses have no question in common: neither leaves the other unreported.
+    for source in (
+        'X {{choose: a="1", b="2"}}.\n\nY {{choose: c="1", d="2"}}.\n',
+        'X {{choose: Bad Id, a="1", b="2"}}.\n\nY {{choose: Bad Id, a="1", b="2"}}.\n',
+    ):
+        assert _decision_rows(_fragment(source)) == [("choose-invalid", 1, False), ("choose-invalid", 3, False)]
+
+
+def test_a_long_choose_is_quoted_short_where_another_use_names_it():
+    phrase = "word " * 40
+    source = f'X {{{{choose: q, a="{phrase}", b="{phrase}"}}}}.\n\n## A {{#a when=q}}\n'
+    (finding,) = _fragment(source).diagnostics
+    assert finding.rule == "condition-invalid" and phrase not in finding.message
+    assert "'{{choose: q, a=\"word word" in finding.message and "...' (line 1)" in finding.message
+
+
 def test_a_host_that_is_not_a_template_still_has_each_use_reported_as_before():
     # Nobody declares the question: each use is the fragment's own, as it was.
     source = '## T {#t when=len}\n\nFor {{choose: len, a="x", b="y"}}.\n'
