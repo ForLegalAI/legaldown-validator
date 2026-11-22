@@ -265,7 +265,8 @@ stripped, and keeps the last of the keys it reads as one (in the order the model
 own line, and the finding names the line of the one that does (for a key written again, the entry that repeats it,
 in the same key as read); when the model keeps none, because the last entry written has an empty or blank key or a
 null, empty or blank value, the finding says which; when that last entry is skipped and an entry written before it
-that strips alike is read instead (`fr: a`, `' fr': b`, `' fr': ''`), the finding names both, the entry skipped
+or after it that strips alike is read instead (`fr: a`, `' fr': b`, `' fr': ''`, or `fr: ''`, `fr: ''`,
+`' fr': a.md`), the finding names both, the entry skipped
 and the entry read (#133). (In the other mappings, a key written again names the line of
 the key that repeats it, and a key read as the same names the line of the one the model holds.) The keys are shown as they are written in the source (quotes and escapes
 included, between backticks), so that `1` and `"1"` differ. An aliased key (`&k fr`, then `*k`) is one node for the

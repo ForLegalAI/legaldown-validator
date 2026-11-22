@@ -137,8 +137,8 @@ class Ignored:
     repeats it, the entry the model keeps for the key instead, or the last entry written of the key, which the
     model *skipped* for the reason given (an empty or blank key, a null, empty or blank value); *skipped* is ""
     when *by* is not skipped. *kept* is the entry the model keeps for the key, None if it keeps none: when *by*
-    is skipped and the model keeps an entry all the same, it is one written before *by* that strips alike
-    (#133). *itself* is the reason the model skips *entry* itself, when it is the last of its key and loses
+    is skipped and the model keeps an entry all the same, it is one that strips alike, written before *by* or
+    after it (#133). *itself* is the reason the model skips *entry* itself, when it is the last of its key and loses
     to such an earlier entry; "" otherwise. *why*: ``"repeated"`` (the same YAML key written again: invalid
     YAML), ``"text"`` (a different YAML key that the model reads as the same text, as ``1`` and ``'1'``),
     ``"stripped"`` (padding) or ``"value"`` (keys that Python holds as one though their text differs, as ``1``
@@ -320,7 +320,9 @@ def read_maps(
             if loses:  # two slots, as above
                 why = _why(str(slot), str(keeps[-1][0]))
                 ignored.append(Ignored(last, stays[last.key], why, "", stays[last.key], reasons[slot]))
-            skipped = reasons[slot] if not keeps or loses else ""
+            # The slot's last entry, when skipped, is named with the entry the model keeps for the key, if any,
+            # written before it or after (#133).
+            skipped = reasons[slot]
             by = last if skipped else stays[last.key]  # the entry the model keeps for the key, else the last written
             for place, (entry, text) in enumerate(found[:-1]):
                 # A key written again is named by the entry that repeats it, unless that is skipped.
@@ -340,7 +342,8 @@ class Repeated:
     different YAML key that the model reads as the same text, as ``1`` and ``'1'``), ``"value"`` (keys of
     other types that Python holds as one, in a question's ``default``, where the YAML types stay: ``1`` and
     ``1.0``) or ``"merge"`` (a merge key ``<<`` written again in the mapping, which the reader merges all the
-    same, #133). *by_written* and *by_line* are the key that repeats it, or the one the model holds. An aliased
+    same, #133). *by_written* and *by_line* are the key that repeats it, or the one the model holds (always a line: an
+    aliased key is at its alias, #133). An aliased
     key is where its alias is written (#133). *field* is the top-level frontmatter key the mapping is under (the
     key itself in the root), whose part of the model the finding describes (``Locator.repeats``, #133), None
     if it is no text or if the frontmatter shares a collection (an alias, a ``<<`` source), when it may be held
@@ -353,7 +356,7 @@ class Repeated:
     start: int
     why: str
     by_written: str
-    by_line: int | None
+    by_line: int
     field: str | None = None
     mapping_line: int | None = None
     mapping_column: int | None = None

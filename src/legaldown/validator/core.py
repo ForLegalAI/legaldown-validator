@@ -1565,7 +1565,7 @@ def _check(
     if not mode.empty_metadata:
         paths: dict[tuple[str, int | None, int | None], str] = {}  # the path of each mapping, shown once
         for each in where.repeats():
-            at = "" if each.by_line is None else f" at line {each.by_line}"
+            at = f" at line {each.by_line}"
             report = result.error if each.why in ("repeated", "merge") else result.warning
             mapping = (each.path, each.mapping_line, each.mapping_column)
             if mapping not in paths:
@@ -1590,7 +1590,7 @@ def _check(
                 )
             else:
                 what = _key_clause(each.why, each.by_written, at)
-                stays = _key_read(each.by_line) if each.why != "repeated" and each.by_line is not None else ""
+                stays = _key_read(each.by_line) if each.why != "repeated" else ""
                 message = _key_ignored(subject, each.written, what, stays)
             report(FRONTMATTER_KEY_DUPLICATE_RULE, message, line=each.line)
 

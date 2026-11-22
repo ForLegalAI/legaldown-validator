@@ -168,8 +168,24 @@ def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
         "and the entry at line 6 is skipped (its value is empty), so no entry is kept.",
     ]
     # a blank entry that is not the last of its key is no reason to say so
-    front = "translations:\n  a: x\n  a: ''\n  ' a': z\n"
+    front = "translations:\n  a: ''\n  a: x\n  ' a': z\n"
     assert not any("skipped" in d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE)
+
+
+def test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_after_it():
+    # #133: `fr` is written again at line 5, which is skipped too, and `' fr'` at line 6 is the entry read: as when
+    # the entry read is written before (`test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_before_it`).
+    front = "translations:\n  fr: ''\n  fr: ''\n  ' fr': a.md\n"
+    assert parse(_source(front)).metadata.translations == {"fr": "a.md"}
+    found = [(d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (4, "error", "The translations key `fr` is written again: this entry is ignored, the entry at line 5 is "
+         "skipped (its value is empty), and the entry at line 6 is the one read."),
+    ]
+    # the same with a key read as the same text, and in field_types
+    front = "field_types:\n  1: a\n  '1': ''\n  ' 1': b\n"
+    ((_line, _level, message),) = [(d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert message.endswith("the entry at line 5 is skipped (its value is empty), and the entry at line 6 is the one read.")
 
 
 # ── the same key written twice, or read as one ──
