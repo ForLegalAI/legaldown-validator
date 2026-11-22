@@ -2331,7 +2331,18 @@ def _check(
                     )
                 elif name == "attach":
                     referenced_attachments.add(value)
-                    if value not in attachment_ids:
+                    if not value:
+                        # Whatever the host declares, a reference with no target is wrong.
+                        result.error("attach-undeclared", f"'{directive.source}' has no target.", line=line)
+                    elif not IDENTIFIER_RE.fullmatch(value):
+                        # As for ref-broken: an attachment id is an identifier (§5.6), so a
+                        # target that is none can be declared by no including document (#147).
+                        result.error(
+                            "attach-undeclared",
+                            f"Attachment reference '{directive.source}' names no attachment id: "
+                            "an id must match [a-z][a-z0-9-]*.", line=line,
+                        )
+                    elif value not in attachment_ids:
                         result.error(
                             "attach-undeclared",
                             f"Attachment reference '{{{{attach: {value}}}}}' references undeclared attachment id.", line=line,

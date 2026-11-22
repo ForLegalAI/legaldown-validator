@@ -454,15 +454,16 @@ Diagnostic(rule, level, message, line=None, file="", host_dependent=False)
   combined document); the skips after it are reported.
 - A finding that the including document may settle is reported with the rule id and the level it has
   in a complete document, and has `host_dependent` set: a `{{party:}}`, `{{side:}}` or `{{attach:}}`
-  it does not declare, a condition or `{{choose:}}` on a question it does not declare
+  identifier it does not declare, a condition or `{{choose:}}` on a question it does not declare
   (`condition-invalid`, `choose-invalid`), a `{{ref:}}` to an identifier or a `{{term:}}` that the
   fragment itself does not hold (`ref-broken`, `term-undefined`), and a definition it declares and does
   not reference (`def-unreferenced`: the host may). Set those aside while the host is not known; take
   them seriously when the fragment is validated in it.
 - Anything else is the fragment's own and is not marked: a malformed directive, a target that is not
-  an identifier (`{{ref: Bad Id}}`), a `{{ref:}}` with no target, a malformed condition, a heading that
-  skips a level, and so on. A `{{ref:}}` to a section or anchor of the fragment itself, and a
-  `{{term:}}` of its own `{{def:}}`, resolve and are not reported.
+  an identifier (`{{ref: Bad Id}}`, `{{attach: Sched A}}`), a `{{ref:}}`, `{{term:}}` or `{{attach:}}`
+  with no target, a malformed condition, a heading that skips a level, and so on. A `{{ref:}}` to a
+  section or anchor of the fragment itself, and a `{{term:}}` of its own `{{def:}}`, resolve and are
+  not reported.
 - A fragment that has frontmatter draws `include-has-frontmatter` (§16.11), at the line of its first
   key (the opening `---` when it has none), and a level-1 heading draws `include-has-h1`, at the
   heading, each an Error. Its metadata is then not read at all, and the lines of everything else are

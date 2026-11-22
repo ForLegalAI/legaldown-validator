@@ -105,7 +105,10 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   declare, a `{{ref:}}` or `{{term:}}` it does not hold) is still reported, with the rule id and
   level it has in a complete document, but with `Diagnostic.host_dependent` set: only the including
   document can settle it. So is a definition it declares and does not reference
-  (`def-unreferenced`), which the host may reference. A fragment cannot tell
+  (`def-unreferenced`), which the host may reference. A target that is no identifier (§5.2, §5.6,
+  §7.2), such as `{{ref: Bad Id}}`, `{{term: INVALID}}` or `{{attach: Sched A}}` (#147), or no
+  target at all, names nothing any host can declare, so its `ref-broken`, `term-undefined` or
+  `attach-undeclared` is the fragment's own and is not marked. A fragment cannot tell
   whether its host is a template, so it is one exactly when it holds a condition or a `{{choose:}}`,
   unless `validate(template=)` (`legaldown validate --fragment --template` / `--no-template`) says
   so: a blank or a drafting note is legal in any document. A host that is no template declares no
@@ -800,7 +803,8 @@ The block is still the frontmatter, so the document is not `frontmatter-absent`,
 heading must still be level 1 (`heading-skip`, §4.1). Its metadata is read as empty, so nothing
 is reported for want of what it might have declared (`title-missing`, `sides-absent`,
 `sides-minimum`, `parties-minimum`, `issuer-side-required`), and nothing that needs those
-declarations is reported either: `party-unknown`, `side-unknown`, `attach-undeclared`,
+declarations is reported either: `party-unknown`, `side-unknown`, `attach-undeclared` (where
+its target is an identifier: no frontmatter declares `{{attach: Sched A}}` or `{{attach:}}`, #147),
 `ref-targets-attachment`, `amend-term-undefined`, `amend-term-unresolvable`, and
 `condition-invalid` and `choose-invalid` where they name a question that is not declared (a
 malformed condition, or the wrong form for a declared question, is not). What the body decides
