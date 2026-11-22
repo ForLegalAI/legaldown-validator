@@ -1577,7 +1577,9 @@ def _check(
                     paths[mapping] = each.path if plain else _shown(each.path) if each.path else "frontmatter"
                 else:
                     cut = _shown("…" + each.path[1 - _SHOWN_WIDTH:])
-                    paths[mapping] = f"{cut} (the mapping at line {each.mapping_line}, column {each.mapping_column})"
+                    known = each.mapping_line is not None and each.mapping_column is not None
+                    where_at = f" (the mapping at line {each.mapping_line}, column {each.mapping_column})" if known else ""
+                    paths[mapping] = cut + where_at
             subject = paths[mapping]
             if each.why == "merge":
                 # `<<` written again: the reader merges both, so no entry is ignored as such (#133).

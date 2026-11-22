@@ -600,6 +600,16 @@ def test_paths_that_are_cut_alike_in_one_run_each_name_their_own_mapping():
     assert "(the mapping at line 4, column 5)" in first[2] and "(the mapping at line 7, column 5)" in second[2]
 
 
+def test_a_cut_path_without_a_known_mapping_place_says_none():
+    import dataclasses
+
+    document = parse(_source("x: {a: 1, a: 2}\n"))
+    (repeat,) = document.source_map.repeats
+    document.source_map.repeats = (dataclasses.replace(repeat, path="k" * 90, mapping_line=None, mapping_column=None),)
+    (message,) = [d.message for d in validate(document).diagnostics if d.rule == RULE]
+    assert "(the mapping" not in message and message.startswith("The `…kkk")
+
+
 def test_a_merge_key_written_twice_in_translations_names_the_map_as_its_check_does():
     ((_line, _level, message),) = _found("translations:\n  <<: {fr: a}\n  <<: {de: b}\n")
     assert message.startswith("The translations key `<<` is written again at line 4")

@@ -308,10 +308,10 @@ How the rule reads the YAML:
   (`translations.<<`), whose own entries stay with the check above. Only the entries of a source that reach the
   mapping are judged: one that the mapping's own key, or a source that wins over it, takes the place of is never
   read, and neither is its value. In `translations` and `field_types`, an entry merged in that the model reads as
-  one with another only once stripped (`translations: {<<: *b, ' fr': b.lgd}`, where `b` holds `fr`) is a key YAML
-  keeps apart and the model drops: it is reported with the map's own entries, at the line where it is written in
-  the source, naming the entry read (#133); merged keys that are one key to YAML, or one once read as text
-  (`1` and `'1'`), are merge precedence there as everywhere. A repeat inside a source is reported when the source's
+  one with an entry of another key only once stripped, which YAML keeps apart (`translations: {<<: *b, ' fr': b.lgd}`,
+  where `b` holds `fr`), is dropped by the model alone: it is reported with the map's own entries, at the line where
+  it is written in the source, naming the entry read (#133). Merged keys that are one key to the reader's dict
+  (`fr` and `"fr"`, or `1`, `!!int 1` and `'1'`, all read as text) are merge precedence there as everywhere. A repeat inside a source is reported when the source's
   entry is the one held.
 - **A `<<` written twice in one mapping** is the same YAML key written again, which a strict reader rejects: an
   Error at each `<<` but the last, naming the one after it (#133). The message does not say that an entry is
@@ -333,8 +333,7 @@ How the rule reads the YAML:
 - **`translations` and `field_types` written twice at the root** are a repeat of the root mapping: the one dropped
   is reported as `frontmatter`, and the one read, by the check above.
 - **The findings describe the source text.** Each is judged against the field of the metadata it is under, the
-  top-level key of its path (`sides` for `sides[0].parties[1]`, `title` for `title` written twice, the key itself
-  for one in a source merged into the root), and a document whose field was changed after it was parsed draws none
+  top-level key of its path (`sides` for `sides[0].parties[1]`, `title` for `title` written twice), and a document whose field was changed after it was parsed draws none
   of the findings under that field (#133): the parser keeps the objects of each such field it built and the size of
   each list, dict and model, which the validator compares; it reads no value, so a number of any size is no matter.
   An edit of another field leaves them be (`metadata.title = "new"` drops the finding of `title` written twice, not

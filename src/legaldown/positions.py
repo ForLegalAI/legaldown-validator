@@ -246,10 +246,10 @@ def _why(text: str, other: str) -> str:
 
 
 def _judged(entry: WrittenEntry, why: str) -> bool:
-    """Whether ``read_maps`` reports *entry*, which another takes the place of for *why*: an entry merged in
-    (``<<``) is merge precedence, as in every other mapping (``repeated_keys``), or a repeat in its source,
-    which the source's check reports, unless the two are one only once stripped, which YAML does not see
-    (#133)."""
+    """Whether ``read_maps`` reports *entry*, which a later entry of its slot (the same key to the model's dict)
+    takes the place of for *why*: an entry merged in (``<<``) is merge precedence then, as in every other mapping
+    (``repeated_keys``), or a repeat in its source, which the source's check reports. Entries of two slots that
+    the model reads as one once stripped or read as text are two keys to YAML, and always reported (#133)."""
     return not entry.merged or why == "stripped"
 
 
@@ -308,9 +308,8 @@ def read_maps(
         ignored: list[Ignored] = []
         for key, found in kept.items():  # a slot replaced by a later one that strips alike
             for slot, entry in found[:-1]:
-                why = _why(str(slot), str(found[-1][0]))
-                if _judged(entry, why):
-                    ignored.append(Ignored(entry, stays[key], why, "", stays[key]))
+                # Two slots are two keys to YAML, merged in or not: the model alone reads them as one.
+                ignored.append(Ignored(entry, stays[key], _why(str(slot), str(found[-1][0])), "", stays[key]))
         for slot, found in slots.items():  # the entries of a slot replaced by its last
             last, last_text = found[-1]
             keeps = kept.get(last.key, [])
@@ -318,7 +317,8 @@ def read_maps(
             # entry it would have replaced is read instead (#133). A skipped slot before the one kept is replaced
             # by it anyway, and a blank `translations` entry is no collision then (#116).
             loses = bool(reasons[slot]) and bool(keeps) and order[keeps[-1][0]] < order[slot]
-            if loses and _judged(last, why := _why(str(slot), str(keeps[-1][0]))):
+            if loses:  # two slots, as above
+                why = _why(str(slot), str(keeps[-1][0]))
                 ignored.append(Ignored(last, stays[last.key], why, "", stays[last.key], reasons[slot]))
             skipped = reasons[slot] if not keeps or loses else ""
             by = last if skipped else stays[last.key]  # the entry the model keeps for the key, else the last written
@@ -610,7 +610,7 @@ class _Mapping:
 
     def where(self, slot: Any) -> tuple[str, str | None, int, int]:
         """The mapping's path as text, the top-level key it is under (*slot*, the key of the finding, for the
-        root and its sources), and the line and column where it starts."""
+        root), and the line and column where it starts."""
         if self._where is None:
             steps = []
             path = self.path

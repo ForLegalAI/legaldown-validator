@@ -124,6 +124,8 @@ def test_a_key_merged_in_that_strips_like_a_written_key_is_reported_where_it_is_
     # the same text as a written one (`1` and `'1'`) is merge precedence, as in every other mapping: neither is said.
     assert _found("b: &b {fr: a.lgd}\ntranslations: {<<: *b, fr: b.lgd}\n") == []
     assert _found("b: &b {1: a.lgd}\ntranslations: {<<: *b, '1': b.lgd}\n") == []
+    # `!!int 1` is read as the text `1` too, so it is the same key to the reader's dict as `'1'`: precedence
+    assert _found("b: &b {!!int 1: x.md}\ntranslations: {<<: *b, '1': y.md}\n") == []
     # and the entry read is found at its line
     assert parse(_source("b: &b {fr: a.lgd}\ntranslations: {<<: *b}\n")).source_map.key("translations", "fr") == 3
 
