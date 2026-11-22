@@ -1181,6 +1181,22 @@ def test_what_continues_a_paragraph_is_read_from_the_output():
     assert not hazards._all_dead(["[b]: v", "[a]: The u \x01"])  # (a first line is a candidate)
 
 
+def test_a_line_of_answers_alone_is_never_blank_so_the_label_after_it_continues_the_paragraph():
+    """``_continued`` rests on an answer never making a line blank (#144): an answer of spaces or tabs, or one that
+    begins or ends with one, is refused, and other white space (a no-break space, U+3000, U+200B) is text, to the
+    model and to markdown-it, so the label on the next line continues the paragraph."""
+    t = parse_template(_PIN_HEAD + "{{placeholder: p1}}\n[b]: v {{placeholder: p2}}\n")
+    for blank in (" ", "\t", "  "):
+        assert t.form({"p1": blank, "p2": '"t"'}).assemble().output == ""
+    for space in ("\xa0", "\u3000", "\u200b"):
+        output = t.form({"p1": space, "p2": '"t"'}).assemble().output.split("---\n", 2)[2]
+        assert definitions_read(output)[0] == ()
+        if markdown_it is not None:
+            env = {}
+            markdown_it.MarkdownIt("commonmark").parse(output, env)
+            assert not env.get("references"), space
+
+
 def test_a_typed_value_after_a_destination_and_a_blank_makes_a_label_dead_and_not_hopeless():
     """A date, money or duration placeholder assembles to a value (``{{date: …}}``), which opens no title, as written or
     rendered; a text placeholder may be anything, and a value in the destination's place is not read past (#144)."""
