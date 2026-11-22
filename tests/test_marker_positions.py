@@ -208,3 +208,10 @@ def test_many_markers_holding_braces_in_comments_are_found_in_linear_time():
 
     small, large = took(1000), took(8000)
     assert large < max(small, 0.01) * 30  # 8 times the markers: quadratic would be 64 times the time
+
+
+def test_a_look_alike_running_over_a_cell_end_does_not_hide_a_cells_marker():
+    source = _HEAD + "# A\n\n| a | b | c |\n|---|---|---|\n| {#a|b} | {#a\\|b} |\n"
+    [found] = _check(source)
+    assert found.source == "{#a|b}"
+    assert _written(source, found) == "{#a\\|b}"

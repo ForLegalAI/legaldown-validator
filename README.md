@@ -870,8 +870,7 @@ for a document built in code, or changed since it was parsed so that it no longe
 (like `layout()`, they describe the source as parsed: an edit that keeps the length of every text is
 not told apart, so parse again after editing); and for a marker the source writes otherwise than its
 block's text holds it: in a block holding the same spelling in fenced code, which the text blanks, in a
-table whose rows have cells past the header's width, which the table drops, and for a marker with a
-comment in it that runs over a line break.
+table whose rows have cells past the header's width, which the table drops.
 Heading markers are not among them: `document.layout()` gives a heading's `marker_line`.
 
 ```python

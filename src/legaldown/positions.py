@@ -795,6 +795,10 @@ def _count(text: str, needle: str) -> int:
     return count
 
 
+#: A ``|`` that ends a table cell: one not after a backslash (``parser._split_row``).
+_CELL_BREAK_RE = re.compile(r"(?<!\\)\|")
+
+
 def _written_end(line: str, start: int, needle: str, table: bool) -> int | None:
     """Where *needle*, as a block's text holds it, ends in source *line* if it is written there from
     *start*: in a table row, a ``|`` of it is written ``\\|``. None if it is not."""
@@ -1017,7 +1021,11 @@ class Locator:
                 places.text_braces.extend((number, at) for at in find_all(text, "{"))
             for number, line in enumerate(self._map.lines[leaf.start - 1:leaf.end - 1]):
                 for match in MARKER_RE.finditer(line):
-                    spelled = match.group().replace("\\|", "|") if leaf.kind == "table" else match.group()
+                    spelled = match.group()
+                    if leaf.kind == "table":
+                        if _CELL_BREAK_RE.search(spelled):
+                            continue  # it runs over a cell's end: no cell holds it
+                        spelled = spelled.replace("\\|", "|")
                     places.lines.setdefault(spelled, []).append((number, match.start()))
                 places.line_braces.extend((number, at) for at in find_all(line, "{"))
             self._marker_places[key] = places
