@@ -712,8 +712,8 @@ Where this differs from CommonMark, or is read more simply:
       continues a paragraph cannot begin a definition (CommonMark §4.7: a definition cannot interrupt a paragraph, and
       once a line of one is no definition, none after it is), so the next line of the paragraph, `[b]: v` or `[Option
       B]: {{p4}} shall pay.`, is not asked (#144); the paragraphs are the parser's reading of the assembly, and only of
-      one without raw HTML, code, a quote or a table (an answer may end an HTML comment, and what follows is read
-      anew), and a line continues it if it and the lines between begin with no `>`, list marker, digit, `#`, `=`,
+      those before any raw HTML, code, quote or table in it (an answer may end an HTML comment, and what follows is
+      read anew), and a line continues it if it and the lines between begin with no `>`, list marker, digit, `#`, `=`,
       `` ` ``, `~`, `<`, `|`, `_` or answer. A value that a typed placeholder assembles to (`{{date: …}}`,
       `{{money: …}}`, `{{duration: …}}`) opens no title, written or rendered, so it may be the character after the
       destination's blank (`[a]: u {{placeholder: d1}} {{p1}} …` is clean, #144); in the destination's place it is

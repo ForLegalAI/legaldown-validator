@@ -1139,6 +1139,7 @@ def test_what_continues_a_paragraph_is_read_from_the_output():
     assert hazards._continued(["[a]: The u \x01", "\x01 [b]: v", "[c]: v"]) == set()
     for other in (["```", "x", "```"], ["<!--", "-->"], ["> q"], ["| a | b |", "|---|---|"]):
         assert hazards._continued([*other, "", "[a]: The u \x01", "[b]: v"]) == set(), other
+        assert hazards._continued(["[a]: The u \x01", "[b]: v", "", *other]) == {1}, other  # (after it: no matter)
     assert hazards._all_dead(["[a]: The u \x01", "[b]: v"])
     assert not hazards._all_dead(["[a]: The u \x01", "", "[b]: v"])
     assert not hazards._all_dead(["[b]: v", "[a]: The u \x01"])  # (a first line is a candidate)
@@ -1174,8 +1175,9 @@ def test_a_label_after_a_heading_or_a_rule_opens_a_paragraph_and_does_not_pay_fo
 def test_reading_the_paragraphs_of_an_assembly_is_charged(monkeypatch):
     """The layout ``_continued`` reads is paid for from the budget, once for each assembly it reads (#144)."""
     charged = []
-    assert hazards._all_dead(["[a]: The u \x01", "[b]: v"], lambda: charged.append(1)) and charged == [1]
-    assert hazards._all_dead(["[a]: The u \x01"], lambda: charged.append(1)) and charged == [1]  # (all dead: none)
+    assert hazards._all_dead(["[a]: The u \x01", "[b]: v"], lambda: charged.append(1) or True) and charged == [1]
+    assert hazards._all_dead(["[a]: The u \x01"], lambda: charged.append(1) or True) and charged == [1]  # (all dead: none)
+    assert not hazards._all_dead(["[a]: The u \x01", "[b]: v"], lambda: False)  # (past the budget: not settled)
 
 
 _PREAMBLE_HAZARD = 'x {when=q}\n- {{choose: c1, true="", false="z"}}\n  [a]: u {{placeholder: p1}} {when=q}\n'

@@ -785,8 +785,11 @@ class _Assembler:
         (``_all_dead``), or continues a paragraph (``_continued``). The output is the template's text up to the first
         answer, which is all that ``_dead`` reads of it, and its lines, which are every output's. Reading an output's
         paragraphs costs what assembling it does (*weight*), charged as it is done."""
-        def charge() -> None:
+        def charge() -> bool:
+            if self.left[0] < weight:
+                return False  # (past the budget: the region is not settled)
             self.left[0] -= weight
+            return True
 
         for combo in product(*deciding.values()):
             lines = self._assemble(mini, dict(zip(deciding, combo, strict=True)), fixed)
@@ -1053,11 +1056,11 @@ def _may_open(lines: list[str], number: int) -> bool:
     return not text or _CONTINUATION_RE.match(lines[number]) is None
 
 
-def _all_dead(lines: list[str], charge: Callable[[], None] | None = None) -> bool:
+def _all_dead(lines: list[str], charge: Callable[[], bool] | None = None) -> bool:
     """Whether every label that opens a line of the assembled *lines* is dead (``_dead``): a candidate is each
     ``[`` that a definition could begin with, which is more than the definitions there are, but for the lines that
     continue a paragraph whose first line is no definition (``_continued``, asked only when a candidate is not
-    dead, and *charge*d for)."""
+    dead, and *charge*d for: False if it cannot be)."""
     live = []
     for number, line in enumerate(lines):
         found = _LABEL_START_RE.match(line)
@@ -1065,8 +1068,8 @@ def _all_dead(lines: list[str], charge: Callable[[], None] | None = None) -> boo
             live.append(number)
     if not live:
         return True
-    if charge is not None:
-        charge()
+    if charge is not None and not charge():
+        return False
     continued = _continued(lines)
     return all(number in continued for number in live)
 
@@ -1083,13 +1086,13 @@ def _continued(lines: list[str]) -> set[int]:
     line break and begins no block (assembly's line-start check, §15.7.3), and escapes ``|``, so blank lines, line
     starts and tables are the same in every output; what an answer can still change is where an HTML block ends
     (``-->`` in it ends a comment), and with it what follows, so an output with raw HTML or code in it (or a quote,
-    whose blocks the layout does not give) has no such line, nor one with a table."""
+    whose blocks the layout does not give) has no such line before it, nor after a table."""
     spans = _spans(_layout(lines))
-    if any(span.kind in ("code", "html", "quote", "table") for span in spans):
-        return set()
+    # (Where the first such block begins: what follows a paragraph does not change how its lines are read.)
+    other = min((span.start for span in spans if span.kind in ("code", "html", "quote", "table")), default=len(lines))
     found: set[int] = set()
     for span in spans:
-        if span.kind in PARAGRAPH_KINDS:
+        if span.kind in PARAGRAPH_KINDS and span.end <= other:
             for number in range(span.start + 1, span.end):
                 if _CONTINUATION_RE.match(lines[number]) is None:
                     break
