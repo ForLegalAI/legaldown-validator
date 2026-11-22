@@ -49,6 +49,8 @@ from .result import _Recorder
 from .templates import DECISION_QUESTION_TYPES, _InsertionScan, question_type, template_text
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .combined import Combined
 
 #: The most combinations of witness answers that one region is assembled with; the most work for one region, which
@@ -670,7 +672,7 @@ class _Assembler:
                     elif self._settled(mini, deciding, {
                         **{name: values[0] for name, values in keys.items() if name not in texts and name not in deciding},
                         **dict.fromkeys(texts, SENTINEL),
-                    }):
+                    }, weight):
                         self.memo[shape] = frozenset()
                 except Exception:  # noqa: BLE001 - the assembler cannot read the region: the conservative rule judges it
                     self.memo[shape] = None
@@ -776,15 +778,19 @@ class _Assembler:
             return None
         return [line.text for line in self.assembly._emit(mini.main, decision.removed[""], answers)]
 
-    def _settled(self, mini: Any, deciding: dict[str, list], fixed: dict) -> bool:
+    def _settled(self, mini: Any, deciding: dict[str, list], fixed: dict, weight: int = 0) -> bool:
         """Whether no definition can be read in the region whatever its text answers: for every combination of the
         answers to the *deciding* questions, with the others *fixed* (the texts answered by ``SENTINEL``, a typed
         question by its first answer: it is read no further than its ``{{``), every label in the output is dead
         (``_all_dead``), or continues a paragraph (``_continued``). The output is the template's text up to the first
-        answer, which is all that ``_dead`` reads of it, and its lines, which are every output's."""
+        answer, which is all that ``_dead`` reads of it, and its lines, which are every output's. Reading an output's
+        paragraphs costs what assembling it does (*weight*), charged as it is done."""
+        def charge() -> None:
+            self.left[0] -= weight
+
         for combo in product(*deciding.values()):
             lines = self._assemble(mini, dict(zip(deciding, combo, strict=True)), fixed)
-            if lines is not None and not _all_dead(lines):
+            if lines is not None and not _all_dead(lines, charge):
                 return False
         return True
 
@@ -1037,16 +1043,21 @@ def _may_open(lines: list[str], number: int) -> bool:
     """Whether line *number* of the template's *lines* may begin a paragraph, as ``_hopeless`` is asked of it:
     unless it follows a line of text and continues it (``_CONTINUATION_RE``). ``_continued`` says so of the output;
     here it is a guess, which only decides whether the cutoff is tried."""
-    if number == 0 or is_blank(lines[number - 1]) or lines[number - 1].lstrip(" \t").startswith(">"):
+    if number == 0:
         return True
-    return _CONTINUATION_RE.match(lines[number]) is None
+    # (After a blank line, a heading, a rule, a fence, raw HTML, a table row or a quote it opens one; after text, or
+    # an item's or a paragraph's label, not.)
+    before = lines[number - 1]
+    label = _LABEL_START_RE.match(before)
+    text = _CONTINUATION_RE.match(before) is not None or (label is not None and ">" not in label.group())
+    return not text or _CONTINUATION_RE.match(lines[number]) is None
 
 
-def _all_dead(lines: list[str]) -> bool:
+def _all_dead(lines: list[str], charge: Callable[[], None] | None = None) -> bool:
     """Whether every label that opens a line of the assembled *lines* is dead (``_dead``): a candidate is each
     ``[`` that a definition could begin with, which is more than the definitions there are, but for the lines that
     continue a paragraph whose first line is no definition (``_continued``, asked only when a candidate is not
-    dead)."""
+    dead, and *charge*d for)."""
     live = []
     for number, line in enumerate(lines):
         found = _LABEL_START_RE.match(line)
@@ -1054,6 +1065,8 @@ def _all_dead(lines: list[str]) -> bool:
             live.append(number)
     if not live:
         return True
+    if charge is not None:
+        charge()
     continued = _continued(lines)
     return all(number in continued for number in live)
 

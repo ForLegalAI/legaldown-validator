@@ -1158,6 +1158,26 @@ def test_a_typed_value_after_a_destination_and_a_blank_makes_a_label_dead_and_no
     assert hazards._hopeless("[a]: {{placeholder: n}} x", typed=True)
 
 
+def test_a_label_after_a_heading_or_a_rule_opens_a_paragraph_and_does_not_pay_for_the_cutoff(monkeypatch):
+    """``_may_open``: only a line after plain text continues a paragraph; after a heading line or a rule the label
+    opens one, and a hopeless one is not tried (#144)."""
+    settled = _count(monkeypatch, "_settled", hazards._Assembler)
+    hopeless = "[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at {{placeholder: p3}}.\n"
+    for before in ("## Fees {#fees}\n", "***\n", "| a | b |\n"):
+        reported(before + hopeless)
+    assert settled[0] == 0
+    assert hazards._may_open(["The Seller", "[b]: v"], 1) is False
+    assert hazards._may_open(["# Fees", "[b]: v"], 1) and hazards._may_open(["x", "> [b]: v"], 1)
+    assert not hazards._may_open(["- [a]: The u", "  [b]: v"], 1) and hazards._may_open(["> [a]: u", "[b]: v"], 1)
+
+
+def test_reading_the_paragraphs_of_an_assembly_is_charged(monkeypatch):
+    """The layout ``_continued`` reads is paid for from the budget, once for each assembly it reads (#144)."""
+    charged = []
+    assert hazards._all_dead(["[a]: The u \x01", "[b]: v"], lambda: charged.append(1)) and charged == [1]
+    assert hazards._all_dead(["[a]: The u \x01"], lambda: charged.append(1)) and charged == [1]  # (all dead: none)
+
+
 _PREAMBLE_HAZARD = 'x {when=q}\n- {{choose: c1, true="", false="z"}}\n  [a]: u {{placeholder: p1}} {when=q}\n'
 
 
