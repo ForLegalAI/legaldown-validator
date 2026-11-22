@@ -1164,12 +1164,13 @@ def test_a_label_after_a_heading_or_a_rule_opens_a_paragraph_and_does_not_pay_fo
     opens one, and a hopeless one is not tried (#144)."""
     settled = _count(monkeypatch, "_settled", hazards._Assembler)
     hopeless = "[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at {{placeholder: p3}}.\n"
-    for before in ("## Fees {#fees}\n", "***\n", "| a | b |\n"):
+    for before in ("## Fees {#fees}\n", "***\n", "| a | b |\n", "    code\n", "<div>\nx\n"):
         reported(before + hopeless)
     assert settled[0] == 0
     assert hazards._may_open(["The Seller", "[b]: v"], 1) is False
     assert hazards._may_open(["# Fees", "[b]: v"], 1) and hazards._may_open(["x", "> [b]: v"], 1)
     assert not hazards._may_open(["- [a]: The u", "  [b]: v"], 1) and hazards._may_open(["> [a]: u", "[b]: v"], 1)
+    assert hazards._may_open(["    code", "[b]: v"], 1) and hazards._may_open(["<div>", "[b]: v"], 1, raw=True)
 
 
 def test_reading_the_paragraphs_of_an_assembly_is_charged(monkeypatch):

@@ -634,7 +634,7 @@ class _Assembler:
             and SENTINEL not in "".join([*context, *lines])
             and not any(
                 _hopeless(line, (start + number, line.find("{{")) in typed)
-                for number, line in enumerate(lines) if _may_open(lines, number)
+                for number, line in enumerate(lines) if _may_open(lines, number, start + number - 1 in self.solid)
             )
         )
         if too_many and not cutoff:
@@ -672,7 +672,7 @@ class _Assembler:
                     elif self._settled(mini, deciding, {
                         **{name: values[0] for name, values in keys.items() if name not in texts and name not in deciding},
                         **dict.fromkeys(texts, SENTINEL),
-                    }, weight):
+                    }, weight, WORK_CAP - cost):
                         self.memo[shape] = frozenset()
                 except Exception:  # noqa: BLE001 - the assembler cannot read the region: the conservative rule judges it
                     self.memo[shape] = None
@@ -778,17 +778,23 @@ class _Assembler:
             return None
         return [line.text for line in self.assembly._emit(mini.main, decision.removed[""], answers)]
 
-    def _settled(self, mini: Any, deciding: dict[str, list], fixed: dict, weight: int = 0) -> bool:
+    def _settled(
+        self, mini: Any, deciding: dict[str, list], fixed: dict, weight: int = 0, allowance: int = 0,
+    ) -> bool:
         """Whether no definition can be read in the region whatever its text answers: for every combination of the
         answers to the *deciding* questions, with the others *fixed* (the texts answered by ``SENTINEL``, a typed
         question by its first answer: it is read no further than its ``{{``), every label in the output is dead
         (``_all_dead``), or continues a paragraph (``_continued``). The output is the template's text up to the first
         answer, which is all that ``_dead`` reads of it, and its lines, which are every output's. Reading an output's
-        paragraphs costs what assembling it does (*weight*), charged as it is done."""
+        paragraphs costs what assembling it does (*weight*), charged as it is done, up to the region's *allowance*
+        under ``WORK_CAP`` and to what is left of the budget."""
+        spare = [allowance]
+
         def charge() -> bool:
-            if self.left[0] < weight:
-                return False  # (past the budget: the region is not settled)
+            if self.left[0] < weight or spare[0] < weight:
+                return False  # (past the cap or the budget: the region is not settled)
             self.left[0] -= weight
+            spare[0] -= weight
             return True
 
         for combo in product(*deciding.values()):
@@ -1042,15 +1048,16 @@ def _hopeless(line: str, typed: bool = False) -> bool:
     return rest[k] in "\"'("
 
 
-def _may_open(lines: list[str], number: int) -> bool:
+def _may_open(lines: list[str], number: int, raw: bool = False) -> bool:
     """Whether line *number* of the template's *lines* may begin a paragraph, as ``_hopeless`` is asked of it:
     unless it follows a line of text and continues it (``_CONTINUATION_RE``). ``_continued`` says so of the output;
-    here it is a guess, which only decides whether the cutoff is tried."""
-    if number == 0:
+    here it is a guess, which only decides whether the cutoff is tried. *raw*: the line before is in code or raw
+    HTML."""
+    before = lines[number - 1] if number else ""
+    if number == 0 or raw or before.startswith(("    ", "\t")):
         return True
-    # (After a blank line, a heading, a rule, a fence, raw HTML, a table row or a quote it opens one; after text, or
-    # an item's or a paragraph's label, not.)
-    before = lines[number - 1]
+    # (After a blank line, indented code, a heading, a rule, a fence, raw HTML, a table row or a quote it opens one;
+    # after text, or an item's or a paragraph's label, not.)
     label = _LABEL_START_RE.match(before)
     text = _CONTINUATION_RE.match(before) is not None or (label is not None and ">" not in label.group())
     return not text or _CONTINUATION_RE.match(lines[number]) is None
