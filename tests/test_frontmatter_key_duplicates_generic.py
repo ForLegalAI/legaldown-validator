@@ -8,6 +8,7 @@ import time
 from unittest import mock
 
 import pytest
+import yaml
 
 from legaldown import document_from_dict, parse, parser
 from legaldown.positions import repeated_keys
@@ -275,8 +276,17 @@ def test_an_entry_of_a_later_source_that_an_earlier_one_overrides_is_not_read():
     ]
 
 
-def test_a_source_of_a_source_is_overridden_by_the_source_that_merges_it():
+def test_a_source_of_a_source_is_judged_as_the_reader_holds_it():
+    # PyYAML 6.0.4 keeps the first entry of a one-character key it merges: the source of the source's `a`
+    # comes first and is held, so its repeated `b` is read and reported (CONFORMANCE.md).
     front = "x:\n  <<: {<<: {a: {b: 1, b: 2}}, a: 1}\n"
+    assert yaml.safe_load(front) == {"x": {"a": {"b": 2}}}
+    assert [m for _l, _lvl, m in _found(front)] == [
+        "The `x.<<.<<.a` key `b` is written again at line 3: this entry is ignored."
+    ]
+    # A longer key is not merged once: the source's own `fee` comes last and is held, the inner one not read.
+    front = "x:\n  <<: {<<: {fee: {b: 1, b: 2}}, fee: 1}\n"
+    assert yaml.safe_load(front) == {"x": {"fee": 1}}
     assert _found(front) == []
 
 
@@ -299,23 +309,37 @@ def test_a_source_judged_for_all_its_keys_and_for_some_is_reported_once():
 
 
 def test_a_key_written_twice_among_two_merges_is_judged_as_the_reader_orders_them():
-    # `<<` twice: the sources of both are merged, the later's entries over the earlier's; a key repeated inside the
-    # later source is a repeat there, though the earlier source has it too.
-    ((line, level, message),) = _found("x:\n  <<: {k: 1}\n  <<: {k: 2, k: 3}\n")
-    assert (line, level) == (4, "error") and message.startswith("The `x.<<` key `k` is written again at line 4")
-    # the earlier source's entry is dropped by the later one: neither it nor its value is read
-    assert _found("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {k: 1}\n") == []
+    # `<<` twice: PyYAML 6.0.4 keeps the first entry of a one-character key it merges, so the earlier source's `k`
+    # is held and the later source's entries of it are never read.
+    assert yaml.safe_load("x:\n  <<: {k: 1}\n  <<: {k: 2, k: 3}\n") == {"x": {"k": 1}}
+    assert _found("x:\n  <<: {k: 1}\n  <<: {k: 2, k: 3}\n") == []
+    # the earlier source's entry is held, so what its value repeats is read
+    assert [m for _l, _lvl, m in _found("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {k: 1}\n")] == [
+        "The `x.<<.k` key `a` is written again at line 3: this entry is ignored."
+    ]
+    # a longer key goes the other way: the later source's entries are over the earlier's, and a key repeated
+    # inside the later source is a repeat there
+    ((line, level, message),) = _found("x:\n  <<: {key: 1}\n  <<: {key: 2, key: 3}\n")
+    assert (line, level) == (4, "error") and message.startswith("The `x.<<` key `key` is written again at line 4")
+    assert _found("x:\n  <<: {key: {a: 1, a: 2}}\n  <<: {key: 1}\n") == []
     # but a key only the earlier source has still is
     assert [m for _l, _lvl, m in _found("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {j: 1}\n")] == [
         "The `x.<<.k` key `a` is written again at line 3: this entry is ignored."
     ]
 
 
-def test_the_first_source_of_a_list_wins_and_a_second_merge_wins_over_both():
+def test_a_list_of_sources_and_a_second_merge_are_judged_as_the_reader_holds_them():
+    # PyYAML 6.0.4 reads a list of sources first to last. A one-character key is merged once: the first source's
+    # `a` is held, over the second source's and over a second `<<`.
     front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}}]\n  <<: {a: 1}\n"
-    assert _found(front) == []
+    assert [m.split(" key ")[0] for _l, _lvl, m in _found(front)] == ["The `x.<<[0].a`"]
     front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}}]\n"
     assert [m.split(" key ")[0] for _l, _lvl, m in _found(front)] == ["The `x.<<[0].a`"]
+    # A longer key: the last source's entry is held, and a second `<<` over both.
+    front = "x:\n  <<: [{ab: {b: 1, b: 2}}, {ab: {c: 1, c: 2}}]\n"
+    assert [m.split(" key ")[0] for _l, _lvl, m in _found(front)] == ["The `x.<<[1].ab`"]
+    front = "x:\n  <<: [{ab: {b: 1, b: 2}}, {ab: {c: 1, c: 2}}]\n  <<: {ab: 1}\n"
+    assert _found(front) == []
 
 
 def test_a_mapping_of_thousands_of_sources_takes_linear_time():

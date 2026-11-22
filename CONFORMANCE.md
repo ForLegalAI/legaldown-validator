@@ -296,8 +296,13 @@ How the rule reads the YAML:
   (`translations.<<`), whose own entries stay with the check above. Only the entries of a source that reach the
   mapping are judged: one that the mapping's own key, or a source that wins over it, takes the place of is never
   read, and neither is its value. A `<<` written twice in one mapping is not reported as such: the reader merges
-  both, the later's entries over the earlier's, and the model may drop entries there; that is merge precedence,
-  not a repeat, and is not reported. A repeat inside a source is, when the source's entry is the one held.
+  both, and the model may drop entries there; that is merge precedence, not a repeat, and is not reported. A repeat
+  inside a source is, when the source's entry is the one held. Which entry is held is read off the mapping as the
+  YAML reader flattened it, not worked out, because PyYAML releases differ. PyYAML 6.0.4, which the package
+  requires, reads a list of sources first to last, and keeps the first entry it met of a key whose text is the same
+  Python string object: in CPython that is a one-character key (`a`) or an entry an alias brings in twice. For other
+  keys, the last entry stays (`x: {<<: {a: 1, a: 2}}` holds `a: 1`; `x: {<<: {fee: 1, fee: 2}}` holds `fee: 2`).
+  The finding follows what the reader holds, so it names the entry that is dropped either way.
 - **A dropped entry is ignored whole:** a repeat inside the value of a key that a later one replaces is not
   reported, as the model never holds it.
 - **A mapping shared through an alias is reported once**, under the first path that reaches it, at the line where it

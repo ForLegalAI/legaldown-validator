@@ -395,8 +395,10 @@ def repeated_keys(
     replaces (#131), as the model's dict does: the keys that ``construct`` builds equal are one, and the last
     stays. Run after the document is built, so every mapping reached has been flattened (``_read_as_written``
     and the reader's own recursion into a ``<<`` source). That puts the entries of the sources first, as the
-    reader orders them (the sources of each ``<<`` in turn, those of a list last to first), and the mapping's
-    own after, and the last entry of a key is the one held. *merges* holds, for each mapping that merges keys
+    reader flattens them, and the mapping's own after, and the last entry of a key that the flattened mapping
+    has is the one held: which entry of a source that is is read off the flattened mapping, not worked out,
+    since PyYAML releases differ (6.0.4 reads a list of sources first to last and keeps a source's first
+    entry of a key it has met; earlier ones read a list last to first and keep a source's last entry). *merges* holds, for each mapping that merges keys
     in, the entries written in it and the sources it merges (``parser._StrDateSafeLoader.flatten_mapping``). A
     source is judged as a mapping of its own, but only for the entries that are held in the mapping that merges
     it: an entry that a later one takes the place of, a key written in the mapping or a later source, is never
@@ -464,8 +466,15 @@ def repeated_keys(
                     groups.setdefault(slot, []).append(entry)
             where = None
             for slot, group in groups.items():
-                if held is not None and id(group[-1]) not in held:
-                    continue  # a later entry of the mapping that merges this one takes its place: not read
+                if held is not None:
+                    # The entry the mapping that merges this one holds, as the reader flattened it: the last one
+                    # the flattened mapping has of the key. PyYAML 6.0.4 keeps a source's first entry of a key
+                    # it has met (by the key's text object) and reads a list of sources first to last; earlier
+                    # releases read a list last to first and keep a source's last entry.
+                    kept = [entry for entry in group if id(entry) in held]
+                    if not kept:
+                        continue  # an entry of a later source, or of the mapping, takes its place: not read
+                    group = [entry for entry in group if entry is not kept[-1]] + kept[-1:]
                 if len(group) > 1 and node not in skip:
                     where = _path_text(path, block) if where is None else where
                     for key, repeat in _replaced(group, where, block, breaks, first_line, slot_of, resolved):
