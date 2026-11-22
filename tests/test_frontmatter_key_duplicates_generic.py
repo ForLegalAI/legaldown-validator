@@ -435,7 +435,8 @@ def test_a_long_key_is_cut_short_in_the_path_of_the_findings_under_it():
     assert time.perf_counter() - start < 10
     assert len(found) == 7_999
     assert all(len(message) < 200 for _line, _level, message in found)
-    assert found[0][2].startswith("The `k" + "x" * 39 + "…` key `a` is written again at line 5")
+    # a key cut in a step may make two paths alike, so the mapping's place is said (#133)
+    assert found[0][2].startswith("The `k" + "x" * 39 + "…` (the mapping at line 4, column 3) key `a` is written again at line 5")
 
 
 def test_a_lone_surrogate_in_a_key_is_escaped_in_the_path_and_czech_letters_are_not():
@@ -449,7 +450,7 @@ def test_a_lone_surrogate_in_a_key_is_escaped_in_the_path_and_czech_letters_are_
 def test_a_step_is_cut_before_it_is_escaped_and_closed_after():
     # a 60-character quoted key: the cut is in the text, and the step keeps its closing bracket
     ((_line, _level, message),) = _found('"' + "ab c" * 15 + '": {a: 1, a: 2}\n')
-    assert message.startswith('The `["' + "ab c" * 10 + '…"]` key `a`')
+    assert message.startswith('The `["' + "ab c" * 10 + '…"]` (the mapping at line 2, column 65) key `a`')
     # a surrogate at the cut: the escape is whole or it is not there
     for before in (36, 38, 39, 40):
         ((_line, _level, message),) = _found('"' + "x" * before + "\\ud800" + "y" * 30 + '": {a: 1, a: 2}\n')
@@ -459,7 +460,7 @@ def test_a_step_is_cut_before_it_is_escaped_and_closed_after():
         message.encode("utf-8")
     # a typed key: the brace is closed too
     ((_line, _level, message),) = _found(_questions("      ? " + "0" * 60 + "1\n      : {a: 1, a: 2}\n"))
-    assert message.startswith("The `questions.q1.default{" + "0" * 40 + "…}` key `a`")
+    assert message.startswith("The `questions.q1.default{" + "0" * 40 + "…}` (the mapping at line 7, column 9) key `a`")
 
 
 def test_a_key_is_cut_short_where_a_message_names_it():
@@ -592,6 +593,12 @@ def test_two_sources_of_two_merge_keys_are_told_apart():
     assert [message.split(" key ")[0] for _l, _lvl, message in found] == ["The `x.<<#1[0]`", "The `x.<<#2[1]`"]
 
 
+def test_short_paths_whose_keys_are_cut_alike_are_told_apart():
+    front = f"x:\n  {'b' * 50}X:\n    k: 1\n    k: 2\n  {'b' * 50}Y:\n    k: 1\n    k: 2\n"
+    first, second = _found(front)
+    assert "(the mapping at line 4, column 5)" in first[2] and "(the mapping at line 7, column 5)" in second[2]
+
+
 def test_paths_that_are_cut_alike_in_one_run_each_name_their_own_mapping():
     # #133: the subject of a cut path is worked out for each mapping, not once for its text.
     long = "a" * 50
@@ -636,7 +643,7 @@ def test_a_number_too_large_to_write_is_not_written():
     document = parse(_source(key))
     assert document.frontmatter_error is None
     ((_line, _level, message),) = _found(key)
-    assert message.startswith("The `questions.q1.default{0xffff") and "…}` key `a` is written again" in message
+    assert message.startswith("The `questions.q1.default{0xffff") and "…}` (the mapping at line 7, column 9) key `a` is written again" in message
     assert len(message) < 200  # the key is cut short, not copied into the finding
     # no repeat of it: nothing to say, and the document is read
     assert _found(f"questions:\n  q1:\n    type: text\n    default:\n      ? {huge}\n      : 1\n") == []

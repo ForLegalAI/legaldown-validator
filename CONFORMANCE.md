@@ -254,7 +254,7 @@ more than one, #133). A key in a step of the path is cut after 40 characters (`�
 copied into every finding under it, and a character that cannot be written out, as a lone surrogate that `"\ud800"` makes,
 is escaped; letters stay as they are written. A path longer than 80 characters keeps its end and says where the
 mapping starts (`` `…k298.k299` (the mapping at line 302, column 601)``), so that two long paths that end alike are
-told apart (#133), and a key named in a message, in this check and in that of `translations` and `field_types`, is
+told apart (#133); so does a path with a key cut short in a step, which may be alike too; and a key named in a message, in this check and in that of `translations` and `field_types`, is
 cut after 80 characters (`…`). A key written as nothing (an empty YAML key, which YAML reads as null) is shown as
 `(empty)`, without backticks, so that it is not taken for the key `''`, an empty string written in quotes, which is
 shown as written (#133).

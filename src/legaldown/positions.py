@@ -245,12 +245,12 @@ def _why(text: str, other: str) -> str:
     return "text" if text == other else "stripped" if text.strip() == other.strip() else "value"
 
 
-def _judged(entry: WrittenEntry, why: str) -> bool:
+def _judged(entry: WrittenEntry) -> bool:
     """Whether ``read_maps`` reports *entry*, which a later entry of its slot (the same key to the model's dict)
-    takes the place of for *why*: an entry merged in (``<<``) is merge precedence then, as in every other mapping
+    takes the place of: not an entry merged in (``<<``), which is merge precedence then, as in every other mapping
     (``repeated_keys``), or a repeat in its source, which the source's check reports. Entries of two slots that
     the model reads as one once stripped or read as text are two keys to YAML, and always reported (#133)."""
-    return not entry.merged or why == "stripped"
+    return not entry.merged
 
 
 def read_maps(
@@ -326,7 +326,7 @@ def read_maps(
                 # A key written again is named by the entry that repeats it, unless that is skipped.
                 again = next((each for each, _text in found[place + 1:] if each.resolved == entry.resolved), None)
                 why = "repeated" if again else _why(text, last_text)
-                if _judged(entry, why):
+                if _judged(entry):
                     ignored.append(Ignored(entry, again if again and not skipped else by, why, skipped, stays.get(entry.key)))
         maps[name] = StrippedMap(stays, tuple(sorted(ignored, key=lambda each: (each.entry.line, each.entry.start))))
     return maps

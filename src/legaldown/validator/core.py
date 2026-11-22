@@ -1572,11 +1572,12 @@ def _check(
                 # A long path keeps its end, which names the mapping, and says where the mapping starts, so that
                 # two whose paths end alike are told apart (#133). `translations` and `field_types` are named as
                 # their own check names them (a `<<` written twice there).
-                if len(each.path) <= _SHOWN_WIDTH:
+                # A key cut short in a step (`…`) may make two paths alike as well.
+                if len(each.path) <= _SHOWN_WIDTH and "…" not in each.path:
                     plain = each.path in STRIPPED_MAPS
                     paths[mapping] = each.path if plain else _shown(each.path) if each.path else "frontmatter"
                 else:
-                    cut = _shown("…" + each.path[1 - _SHOWN_WIDTH:])
+                    cut = _shown(each.path if len(each.path) <= _SHOWN_WIDTH else "…" + each.path[1 - _SHOWN_WIDTH:])
                     known = each.mapping_line is not None and each.mapping_column is not None
                     where_at = f" (the mapping at line {each.mapping_line}, column {each.mapping_column})" if known else ""
                     paths[mapping] = cut + where_at
