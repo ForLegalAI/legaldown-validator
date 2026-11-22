@@ -165,7 +165,9 @@ LIST_KINDS = ("ordered_list", "unordered_list")
 
 #: Block kinds whose text is a paragraph's, lines and all: a ``paragraph``
 #: and the ``definition``, ``ref`` and ``term`` paragraphs the parser reads
-#: out of one. Each is one unit a condition may attach to: a marker that ends
+#: out of one (a ``ref`` or ``term`` keeps its text in ``prefix``, ``target``
+#: and ``suffix``, not ``text``: ``block_fragments`` reads any of them). Each
+#: is one unit a condition may attach to: a marker that ends
 #: its text conditions the block as a whole (§5.7), where in a list it would
 #: condition the item it ends. A ``link_definition`` holds no text and is not
 #: one. The validator reads this tuple itself, so a tool that edits or compares

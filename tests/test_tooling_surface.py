@@ -517,11 +517,18 @@ def test_the_paragraph_kinds_are_the_ones_the_validator_reads_as_paragraphs():
     assert isinstance(grammar.PARAGRAPH_KINDS, tuple)
     assert grammar.PARAGRAPH_KINDS == ("paragraph", "definition", "ref", "term")
     assert not hasattr(units, "_PARAGRAPHS")
-    # A condition at the end of a preamble block's text is a paragraph's,
-    # placed in a template, exactly for these kinds (§5.7).
-    document = parse(
-        "---\ntitle: T\n---\n\nPlain. {when=vat}\n\n\"Fee\" {{def: fee}} means x. {when=vat}\n\n"
-        "See {{ref: a}}. {when=vat}\n\n{{term: a}} {when=vat}\n\n| h |\n|---|\n| c {when=vat} |\n\n# A\n\nText.\n"
+    assert not hasattr(units, "_LISTS")
+    blocks = (
+        "Plain. {when=vat}\n\n\"Fee\" {{def: fee}} means x. {when=vat}\n\n"
+        "See {{ref: a}}. {when=vat}\n\n{{term: a}} {when=vat}\n\n| h |\n|---|\n| c {when=vat} |\n"
     )
-    found = {document.preamble[each.block].kind: each.template_only for each in find_markers(document)}
-    assert found == {**dict.fromkeys(grammar.PARAGRAPH_KINDS, True), "table": False}
+    kinds = [*grammar.PARAGRAPH_KINDS, "table"]
+    # In the preamble, a condition at the end of a block's text is a
+    # paragraph's, placed in a template, exactly for these kinds (§5.7).
+    document = parse("---\ntitle: T\n---\n\n" + blocks + "\n# A\n\nText.\n")
+    found = [(document.preamble[each.block].kind, each.template_only) for each in find_markers(document)]
+    assert found == [(kind, kind != "table") for kind in kinds]
+    # In a section it conditions the block as a whole; in a table cell it is literal text.
+    document = parse("---\ntitle: T\n---\n\n# A\n\n" + blocks)
+    found = [(document.sections[0].blocks[each.block].kind, each.placed(False)) for each in find_markers(document)]
+    assert found == [(kind, kind != "table") for kind in kinds]
