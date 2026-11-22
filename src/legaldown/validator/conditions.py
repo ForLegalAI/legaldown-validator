@@ -9,11 +9,11 @@ from __future__ import annotations
 import itertools
 import re
 from collections.abc import Collection, Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from .result import Depends
-from .templates import question_type
+from .result import Depends, Line
+from .templates import _id_problem, question_type
 
 _CONDITION_RE = re.compile(r"(!?)([a-z][a-z0-9-]*)(?::([a-z][a-z0-9-]*))?")
 
@@ -85,6 +85,139 @@ def condition_problem(text: str, questions: Any) -> str | None:
     ``metadata.questions``; condition-invalid, §15.3), or None."""
     issue = condition_issue(text, questions)
     return issue[1] if issue else None
+
+
+# ── Questions no host can declare (#148) ─────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionUse:
+    """A use of a decision question that the document does not declare, which a
+    fragment's host would declare (§12.2): a valid condition on it (§15.3), or a
+    well-formed ``{{choose:}}`` of it (§15.5)."""
+
+    question: str
+    #: How a message about another use names this one: ``the condition 'q' on the
+    #: heading 'T'``, or the ``{{choose:}}`` as written, quoted.
+    what: str
+    line: Line
+    #: What the caller knows the use by (``undeclarable``).
+    key: Any
+    condition: Condition | None = None
+    #: The answers a ``{{choose:}}`` lists a phrase for, as written; None for a condition.
+    answers: tuple[str, ...] | None = None
+
+
+def _use_type(use: DecisionUse) -> tuple[str | None, str]:
+    """The type *use* needs its question declared with, ``"boolean"`` or ``"choice"``, and
+    ``""``; or None, and why no declaration gives it what it needs (verb first)."""
+    question = use.question
+    problem = _id_problem(question)
+    if problem:
+        if not question:
+            return None, "names no question, so no including document can declare one for it (§15.5)"
+        return None, f"names '{question}', which {problem}: it can be no question id, so no including document can declare it (§15.2)"
+    if use.answers is None:
+        value = use.condition.value if use.condition is not None else None
+        if value is None:
+            return "boolean", ""
+        problem = _id_problem(value)
+        if problem:
+            return None, (
+                f"tests the answer '{value}' of '{question}', which {problem}: it can be no choice's value, "
+                f"so no including document can declare '{question}' for it (§15.2)"
+            )
+        return "choice", ""
+    answers = set(use.answers)
+    if answers == {"true", "false"}:
+        return "boolean", ""
+    if len(answers) >= 2 and not any(_id_problem(answer) for answer in answers):
+        return "choice", ""
+    listed = f"{', '.join(use.answers)} as the answers" if use.answers else "no answer"
+    return None, (
+        f"lists {listed} to '{question}': a boolean question's are true and false, and a choice "
+        f"question's are at least two values, none of them a word YAML reads as a boolean or null, so no "
+        f"including document can declare it (§15.2)"
+    )
+
+
+def _at(use: DecisionUse) -> str:
+    line = use.line() if callable(use.line) else use.line
+    return f" (line {line})" if line else ""
+
+
+@dataclass(slots=True)
+class _Declarable:
+    """What the uses of one question met so far need, all of which one declaration gives."""
+
+    #: The first use, which decides the type: every later one needs the same.
+    first: DecisionUse
+    kind: str
+    #: Of a choice question: the first ``{{choose:}}``, whose answers its choices must be.
+    chooser: DecisionUse | None = None
+    #: Of a choice question: the first condition testing each value.
+    values: dict[str, DecisionUse] = field(default_factory=dict)
+
+    def conflict(self, use: DecisionUse, kind: str) -> str | None:
+        """Why no declaration gives *use*, of *kind*, what it needs with the uses met so far
+        (verb first, naming one it disagrees with); None when one does, and *use* is then met."""
+        question = use.question
+        if kind != self.kind:
+            return (
+                f"uses '{question}' as a {kind} question, but {self.first.what}{_at(self.first)} uses it as a "
+                f"{self.kind} one: no including document can declare it both ways (§15.2)"
+            )
+        if kind != "choice":
+            return None
+        if use.answers is not None:
+            if self.chooser is not None:
+                if set(use.answers) != set(self.chooser.answers or ()):
+                    return (
+                        f"lists {', '.join(use.answers)} as the answers to '{question}', but "
+                        f"{self.chooser.what}{_at(self.chooser)} lists {', '.join(self.chooser.answers or ())}: "
+                        f"no including document can declare both (§15.2)"
+                    )
+                return None
+            for value, other in self.values.items():
+                if value not in use.answers:
+                    return (
+                        f"lists {', '.join(use.answers)} as the answers to '{question}', but {other.what}{_at(other)} "
+                        f"tests the answer '{value}': no including document can declare both (§15.2)"
+                    )
+            self.chooser = use
+            return None
+        value = use.condition.value if use.condition is not None else None
+        assert value is not None  # a choice's condition has a value (``_use_type``)
+        if self.chooser is not None and value not in (self.chooser.answers or ()):
+            return (
+                f"tests the answer '{value}' of '{question}', but {self.chooser.what}{_at(self.chooser)} lists "
+                f"{', '.join(self.chooser.answers or ())} as its answers: no including document can declare both (§15.2)"
+            )
+        self.values.setdefault(value, use)
+        return None
+
+
+def undeclarable(uses: Iterable[DecisionUse]) -> dict[str, tuple[Any, str]]:
+    """The questions that no declaration gives what their *uses* (in document order) need
+    (§15.2, §15.3, §15.5): a boolean question for a condition without a value and for a
+    ``{{choose:}}`` of exactly true and false, a choice question with that value or those
+    answers for the others (#148). Each is the key of the first use at which none does, and
+    why (verb first, naming an earlier use it disagrees with, if any). A fragment's host
+    cannot declare such a question, so it is the fragment's own finding, made once there."""
+    found: dict[str, tuple[Any, str]] = {}
+    met: dict[str, _Declarable] = {}
+    for use in uses:
+        if use.question in found:
+            continue
+        kind, problem = _use_type(use)
+        if kind is not None:
+            declarable = met.setdefault(use.question, _Declarable(use, kind))
+            conflict = declarable.conflict(use, kind)
+            if conflict is None:
+                continue
+            problem = conflict
+        found[use.question] = use.key, problem
+    return found
 
 
 _BOOLEAN_ANSWERS = (True, False)

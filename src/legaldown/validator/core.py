@@ -43,6 +43,7 @@ from ..specification import SPEC_VERSION, parse_version
 from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
     ALWAYS,
+    DecisionUse,
     Exclusivity,
     Presence,
     always_covered,
@@ -50,6 +51,7 @@ from .conditions import (
     exclusive,
     parse_condition,
     satisfiable,
+    undeclarable,
 )
 from .fragments import (
     Files,
@@ -977,6 +979,48 @@ def is_template(document: Document) -> bool:
     or contains a ``{{choose:}}``, wherever it is. ``validate``
     reports it too (``DocumentIndex.is_template``)."""
     return _is_template(document, None, lex)
+
+
+def _undeclarable_questions(
+    document: Document,
+    conditions: Sequence[tuple[str, str, int | None]],
+    orders: Sequence[tuple[int, ...]],
+    questions: Any,
+    where: Locator,
+    lex_fragment: Callable[[str], Lexed],
+) -> dict[str, tuple[Any, str]]:
+    """The questions that *document*, a fragment, does not declare and uses in ways no one
+    declaration allows (``undeclarable``, #148), each with the key of the use to report it at
+    and why: ``("condition", i)`` for the i-th of *conditions* (where each is in the document:
+    *orders*), ``("choose", section, block, fragment, start)`` for a ``{{choose:}}``. Only a
+    valid condition and a well-formed ``{{choose:}}`` are uses: what is wrong with the others is
+    their own finding whatever is declared."""
+    from ..definitions import text_fragments  # see the import note in _validate
+
+    uses: list[tuple[tuple[int, ...], DecisionUse]] = []
+    for key, ((place, text, line), order) in enumerate(zip(conditions, orders, strict=True)):
+        condition = parse_condition(text)
+        if condition is not None and question_type(questions, condition.question) is None:
+            uses.append((order, DecisionUse(
+                condition.question, f"the condition '{text}' on {place}", line, ("condition", key), condition=condition,
+            )))
+    for section_index, block_index, block in document.iter_indexed_blocks():
+        for fragment_index, fragment in enumerate(text_fragments(block)):
+            for directive in lex_fragment(fragment).directives:
+                question = directive.positional or ""
+                if directive.name != "choose" or directive.malformed or question_type(questions, question) is not None:
+                    continue
+                uses.append((
+                    (-1 if section_index is None else section_index, block_index, fragment_index, directive.start),
+                    DecisionUse(
+                        question, f"'{directive.source}'",
+                        partial(where.find, section_index, block_index, directive.source, fragment_index, directive.start),
+                        ("choose", section_index, block_index, fragment_index, directive.start),
+                        answers=tuple(directive.params),
+                    ),
+                ))
+    uses.sort(key=lambda entry: entry[0])
+    return undeclarable(use for _order, use in uses)
 
 
 def _is_template(
@@ -2144,6 +2188,33 @@ def _check(
     asked = {directive.positional for directive, _line in placeholders + chooses if directive.positional}
     asked_in_notes: set[str] = set()
 
+    # Every condition in a condition position (§15.3): on what, as written,
+    # and its line; and, of each, where it is in the document (for ``undeclared``).
+    conditions: list[tuple[str, str, int | None]] = []
+    condition_orders: list[tuple[int, ...]] = []
+    for index, section in enumerate(document.sections):
+        if section.condition and not untemplated:
+            conditions.append((f"the heading '{section.title}'", section.condition, where.heading(index)))
+            condition_orders.append((index, -1))
+    for found in markers:
+        if found.marker and found.marker.condition and found.placed(template) and not untemplated:
+            conditions.append((f"'{found.source}'", found.marker.condition, marker_line(found)))
+            condition_orders.append(
+                (-1 if found.section is None else found.section, found.block, found.fragment, found.offset)
+            )
+    for index, att in enumerate(meta.attachments):
+        if att.when:
+            conditions.append((f"attachment '{att.id}'", att.when, where.key("attachments", index, "when")))
+            condition_orders.append((-2, index))
+    # The questions a fragment uses that no host can declare as it uses them (#148): each is the
+    # fragment's own finding, made once, at the use where no declaration can be had, in place of
+    # the host-dependent findings of its uses.
+    undeclared = (
+        _undeclarable_questions(document, conditions, condition_orders, questions, where, lex_fragment)
+        if mode.fragment and host_declares and not untemplated and (conditions or "choose" in body_directives)
+        else {}
+    )
+
     # The images that name their file by a link reference definition (#92, #104):
     # the definition's path is judged once, where it is written.
     reference_images = ReferenceImages(document, where, combined)
@@ -2321,8 +2392,16 @@ def _check(
                         )
                     result.index.values.fields.append((value, ftype))
                 elif name == "choose" and not untemplated:
+                    own = undeclared.get(directive.positional or "")
                     with result.at(line):
-                        check_choose(directive, questions, result, host_declares=host_declares)
+                        check_choose(
+                            directive, questions, result, host_declares=host_declares,
+                            undeclarable=None if own is None else (
+                                f"'{directive.source}' {own[1]}."
+                                if own[0] == ("choose", section_index, block_index, fragment_index, directive.start)
+                                else ""
+                            ),
+                        )
                 elif name == "include":
                     # §2.3: a path of the fragment's own, whoever includes it
                     file_references.check(
@@ -2398,30 +2477,16 @@ def _check(
         )
 
     # ── Templates (§15) ──
-    # Every condition in a condition position (§15.3): on what, as written,
-    # and its line.
-    conditions: list[tuple[str, str, int | None]] = [
-        (f"the heading '{section.title}'", section.condition, where.heading(index))
-        for index, section in enumerate(document.sections)
-        if section.condition and not untemplated
-    ]
-    conditions.extend(
-        (f"'{found.source}'", found.marker.condition, marker_line(found))
-        for found in markers
-        if found.marker
-        and found.marker.condition
-        and found.placed(template)
-        and not untemplated
-    )
-    conditions.extend(
-        (f"attachment '{att.id}'", att.when, where.key("attachments", index, "when"))
-        for index, att in enumerate(meta.attachments)
-        if att.when
-    )
-    for place, text, line in conditions:
+    for key, (place, text, line) in enumerate(conditions):
         issue = condition_issue(text, questions)
         if issue:
             depends, problem = issue
+            own = undeclared.get(parse_condition(text).question) if depends is not None else None
+            if own is not None:
+                # No host can declare the question as the fragment uses it (#148): one finding, its own.
+                if own[0] == ("condition", key):
+                    result.error("condition-invalid", f"The condition '{text}' on {place} {own[1]}.", line=line)
+                continue
             result.error(
                 "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
                 line=line, depends=depends if host_declares else None,

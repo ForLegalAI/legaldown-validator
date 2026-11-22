@@ -110,7 +110,17 @@ boundaries, and the final option (§15.9, `validate(final=True)` or
   unless `validate(template=)` (`legaldown validate --fragment --template` / `--no-template`) says
   so: a blank or a drafting note is legal in any document. A host that is no template declares no
   question, so a condition or a `{{choose:}}` naming one is then the fragment's own
-  `condition-invalid` or `choose-invalid`, not `host_dependent`. What §15.3 asks of a template's
+  `condition-invalid` or `choose-invalid`, not `host_dependent`. Nor is a question the fragment uses
+  in ways no one declaration allows ([#148](https://github.com/ForLegalAI/legaldown-validator/issues/148)):
+  as a boolean (a condition without a value, `when=q` or `when=!q`, or a `{{choose:}}` of exactly
+  `true` and `false`) and as a choice (`when=q:v`, or a `{{choose:}}` of other answers); as a choice
+  of other answers by two `{{choose:}}`, or with a value a `{{choose:}}` does not list; or in a way
+  no declaration allows at all (a `{{choose:}}` of fewer than two answers, an answer or value YAML
+  reads as a boolean or null, a question id that is none). That is one finding of the fragment's own,
+  at the first use none can be declared for, under that use's rule (`condition-invalid` or
+  `choose-invalid`, as a complete document declaring the question for the earlier use reports it there)
+  and naming the use it disagrees with; its other uses are not reported. Uses one declaration allows
+  stay `host_dependent`. What §15.3 asks of a template's
   fragment is asked in this mode only when `template=True` says the host is a template (below).
   `legaldown validate --fragment` marks the host-dependent findings in its text output, counts them apart in its
   summary, and its exit status ignores them. Rule ids and levels are unchanged, and without `fragment=True` nothing is
