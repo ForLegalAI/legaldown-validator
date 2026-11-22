@@ -40,7 +40,11 @@ def _check(source: str, document: Document | None = None) -> list[FoundMarker]:
     assert len(set(spans)) == len(spans), source
     for each in found:
         assert each.span is not None, (source, each)
-        assert _written(source, each) == _fragment_text(document, each), (source, each)
+        blocks = document.preamble if each.section is None else document.sections[each.section].blocks
+        written = _written(source, each)
+        if blocks[each.block].kind == "table":
+            written = written.replace("\\|", "|")  # a cell's pipe is written escaped
+        assert written == _fragment_text(document, each), (source, each)
         assert each.line == _file_line(source, each.span[0]), (source, each)
     return found
 
@@ -159,7 +163,7 @@ _CONTEXTS_TOO = [
     "# T\n\n>> {text}\n> b",
     "# T\n\n1. a\n\n   b\n   {text}\n2. c",
 ]
-_EXTRA_TOKENS = ["\t", "é", "日", "🙂", "\r\n", "\r", "> ", "  - ", "\t- ", "{#x}"]
+_EXTRA_TOKENS = ["\\|", "\t", "é", "日", "🙂", "\r\n", "\r", "> ", "  - ", "\t- ", "{#x}"]
 
 
 def test_every_marker_spans_itself_as_written_in_random_documents():
@@ -181,3 +185,26 @@ def test_a_pipe_in_a_table_cell_is_spanned_as_the_cell_writes_it():
     assert found.source == "{when=a|b}"
     assert _written(source, found) == "{when=a\\|b}"
     assert found.line == 9
+
+
+def test_a_marker_whose_comment_holds_a_brace_is_found_by_its_brace():
+    source = _HEAD + "# A\n\nText {#a <!-- } -->} and {#a <!-- } -->}\n\n| h |\n|---|\n| {when=\"a\\|b\" <!-- } -->} |\n"
+    found = _check(source)
+    assert [_written(source, each) for each in found] == [
+        "{#a <!-- } -->}", "{#a <!-- } -->}", '{when="a\\|b" <!-- } -->}'
+    ]
+
+
+def test_many_markers_holding_braces_in_comments_are_found_in_linear_time():
+    import time
+
+    def took(count: int) -> float:
+        text = "\n".join(f"x {{#a{number} <!-- }} -->}}" for number in range(count))
+        document = parse(_HEAD + "# A\n\n" + text + "\n")
+        start = time.perf_counter()
+        found = find_markers(document)
+        assert len(found) == count and all(each.span for each in found)
+        return time.perf_counter() - start
+
+    small, large = took(1000), took(8000)
+    assert large < max(small, 0.01) * 30  # 8 times the markers: quadratic would be 64 times the time

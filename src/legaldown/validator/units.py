@@ -68,7 +68,9 @@ class FoundMarker:
     #: points, *end* exclusive: ``source[start:end]`` is the marker as written, which is ``self.source``
     #: but for a comment or code span in it, which ``self.source`` blanks, and a ``|`` in a table cell,
     #: written ``\|``. None when the document has no ``layout()``: it was built in code, or changed since
-    #: it was parsed. Not compared: it says where the marker is, not what it is.
+    #: it was parsed (as ``layout()``, an edit that keeps every text's length is not told apart); and when
+    #: its block's source does not hold it as its text does (``Locator.marker_span``). Not compared: it
+    #: says where the marker is, not what it is.
     span: tuple[int, int] | None = field(default=None, compare=False)
     #: The file line, counted from 1, that it is written on, as ``SourceLayout`` counts lines; None
     #: with no span.

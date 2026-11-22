@@ -799,12 +799,17 @@ def _count(text: str, needle: str) -> int:
     return count
 
 
-def _occurrences(text: str, needle: str) -> Iterator[int]:
-    """Where *needle* starts in *text*, each place, escaped or not, overlapping ones too."""
-    at = text.find(needle)
-    while at >= 0:
-        yield at
-        at = text.find(needle, at + 1)
+def _written_end(line: str, start: int, needle: str, table: bool) -> int | None:
+    """Where *needle*, as a block's text holds it, ends in source *line* if it is written there from
+    *start*: in a table row, a ``|`` of it is written ``\\|``. None if it is not."""
+    at = start
+    for char in needle:
+        if table and char == "|" and line.startswith("\\|", at):
+            at += 1
+        if line[at:at + 1] != char:
+            return None
+        at += 1
+    return at
 
 
 def _nth(lines: list[str], needle: str, n: int) -> int | None:
@@ -840,6 +845,18 @@ class _Leaf:
     kind: str = ""
 
 
+@dataclass(slots=True)
+class _MarkerPlaces:
+    """Where the candidates for markers (``MARKER_RE``) are in a leaf, by their spelling: in its *texts*,
+    each as (text, offset), and in its *lines*, each as (line from 0, column), a table cell's spelled as
+    the cell reads it; and where every ``{`` is in either, in order."""
+
+    texts: dict[str, list[tuple[int, int]]]
+    lines: dict[str, list[tuple[int, int]]]
+    text_braces: list[tuple[int, int]]
+    line_braces: list[tuple[int, int]]
+
+
 class Locator:
     """The lines of a document's parts, for its diagnostics (§16.9): None
     for every part when the document has no source map, or no longer fits
@@ -855,7 +872,7 @@ class Locator:
         self._definition_lines: dict[tuple[int | None, int], list[int]] = {}
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
         # Per leaf, by its id, the marker candidates in its texts and in its lines (``_candidates_in``).
-        self._marker_places: dict[int, tuple[dict[str, list[tuple[int, int]]], dict[str, list[tuple[int, int, int]]]]] = {}
+        self._marker_places: dict[int, _MarkerPlaces] = {}
 
     def start(self) -> int | None:
         """The document's first line."""
@@ -962,58 +979,52 @@ class Locator:
         file line, counted from 1 (#150). A marker is on one line, and a block's texts hold each line's
         text as written; so the candidates for markers (``MARKER_RE``) in the texts of the block that holds
         the fragment, and those in its lines, are the same, in the same order: the marker is the candidate
-        of its rank among those spelled alike, a literal one and a placed one apart. None without a source
-        map, when the document no longer fits it, and when the texts and the lines disagree (a fenced code
-        block holding the same spelling, which its text blanks; a table cell past the header's width).
-        In a table cell, a ``|`` is written ``\\|``, which the span covers."""
+        of its rank among those spelled alike, a literal one and a placed one apart. A marker that is no
+        candidate as written (a comment or code span in it holds a brace) is the ``{`` of its rank among
+        all of the block's. None without a source map, when the document no longer fits it, and when the
+        texts and the lines disagree (a fenced code block holding the same spelling, which its text
+        blanks; a table cell past the header's width). In a table cell, a ``|`` is written ``\\|``, which
+        the span covers."""
         if self._map is None:
             return None
         leaf = self._leaf_for(section, index, fragment)
-        if leaf is None:
+        if leaf is None or "\n" in needle:  # a comment blanked in it holds a line break: it is on two lines
             return None
         text, base = leaf.places[fragment]
-        in_texts, in_lines = self._candidates_in(leaf)
-        if needle in in_texts:
-            texts, lines = in_texts[needle], in_lines.get(needle, [])
-        elif "\n" in needle:
-            return None  # a comment blanked in it holds a line break: it is on two lines
-        else:
-            # A comment or code span blanked in it holds a brace, so it is no candidate as written: it is
-            # looked for as it is, in this one block.
-            texts = [(number, at) for number, each in enumerate(leaf.texts) for at in _occurrences(each, needle)]
-            lines = [
-                (number, at, at + len(needle))
-                for number, each in enumerate(self._map.lines[leaf.start - 1:leaf.end - 1])
-                for at in _occurrences(each, needle)
-            ]
-        rank = bisect.bisect_left(texts, (text, base + offset))
-        if len(texts) != len(lines) or rank == len(texts) or texts[rank] != (text, base + offset):
+        places = self._candidates_in(leaf)
+        in_texts, in_lines = places.texts.get(needle), places.lines.get(needle, [])
+        if in_texts is None:
+            in_texts, in_lines = places.text_braces, places.line_braces
+        rank = bisect.bisect_left(in_texts, (text, base + offset))
+        if len(in_texts) != len(in_lines) or rank == len(in_texts) or in_texts[rank] != (text, base + offset):
             return None
-        number, (column, end) = leaf.start + lines[rank][0], lines[rank][1:]
+        row, column = in_lines[rank]
+        line = self._map.lines[leaf.start - 1 + row]
+        end = _written_end(line, column, needle, leaf.kind == "table")
+        if end is None:
+            return None
+        number = leaf.start + row
         start = self._map.line_starts()[number - 1]
         return start + column, start + end, number
 
-    def _candidates_in(
-        self, leaf: _Leaf
-    ) -> tuple[dict[str, list[tuple[int, int]]], dict[str, list[tuple[int, int, int]]]]:
-        """The candidates for markers in *leaf*, read once for it, by their spelling: in its texts, where
-        each is (text, offset); in its lines, where each is (line from 0, start, end) — a table cell's
-        spelled as the cell reads it."""
+    def _candidates_in(self, leaf: _Leaf) -> _MarkerPlaces:
+        """Where the candidates for markers, and the braces, are in *leaf*, read once for it."""
         from .markers import MARKER_RE
 
         key = id(leaf)
         if key not in self._marker_places:
             assert self._map is not None
-            in_texts: dict[str, list[tuple[int, int]]] = {}
+            places = _MarkerPlaces({}, {}, [], [])
             for number, text in enumerate(leaf.texts):
                 for match in MARKER_RE.finditer(text):
-                    in_texts.setdefault(match.group(), []).append((number, match.start()))
-            in_lines: dict[str, list[tuple[int, int, int]]] = {}
+                    places.texts.setdefault(match.group(), []).append((number, match.start()))
+                places.text_braces.extend((number, at) for at in find_all(text, "{"))
             for number, line in enumerate(self._map.lines[leaf.start - 1:leaf.end - 1]):
                 for match in MARKER_RE.finditer(line):
                     spelled = match.group().replace("\\|", "|") if leaf.kind == "table" else match.group()
-                    in_lines.setdefault(spelled, []).append((number, match.start(), match.end()))
-            self._marker_places[key] = (in_texts, in_lines)
+                    places.lines.setdefault(spelled, []).append((number, match.start()))
+                places.line_braces.extend((number, at) for at in find_all(line, "{"))
+            self._marker_places[key] = places
         return self._marker_places[key]
 
     def definition(self, section: int | None, index: int, ordinal: int) -> int | None:

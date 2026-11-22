@@ -866,11 +866,18 @@ marker as written, a marker after a paragraph's line break, in a list item or in
 included, and each of two markers spelled alike has its own. `FoundMarker.source` is the marker as the
 validator reads it, a comment or code span in it blanked; in a table cell the span holds a `|` as the
 cell writes it, `\|`. `line` is the file line it is on. Both are `None` when `document.layout()` is:
-for a document built in code, or changed since it was parsed. Heading markers are not among them:
-`document.layout()` gives a heading's `marker_line`.
+for a document built in code, or changed since it was parsed so that it no longer fits its source
+(like `layout()`, they describe the source as parsed: an edit that keeps the length of every text is
+not told apart, so parse again after editing); and for a marker the source writes otherwise than its
+block's text holds it (in a block holding the same spelling in fenced code, which the text blanks).
+Heading markers are not among them: `document.layout()` gives a heading's `marker_line`.
 
 ```python
-source = Path("contract.lgd").read_text(encoding="utf-8", newline="")  # line endings as written
+from pathlib import Path
+from legaldown import parse
+from legaldown.syntax import find_markers
+
+source = Path("contract.lgd").read_bytes().decode("utf-8")  # as load reads it: line endings as written
 for found in find_markers(parse(source)):
     if found.span and found.placed(template=False):
         start, end = found.span
