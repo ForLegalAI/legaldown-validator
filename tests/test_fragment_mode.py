@@ -94,6 +94,9 @@ INTRINSIC = [
     ("A {{ref:}}", "ref-broken"),
     ("A {{term: Bad Id}}", "term-undefined"),
     ("A {{term:}}", "term-undefined"),
+    # An attachment id is an identifier (§5.6): no host declares this one (#147).
+    ("A {{attach: Sched A}}", "attach-undeclared"),
+    ("A {{attach:}}", "attach-undeclared"),
     ("A {{party: Bad Id}}", "party-name-malformed"),
     ("A {{side: Bad Id}}", "side-name-malformed"),
     ("## Clause {when=BAD}\n\nText.", "condition-invalid"),
@@ -111,6 +114,30 @@ def test_what_is_wrong_whatever_the_host_declares_is_not_flagged(body, rule):
     fragment = _fragment(source)
     assert any(d.rule == rule for d in fragment.diagnostics), fragment.diagnostics
     assert not any(d.host_dependent for d in fragment.diagnostics if d.rule == rule)
+
+
+@pytest.mark.parametrize("kind", ["include", "attachment"])
+def test_an_attach_target_that_is_no_identifier_is_the_fragments_own_finding(kind):
+    # #147: as for {{ref: Bad Id}}, an attachment id is an identifier (§5.6), so
+    # no including document can declare 'Sched A'; 'annex' it may.
+    source = "## A {#a}\n\nSee {{attach: Sched A}} and {{attach: annex}}.\n\n- Also {{attach: Sched B}}. {when=vat}\n"
+    fragment = _fragment(source, fragment_kind=kind)
+    assert [(d.rule, d.level, d.line, d.host_dependent) for d in fragment.diagnostics if d.rule == "attach-undeclared"] == [
+        ("attach-undeclared", "error", 3, False),
+        ("attach-undeclared", "error", 3, True),
+        ("attach-undeclared", "error", 5, False),
+    ]
+    # A complete document reports the same findings, none of them flagged.
+    complete = validate(parse(source))
+    assert [(d.rule, d.line) for d in complete.diagnostics if d.rule == "attach-undeclared"] == [
+        ("attach-undeclared", 3), ("attach-undeclared", 3), ("attach-undeclared", 5),
+    ]
+    assert not any(d.host_dependent for d in complete.diagnostics)
+    # The message says what is wrong with the target, not that a host lacks it.
+    own = [d.message for d in fragment.diagnostics if d.rule == "attach-undeclared" and not d.host_dependent]
+    assert own and all("must match [a-z][a-z0-9-]*" in message for message in own)
+    empty = _fragment("## A\n\nSee {{attach:}}.\n")
+    assert [d.message for d in empty.diagnostics if d.rule == "attach-undeclared"] == ["'{{attach:}}' has no target."]
 
 
 def test_a_reference_to_a_section_or_anchor_of_the_fragment_is_not_reported():
