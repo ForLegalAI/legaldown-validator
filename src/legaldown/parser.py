@@ -71,6 +71,7 @@ from .positions import (
     read_maps,
     repeated_keys,
     stripped_nodes,
+    written_line_starts,
     written_maps,
 )
 
@@ -2144,7 +2145,7 @@ def parse(
         metadata_seen=list(metadata_snapshot(document.metadata)) if front.repeats else [],
         layout=layout,
         shape=document_shape(document),
-        written=None if written == source else written,
+        starts=None if written == source else written_line_starts(written),
     )
     return document
 

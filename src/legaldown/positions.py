@@ -10,7 +10,8 @@ import bisect
 import dataclasses
 import json
 import re
-from collections.abc import Callable, Iterator
+from array import array
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from itertools import accumulate
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -618,21 +619,16 @@ class SourceMap:
     #: when there are any, ``metadata_snapshot`` of the metadata as parsed: they describe its source text.
     repeats: tuple[Repeated, ...] = ()
     metadata_seen: list[Any] = field(default_factory=list, compare=False, repr=False)
-    #: The source as given to ``parse``, when it is not ``lines`` joined with LF: it starts with a byte-order
-    #: mark or ends a line at CR (#150). None when it is.
-    written: str | None = field(default=None, compare=False, repr=False)
-    #: The offset in that source of each line of ``lines`` (``line_starts``), once asked for.
-    starts: list[int] | None = field(default=None, compare=False, repr=False)
+    #: The offset of each line of ``lines`` in the source as given to ``parse`` (``line_starts``, #150):
+    #: given by ``parse`` when that source starts with a byte-order mark or ends a line at CR, so that
+    #: ``lines`` joined with LF is not it; else worked out from ``lines`` once asked for.
+    starts: Sequence[int] | None = field(default=None, compare=False, repr=False)
 
-    def line_starts(self) -> list[int]:
+    def line_starts(self) -> Sequence[int]:
         """The offset of each of ``lines`` in the source as given to ``parse``, in characters (code
         points): a byte-order mark, and a CRLF line ending, count as they are written there."""
         if self.starts is None:
-            if self.written is None:
-                self.starts = list(accumulate((len(line) + 1 for line in self.lines[:-1]), initial=0))
-            else:
-                first = 1 if self.written.startswith("\ufeff") else 0
-                self.starts = [first, *(m.end() for m in LINE_ENDING_RE.finditer(self.written, first))]
+            self.starts = array("q", accumulate((len(line) + 1 for line in self.lines[:-1]), initial=0))
         return self.starts
 
     def fits(self, document: Document) -> bool:
@@ -1167,7 +1163,7 @@ def _lifted(block: Block, own: list[str], first: int, lines: list[str], start: i
         if suffix:
             places[number] = (0, len(joined) - len(suffix))
         lifted = len(prefix)
-    return _Leaf(start, end, [joined], places, lifted if lifted >= 0 else None)
+    return _Leaf(start, end, [joined], places, lifted if lifted >= 0 else None, block.kind)
 
 
 def _public_layout(layout: Any, base: int, frontmatter: tuple[int, int] | None) -> SourceLayout:
@@ -1191,6 +1187,14 @@ def _public_layout(layout: Any, base: int, frontmatter: tuple[int, int] | None) 
             for heading, blocks in layout.sections
         ),
     )
+
+
+def written_line_starts(written: str) -> Sequence[int]:
+    """The offset in *written*, a source as given to ``parse``, of each of its lines as the parser
+    reads them (``SourceMap.line_starts``): after a byte-order mark, and after each line ending, LF, CR
+    or CRLF."""
+    first = 1 if written.startswith("\ufeff") else 0
+    return array("q", [first, *(match.end() for match in LINE_ENDING_RE.finditer(written, first))])
 
 
 def body_layout(text: str) -> SourceLayout:
