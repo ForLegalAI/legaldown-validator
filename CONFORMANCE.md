@@ -706,11 +706,26 @@ Where this differs from CommonMark, or is read more simply:
       destination word (no `<`, no parenthesis, no backslash, no control character), a blank and a character that
       cannot open a title. The definition is then none whatever the answers are, and whatever follows on the line and
       after it, under the reading of the specification and of the renderers. The witnesses are tried instead (and
-      the over-flag stands, if they are over the cap) when any line-start `[` of any assembly is not dead (the next
-      line of the paragraph, `[b]: v`, too), when the region has more than `DECISION_CAP` = 64 combinations of
-      decisions, is over `WORK_CAP`, or is past the budget, or when the template holds the sentinel. The cutoff is
+      the over-flag stands, if they are over the cap) when any line-start `[` of any assembly that can begin a
+      definition is not dead, when the region has more than `DECISION_CAP` = 64 combinations of
+      decisions, is over `WORK_CAP`, or is past the budget, or when the template holds the sentinel. A line that
+      continues a paragraph cannot begin a definition (CommonMark §4.7: a definition cannot interrupt a paragraph, and
+      once a line of one is no definition, none after it is), so the next line of the paragraph, `[b]: v` or `[Option
+      B]: {{p4}} shall pay.`, is not asked (#144); the paragraphs are the parser's reading of the assembly, and only of
+      those before any raw HTML, code, quote or table in it (an answer may end an HTML comment, and what follows is
+      read anew), and a line continues it if it and the lines between begin with no `>`, list marker, digit, `#`, `=`,
+      `` ` ``, `~`, `<`, `|`, `_` or answer. A value that a typed placeholder assembles to (`{{date: …}}`,
+      `{{money: …}}`, `{{duration: …}}`, with a date or a number as its value) opens no title, written or rendered, so it may be the character after the
+      destination's blank (`[a]: u {{placeholder: d1}} {{p1}} …` is clean, #144); in the destination's place it is
+      not read past. The cutoff is
       not tried, and costs nothing, for a region in which a line begins with a label that cannot be dead from its
-      text up to the first `{{` (`[a]: u {{p}}`: a destination, a blank, then an answer). It is charged like the
+      text up to the first `{{` (`[a]: u {{p}}`: a destination, a blank, then an answer), unless the line continues
+      the text before it: the line before is the one assembly leaves there, past a drafting note it removes, and a
+      label after a line that may vanish without it (nothing but choices whose phrases may be empty, a conditional
+      unit that does not hold the label too), a
+      blank line, a heading, a rule, a fence, raw HTML, a table row or a quote may begin a paragraph (#144). So
+      `[Option A]: The Seller shall pay {{p1}} to {{p2}} at {{p3}}.`, a drafting note, then `[b]: v {{p4}}` is
+      clean. It is charged like the
       witnesses (`WORK_CAP`, the budget), once for each shape of region, whether it settles it or not. Measured, in a paragraph that begins `[label]:` and a
       sentence of nine words: one text blank is tried in 5 ms, two in 0.14 s (0.3 s with a choice, 0.5 s with a
       condition on the item); three or more fall back only when the label's line, after the colon, does not hold a
@@ -720,11 +735,15 @@ Where this differs from CommonMark, or is read more simply:
       (29791 is 31 answers cubed): `[Option A]: {{p1}} shall pay …` (a blank first), `[Option A]: Pay {{p1}} to …`
       (one word, then a blank), `[Option A]: (The) Seller …` (a title may open), `[Effective Date]: {{d1}} is …`
       (a typed value first), a label over two lines or alone on its line (`[gdpr]: https://x` and the sentence on the
-      next), and a destination that an answer continues (`[a]: u{{p1}} x …`). Labels that an answer can complete stay
+      next), a destination that an answer continues (`[a]: u{{p1}} x …`), and a label that a quote begins on the next
+      line (`> [b]: v`). Labels that an answer can complete stay
       reported as hazards where the witnesses are tried (`[a]: u {{p1}}`, `[a]: u "t {{p1}} {{p2}}`). The budget is some 1000 different
       paragraphs of one line and one text blank, or 40 of two, or 11 of two with a choice: past it the rest are
       reported (of 60 paragraphs of two blanks, 20 are; of 1200 of one, 64). The same paragraph is assembled once,
-      however often it occurs. Five text blanks in one paragraph that the cutoff does not decide, or one question asked in more than a thousand
+      however often it occurs, in the preamble once and in the sections once: a list item's `{when=}` is a marker
+      in a section and text in the preamble (§5.7), so the two are read apart (#144; one verdict for both hid the
+      hazard of `x {when=q}` / `- {{choose: c, …}}` / `  [a]: u {{p}} {when=q}` in a section after the same lines in
+      the preamble). Five text blanks in one paragraph that the cutoff does not decide, or one question asked in more than a thousand
       lines of a paragraph, are over the cap whatever the budget; and so is a paragraph of 300 KB (it took 107 s to try
       four of them): the characters are counted. A region in which no insertion can vary (each has one answer) is judged clean without being read. A file or a
       region the assembler cannot read is judged by the conservative rule too (every insertion in a paragraph in which

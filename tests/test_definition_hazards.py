@@ -34,7 +34,7 @@ from legaldown import parse
 from legaldown.assembly import _Answers, _decide, _emit, _escape, _finish, _read
 from legaldown.definitions import nested_blocks
 from legaldown.directives import lex
-from legaldown.markdown import Reading, _read_definition
+from legaldown.markdown import Reading, _read_definition, definitions_read_as
 from legaldown.positions import Locator
 from legaldown.template import parse_template
 from legaldown.validator import hazards, templates, validate
@@ -325,7 +325,10 @@ def gen_option(rng, max_text=4):
         lines = [prefix + line]
         if rng.random() < 0.3:
             pad = " " * len(prefix) if prefix != "> " else "> "
-            lines.append(pad + rng.choice(['"t"', '"{{placeholder: p1}}"', "x", "(t)", "more", "[b]: v", '"t']))
+            lines.append(pad + rng.choice([
+                '"t"', '"{{placeholder: p1}}"', "x", "(t)", "more", "[b]: v", '"t', "[b]: https://x",
+                "[Option B]: The Buyer shall pay.",  # (lines that continue the paragraph, #144)
+            ]))
         if rng.random() < 0.15:
             lines[-1] += " {when=q}"
         out += lines
@@ -336,6 +339,31 @@ def gen_option(rng, max_text=4):
 
 
 GENERATORS = {"real": gen_real, "fz2": gen_fz2, "nest": gen_nest, "cond": gen_cond, "option": gen_option}
+
+#: What may lie between an ``[Option A]:`` paragraph's first line and a label line after it: something assembly
+#: removes (a drafting note, a line of choices that may be empty, a conditional paragraph), with or without blank
+#: lines around it, or text.
+_BETWEEN = [
+    ["> [!DRAFTING]", "> n"], ["> [!DRAFTING]", "> n", ""], ["", "> [!DRAFTING]", "> n"], ["", "> [!DRAFTING]", "> n", ""],
+    ['{{choose: c1, true="", false="Recitals."}}'], ['{{choose: c1, true="", false="z"}}', ""],
+    ["", "Text {when=q}", ""], ["and more"], [],
+]
+_AFTER = [
+    "[b]: v {{placeholder: p4}}", '[b]: v "{{placeholder: p4}}"', "[Option B]: {{placeholder: p4}} shall pay.",
+    "[b]: https://x", "[b]:", '[b]: {{choose: c2, true="\\"", false="(t)"}}', "  [b]: v {{placeholder: p4}}",
+    "> [b]: v {{placeholder: p4}}", "- [b]: v {{placeholder: p4}}",
+]
+
+
+def gen_joined(rng, max_text=4):
+    """A dead ``[Option A]:`` line of text blanks, then what assembly removes (``_BETWEEN``), then a label line
+    (``_AFTER``) and maybe the next one: the line before a label is not the one in the output (#144)."""
+    blanks = [f"{{{{placeholder: p{n}}}}}" for n in range(1, rng.randint(2, min(3, max_text)) + 1)]
+    first = rng.choice(["[Option A]: The Seller shall pay ", "[a]: u ", "The Seller shall pay "]) + " to ".join(blanks) + "."
+    lines = [first, *rng.choice(_BETWEEN), rng.choice(_AFTER)]
+    if rng.random() < 0.3:
+        lines += [*rng.choice(_BETWEEN), rng.choice(_AFTER)]
+    return _template(lines, rng)
 
 
 # ── The whole-document reference: the product of the witnesses ────
@@ -688,12 +716,21 @@ def test_no_definition_is_read_at_a_label_that_is_dead_whatever_completes_it():
     assert holes == 0
 
 
+def test_no_definition_is_read_in_a_line_that_continues_the_paragraph_of_a_dead_label():
+    """The lemma of the lines that continue a paragraph (#144): where ``_all_dead`` holds only because of them, the
+    model reads no definition in any completion of the output, under the three readings, nor markdown-it."""
+    parser = markdown_it.MarkdownIt("commonmark") if markdown_it is not None else None
+    refined, holes = run_continuation_oracle(3000, seed=1441, parser=parser)
+    assert refined > 80, refined
+    assert holes == 0
+
+
 def test_the_generators_reach_what_they_are_for():
     """The shapes that the oracles are about occur in the generated templates."""
     rng = random.Random(1295)
     seen = Counter()
     for name, generator in GENERATORS.items():
-        for _ in range(60):
+        for _ in range(100):
             source = generator(rng)
             body = body_of(source)
             seen[f"{name}-note"] += "[!DRAFTING]" in body
@@ -705,6 +742,8 @@ def test_the_generators_reach_what_they_are_for():
             seen[f"{name}-raw"] += bool(re.search(r"^(?:```|~~~|<!--|    code)$|^<!--$", body, re.M))
             seen[f"{name}-empty-first"] += bool(re.search(r"^ *(?:[-*]|[0-9]+\.)$", body, re.M))
             seen[f"{name}-after-label"] += bool(re.search(r"\]\{\{", body))
+            # (a label line and a line that continues its paragraph with a label, #144)
+            seen[f"{name}-continued"] += bool(re.search(r"^[ >*+\-0-9.]*\[[^\]\n]*\]:[^\n]*\n *\[(?:b|Option B)\]: ", body, re.M))
             seen[f"{name}-blanks"] += any(  # a label line with three blanks after two fixed words
                 re.match(r"[ >*+\-0-9.]*\[[^\]\n]*\]: [A-Za-z]+ [A-Za-z]+ ", line) and line.count("{{placeholder: p") >= 3
                 for line in body.splitlines()
@@ -715,6 +754,7 @@ def test_the_generators_reach_what_they_are_for():
     assert seen["fz2-quote"] and seen["fz2-note"] and seen["fz2-marker"], seen
     assert seen["real-after-label"] + seen["nest-after-label"] + seen["cond-after-label"] > 5, seen
     assert seen["option-blanks"] > 3 and seen["option-marker"] and seen["option-quote"] and seen["option-after-label"], seen
+    assert seen["option-continued"] > 3, seen
     assert seen["real-raw"] and seen["fz2-raw"] and seen["cond-raw"] and seen["nest-empty-first"], seen
 
 
@@ -761,6 +801,15 @@ def random_vs_validator(generator, count, seed, bases=8, alternatives=8):
 _COUNT_RANDOM = {"real": 12, "fz2": 30, "nest": 6, "cond": 5, "option": 30}
 
 
+def test_random_answers_change_no_definition_where_assembly_joins_a_label_to_a_dead_paragraph():
+    """What assembly removes before a label line (a note, an empty choice, a conditional paragraph) decides whether
+    it continues a paragraph: random answers change no definition in a region the validator judged clean, the cutoff
+    decided some of them, and there were hazards (#144)."""
+    seen, found, cut, holes = random_vs_validator(gen_joined, 60, seed=1442, bases=4, alternatives=4)
+    assert not holes, holes[:2]
+    assert seen > 40 and found > 5 and cut > 10, (seen, found, cut)
+
+
 @pytest.mark.parametrize("name", GENERATORS)
 def test_random_answers_change_no_definition_in_a_region_the_validator_judged_clean(name):
     seen, found, cut, holes = random_vs_validator(
@@ -778,7 +827,15 @@ _LEMMA_TOKENS = [
     "x", "u", " ", " ", "  ", "\t", '"', "'", "(", ")", "<", ">", ":", "\\", "&", "#", "-", "=", ".", "[", "]", "{{", "}}",
     "*", "`", "_", "|", "\x7f", "\x00", "The", "Seller", "https://x", "u((", "))", '"t"', "(t)", "'t'", "\\]", "\\(",
     "<u v>", "{{date: 2024-01-01}}", "s.r.o.", "&amp;",
+    # Values, as a typed placeholder assembles to them and as written (#144), and a directive that is none.
+    " {{date: 2024-01-01}}", " {{money: 100, currency=EUR}}", " {{duration: 12, unit=MO}}", "{{ref: x}}",
 ]
+#: How a value may be rendered: the lemma holds for the value as written and as each of these.
+_LEMMA_RENDERED = {
+    "{{date: 2024-01-01}}": ["1 January 2024", "2024-01-01", "01/01/2024", "1. ledna 2024"],
+    "{{money: 100, currency=EUR}}": ["EUR 100.00", "€100", "100,00 EUR", "100 €"],
+    "{{duration: 12, unit=MO}}": ["12 months", "12 MO"],
+}
 _LEMMA_ANSWERS = [
     "x", " ", '"', "'", "(", ")", ">", "<", ":", "\\", "&", "#", "-", "=", ".", "[", "]", "{", "}", "*", "\t", "\xa0",
     "1", "/", "!", "`", "_", "|", "~", "\x01", "((", "))", ": u", ' "t"', "t)", 't"', "\n",
@@ -796,8 +853,8 @@ def _lemma_answer(rng):
 def run_lemma_oracle(count, seed, completions=20):
     """Of *count* random lines that begin a label, those that ``hazards._dead`` calls dead are completed *completions*
     times (a random answer, escaped as assembly escapes it, for each sentinel; and up to two lines after it) and
-    read by ``_read_definition`` under the three readings. Returns ``(dead lines, definitions read)``: the lemma
-    of ``_dead`` is that no definition is read."""
+    read by ``_read_definition`` under the three readings, with each value as written or rendered. Returns ``(dead
+    lines, definitions read)``: the lemma of ``_dead`` is that no definition is read."""
     rng = random.Random(seed)
     dead = holes = 0
     for _ in range(count):
@@ -821,6 +878,9 @@ def run_lemma_oracle(count, seed, completions=20):
             text = pieces[0]
             for piece in pieces[1:]:
                 text += _escape(_lemma_answer(rng), piece) + piece
+            for value, renderings in _LEMMA_RENDERED.items():
+                if rng.random() < 0.5:
+                    text = text.replace(value, rng.choice(renderings))
             tail = "".join(
                 "\n" + "".join(rng.choice([*_LEMMA_TOKENS, '"', "'", ")", " "]) for _ in range(rng.randint(0, 6)))
                 for _ in range(rng.randint(0, 2))
@@ -830,6 +890,77 @@ def run_lemma_oracle(count, seed, completions=20):
                 for reading in (Reading.SPEC, Reading.MDIT, Reading.PANDOC)
             )
     return dead, holes
+
+
+#: The lines that may follow a paragraph's first in an output: ones that continue it (labels, definitions whole,
+#: indented, lazy), and ones that end it or begin something else (a blank line, a quote, an item, raw HTML, code,
+#: a table, a heading, an underline).
+_FOLLOWING = [
+    "[b]: https://x", '[b]: v "t"', "[b]:", "[Option B]: \x01 shall pay.", "[b]: \x01", "  [b]: v", "    [b]: v",
+    "and [c]: v", "u \x01", '"t"', "(t)", "'t'", "u", "- [c]: u", "* [c]: u", "1. [c]: u", "2. [c]: u", "> [d]: u",
+    ">", "", "", "```", "~~~", "<!--", "-->", "<div>", "<!-- n -->", "| a | b |", "|---|---|", "===", "---", "# h",
+    "[a]: u {{date: 2024-01-01}} \x01", "\\[b]: v",
+]
+
+
+def _paragraph_output(rng):
+    """The lines of an output (every text answer ``SENTINEL``): a label line or text first, in an item or not, then up
+    to four lines of ``_FOLLOWING``, in the item, lazy or not, with some lines before them."""
+    label = rng.choice(_LEMMA_LABELS[:-1])
+    parts = [rng.choice([hazards.SENTINEL, *_LEMMA_TOKENS[:30], " The Seller", " u"]) for _ in range(rng.randint(1, 6))]
+    first = rng.choice([f"{label}: The Seller {hazards.SENTINEL}", label + ":" + "".join(parts), "The \x01 x"])
+    item = rng.random() < 0.3
+    lines = [rng.choice(["- ", "1. "]) + first if item else first]
+    for _ in range(rng.randint(1, 4)):
+        line = rng.choice(_FOLLOWING)
+        lines.append(("   " if item and rng.random() < 0.6 else "") + line)
+    before = rng.choice([
+        [], [], ["# x", ""], ["x", ""], ["- x", ""], ["<!--", "x"], ["```", "x", "```", ""], ["> q", ""],
+        # (an answer may end the comment early, and what was in it is read: a fence, or text)
+        ["<!--", "x \x01", "```", "-->"], ["- <!--", "  x \x01", "  ```", "  -->"], ["<!--", "u \x01", "-->"],
+    ])
+    if before and before[0] == "- <!--":
+        lines[0] = "  " + lines[0]  # (the paragraph is in the item, after the comment)
+    return [*before, *lines]
+
+
+def _continuation_answer(rng):
+    """A random answer, sometimes one that ends raw HTML (``-->``)."""
+    return rng.choice(["-->", "x -->", "?>"]) if rng.random() < 0.2 else _lemma_answer(rng)
+
+
+def run_continuation_oracle(count, seed, completions=12, parser=None):
+    """Of *count* random outputs, those that ``hazards._all_dead`` calls clean only because a line continues a
+    paragraph (``_continued``) are completed *completions* times (a random answer, escaped as assembly escapes it,
+    for each sentinel, and each value as written or rendered), and their definitions read by the model under the
+    three readings, and by markdown-it (*parser*). Returns ``(outputs, definitions read)``: no definition is read."""
+    rng = random.Random(seed)
+    refined = holes = 0
+    for _ in range(count):
+        lines = _paragraph_output(rng)
+        live = [
+            line for line in lines
+            if (found := hazards._LABEL_START_RE.match(line)) and not hazards._dead(line, found.end() - 1)
+        ]
+        if not live or not hazards._all_dead(lines):
+            continue
+        refined += 1
+        for _ in range(completions):
+            pieces = "\n".join(lines).split(hazards.SENTINEL)
+            text = pieces[0]
+            for piece in pieces[1:]:
+                text += _escape(_continuation_answer(rng), piece) + piece
+            for value, renderings in _LEMMA_RENDERED.items():
+                if rng.random() < 0.5:
+                    text = text.replace(value, rng.choice(renderings))
+            for reading in (Reading.SPEC, Reading.PANDOC, Reading.MDIT):
+                with definitions_read_as(reading):
+                    holes += bool(hazards._definitions(text))
+            if parser is not None:
+                env = {}
+                parser.parse(text, env)
+                holes += bool(env.get("references"))
+    return refined, holes
 
 
 # ── Pins ──────────────────────────────────────────────────────────
@@ -902,8 +1033,11 @@ def test_two_text_blanks_alone_and_with_a_condition_or_a_choice_are_judged_not_o
         ('[a]: u "t {{placeholder: p1}} {{placeholder: p2}} {{placeholder: p3}}\n', 3),
         # (A label that the cutoff tries and cannot show dead: a choice may give the title its opener.)
         ('[Option A]: The {{choose: c2, true="\\"", false="z"}} pay {{placeholder: p1}} {{placeholder: p2}} {{placeholder: p3}}\n', 4),
-        # (And one in another line of the region.)
-        ("[Option A]: The Seller shall pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n[b]: v\n", 3),
+        # (And one in another line of the region, which begins a quote and so no continuation of the paragraph.)
+        ("[Option A]: The Seller shall pay {{placeholder: p1}} to {{placeholder: p2}} at {{placeholder: p3}}.\n> [b]: v\n", 3),
+        # (A typed value in the destination's place: rendered, it may hold no blank, #144.)
+        ("[a]: {{placeholder: d1}} x {{placeholder: p1}} {{placeholder: p2}} {{placeholder: p3}}\n", 4),
+        ("[a]: u{{placeholder: d1}} {{placeholder: p1}} {{placeholder: p2}} {{placeholder: p3}}\n", 4),
     ],
 )
 def test_three_text_blanks_in_a_paragraph_a_definition_begins_are_over_reported_and_told_how_to_stop(body, count):
@@ -938,6 +1072,16 @@ _CHOICE_2 = '{{choose: c2, true="30", false="60"}}'
         f"> [!DRAFTING]\n> n\n[Option A]: The Seller shall pay {_BLANKS}.\n",
         f"-\n  [Option A]: The Seller shall pay {_BLANKS}.\n",
         f"1. [Option A]: The Seller shall pay {_BLANKS}.\n   [Option B]: The Buyer shall pay {_BLANKS}.\n",
+        # A line that continues the paragraph begins no definition, whatever it holds (#144).
+        f"[Option A]: The Seller shall pay {_BLANKS}.\n[b]: v\n",
+        f"[Option A]: The Seller shall pay {_BLANKS}.\nand more\n  [b]: https://x\n",
+        f"- [Option A]: The Seller shall pay {_BLANKS}.\n  [b]: https://x\n",
+        f"[Option A]: The {_CHOICE_1} shall pay {_BLANKS}.\n[Option B]: {{{{placeholder: p4}}}} shall pay.\n",
+        # A typed value after a destination and a blank opens no title (#144).
+        f"[a]: u {{{{placeholder: d1}}}} {_BLANKS}\n",
+        f"[a]: u {{{{placeholder: m1, currency=EUR}}}} {_BLANKS}\n",
+        f"[a]: u {{{{placeholder: u1, unit=MO}}}} {_BLANKS}\n",
+        f"[a]: u {{{{date: 2024-01-01}}}} {_BLANKS}\n",
     ],
 )
 def test_three_text_blanks_after_a_destination_word_and_a_word_are_judged_clean_by_the_cutoff(body):
@@ -998,6 +1142,147 @@ def test_a_region_whose_label_cannot_be_dead_does_not_pay_for_the_cutoff(monkeyp
     found = reported(body)
     assert found == []
     assert settled[0] == 0 and emitted[0] == 40 * len(TEXT_WITNESSES)  # (no assembly for the cutoff)
+
+
+@pytest.mark.parametrize(
+    ("body", "count"),
+    [
+        # The examples of #144: before, 3 and 4 fallbacks; the next line continues the paragraph.
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n[b]: https://x\n", 0),
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n[Option B]: {{{{placeholder: p4}}}} shall pay.\n", 0),
+        (f"- The Seller agrees.\n  [Option B]: {_BLANKS}.\n", 0),
+        (f"- a\n  - [Option A]: The Seller shall pay {_BLANKS}.\n    and then\n    [Option B]: {{{{placeholder: p4}}}} shall pay.\n", 0),
+        # Not a continuation: a blank line, a quote, raw HTML before it.
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n\n[b]: https://x {{{{placeholder: p4}}}}\n", 1),
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n> [Option B]: {{{{placeholder: p4}}}} shall pay.\n", 4),
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n<!-- n -->\n[b]: https://x\n", 3),
+    ],
+)
+def test_a_line_that_continues_the_paragraph_of_a_dead_label_is_no_candidate(body, count):
+    """A definition cannot interrupt a paragraph: once its first line is no definition, none of it is (#144)."""
+    found = reported(body)
+    assert len(found) == count, found
+    assert all("too many answers" in message for _line, message in found) or count == 1, found
+
+
+def test_what_continues_a_paragraph_is_read_from_the_output():
+    """``_continued``: the lines after a paragraph's first, as the parser reads the output, while each continues it in
+    every reading; none in an output with raw HTML, code, a quote or a table, whose blocks an answer may change or
+    the layout does not give."""
+    lines = ["# x", "", "[a]: The u \x01", "[b]: v", "and [c]: v", "  [d]: v", "2. [e]: v", "[f]: v", "", "[g]: v"]
+    assert hazards._continued(lines) == {3, 4, 5}
+    assert hazards._continued(["- [a]: The u \x01", "  [b]: v", "[c]: v", "- [d]: v"]) == {1, 2}
+    assert hazards._continued(["[a]: The u \x01", "\x01 [b]: v", "[c]: v"]) == set()
+    for other in (["```", "x", "```"], ["<!--", "-->"], ["> q"], ["| a | b |", "|---|---|"]):
+        assert hazards._continued([*other, "", "[a]: The u \x01", "[b]: v"]) == set(), other
+        assert hazards._continued(["[a]: The u \x01", "[b]: v", "", *other]) == {1}, other  # (after it: no matter)
+    assert hazards._all_dead(["[a]: The u \x01", "[b]: v"])
+    assert not hazards._all_dead(["[a]: The u \x01", "", "[b]: v"])
+    assert not hazards._all_dead(["[b]: v", "[a]: The u \x01"])  # (a first line is a candidate)
+
+
+def test_a_line_of_answers_alone_is_never_blank_so_the_label_after_it_continues_the_paragraph():
+    """``_continued`` rests on an answer never making a line blank (#144): an answer of spaces or tabs, or one that
+    begins or ends with one, is refused, and other white space (a no-break space, U+3000, U+200B) is text, to the
+    model and to markdown-it, so the label on the next line continues the paragraph."""
+    t = parse_template(_PIN_HEAD + "{{placeholder: p1}}\n[b]: v {{placeholder: p2}}\n")
+    for blank in (" ", "\t", "  "):
+        assert t.form({"p1": blank, "p2": '"t"'}).assemble().output == ""
+    for space in ("\xa0", "\u3000", "\u200b"):
+        output = t.form({"p1": space, "p2": '"t"'}).assemble().output.split("---\n", 2)[2]
+        assert definitions_read(output)[0] == ()
+        if markdown_it is not None:
+            env = {}
+            markdown_it.MarkdownIt("commonmark").parse(output, env)
+            assert not env.get("references"), space
+
+
+def test_a_typed_value_after_a_destination_and_a_blank_makes_a_label_dead_and_not_hopeless():
+    """A date, money or duration placeholder assembles to a value (``{{date: …}}``), which opens no title, as written or
+    rendered; a text placeholder may be anything, and a value in the destination's place is not read past (#144)."""
+    for value in ("{{date: 2024-01-01}}", "{{money: 100, currency=EUR}}", "{{duration: 12, unit=MO}}"):
+        assert hazards._dead(f"[a]: u {value} \x01", 0)
+        assert not hazards._dead(f"[a]: u{value} \x01", 0)
+        assert not hazards._dead(f"[a]: {value} x \x01", 0)
+    assert not hazards._dead("[a]: u {{ref: x}} \x01", 0) and not hazards._dead("[a]: u \x01", 0)
+    assert not hazards._dead('[a]: u {{date: "t"}} \x01', 0)  # (a value that is none may be written as it is)
+    assert hazards._hopeless("[a]: u {{placeholder: n}}")
+    assert not hazards._hopeless("[a]: u {{placeholder: n}}", typed=True)
+    assert hazards._hopeless("[a]: u{{placeholder: n}}", typed=True)
+    assert hazards._hopeless("[a]: {{placeholder: n}} x", typed=True)
+
+
+def test_a_label_after_a_heading_or_a_rule_opens_a_paragraph_and_does_not_pay_for_the_cutoff(monkeypatch):
+    """``_may_open``: only a line after plain text continues a paragraph; after a heading line or a rule the label
+    opens one, and a hopeless one is not tried (#144)."""
+    settled = _count(monkeypatch, "_settled", hazards._Assembler)
+    hopeless = "[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at {{placeholder: p3}}.\n"
+    for before in ("## Fees {#fees}\n", "***\n", "| a | b |\n", "    code\n", "<div>\nx\n"):
+        reported(before + hopeless)
+    assert settled[0] == 0
+    assert hazards._may_open(["The Seller", "[b]: v"], 1) is False
+    assert hazards._may_open(["# Fees", "[b]: v"], 1) and hazards._may_open(["x", "> [b]: v"], 1)
+    assert not hazards._may_open(["- [a]: The u", "  [b]: v"], 1) and hazards._may_open(["> [a]: u", "[b]: v"], 1)
+    assert hazards._may_open(["<div>", "[b]: v"], 1, raw=True)
+    assert not hazards._may_open(["- The Seller agrees.", "  [b]: v"], 1)
+    assert not hazards._may_open(["  - x", "    and then", "    [b]: v"], 2)
+
+
+def test_reading_the_paragraphs_of_an_assembly_is_charged(monkeypatch):
+    """The layout ``_continued`` reads is paid for from the budget, once for each assembly it reads (#144)."""
+    charged = []
+    assert hazards._all_dead(["[a]: The u \x01", "[b]: v"], lambda: charged.append(1) or True) and charged == [1]
+    assert hazards._all_dead(["[a]: The u \x01"], lambda: charged.append(1) or True) and charged == [1]  # (all dead: none)
+    assert not hazards._all_dead(["[a]: The u \x01", "[b]: v"], lambda: False)  # (past the budget: not settled)
+
+
+@pytest.mark.parametrize(
+    ("body", "count", "tried"),
+    [
+        # A line of choices that may be empty: the label after it may open the paragraph, and is hopeless.
+        ('{{choose: c1, true="", false="Recitals."}}\n[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at '
+         "{{placeholder: p3}}.\n", 4, 0),
+        # A drafting note is removed: the label after it continues the paragraph before it, and is no candidate.
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n> [!DRAFTING]\n> n\n[b]: v {{{{placeholder: p4}}}}\n", 0, 1),
+        # With a blank line after the note it begins a paragraph, and the hazard is reported.
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n> [!DRAFTING]\n> n\n\n[b]: v {{{{placeholder: p4}}}}\n", 1, 1),
+        # In one conditional unit, the lines go together: the label continues the paragraph.
+        (f"## S {{when=q}}\n\n[Option A]: The Seller shall pay {_BLANKS}.\n[Option B]: {{{{placeholder: p4}}}} shall pay.\n", 0, 1),
+        (f"[Option A]: The Seller shall pay {_BLANKS}.\n[b]: https://x\nand more. {{when=q}}\n", 0, 1),
+        # A bare marker before it: the label may begin the paragraph.
+        ('- {{choose: c1, true="", false="z"}}\n[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at '
+         "{{placeholder: p3}}.\n", 4, 0),
+        # A conditional paragraph before it, removed, leaves the label at a paragraph's start.
+        ("Text {when=q}\n\n[Option A]: {{placeholder: p1}} shall pay {{placeholder: p2}} at {{placeholder: p3}}.\n", 3, 0),
+    ],
+)
+def test_the_line_before_a_label_is_the_one_assembly_leaves(monkeypatch, body, count, tried):
+    """``_opens``: a note is skipped, and a line that may vanish lets the label open a paragraph (#144)."""
+    settled = _count(monkeypatch, "_settled", hazards._Assembler)
+    found = reported(body)
+    assert len(found) == count, found
+    assert settled[0] == tried
+
+
+_PREAMBLE_HAZARD = 'x {when=q}\n- {{choose: c1, true="", false="z"}}\n  [a]: u {{placeholder: p1}} {when=q}\n'
+
+
+def test_a_region_in_the_preamble_and_the_same_in_a_section_are_judged_apart(monkeypatch):
+    """#144: a list item's ``{when=}`` is a marker in a section and text in the preamble (§5.7), so the same lines are
+    clean in the preamble and a hazard in a section. They were one entry of the memo, and the preamble's verdict
+    hid the section's hazard."""
+    def lines(body):
+        result = validate(parse(_HEAD + body))
+        return [d.line - _HEAD.count("\n") - 1 for d in result.diagnostics if d.rule == "insertion-boundary"]
+
+    assert lines(_PREAMBLE_HAZARD) == []
+    assert lines("# A\n\n" + _PREAMBLE_HAZARD) == [3, 4]
+    enumerated = _count(monkeypatch, "_enumerate", hazards._Assembler)
+    assert lines(_PREAMBLE_HAZARD + "\n# A\n\n" + _PREAMBLE_HAZARD) == [7, 8]
+    assert enumerated[0] == 2
+    enumerated[0] = 0
+    assert lines("# A\n\n" + _PREAMBLE_HAZARD + "\n# B\n\n" + _PREAMBLE_HAZARD) == [3, 4, 9, 10]
+    assert enumerated[0] == 1  # (two sections are one shape)
 
 
 @pytest.mark.parametrize(
