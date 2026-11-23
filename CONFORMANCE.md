@@ -1461,7 +1461,14 @@ validator counts a blank, at every position of the frontmatter; the tests compar
   template (`Template.problems`); one in a key or under a key the model does not read is
   **`ldv-frontmatter-placeholder-unread`**, a **Warning** (`legaldown.grammar.FRONTMATTER_PLACEHOLDER_UNREAD_RULE`), at
   its line, so that it does not stay as written without a word (§3.10 does not forbid it there, so no more than
-  a Warning). A comment is no part of the YAML, and draws nothing.
+  a Warning). A comment is no part of the YAML, and draws nothing. The verdict is the written scalar's: one that
+  a value field reaches, through an alias or a merge (`<<: *base`) too, is that field's blank, wherever it is
+  written, but not one that the field's own key, or a later one, overrides at the same path (a merged-in
+  `legal_name` under the party's own, the first of two `title:`); one no field reads is reported once, however many
+  paths reach it. A value is a blank only where its written scalar is at the path the model reads it from: one the
+  model reads from a key that others of its mapping read as the same once stripped (`" Reg"` merged in, `"Reg "`
+  its own) is, when the key it names is not written so, no blank, and its written scalar draws the Warning. A value
+  set in code since the document was parsed is not the source's, and is judged as one built in code (a blank).
 - An alias to an anchored value (`subtitle: *t`) is the anchor's value: a blank wherever it is used (the final check
   reports it at the anchor and at the alias), which assembly fills through the anchor, where it is written, so every
   alias reads the answer.
