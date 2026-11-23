@@ -1880,6 +1880,15 @@ def _chain(entry: _Entry | None) -> Iterator[_Entry]:
         entry = entry.parent
 
 
+#: The block constructs that §15.7.3 has the line-start check keep a line from beginning, as ``_signatures`` names
+#: them: a backslash (or, for indented code, the removal of the indentation) where the line would begin one.
+_ESCAPABLE = frozenset({"item", "quote", "heading", "setext", "code", "rule", "html"})
+#: And those ``_signatures`` records besides, by the parser's kind: a line that begins one in the output where the
+#: template's does not reads otherwise, but §15.7.3 gives no escape for it ("No other character is escaped"), so the
+#: check leaves it, and the validator says so (``ldv-bare-markers``, #120).
+_UNESCAPED = {"link_definition": "definition", "table": "table"}
+
+
 #: How deep the line-start check reads quotes into blocks for the layout (``_signatures``): twice as deep as the
 #: validator does (``MAX_QUOTE_DEPTH``), so that an item in a quote past its depth keeps its line, and past it no
 #: deeper in items and quotes together, which each read the text in them again.
@@ -1891,7 +1900,9 @@ def _signatures(
 ) -> tuple[defaultdict[int, Counter[str]], dict[int, _Entry], _Layout, tuple[tuple[int, ...], int] | None]:
     """What the parser reads *lines* as beginning, line by line, of the constructs
     §15.7.3 names: ``item``, ``quote``, ``heading`` (ATX), ``setext`` (for the underline
-    of a heading that began on an earlier line), ``code``, ``rule`` and ``html``; and the
+    of a heading that began on an earlier line), ``code``, ``rule`` and ``html``; and two it does
+    not, ``definition`` (a link reference definition) and ``table`` (at its header), which the
+    check does not escape (``_ESCAPABLE``) but which a reading compared must see (#120); and the
     innermost container each line lies in (``_Entry``), as the parser's layout has it, quotes
     and list items alike. Only line *last* if it is given (no containers then), and then also the
     paragraph it lies in, if that is in list items alone: the content columns of the items around
@@ -1923,6 +1934,8 @@ def _signatures(
             lines_kinds = [(end - 1, "setext")]
         elif kind in ("heading", "quote", "code", "rule", "html"):
             lines_kinds = [(start, kind)]
+        elif kind in _UNESCAPED:
+            lines_kinds = [(start, _UNESCAPED[kind])]
         else:
             lines_kinds = []
         for line, found in lines_kinds:
@@ -2496,7 +2509,13 @@ def _kept(
     # text in the output (a ``3.`` that no item holds), what follows it may begin a block.
     content = line[_content_start(frame, line, tail.begun["item"], prefix):]
     was = plain[_content_start(frame, plain, template["item"], prefix):]
-    return None if tail.begun - template or _free(content, was) else tail
+    return None if _escapable(tail.begun - template) or _free(content, was) else tail
+
+
+def _escapable(begun: Counter[str]) -> bool:
+    """Whether *begun*, what a line begins that its template line does not, holds a construct that §15.7.3 has
+    the line-start check prevent (``_ESCAPABLE``): a definition or a table it does not."""
+    return any(kind in _ESCAPABLE for kind in begun)
 
 
 def _content_start(frame: _Frame, text: str, items: int, limit: int) -> int:

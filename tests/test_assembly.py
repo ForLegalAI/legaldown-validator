@@ -727,6 +727,20 @@ class TestLineStartsInContext:
             '   2. {{choose: x, true="", false="T"}}\n    {{placeholder: name}} x\n': "   2. \n    \\- - - x\n",
         }[body]
 
+    @pytest.mark.parametrize(("body", "written"), [
+        ('{{choose: x, true="", false="T"}}\n    [a]: /url\n', "[a]: /url\n"),
+        ('- x\n\n  {{choose: x, true="", false="T"}}\n      [a]: /url\n', "- x\n\n  [a]: /url\n"),
+        ('> a\n> {{choose: x, true="", false="T"}}\n> [a]: /url\n', "> a\n> \n> [a]: /url\n"),
+        ('a | b\n{{choose: x, true="", false="T"}}\n|---|---|\n', "a | b\n|---|---|\n"),
+    ])
+    def test_a_definition_or_a_table_is_not_escaped(self, body, written):
+        """§15.7.3 has the line-start check prevent the constructs it names, and "no other character is escaped": a
+        line after a deleted one that becomes a link reference definition or a part of a table keeps its text (and
+        loses the indentation that would make it indented code). The output reads otherwise than the template, and
+        the validator warns of it (``ldv-bare-markers``, #120); the check reads the definition and the table, and
+        leaves them."""
+        assert self._assembled(body, {"x": True}, _BOOL) == written
+
     @pytest.mark.parametrize("body", _OPEN_QUESTIONS_120)
     def test_the_validator_warns_of_each_open_question(self, body):
         """The assembler cannot keep these from reading otherwise without a change to the specification, so the
@@ -748,6 +762,16 @@ class TestLineStartsInContext:
         ('1.\n   {{choose: x, true="", false="T"}}\n\n   more\n', "leaves the item or quote"),
         ('> {{choose: x, true="", false="T"}} {{choose: x, true="", false="U"}}\n> 2. b\n', "begins other blocks"),
         ('text\n- {{choose: x, true="", false="T"}}{{choose: c, one="", two=""}}\n', "the underline of a heading"),
+        # The line after it becomes a link reference definition, which is not displayed, or a part of a table: the
+        # line-start check escapes neither (§15.7.3 names no such construct, "No other character is escaped"), and
+        # the line's indentation goes as indented code would (pinned in test_a_definition_or_a_table_is_not_escaped).
+        ('{{choose: x, true="", false="T"}}\n    [a]: /url\n', "becomes a link reference definition"),
+        ('{{choose: x, true="", false="T"}}\n[a]: /url\n', "becomes a link reference definition"),
+        ('- x\n\n  {{choose: x, true="", false="T"}}\n      [a]: /url\n', "becomes a link reference definition"),
+        ('> a\n> {{choose: x, true="", false="T"}}\n> [a]: /url\n', "becomes a link reference definition"),
+        ('a | b\n{{choose: x, true="", false="T"}}\n|---|---|\n', "the line above it becomes part of a table"),
+        ('- a | b\n  {{choose: x, true="", false="T"}}\n  |---|---|\n', "becomes part of a table"),
+        ('> a | b\n{{choose: x, true="", false="T"}}\n> |---|---|\n', "becomes part of a table"),
         # A drafting note before it is removed first: the bare "-" underlines "text" (#120 review).
         ('text\n> [!DRAFTING]\n> n\n- {{choose: x, true="", false="T"}}\n', "the underline of a heading"),
     ])

@@ -40,7 +40,7 @@ import yaml
 
 from ..definitions import nested_blocks
 from ..directives import Directive, lex
-from ..markdown import is_blank, is_drafting_marker, label_end, skip_blanks
+from ..markdown import indent_width, is_blank, is_drafting_marker, label_end, skip_blanks
 from ..markers import MARKER_RE
 from ..models import PARAGRAPH_KINDS, Document
 from ..parser import _layout, parse
@@ -1361,6 +1361,19 @@ def _units(assembly: Any, plains: list[str]) -> list[tuple[int, int]]:
     return sorted(found) or [(0, len(plains))]
 
 
+def _escaped(assembly: Any, body: str) -> str | None:
+    """*body*, a line's content, with the backslash that ``assembly._fix`` puts before its first character, or before
+    the ``.`` or ``)`` of an ordered-list number; None where it puts none."""
+    lead = len(body) - len(body.lstrip(" \t"))
+    ordered = assembly._ORDERED_RE.match(body, lead)
+    at = ordered.start("delim") if ordered else lead
+    if not body[at:at + 1] or body[at] not in assembly._PUNCTUATION:
+        return None
+    if body[at] == "\\" and body[at + 1:at + 2] in assembly._PUNCTUATION:
+        return None
+    return body[:at] + "\\" + body[at:]
+
+
 def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emptied: str) -> str:
     """What the lines of *window*, which the template reads as *read* (``assembly._signatures``), read as otherwise
     once line *at* is *emptied* (or deleted, when it is blank: step 5): "" when nothing does. Each line is compared by
@@ -1369,15 +1382,26 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
     changed = window[:at] + ([] if deleted else [emptied]) + window[at + 1:]
     begun, containers = read
     begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
-    if deleted and at < len(changed) and begun_after[at] - begun[at + 1]:
-        # The line after a deleted one has the line-start check (``assembly._Line.after``): when it begins what the
-        # template line does not (``assembly._kept``), the assembler escapes it, after its container markers and the indentation it keeps,
-        # up to the content column of the items the template line is in (``assembly._Frame.keep``, as ``_fix``).
+    if deleted and at < len(changed) and assembly._escapable(begun_after[at] - begun[at + 1]):
+        # The line after a deleted one has the line-start check (``assembly._Line.after``): when it begins a construct
+        # that the template line does not and §15.7.3 names (``assembly._kept``), the assembler writes the first of
+        # its forms that begins none (``assembly._fix``): without its indentation past the content column of its item
+        # (``_Frame.keep``), with a backslash, or both. A definition or a table it leaves (#120): they are compared.
         frame = assembly._Reading(window, []).frame(at + 1)
         line = changed[at]
-        kept = " " * frame.keep if frame.full else ""
-        changed[at] = line[:frame.prefix] + kept + "\\" + line[frame.prefix:].lstrip(" \t")
-        begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
+        head, body = line[:frame.prefix], line[frame.prefix:]
+        column = frame.keep if frame.full and not begun[at + 1]["item"] else 0
+        stripped = body.lstrip(" \t")
+        if column and indent_width(body) >= column:
+            stripped = " " * column + stripped
+        forms = [stripped, _escaped(assembly, body), _escaped(assembly, stripped)] if stripped != body else [
+            _escaped(assembly, body)
+        ]
+        for form in [each for each in forms if each is not None]:
+            changed[at] = head + form
+            begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
+            if not assembly._escapable(begun_after[at] - begun[at + 1]):
+                break
 
     def moved(line: int) -> int:  # a line of *changed* as the line of *window* it is
         return line + 1 if deleted and line >= at else line
@@ -1402,6 +1426,11 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
             return "its markers begin other blocks than the template's"
         where = "the line above it" if line < at else "the line after it" if line == at + 1 else "a line after it"
         if begun[line] != begun_after[after]:
+            extra = begun_after[after] - begun[line]
+            if extra["definition"]:
+                return f"{where} becomes a link reference definition, which is not displayed"
+            if extra["table"]:
+                return f"{where} becomes part of a table"
             return f"{where} begins other blocks than the template's (as after a blank line)"
         if chain(containers, line, False) != chain(containers_after, after, True):
             return f"{where} is in other containers than the template's (it leaves the item or quote that held it)"
