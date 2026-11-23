@@ -40,7 +40,7 @@ from ..markdown import (
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import STRIPPED_MAPS, Locator
 from ..specification import SPEC_VERSION, parse_version
-from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
+from .combined import HOST_ONLY, Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
     ALWAYS,
     DecisionUse,
@@ -60,6 +60,7 @@ from .fragments import (
     UnreadReason,
     check_includes,
     content_findings,
+    fragment_includes,
     shape_findings,
 )
 from .helpers import (
@@ -114,7 +115,7 @@ from .templates import (
     check_template_body,
     question_type,
 )
-from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
+from .units import FoundMarker, Units, find_markers, iter_include_paragraphs, marker_matches, own_presence
 
 if TYPE_CHECKING:
     from ..definitions import DefinitionRef
@@ -1240,16 +1241,19 @@ def validate(
         are, from the fragment's directory, at its line in the fragment, a chain that comes back
         is ``include-cycle`` and an identifier the combined document declares twice
         ``include-anchor-duplicate`` (§16.11); to a depth of 32 fragments and 10,000 includes and
-        headings, past which nothing is followed and the Warning of §17.5 says so. When every
-        include of the document was followed into a fragment, the document is validated once more
-        with the fragments spliced in at their includes, as the one document it is (§16.11; the
-        combined document): a reference or a term into a fragment resolves, an auto-generated
-        identifier that the fragments and the document share is ``anchor-autogen-collision``, and
-        what a fragment holds that a complete document may not is reported in it, at its line, with
-        ``Diagnostic.file`` the fragment's path. The LegalDown attachment files that were read and
-        are fragments follow the body in it, each on its own (§12.4; one not read leaves the others
-        as they are). With any include not followed, the document is validated as it is, and the
-        Warning says the combined-document checks were not made.
+        headings, past which nothing is followed and the Warning of §17.5 says so. The document is
+        validated with the fragments its includes were followed into spliced in at their includes, as
+        the one document it is (§16.11; the combined document): a reference or a term into a fragment
+        resolves, an auto-generated identifier that the fragments and the document share is
+        ``anchor-autogen-collision``, what a fragment holds that a complete document may not is
+        reported in it, at its line, with ``Diagnostic.file`` the fragment's path, and under *final*
+        a template construct a fragment holds is ``template-construct-present`` (§15.9). The LegalDown
+        attachment files that were read and are fragments follow the body in it, each on its own,
+        with the fragments their own includes take in (§12.4; one not read leaves the others as they
+        are). An include not followed stays the paragraph it is: a ``ref-broken``, ``term-undefined``,
+        ``def-unreferenced``, ``attachment-unreferenced`` or ``condition-reference-unsafe`` (and the
+        amendment's term rules) says that what it would bring in may settle it, and the Warning names
+        the combined-document checks for it as not made (#141).
     document_root:
         The directory every file the document refers to must lie within
         (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
@@ -1363,6 +1367,64 @@ def _check(
     document_root: str | os.PathLike[str] | None = None,
     combined: Combined | None = None,
 ) -> _Recorder:
+    """The validation of *document* (``_pass``). A document whose includes and attachment files are read is
+    validated twice, as itself and combined (§16.11), and of the pass over itself only the rules of
+    ``combined.HOST_ONLY`` are kept (``merge_diagnostics``): when a combined document is likely, that pass makes
+    only those (*host_only*, #141), and should none be made after all, the document is validated again in full.
+    The files are read once for both (``Files``). The findings are the same either way."""
+    if combined is not None or mode.fragment or resolve is None:
+        return _pass(document, final, resolve, mode, document_root, combined)
+    files = Files(resolve, document, document_root)
+    if _may_combine(document, files):
+        result = _pass(document, final, resolve, mode, document_root, files=files, host_only=True)
+        if result.spliced:
+            return result
+    return _pass(document, final, resolve, mode, document_root, files=files)
+
+
+def _may_combine(document: Document, files: Files) -> bool:
+    """Whether the validation of *document* is likely to splice something into a combined document: an include
+    paragraph of it, or a LegalDown attachment file, names a file that is read and is a fragment. It reads only
+    what the walk of the includes reads (``check_includes``), so a loader is asked for nothing more."""
+    lexed = cache(lex)
+    for _section, _block, directive in iter_include_paragraphs(document, lexed):
+        written = directive.positional or ""
+        if not written.endswith(LEGALDOWN_EXTENSIONS):
+            continue
+        relative, _problem = files.locate("", written)
+        if relative is not None and not files.is_own(relative) and (target := files.read(relative)) is not None and target.spliceable:
+            return True
+    if document.frontmatter_error is not None:
+        return False  # (its frontmatter is not read: it declares no attachment)
+    template: bool | None = None  # (asked only of an attachment file with include paragraphs)
+    for _index, _attachment, written in legaldown_attachments(document.metadata):
+        relative = files.relative(written)
+        if relative is None or files.is_own(relative) or (target := files.read(relative)) is None or not target.spliceable:
+            continue
+        # In a template an attachment file with include paragraphs is left out (``check_includes``).
+        if fragment_includes(target, lexed):
+            if template is None:
+                template = _is_template(document, None, lexed)
+            if template:
+                continue
+        return True
+    return False
+
+
+def _pass(
+    document: Document,
+    final: bool,
+    resolve: LoadFile | None,
+    mode: _Mode,
+    document_root: str | os.PathLike[str] | None = None,
+    combined: Combined | None = None,
+    *,
+    files: Files | None = None,
+    host_only: bool = False,
+) -> _Recorder:
+    # *files*: what the validation reads, given by ``_check``. *host_only*: the pass makes only the rules of
+    # ``combined.HOST_ONLY`` (the recorder drops the others before their line is looked for, and the checks that
+    # make nothing else are not run), for a document whose combined document is expected (``_check``).
     # *combined*: the document is the combined document of another (§16.11, #117), validated once more
     # as the document it is with its fragments in: ``document`` is its own, and the validation reads
     # the files, the lexing and the locations of the document that holds the includes.
@@ -1374,8 +1436,11 @@ def _check(
     if unreadable is not None:
         mode = _UNREADABLE_FRONTMATTER
     result = _Recorder(
-        suppress=mode.suppress, fragment=mode.fragment, places=[] if combined is not None else None
+        suppress=mode.suppress, fragment=mode.fragment, places=[] if combined is not None else None,
+        unsettleable=[] if combined is not None else None,
+        keep=HOST_ONLY if host_only else None,
     )
+    full = not host_only  # (the checks that make no rule of HOST_ONLY run only in a full pass)
     # A fragment's own frontmatter, if it wrongly has any, is reported below
     # and then not read: the host's frontmatter is the one that declares.
     # Everything after this reads the document as a body-only one, whose
@@ -1388,7 +1453,7 @@ def _check(
     # The files the document refers to, each read and parsed once: the original it
     # amends, its attachment files, and its include fragments (#35). A fragment
     # validated on its own reads none: its own includes are the host's concern.
-    files = combined.files if combined is not None else (
+    files = combined.files if combined is not None else files if files is not None else (
         Files(resolve, document, document_root) if resolve is not None else None
     )
     # The paths the document names (§2.3, #104), from the directory it is in.
@@ -1467,6 +1532,10 @@ def _check(
     # document that is none has no condition and no {{choose:}} of its own, so those of its fragments are not
     # collected, nor judged (the fragment is as it was before it was validated with the document).
     untemplated = combined is not None and not combined.template
+    # They are still template constructs that remain in the combined document, which the final check rejects
+    # (§15.9, §16.11: every check applies to the combined document): those are kept for it alone (#141).
+    final_conditions: list[tuple[str, str, Line]] = []
+    final_chooses: list[tuple[Directive, Line]] = []
     # {{choose:}} belongs in body text: never in frontmatter or a heading
     # (§15.5). Wherever it is, it makes the document a template (§15.1).
     misplaced_chooses = [
@@ -1479,6 +1548,7 @@ def _check(
         for directive in named(text, "choose")
     ]
     if untemplated:
+        final_chooses += [(directive, line) for directive, _misplaced, line in misplaced_chooses]
         misplaced_chooses = []
 
     # ── Templates and the presence of units (§15.1, §15.3) ──
@@ -1904,7 +1974,7 @@ def _check(
             result.error(
                 # (An attachment file comes after the body, so the later heading is its own: §16.10.)
                 "attachment-anchor-duplicate"
-                if combined is not None and combined.section_origin[section_index][0].attachment is not None
+                if combined is not None and combined.unit_of(combined.section_origin[section_index][0]).attachment is not None
                 else "anchor-duplicate",
                 f"Duplicate section identifier on '{section.title}'. It was adjusted to "
                 f"'{identifier}'.", line=where.heading(section_index),
@@ -2240,11 +2310,15 @@ def _check(
     conditions: list[tuple[str, str, int | None]] = []
     condition_orders: list[tuple[int, ...]] = []
     for index, section in enumerate(document.sections):
-        if section.condition and not untemplated:
+        if section.condition and untemplated:
+            final_conditions.append((f"the heading '{section.title}'", section.condition, where.heading(index)))
+        elif section.condition:
             conditions.append((f"the heading '{section.title}'", section.condition, where.heading(index)))
             condition_orders.append((index, -1))
     for found in markers:
-        if found.marker and found.marker.condition and found.placed(template) and not untemplated:
+        if found.marker and found.marker.condition and found.placed(template) and untemplated:
+            final_conditions.append((f"'{found.source}'", found.marker.condition, marker_line(found)))
+        elif found.marker and found.marker.condition and found.placed(template):
             conditions.append((f"'{found.source}'", found.marker.condition, marker_line(found)))
             condition_orders.append(
                 (-1 if found.section is None else found.section, found.block, found.fragment, found.offset)
@@ -2309,8 +2383,8 @@ def _check(
                 name = directive.name
                 # Found only if a diagnostic is made there.
                 line = partial(where.find, section_index, block_index, directive.source, fragment_index, directive.start)
-                if name == "choose" and not untemplated:
-                    chooses.append((directive, line))  # a template even when malformed
+                if name == "choose":
+                    (final_chooses if untemplated else chooses).append((directive, line))  # a template even when malformed
                 if name in ("choose", "placeholder") and directive.positional:
                     (asked_in_notes if in_note else asked).add(directive.positional)
                 if name == "placeholder":
@@ -2350,7 +2424,7 @@ def _check(
                     # Whatever the host holds, a reference with no target is wrong.
                     result.error(
                         "ref-broken" if name == "ref" else "term-undefined",
-                        f"'{directive.source}' has no target.", line=line,
+                        f"'{directive.source}' has no target.", line=line, unsettleable=True,
                     )
                 elif name == "ref":
                     ref_targets.append((value, line))
@@ -2494,6 +2568,7 @@ def _check(
                 result.error(
                     "ref-broken", f"Broken section reference: '{target}'.", line=line,
                     depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
+                    unsettleable=not IDENTIFIER_RE.fullmatch(target),
                 )
         for target, line in term_targets:
             result.used_terms.add(target)
@@ -2505,6 +2580,7 @@ def _check(
                             f"Undefined term reference: '{target}' (not found in "
                             f"amendment or imported original).", line=line,
                             depends=Depends.FRONTMATTER,  # `amends` is the frontmatter's
+                            unsettleable=not IDENTIFIER_RE.fullmatch(target),  # (a term is defined by an id, §7.2)
                         )
                     else:
                         # Original unavailable or not LegalDown source:
@@ -2515,12 +2591,14 @@ def _check(
                             f"amendment; the original document is not available "
                             f"to verify it.", line=line,
                             depends=Depends.FRONTMATTER,
+                            unsettleable=not IDENTIFIER_RE.fullmatch(target),
                         )
                 else:
                     # As for ref-broken: a term is defined by an id (§7.2).
                     result.error(
                         "term-undefined", f"Undefined term reference: '{target}'.", line=line,
                         depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
+                        unsettleable=not IDENTIFIER_RE.fullmatch(target),
                     )
 
     _check_blank_codes(blanks, result)
@@ -2551,7 +2629,8 @@ def _check(
                 "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
                 line=line, depends=depends if host_declares else None,
             )
-    _check_never_true(document, markers, units, questions, result, where)
+    if full:
+        _check_never_true(document, markers, units, questions, result, where)
 
     # Circular definitions (§16.3, §7.2): one Warning for each set of
     # definitions explained in terms of each other, where the last of them, in
@@ -2562,7 +2641,7 @@ def _check(
         registered,
         term_uses,
         exclusivity if template else None,
-    ):
+    ) if full else ():
         result.warning(
             "definition-circular",
             circular_message(registered[number][0].id for number in circle),
@@ -2577,18 +2656,18 @@ def _check(
     if combined is not None and combined.attached:
         places: dict[str, set[Instance]] = {}  # of each definition, the places of its declarations
         for ref, _presence in written:
-            places.setdefault(ref.id, set()).add(combined.place_of(ref.section_index, ref.block_index))
+            places.setdefault(ref.id, set()).add(combined.unit_of(combined.place_of(ref.section_index, ref.block_index)))
         within = {
             def_id: where_declared for def_id, where_declared in places.items()
             if all(place.attachment is not None for place in where_declared)
         }
         uses = [
             use for use in term_uses
-            if use.target not in within or combined.place_of(use.section, use.block) in within[use.target]
+            if use.target not in within or combined.unit_of(combined.place_of(use.section, use.block)) in within[use.target]
         ]
     for number, earlier in used_before_declaration(
         written, uses, _imported_definitions, exclusivity if template else None
-    ):
+    ) if full else ():
         ref = written[number][0]
         declared = definition_line(ref)
         times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
@@ -2617,7 +2696,7 @@ def _check(
     }
     targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
     covered: dict[tuple[str, str, Presence], bool] = {}  # references of one target and presence are alike
-    for kind, uses in references.items():
+    for kind, uses in references.items() if full else ():
         for target, presence, in_note, line in uses:
             declared = targets_of[kind].get(target)
             if in_note or not declared or (kind == "term" and original_unread):
@@ -2642,12 +2721,12 @@ def _check(
     # file. The files are read for their shape and what a template may hold in
     # them (#35), not for the questions they use, so none is unused for certain.
     # Not so in the combined document, which holds the fragments and the attachment files
-    # it could read (#117, #135).
+    # it could read (#117, #135), unless one of them is not in it (#141).
     reads_other_files = (
         ("include" in body_directives or bool(legaldown_attachments(meta)))
-        if combined is None else combined.attachments_out > 0
+        if combined is None else combined.attachments_out > 0 or combined.partial
     )
-    if isinstance(questions, dict) and not reads_other_files:
+    if isinstance(questions, dict) and not reads_other_files and full:
         for qid in questions:
             if qid not in used_questions:
                 result.warning(
@@ -2674,7 +2753,8 @@ def _check(
         document, lex_fragment, result, template=template, where=where, markers=markers, combined=combined,
         cache=imports,
     )
-    _check_raw_html(document, lex_fragment, result, where)
+    if full:
+        _check_raw_html(document, lex_fragment, result, where)
     check_heading_images(document, lex_fragment, file_references, where, reference_images)
     reference_images.check(file_references)
     file_references.finish()
@@ -2707,7 +2787,10 @@ def _check(
             position = len(result.diagnostics)
         result.error_at(position, "heading-skip", message, line=line)
     if final:
-        _check_final(placeholders, chooses, body.notes, conditions, questions, result, where.key("questions"))
+        _check_final(
+            placeholders, chooses + final_chooses, body.notes, conditions + final_conditions, questions, result,
+            where.key("questions"),
+        )
 
     # Warn about declared but unreferenced attachments (§16.10): once per id,
     # which alternatives share (§15.3).
@@ -2720,6 +2803,8 @@ def _check(
                 "attachment-unreferenced",
                 f"Attachment '{att_id}' is declared but never referenced via {{{{attach:}}}}.",
                 line=where.key("attachments", index),
+                # (An id that is no identifier is one no {{attach:}} names: attach-undeclared.)
+                unsettleable=not IDENTIFIER_RE.fullmatch(att_id),
             )
 
     # Warn about declared but never-referenced definitions (§7). May
@@ -2759,8 +2844,13 @@ def _check(
             document_root, combined=included.combined,
         )
         assert whole.places is not None and len(whole.places) == len(whole.diagnostics)
+        assert whole.unsettleable is not None and len(whole.unsettleable) == len(whole.diagnostics)
+        included.combined.unsettleable = {
+            number for number, unsettleable in enumerate(whole.unsettleable) if unsettleable
+        }
         result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, whole.places, included.combined)
-        result.combined = True
+        result.combined = not included.combined.partial
+        result.spliced = True
 
     # §17.5: a Warning for each check category the constructs of the document call for and this
     # validation did not perform, last, once all that was read and checked is known.
