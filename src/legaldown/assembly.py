@@ -767,13 +767,23 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
     skip = set(range(*front.questions)) if front.questions else set()
     # The quoted scalars, as YAML reads them (§3.10, ``positions.quoted_scalars``): after an anchor or a tag
     # too, and never a quote inside a block or plain scalar. Offsets are in the lines joined by LF.
-    scalars = quoted_scalars("\n".join(lines))
+    scalars = quoted_scalars("\n".join(lines))  # in order, and apart
+    first = 0  # the first scalar that does not end before the line
     offset = 0
     for index, line in enumerate(lines):
         at, offset = offset, offset + len(line) + 1
-        within = [(start - at, end - at, q) for start, end, q in scalars if start < at + len(line) and end > at]
-        continued = any(start < 0 for start, _end, _q in within)  # the line goes on a scalar of the one before
-        if index in skip or (not continued and _is_comment(line)) or "{{" not in line:
+        if index in skip or "{{" not in line:
+            continue
+        while first < len(scalars) and scalars[first][1] <= at:
+            first += 1
+        within = []
+        for start, end, q in islice(scalars, first, None):
+            if start >= at + len(line):
+                break
+            within.append((start - at, end - at, q))
+        # (A line YAML reads as a comment holds no quoted scalar; one that goes on a scalar, or that YAML breaks
+        # after its comment, does.)
+        if not within and _is_comment(line):
             continue
         for directive in lex(line).directives:
             if directive.name == "placeholder" and directive.malformed:

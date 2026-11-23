@@ -1349,8 +1349,9 @@ as written, so the validator reads them the same way:
   at the start of a value is a flow mapping, and `frontmatter-invalid-yaml`); without this rule it would be lost
   without a word. How a value is written is read from the source, so a document built in code (no source map) has
   none to judge. How a value is written is YAML's to say (its scalar style), as §3.10 means it, and the validator
-  and assembly read it alike (`positions.quoted_scalars`, YAML's own scanner): assembly fills exactly the
-  placeholders the validator counts as blanks. A quoted string after an anchor or a tag (`&t "..."`, `!!str "..."`)
+  and assembly read it alike: the validator by the styles of the composed frontmatter's scalars
+  (`Locator.unquoted_values`), assembly by YAML's own scanner (`positions.quoted_scalars`). Over the value fields,
+  assembly fills exactly the placeholders the validator counts as blanks. A quoted string after an anchor or a tag (`&t "..."`, `!!str "..."`)
   is one, and a quote at the start of a line of a block scalar (`title: |` over `"Lease {{placeholder: q}}"`) is
   none. An alias to an anchored value (`subtitle: *t`) is the anchor's value: it is a blank wherever it is used
   (the final check reports it at the anchor and at the alias), and assembly fills it through the anchor, where it is
