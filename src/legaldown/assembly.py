@@ -1871,6 +1871,11 @@ def _chain(entry: _Entry | None) -> Iterator[_Entry]:
         entry = entry.parent
 
 
+#: How deep the line-start check reads quotes into blocks for the layout (``_signatures``): twice as deep as the
+#: validator does (``MAX_QUOTE_DEPTH``), at twice the cost, so that an item in a quote past its depth keeps its line.
+_LAYOUT_QUOTE_DEPTH = 2 * MAX_QUOTE_DEPTH
+
+
 def _signatures(
     lines: list[str], last: int | None = None
 ) -> tuple[defaultdict[int, Counter[str]], dict[int, _Entry], _Layout, tuple[tuple[int, ...], int] | None]:
@@ -1883,11 +1888,10 @@ def _signatures(
     it, outer first, and the line it starts on.
 
     A quote in ``MAX_QUOTE_DEPTH`` quotes, which the validator reads as one text, is read into blocks
-    here too, so that the items in it are in the layout (#139), while the text read so, all such quotes
-    together, is no longer than *lines*: past that, a quote is a ``cap`` with no containers inside."""
+    here too, so that the items in it are in the layout (#139), to ``_LAYOUT_QUOTE_DEPTH`` quotes: past
+    that, a quote is a ``cap`` with no containers inside. Each level reads the text in it again."""
     layout = _Layout()
     blocks, sections = _parse_body(lines, layout)
-    budget = sum(len(line) + 1 for line in lines)
     begun: defaultdict[int, Counter[str]] = defaultdict(Counter)
     innermost: dict[int, _Entry] = {}
     leaf: list[tuple[tuple[int, ...], int]] = []
@@ -1921,7 +1925,6 @@ def _signatures(
     ) -> None:
         """*opened*: the lines the items around these blocks start on, or None in a quote;
         *around*: their content columns; *depth*: the items and quotes they are in, *held*: the quotes."""
-        nonlocal budget
         for span, block in zip(spans, model, strict=True):
             start, end = base + span.start, base + span.end
             if last is not None and not start <= last < end:
@@ -1943,10 +1946,7 @@ def _signatures(
                     push("i", first, stop)
                 walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around, held)
             if block.kind == "quote":
-                read = held < MAX_QUOTE_DEPTH
-                if not read and len(block.text) < budget:
-                    budget -= len(block.text)
-                    read = True
+                read = held < _LAYOUT_QUOTE_DEPTH
                 if last is None:
                     push("q" if read else "cap", start, end)
                 if read:

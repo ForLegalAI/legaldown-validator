@@ -837,8 +837,7 @@ def _heading_lines(text: str, written: tuple[int, list[str], str] | None) -> Cal
     """The line of an offset in *text*, the text of a setext heading in an item or a quote, whose lines the model
     joins, stripped, with a space between; *written* is where the heading is (``Locator.fragment_lines``): its first
     line, and its lines, its underline last. Each line's text is the end of the line as written, after its markers and
-    indentation, so the lines are told apart from the last: an offset in the indentation and quote markers between two
-    of them, which no image begins at, may be put on the line before. None when the text is not the lines joined."""
+    indentation, so the lines are told apart from the last. None when the text is not the lines joined so."""
     if written is None or written[2] != "heading" or len(written[1]) < 2:
         return None
     first, lines, _kind = written
@@ -847,12 +846,10 @@ def _heading_lines(text: str, written: tuple[int, list[str], str] | None) -> Cal
     for raw in reversed(lines[1:-1]):
         piece = raw[_LEAD_RE.match(raw).end():].rstrip(" \t")  # type: ignore[union-attr]
         begin = end - len(piece)
-        if not piece or begin < 1 or text[begin:end] != piece or text[begin - 1] not in " \t>":
-            return None
+        if not piece or begin < 1 or text[begin:end] != piece or text[begin - 1] != " ":
+            return None  # (a line whose text begins with a ``>`` far in, say: not told apart)
         starts.append(begin)
-        end = begin
-        while end and text[end - 1] in " \t>":
-            end -= 1
+        end = begin - 1  # the space that joins the lines
     if not end:
         return None
     starts.append(0)

@@ -294,6 +294,7 @@ def test_the_lines_of_a_headings_joined_text_are_not_guessed():
         '> - [a]: x\x01 "![i][b]"\n>   more\n>   ![k](ok.png) text\n>   ---',
         '> [a]: x\x01 "![i][b]"\n![k](ok.png) lazy\n> ===',
         '1. > [a]: x\x01 "![i][b]"\n   >   ![k](ok.png) text\n   > ===',
+        '> [a]: x\x01 "![i][b]"\n> foo ->\n> ![k](ok.png) text\n> ===',  # a line of the heading ends in ">"
     ],
 )
 def test_the_lines_of_a_setext_heading_in_an_item_or_a_quote_are_told_apart(body):

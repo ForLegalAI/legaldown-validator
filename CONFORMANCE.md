@@ -667,7 +667,8 @@ Where this differs from CommonMark, or is read more simply:
         the images that begin on a line the model has as a definition are judged (one that begins in a title and ends
         below it too); the others are the model's own. The model joins the lines of a setext heading in a quote or an
         item, a space between; they are told apart again from the heading's lines as written, each line's text being
-        the end of it after its markers (`paths._heading_lines`), so that a reference-style image in the title of a
+        the end of it after its markers and one space joining it to the line before (`paths._heading_lines`; a line
+        whose text begins with a `>` too far in to be a marker is not told apart, and is read as before), so that a reference-style image in the title of a
         definition that a reading reads there is not that reading's (#139).
       - Text that only a reading has, in a drafting note as that reading reads the quotes around it, is in the note
         (`ReadText.noted`): its images are judged all the same, and none of them is the image whose existence the
@@ -1527,9 +1528,9 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts quotes alone (#139), so a quote in
   sixteen nested items is in the layout with its items. A quote in that many quotes, which the validator reads as
   one text, is read into blocks for the layout too, so that a line in an item in it keeps its item (`> ` seventeen
-  times, `- a`, and `  {{x}}`), as long as the text read so past the depth, all such quotes together, is no
-  longer than the template; past that, a quote's markers are taken by the three-column rule and the items in it
-  are not in the layout (a line in one is read as in the quote alone). A line short of an item's content column
+  times, `- a`, and `  {{x}}`), to twice that depth (32 quotes, at twice the cost); past that, a quote's markers
+  are taken by the three-column rule and the items in it are not in the layout (a line in one is read as in the
+  quote alone). A line short of an item's content column
   that a quote holds (a lazy line) keeps no indentation after its marker, and neither does a line
   that an empty phrase leaves with only a quote's marker. The check cannot give a backslash a position where the
   template's own markers, left bare by an empty phrase, begin the construct (`text` over

@@ -572,6 +572,9 @@ class TestLineStartsInContext:
              "> " * 17 + "- a\n" + "> " * 17 + "\n" + "> " * 17 + "  " + written + "\n")
             for answer, written in (("y", "y"), ("# h", "\\# h"), ("> q", "\\> q"))
         ),
+        # ... and in thirty, whatever else the template holds (#139 review: a budget of its size decided it).
+        ("> " * 30 + "- a\n" + "> " * 30 + "\n" + "> " * 30 + "  {{placeholder: name}}\n", "y",
+         "> " * 30 + "- a\n" + "> " * 30 + "\n" + "> " * 30 + "  y\n"),
         # A lazy line is not in the quote, so its indentation goes no further than the outer item's column.
         ("- > - a\n    {{placeholder: name}}\n", "y", "- > - a\n  y\n"),
     ])

@@ -172,6 +172,15 @@ def test_a_long_quote_is_read_from_its_last_block(shape: str) -> None:
     assert seconds < 8
 
 
+def test_a_quote_nested_a_thousand_deep_in_a_long_template_is_assembled() -> None:
+    """The layout reads quotes into blocks to a depth, not as far as the template's size allows: a long template
+    with one quote a thousand deep does not recurse a thousand times (#139 review)."""
+    lines = ["Text."] * 4000 + ["> " * 1100 + "{{placeholder: p0}}"]
+    body, _parses, seconds = _assembled(lines, "# h")
+    assert body.splitlines()[-1].endswith("\\# h")
+    assert seconds < 8
+
+
 def test_a_whole_line_filled_by_an_answer_that_looks_like_markers_is_no_deleted_line() -> None:
     """The answer ``2024.`` (or ``-``, ``>``) fills its line and is only escaped: it holds the paragraph that
     the template has, so the lines after it are read as the template reads them."""
