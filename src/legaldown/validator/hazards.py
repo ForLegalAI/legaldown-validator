@@ -1262,10 +1262,8 @@ def _bare_markers(
             emptied = emptied[:occ.start] + emptied[occ.end:]
         plains[number] = plain
         if number in source.notes or any(
-            occ.in_table or occ.directive.name != "choose" or occ.directive.malformed
-            or not any(not phrase.strip(" \t") for phrase in occ.directive.params.values())
-            for occ in found
-        ):
+            occ.in_table or occ.directive.name != "choose" or occ.directive.malformed for occ in found
+        ) or not _all_empty(found, declared):
             continue
         # (What the assembler takes for bare markers: ``_Line.bare``.)
         if is_blank(emptied) or assembly._BARE_MARKERS_RE.fullmatch(emptied):
@@ -1278,6 +1276,28 @@ def _bare_markers(
     plains = [plains[number] for number in kept]
     found_lines = _read_bare(assembly, plains, [(slot[n], e, d) for n, e, d in candidates], budget)
     return [each.__class__(kept[each.line], each.source, each.what, each.more) for each in found_lines]
+
+
+def _all_empty(choices: list, declared: dict) -> bool:
+    """Whether one answer to each question empties every one of *choices* (the occurrences of a line): each choice's
+    question is a declared boolean or choice question, and some answer to it picks a phrase of nothing but spaces in
+    each of its choices on the line. A choice of an undeclared question, or with no such phrase, is never empty
+    (``choose-invalid`` reports what is wrong with it)."""
+    answers: dict[str, set[str]] = {}
+    for occ in choices:
+        qid = occ.qid
+        kind = question_type(declared, qid)
+        if kind == "boolean":
+            possible = {"true", "false"}
+        elif kind == "choice" and isinstance(listed := declared[qid].get("choices"), dict):
+            possible = {str(key) for key in listed}
+        else:
+            return False
+        empty = {key for key, phrase in occ.directive.params.items() if key in possible and not phrase.strip(" \t")}
+        answers[qid] = answers.get(qid, possible) & empty
+        if not answers[qid]:
+            return False
+    return True
 
 
 def _read_bare(

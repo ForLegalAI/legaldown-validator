@@ -734,11 +734,13 @@ class TestLineStartsInContext:
         # A line of nothing but choices that step 5 deletes can leave what held it empty (#120, the comment).
         ('1.\n   {{choose: x, true="", false="T"}}\n\n   more\n', "leaves the item or quote"),
         ('> {{choose: x, true="", false="T"}} {{choose: x, true="", false="U"}}\n> 2. b\n', "begins other blocks"),
+        ('text\n- {{choose: x, true="", false="T"}}{{choose: c, one="", two=""}}\n', "the underline of a heading"),
         # A drafting note before it is removed first: the bare "-" underlines "text" (#120 review).
         ('text\n> [!DRAFTING]\n> n\n- {{choose: x, true="", false="T"}}\n', "the underline of a heading"),
     ])
     def test_what_the_warning_says(self, body, what):
-        [found] = [d for d in validate(parse(_template(body, _BOOL))).diagnostics if d.rule == BARE_MARKERS_RULE]
+        questions = _BOOL + "  c:\n    type: choice\n    choices:\n      one: One\n      two: Two\n"
+        [found] = [d for d in validate(parse(_template(body, questions))).diagnostics if d.rule == BARE_MARKERS_RULE]
         assert what in found.message and "#120" in found.message
 
     @pytest.mark.parametrize("body", [
@@ -754,6 +756,10 @@ class TestLineStartsInContext:
         '- {{choose: x, true="", false="T"}} more\n\n  b\n',  # text stays
         '> [!DRAFTING]\n> - {{choose: x, true="", false="T"}}\n\n  b\n',  # removed with the note
         '| a |\n|---|\n| {{choose: x, true="", false="T"}} |\n',
+        # No one answer empties both choices (#120 review), and a choice of an undeclared question is no choice.
+        'text\n- {{choose: x, true="", false="T"}}{{choose: x, true="U", false=""}}\n',
+        'text\n- {{choose: q, a="", b="T"}}\n',
+        'text\n- {{choose: x, yes="", no="T"}}\n',
     ])
     def test_a_line_that_reads_as_the_template_does_is_not_warned_of(self, body):
         assert [d for d in validate(parse(_template(body, _BOOL))).diagnostics if d.rule == BARE_MARKERS_RULE] == []

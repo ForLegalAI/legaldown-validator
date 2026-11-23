@@ -1572,7 +1572,8 @@ Assembly edits the template's source and so inherits a few limits of the parser'
 
   The validator tells the template's author of cases 1 to 4 (the validator's side of #120): **`ldv-bare-markers`**,
   a Warning of this implementation's own (`legaldown.grammar.BARE_MARKERS_RULE`), at a line of a template whose
-  choices all have a phrase that is empty (or spaces), with nothing else on the line but quote and list markers,
+  choices one answer to each of their questions (declared booleans and choices) makes all empty (or spaces), with
+  nothing else on the line but quote and list markers (the assembler's `_BARE_MARKERS_RE`), without its drafting notes,
   where the template read with that line so emptied (or deleted, when nothing is left: step 5) reads otherwise
   than the template read with each insertion a word, as the assembler reads it (`assembly._Reading`): the line's
   markers are a setext underline or a thematic break, or a line of the blocks around it begins other constructs
