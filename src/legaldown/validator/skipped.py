@@ -24,6 +24,7 @@ from . import fragments
 from .fragments import IncludeOutcome, UnreadInclude, UnreadReason
 from .helpers import identifier_rule, legaldown_attachments
 from .paths import FileReference
+from .patterns import FILE_SPELLING_DUPLICATE_RULE
 from .result import Line
 from .templates import IncludeDirective
 
@@ -123,7 +124,7 @@ def _includes(
     rules = []
     if any(each.reason in ("no-resolver", "leads-out") for each in unread):
         # (A path not read is not compared with the others either, #123.)
-        rules += ["include-file-missing", "ldv-file-spelling-duplicate"]
+        rules += ["include-file-missing", FILE_SPELLING_DUPLICATE_RULE]
     if unread:
         # Of a fragment not read nothing is known to follow or to join: both checks that look
         # across fragments (§16.11) go with it.
@@ -164,6 +165,8 @@ def _attachments(document: Document, where: Locator, unread: Sequence[UnreadReas
     if outcome.attachments_unshaped:
         # (The shape of a file that was read is judged: what is not done is of the files not read.)
         rules += ["attachment-has-frontmatter", "attachment-has-h1"]
+    if outcome.attachments_uncompared:
+        rules.append(FILE_SPELLING_DUPLICATE_RULE)  # (a path not read is not compared with the others, #123)
     parts = [_join(rules)]
     if out := outcome.attachments_out:
         # A LegalDown attachment file is spliced into the combined document when it was read and is a fragment

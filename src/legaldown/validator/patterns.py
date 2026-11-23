@@ -41,7 +41,8 @@ INCLUDE_LIMIT_RULE = IMPLEMENTATION_RULE_PREFIX + "include-limit"
 FRONTMATTER_KEY_DUPLICATE_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-key-duplicate"
 # And the one for a file named a second time by another path than the first (``a.lgd`` and ``../doc/a.lgd``
 # from a document in ``doc``), by an include or a LegalDown attachment file: an Error, since assembly writes
-# each file it keeps by the path that names it, and refuses one file by two (#123).
+# each file it keeps by the path that names it, and refuses one file by two (#123). Written out, as SKIPPED_RULE
+# is, since it is one of the rules the combined pass leaves to the document (combined.HOST_ONLY), named as written.
 FILE_SPELLING_DUPLICATE_RULE = "ldv-file-spelling-duplicate"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})

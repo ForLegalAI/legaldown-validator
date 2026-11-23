@@ -227,9 +227,11 @@ class _FileLoader:
 def loader_identity(load_file: LoadFile, relative: str) -> str | None:
     """Which file *load_file* reads for *relative*, when it can say (a ``LoadFile`` with an ``identify``
     method, as ``file_loader``'s has: ``(relative) -> str | None``); None when it cannot, or reads none for
-    it. Two paths with the same identity are one file to the loader (#123)."""
+    it. Two paths with the same identity are one file to the loader (#123). Only text is an answer: an
+    object that has any attribute (a mock) says nothing by it."""
     identify = getattr(load_file, "identify", None)
-    return identify(relative) if callable(identify) else None
+    identity = identify(relative) if callable(identify) else None
+    return identity if isinstance(identity, str) else None
 
 
 def within(base: Path, relative: str, root: str | os.PathLike[str] | Path | None = None) -> Path | None:

@@ -144,11 +144,8 @@ class Files:
         that leads elsewhere, #123); else that path joined to the directory and normalized, as written (no
         link is followed, nor the case of a name)."""
         if relative not in self._keys:
-            lexical = os.path.normpath(os.path.join(self._directory, relative))
             identity = loader_identity(self._resolve, relative)
-            if identity is None and hasattr(self._resolve, "identify"):
-                lexical = "\0" + lexical  # a file the loader reads none for is never one it reads
-            self._keys[relative] = lexical if identity is None else identity
+            self._keys[relative] = os.path.normpath(os.path.join(self._directory, relative)) if identity is None else identity
         return self._keys[relative]
 
     def respelled(self, relative: str) -> str | None:
@@ -758,8 +755,10 @@ class IncludeOutcome:
     the combinations of answers that ``include-heading-skip`` tries (#108). *combined* is the combined
     document (``combined.weave``), when every include of the document was followed into a fragment; and
     of its LegalDown attachment files, *attachments_out* how many are not in it, *attachments_capped* how
-    many of those were left out for the size of the combined document, and *attachments_unshaped* how many
-    were not read for their shape (``attachment-has-frontmatter``, ``attachment-has-h1``)."""
+    many of those were left out for the size of the combined document, *attachments_unshaped* how many
+    were not read for their shape (``attachment-has-frontmatter``, ``attachment-has-h1``), and
+    *attachments_uncompared* how many were not compared with the paths named before them (no loader, or a path
+    that is not read: ``ldv-file-spelling-duplicate``, #123)."""
     filled: set[int] = field(default_factory=set)
     unread: list[UnreadInclude] = field(default_factory=list)
     nested: int = 0
@@ -768,6 +767,7 @@ class IncludeOutcome:
     attachments_out: int = 0
     attachments_capped: int = 0
     attachments_unshaped: int = 0
+    attachments_uncompared: int = 0
 
 
 class _NamedInclude(Protocol):
@@ -1195,9 +1195,9 @@ def check_includes(
         if walk.incomplete:
             unread.add(include.section)  # something it includes is not known: it fills nothing
     entries = legaldown_attachments(document.metadata)
-    capped = unshaped = 0
+    capped = unshaped = uncompared = 0
     if files is None or walk is None:
-        unshaped = len(entries)
+        unshaped = uncompared = len(entries)
     else:
         # Each LegalDown attachment file is read too (§12.4): for its shape, and in a template for the
         # ``{{include:}}`` it must not hold (§16.12), once for each file however often it is attached.
@@ -1206,7 +1206,9 @@ def check_includes(
         include_keys = {files.key(path) for path in findings}  # the files already checked as includes
         for index, _attachment, written in entries:
             relative = files.relative(written)
-            if relative is not None and files.is_own(relative):
+            if relative is None:
+                uncompared += 1
+            elif files.is_own(relative):
                 continue
             if relative is not None and (named := files.respelled(relative)) is not None:
                 # Another path to a file already named, by an include or an attachment (#123).
@@ -1245,6 +1247,7 @@ def check_includes(
     outcome.attachments_out = len(entries) - (len(walk.attached) if built and walk is not None else 0)
     outcome.attachments_capped = capped if walk is not None and walk.complete else 0  # (else the includes are to blame)
     outcome.attachments_unshaped = unshaped
+    outcome.attachments_uncompared = uncompared
     if not splices:
         return outcome
     judgement = include_heading_skips(document, where, splices, first_level, unread, units, questions)

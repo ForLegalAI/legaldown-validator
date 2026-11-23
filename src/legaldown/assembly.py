@@ -1242,7 +1242,7 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
         elif relative in reading:
             reading.attach(relative)  # also an include fragment: read as one, and still an attachment file
         else:
-            reading.read(relative, "attachment")
+            reading.read(relative, "attachment", named=item.file)  # (as the entry writes it, if it is refused)
     reading.finish()
     return reading.subs, reading.last, problems
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -347,3 +348,37 @@ def test_an_attachment_file_named_by_two_entries_is_judged_as_an_attachment_once
     path = _write(root / "doc" / "t.lgd", text)
     problems = [(d.rule, d.file, d.line) for d in load_template(path, document_root=root).problems]
     assert problems == [(RULE, "", _line(text, "file: ../doc/a.lgd")), ("include-file-missing", "a.lgd", 3)]
+
+
+def test_a_loader_whose_identify_gives_no_text_cannot_say():
+    # A mock has every attribute: its ``identify`` answers with no text, which is not taken for an answer.
+    files = {"a.lgd": "A.\n", "b.lgd": "B.\n"}
+    loader = MagicMock(side_effect=files.get)
+    assert loader_identity(loader, "a.lgd") is None
+    result = validate(parse(_DOCUMENT + "{{include: a.lgd}}\n\n{{include: b.lgd}}\n"), resolve=loader)
+    assert _validated(result) == []
+    assert [call.args[0] for call in loader.call_args_list] == ["a.lgd", "b.lgd"]
+
+
+def test_a_missing_attachment_file_named_by_a_second_path_is_refused_by_the_path_its_entry_writes(tmp_path):
+    root = tmp_path / "root"
+    text = (
+        "---\ntitle: D\nattachments:\n  - id: one\n    title: One\n    file: missing.lgd\n"
+        "  - id: two\n    title: Two\n    file: ../doc/missing.lgd\n---\n\n# Scope {#scope}\n\n"
+        "See {{attach: one}} and {{attach: two}}.\n"
+    )
+    path = _write(root / "doc" / "t.lgd", text)
+    problems = load_template(path, document_root=root).problems
+    messages = [d.message for d in problems if d.rule == "attachment-file-missing"]
+    assert [message.split(" cannot")[0] for message in messages] == ["'missing.lgd'", "'../doc/missing.lgd'"]
+
+
+def test_the_warning_lists_the_rule_for_the_attachments_it_did_not_compare():
+    text = (
+        "---\ntitle: D\nattachments:\n  - id: one\n    title: One\n    file: a.lgd\n---\n\n"
+        "# Scope {#scope}\n\nSee {{attach: one}}.\n"
+    )
+    (warning,) = [d for d in validate(parse(text)).diagnostics if d.rule == "ldv-check-skipped"]
+    assert RULE in warning.message
+    files = {"a.lgd": "A.\n"}
+    assert not [d for d in validate(parse(text), resolve=files.get).diagnostics if RULE in d.message]
