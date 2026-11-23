@@ -836,6 +836,11 @@ class TestLineStartsInContext:
         '{{choose: x, true="", false="T"}}\n2. b\n',
         'text\n\n{{choose: x, true="", false="T"}}\n    code\n',
         '{{choose: x, true="", false="T"}}\n    [a]: /url\n',  # escaped, as it is text in the template
+        # The line after it begins with an insertion: the check takes the blanks before it, as the assembler reads the
+        # template too, and the validator reads the line it writes (#120 review: four columns read as code).
+        '> {{choose: x, true="", false="T"}}\n>       {{placeholder: name}} x\n',
+        '1. {{choose: x, true="", false="T"}}\n        {{placeholder: name}} x\n',
+        '- a\n\n  {{choose: x, true="", false="T"}}\n      {{placeholder: name}} x\n',
         'x\n\n    code\n{{choose: x, true="", false="T"}}\n    more\n',  # its indentation goes
         # ... and keeps the indentation that holds the line in its item (the assembler writes "  2\\. b", "  code").
         '- a\n\n  {{choose: x, true="", false="T"}}\n  2. b\n',
@@ -844,7 +849,35 @@ class TestLineStartsInContext:
         '- a\n  - b\n\n    {{choose: x, true="", false="T"}}\n    > q\n',
     ])
     def test_a_line_that_reads_as_the_template_does_is_not_warned_of(self, body):
-        assert [d for d in validate(parse(_template(body, _BOOL))).diagnostics if d.rule == BARE_MARKERS_RULE] == []
+        found = validate(parse(_template(body, _BOOL + _TEXT))).diagnostics
+        assert [d for d in found if d.rule == BARE_MARKERS_RULE] == []
+
+    @pytest.mark.parametrize("body", [
+        '> {{choose: x, true="", false="T"}}\n>       {{placeholder: name}} x\n',
+        '1. {{choose: x, true="", false="T"}}\n        {{placeholder: name}} x\n',
+        '- a\n\n  {{choose: x, true="", false="T"}}\n      {{placeholder: name}} x\n',
+        'x\n\n    code\n{{choose: x, true="", false="T"}}\n    {{placeholder: name}} more\n',
+        '{{choose: x, true="", false="T"}}\n    [a]: /url\n',
+        '> a\n{{choose: x, true="", false="T"}}\n>     - {{placeholder: name}}\n',
+    ])
+    def test_the_validator_reads_the_line_after_the_choice_as_the_assembler_writes_it(self, body):
+        """``hazards._written_window`` writes the line after an emptied choice by the assembler's own line-start
+        check: the line it reads is the line assembly writes, every insertion a word (#120 review)."""
+        from legaldown import assembly as assembly_module
+        from legaldown.validator import hazards
+
+        lines = body.removesuffix("\n").split("\n")
+        at = next(number for number, line in enumerate(lines) if "{{choose" in line)
+        plains = [line.replace("{{placeholder: name}}", "zzz").replace('{{choose: x, true="", false="T"}}', "zzz") for line in lines]
+        firsts = {number: line.index("{{") for number, line in enumerate(lines) if "{{" in line}
+        reading = assembly_module._Reading(list(plains), [
+            assembly_module._Line(plain, number, check=True, first=firsts[number], plain=plain, slot=number)
+            for number, plain in enumerate(plains) if number in firsts
+        ])
+        reading.begun(0)
+        emptied = lines[at].replace('{{choose: x, true="", false="T"}}', "")
+        written = hazards._written_window(assembly_module, plains, reading.plains, at, emptied, firsts)
+        assert self._assembled(body, {"x": True, "name": "zzz"}, _BOOL + _TEXT).removesuffix("\n").split("\n") == written
 
     def test_a_fragment_is_judged_at_its_own_lines(self):
         body = "Text.\n\n{{include: part.lgd}}\n"

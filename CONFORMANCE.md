@@ -1801,9 +1801,10 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   where the template read with that line so emptied (or deleted, when nothing is left: step 5) reads otherwise
   than the template read with each insertion a word, as the assembler reads it (`assembly._Reading`): the line's
   markers are a setext underline or a thematic break, or a line of the blocks around it begins other constructs,
-  a link reference definition, a table and the lines of a code or HTML block among them (the line after a deleted
-  one is read in the first of the forms the line-start check would write, as `assembly._fix` tries them and by
-  its own test, `assembly._keeps`) or lies in other
+  a link reference definition, a table and the lines of a code or HTML block among them (the template is read
+  as the assembler reads it, a line whose insertion begins its content without the blanks before it, and the line
+  after the emptied one is written by the assembler's own line-start check, `assembly._line_starts`, so that the
+  line read is the line written: `hazards._written_window`) or lies in other
   containers (`assembly._signatures`, `validator/hazards.py`: `check_bare_markers`). Each such
   line is read with its own choices empty and every other insertion a word, in all of its conditional units, in the
   blocks around it (the one before, its own, the one after: a list by its items, a quote by the blocks of its

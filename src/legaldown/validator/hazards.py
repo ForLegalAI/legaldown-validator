@@ -1276,7 +1276,8 @@ def _bare_markers(
     kept = [number for number in range(len(plains)) if number not in source.notes]
     slot = {number: index for index, number in enumerate(kept)}
     plains = [plains[number] for number in kept]
-    found_lines = _read_bare(assembly, plains, [(slot[n], e, d) for n, e, d in candidates], budget)
+    firsts = {slot[number]: min(occ.start for occ in found) for number, found in by_line.items() if number in slot}
+    found_lines = _read_bare(assembly, plains, firsts, [(slot[n], e, d) for n, e, d in candidates], budget)
     return [each.__class__(kept[each.line], each.source, each.what, each.more) for each in found_lines]
 
 
@@ -1303,11 +1304,19 @@ def _all_empty(choices: list, declared: dict) -> bool:
 
 
 def _read_bare(
-    assembly: Any, plains: list[str], candidates: list[tuple[int, str, str]], budget: list[int]
+    assembly: Any, plains: list[str], firsts: dict[int, int], candidates: list[tuple[int, str, str]], budget: list[int]
 ) -> list[BareMarkers]:
-    """``_bare_markers`` of the template's lines *plains* (without its drafting notes), for the *candidates*: each
-    line, the line with its choices empty, and its first choice's source."""
-    units = _units(assembly, plains)
+    """``_bare_markers`` of the template's lines *plains* (without its drafting notes, each insertion a word; *firsts*:
+    the column of the first insertion of each line that holds one), for the *candidates*: each line, the line with
+    its choices empty, and its first choice's source."""
+    # The template as the assembler reads it: a line whose insertion begins its content without the blanks before it.
+    reading = assembly._Reading(list(plains), [
+        assembly._Line(plain, number, check=True, first=firsts[number], plain=plain, slot=number)
+        for number, plain in enumerate(plains) if number in firsts
+    ])
+    reading.begun(0)
+    template = reading.plains
+    units = _units(assembly, template)
     starts = [start for start, _end in units]
     found_lines: list[BareMarkers] = []
     readings: dict[tuple[int, int], tuple] = {}  # the template's reading of a window, once
@@ -1316,9 +1325,9 @@ def _read_bare(
         begin = units[at - 1][0] if at > 0 else 0
         end = units[at + 1][1] if at + 1 < len(units) else len(plains)
         end = max(end, number + 1)
-        # The window emptied, and, after a deleted line, the template's frame of the next and the window in each of
-        # the three forms the line-start check may write.
-        cost = (end - begin) * (5 + ((begin, end) not in readings))
+        # The window written (the line-start check of the line after the candidate: the template's reading of the
+        # window, and the window to that line) and read, and the template's reading of it once.
+        cost = (end - begin) * (4 + ((begin, end) not in readings))
         if budget[0] < cost:
             # The rest are not read: the first is reported, for all of them (a Warning for each says no more).
             budget[0] = 0
@@ -1327,8 +1336,11 @@ def _read_bare(
             break
         budget[0] -= cost
         if (begin, end) not in readings:
-            readings[begin, end] = assembly._signatures(plains[begin:end])[:2]
-        what = _reads_otherwise(assembly, plains[begin:end], readings[begin, end], number - begin, emptied)
+            readings[begin, end] = assembly._signatures(template[begin:end])[:2]
+        window_firsts = {line - begin: column for line, column in firsts.items() if begin <= line < end}
+        what = _reads_otherwise(
+            assembly, plains[begin:end], template[begin:end], readings[begin, end], number - begin, emptied, window_firsts
+        )
         if what:
             found_lines.append(BareMarkers(number, directive, what))
     return found_lines
@@ -1362,40 +1374,49 @@ def _units(assembly: Any, plains: list[str]) -> list[tuple[int, int]]:
     return sorted(found) or [(0, len(plains))]
 
 
-def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emptied: str) -> str:
-    """What the lines of *window*, which the template reads as *read* (``assembly._signatures``), read as otherwise
-    once line *at* is *emptied* (or deleted, when it is blank: step 5): "" when nothing does. Each line is compared by
-    what the parser reads it as beginning and by the containers it is in."""
+def _written_window(
+    assembly: Any, window: list[str], template: list[str], at: int, emptied: str, firsts: dict[int, int]
+) -> list[str]:
+    """The lines of *window* (each insertion a word; *template*: as the assembler reads them) as the assembler writes
+    them once line *at*'s choices are empty: *at* is *emptied*, or deleted when that is blank (step 5). The line after
+    it is written by the assembler's own line-start check (``assembly._line_starts``), as it has the check after a
+    deleted line and when it holds an insertion (from its column in *firsts*); the other lines are as the template
+    reads them, their own insertions' escapes aside, which keep them as the template has them."""
     deleted = is_blank(emptied)
-    changed = window[:at] + ([] if deleted else [emptied]) + window[at + 1:]
+    after = at + 1
+    plains = list(template)
+    checked = after < len(window) and (deleted or after in firsts)
+    if checked:
+        plains[after] = window[after]  # (the check removes the blanks before an insertion that begins the content)
+    lines = []
+    for number, plain in enumerate(plains):
+        if number == at and deleted:
+            continue
+        text = emptied if number == at else plain
+        check = checked and number == after
+        lines.append(assembly._Line(
+            text, number, check=check, first=firsts.get(number) if check else None, plain=plain, slot=number,
+            after=check and deleted, bare=number == at,
+        ))
+    if checked:
+        assembly._line_starts(lines, plains)
+    return [line.text for line in lines]
+
+
+def _reads_otherwise(
+    assembly: Any, window: list[str], template: list[str], read: tuple, at: int, emptied: str, firsts: dict[int, int]
+) -> str:
+    """What the lines of *window* (the template's lines, each insertion a word) read as otherwise once line *at* is
+    *emptied* (or deleted, when it is blank: step 5), than as the template reads them (*template*, its lines as the
+    assembler reads them, ``assembly._Reading``, and *read*, ``assembly._signatures`` of those): "" when nothing
+    does. The line after *at* is written by the assembler's own line-start check (``_written_window``), so that a
+    line after a deleted one, or a line with an insertion after bare markers, is what the assembler writes (#120
+    review); *firsts* has the column of each line's first insertion. Each line is compared by what the parser reads it as
+    beginning and by the containers it is in."""
+    deleted = is_blank(emptied)
+    changed = _written_window(assembly, window, template, at, emptied, firsts)
     begun, containers = read
     begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
-    frame = assembly._Reading(window, []).frame(at + 1) if deleted and at < len(changed) else None
-
-    def keeps() -> bool:  # (the assembler's own test, ``assembly._keeps``: after a deleted line, the output differs)
-        assert frame is not None
-        return assembly._keeps(changed[at], begun_after[at], begun[at + 1], window[at + 1], frame.prefix, frame, True)
-
-    if frame is not None and not keeps():
-        # The line after a deleted one has the line-start check (``assembly._Line.after``): when it begins a construct
-        # that the template line does not and §15.7.3 names (``assembly._kept``), the assembler writes the first of
-        # its forms that begins none (``assembly._fix``): without its indentation past the content column of its item
-        # (``_Frame.keep``), with a backslash, or both. A definition or a table it leaves (#120): they are compared.
-        line = changed[at]
-        head, body = line[:frame.prefix], line[frame.prefix:]
-        column = frame.keep if frame.full and not begun[at + 1]["item"] else 0
-        def read(form: str) -> tuple[bool, bool, tuple]:
-            nonlocal begun_after
-            changed[at] = head + form
-            found = assembly._signatures(changed)
-            begun_after = found[0]
-            return keeps(), assembly._hides(begun_after[at] - begun[at + 1]), found
-
-        forms = assembly._forms(body, column)
-        if forms:
-            pick, found = assembly._pick(forms, read)
-            changed[at] = head + forms[pick]
-            begun_after, containers_after, _layout, _leaf = found or assembly._signatures(changed)
 
     def moved(line: int) -> int:  # a line of *changed* as the line of *window* it is
         return line + 1 if deleted and line >= at else line
@@ -1412,7 +1433,7 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
             return "its markers are the underline of a heading"
         if own["rule"] > begun[at]["rule"]:
             return "its markers are a thematic break"
-    for line in range(len(window)):
+    for line in range(len(template)):
         if deleted and line == at:
             continue
         after = line - 1 if deleted and line > at else line
@@ -1421,7 +1442,7 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
             if changed_kinds["in-code"] or changed_kinds["in-fence"] or changed_kinds["in-html"]:
                 return "the lines around it are read as one block, a code or HTML block, that the template has apart"
             return "its markers begin other blocks than the template's"
-        named = line == at + 1 and window[line].strip(" \t")  # (a blank line is in a block only between its lines)
+        named = line == at + 1 and template[line].strip(" \t")  # (a blank line is in a block only between its lines)
         where = "the line above it" if line < at else "the line after it" if named else "a line after it"
         if begun[line] != begun_after[after]:
             extra = begun_after[after] - begun[line]
