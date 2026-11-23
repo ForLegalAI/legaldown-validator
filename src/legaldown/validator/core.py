@@ -1240,16 +1240,19 @@ def validate(
         are, from the fragment's directory, at its line in the fragment, a chain that comes back
         is ``include-cycle`` and an identifier the combined document declares twice
         ``include-anchor-duplicate`` (§16.11); to a depth of 32 fragments and 10,000 includes and
-        headings, past which nothing is followed and the Warning of §17.5 says so. When every
-        include of the document was followed into a fragment, the document is validated once more
-        with the fragments spliced in at their includes, as the one document it is (§16.11; the
-        combined document): a reference or a term into a fragment resolves, an auto-generated
-        identifier that the fragments and the document share is ``anchor-autogen-collision``, and
-        what a fragment holds that a complete document may not is reported in it, at its line, with
-        ``Diagnostic.file`` the fragment's path. The LegalDown attachment files that were read and
-        are fragments follow the body in it, each on its own (§12.4; one not read leaves the others
-        as they are). With any include not followed, the document is validated as it is, and the
-        Warning says the combined-document checks were not made.
+        headings, past which nothing is followed and the Warning of §17.5 says so. The document is
+        validated with the fragments its includes were followed into spliced in at their includes, as
+        the one document it is (§16.11; the combined document): a reference or a term into a fragment
+        resolves, an auto-generated identifier that the fragments and the document share is
+        ``anchor-autogen-collision``, what a fragment holds that a complete document may not is
+        reported in it, at its line, with ``Diagnostic.file`` the fragment's path, and under *final*
+        a template construct a fragment holds is ``template-construct-present`` (§15.9). The LegalDown
+        attachment files that were read and are fragments follow the body in it, each on its own,
+        with the fragments their own includes take in (§12.4; one not read leaves the others as they
+        are). An include not followed stays the paragraph it is: a ``ref-broken``, ``term-undefined``,
+        ``def-unreferenced`` or ``attachment-unreferenced`` (and the amendment's term rules) says that
+        what it would bring in may settle it, and the Warning names the combined-document checks for
+        it as not made (#141).
     document_root:
         The directory every file the document refers to must lie within
         (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
@@ -1909,7 +1912,7 @@ def _check(
             result.error(
                 # (An attachment file comes after the body, so the later heading is its own: §16.10.)
                 "attachment-anchor-duplicate"
-                if combined is not None and combined.section_origin[section_index][0].attachment is not None
+                if combined is not None and combined.unit_of(combined.section_origin[section_index][0]).attachment is not None
                 else "anchor-duplicate",
                 f"Duplicate section identifier on '{section.title}'. It was adjusted to "
                 f"'{identifier}'.", line=where.heading(section_index),
@@ -2586,14 +2589,14 @@ def _check(
     if combined is not None and combined.attached:
         places: dict[str, set[Instance]] = {}  # of each definition, the places of its declarations
         for ref, _presence in written:
-            places.setdefault(ref.id, set()).add(combined.place_of(ref.section_index, ref.block_index))
+            places.setdefault(ref.id, set()).add(combined.unit_of(combined.place_of(ref.section_index, ref.block_index)))
         within = {
             def_id: where_declared for def_id, where_declared in places.items()
             if all(place.attachment is not None for place in where_declared)
         }
         uses = [
             use for use in term_uses
-            if use.target not in within or combined.place_of(use.section, use.block) in within[use.target]
+            if use.target not in within or combined.unit_of(combined.place_of(use.section, use.block)) in within[use.target]
         ]
     for number, earlier in used_before_declaration(
         written, uses, _imported_definitions, exclusivity if template else None
@@ -2651,10 +2654,10 @@ def _check(
     # file. The files are read for their shape and what a template may hold in
     # them (#35), not for the questions they use, so none is unused for certain.
     # Not so in the combined document, which holds the fragments and the attachment files
-    # it could read (#117, #135).
+    # it could read (#117, #135), unless one of them is not in it (#141).
     reads_other_files = (
         ("include" in body_directives or bool(legaldown_attachments(meta)))
-        if combined is None else combined.attachments_out > 0
+        if combined is None else combined.attachments_out > 0 or combined.partial
     )
     if isinstance(questions, dict) and not reads_other_files:
         for qid in questions:
@@ -2772,7 +2775,7 @@ def _check(
         )
         assert whole.places is not None and len(whole.places) == len(whole.diagnostics)
         result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, whole.places, included.combined)
-        result.combined = True
+        result.combined = not included.combined.partial
 
     # §17.5: a Warning for each check category the constructs of the document call for and this
     # validation did not perform, last, once all that was read and checked is known.

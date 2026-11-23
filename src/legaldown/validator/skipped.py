@@ -115,9 +115,10 @@ def _unread(document: Document, unread: list[UnreadInclude], fragment: bool) -> 
 
 
 def _includes(
-    document: Document, paragraphs: list[IncludeDirective], outcome: IncludeOutcome, template: bool, fragment: bool
+    document: Document, where: Locator, paragraphs: list[IncludeDirective], outcome: IncludeOutcome, template: bool,
+    fragment: bool,
 ) -> SkippedCategory | None:
-    if not paragraphs:
+    if not paragraphs and not outcome.attached_includes:
         return None
     unread = outcome.unread
     rules = []
@@ -130,18 +131,27 @@ def _includes(
                   "include-anchor-duplicate"]
         if template:
             rules.append("the parts of template-fragment-invalid that read a fragment")
-    met = [_count(len(paragraphs), "`{{include:}}` paragraph"), *_unread(document, unread, fragment)]
+    met = [_count(len(paragraphs), "`{{include:}}` paragraph")] if paragraphs else []
+    if outcome.attached_includes:  # followed as a fragment's are (#141)
+        met.append(f"{_count(outcome.attached_includes, 'include')} in LegalDown attachment files")
     if outcome.nested:
-        met.insert(1, f"{_count(outcome.nested, 'include')} in the fragments they take in")
+        met.append(f"{_count(outcome.nested, 'include')} in the fragments they take in")
+    met += _unread(document, unread, fragment)
     parts = []
     if rules:
         parts.append(f"{_join(rules)} for the fragments not read")
-    # The combined document is put together only when every include was followed (#117): else what
-    # refers across a fragment and the document is judged as if the fragment were not there.
+    # The combined document holds what the includes were followed into (#117, #141): what refers across a
+    # fragment not in it and the document is judged as if the fragment were not there.
     if outcome.combined is None:
         parts.append(
             "the combined-document checks (§16.11), such as a reference or a term into a fragment, "
             "or an auto-generated identifier the fragments and the document share"
+        )
+    elif outcome.combined.partial:
+        parts.append(
+            "the combined-document checks (§16.11) for what the includes not followed would bring in, such as a "
+            "reference or a term into such a fragment, which are made without it (the fragments that were "
+            "followed are checked with the document)"
         )
     parts += outcome.caps
     if not parts:
@@ -150,7 +160,7 @@ def _includes(
         "includes",
         f"{_items(met)}. Not performed: {_items(parts)} "
         f"(include processing is Full, §17.4; §17.5).",
-        paragraphs[0].line,
+        paragraphs[0].line if paragraphs else partial(where.key, "attachments", outcome.attached_includes_entry, "file"),
     )
 
 
@@ -275,7 +285,7 @@ def skipped_categories(
     imported (``NOT_IMPORTED``: every reason but the document's own);
     *amends_unread*: the same of the original it amends."""
     found = [
-        _includes(document, [each for each in includes if each.paragraph], outcome, template, fragment),
+        _includes(document, where, [each for each in includes if each.paragraph], outcome, template, fragment),
         _attachments(document, where, attachments_unread, outcome),
         _amendment(document, where, amends_unread),
         _bilingual(document, where),

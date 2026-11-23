@@ -129,8 +129,14 @@ def test_the_includes_warning_of_the_end_state_is_none_when_everything_was_read(
     assert _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"})) == []
     # While the combined document is not put together, it is what the Warning names.
     unread = text + "\n{{include: gone.lgd}}\n"
-    (warning,) = _warnings(unread, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
+    (warning,) = _warnings(unread, resolve=_loader({}))
     assert "the combined-document checks (§16.11), such as a reference or a term into a fragment, or an auto-generated identifier the fragments and the document share" in warning.message
+    # When it is put together without a fragment, it names what that fragment would bring in (#141).
+    (warning,) = _warnings(unread, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
+    assert (
+        "the combined-document checks (§16.11) for what the includes not followed would bring in, such as a reference "
+        "or a term into such a fragment, which are made without it"
+    ) in warning.message
     # ... and for fragments not read, the rules that read or join them, in this order.
     (unread,) = _warnings(text)
     assert (

@@ -1636,11 +1636,13 @@ def test_a_definition_line_of_the_host_is_not_joined_to_the_fragment_that_follow
     assert found_in_files("[a]: u\n{{include: part.lgd}}\n", files) == []
 
 
-def test_a_document_whose_includes_are_not_all_followed_is_judged_by_its_own_body_alone():
+def test_a_document_whose_includes_are_not_all_followed_is_judged_with_the_fragments_that_were():
+    # The combined document is partial (#141): the fragment that was read is judged in it, as when all are.
     files = {"part.lgd": "[b]: v {{placeholder: p}}\n"}  # 'gone.lgd' is not there
     body = "[a]: u {{placeholder: p}}\n\n{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
     found = found_in_files(body, files)
-    assert found == [("", _FIRST_OF_FILES)]
+    assert found == [("", _FIRST_OF_FILES), ("part.lgd", 1)]
+    assert found_in_files(body, {}) == [("", _FIRST_OF_FILES)]
 
 
 def test_a_fragment_on_its_own_is_still_judged_as_a_document():
