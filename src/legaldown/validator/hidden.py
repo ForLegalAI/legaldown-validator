@@ -81,18 +81,19 @@ def _innermost_last(block: Block) -> Block | None:
     from ..definitions import list_items  # the parser builds on that module
     from ..parser import MAX_QUOTE_DEPTH, quote_content
 
-    depth = 0
+    depth = held = 0  # the items and quotes it is in, and the quotes alone (#139), as ``nested_blocks`` counts
     while True:
         if block.kind in LIST_KINDS:
             items = list_items(block)
             if not items or not items[-1].blocks:
                 return None
             block = items[-1].blocks[-1]
-        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+        elif block.kind == "quote" and held < MAX_QUOTE_DEPTH:
             children, _spans = quote_content(block.text, depth + 1)
             if not children:
                 return None
             block = children[-1]
+            held += 1
         else:
             return block
         depth += 1
@@ -240,7 +241,8 @@ def _nested_headings(top: Block) -> Iterator[tuple[int, Block]]:
 
     number = -1  # the place of the block the walk is at, counted as ``nested_blocks`` walks
 
-    def walk(block: Block, depth: int, in_note: bool) -> Iterator[tuple[int, Block]]:
+    def walk(block: Block, depth: int, held: int, in_note: bool) -> Iterator[tuple[int, Block]]:
+        # *depth*: the items and quotes *block* is in; *held*: the quotes alone (#139), as ``nested_blocks`` counts.
         nonlocal number
         number += 1
         if block.kind == "heading" and not in_note:
@@ -248,14 +250,14 @@ def _nested_headings(top: Block) -> Iterator[tuple[int, Block]]:
         if block.kind in LIST_KINDS:
             for item in list_items(block):
                 for child in item.blocks:
-                    yield from walk(child, depth + 1, in_note)
-        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+                    yield from walk(child, depth + 1, held, in_note)
+        elif block.kind == "quote" and held < MAX_QUOTE_DEPTH:
             note = in_note or is_drafting_marker(block.text.split("\n", 1)[0].strip())
             for child in quote_content(block.text, depth + 1)[0]:
-                yield from walk(child, depth + 1, note)
+                yield from walk(child, depth + 1, held + 1, note)
 
     if top.kind in LIST_KINDS or top.kind == "quote":
-        yield from walk(top, 0, False)
+        yield from walk(top, 0, 0, False)
 
 
 def check_heading_directives(
