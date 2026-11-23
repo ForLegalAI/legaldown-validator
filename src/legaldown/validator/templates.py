@@ -611,16 +611,9 @@ def check_template_body(
             return None
         return partial(where.find, section, block, needle, fragment, offset, nth=nth)
 
-    for heading, section in enumerate(document.sections):  # headings are body text too
-        lexed = lex_fragment(section.title)
-        scan: _InsertionScan | None = None  # the title's, for its first insertion
-        for directive in lexed.directives:
-            if directive.name in _INSERTIONS and not directive.malformed:
-                scan = scan or _InsertionScan(
-                    section.title, template_text(section.title, lexed.directives), lexed.directives
-                )
-                line = where.heading(heading) if where is not None else None
-                _check_insertion(scan, directive, result, line)
+    # (Not a section's heading: §11.4 recognizes no directive there, so no answer is inserted, and assembly
+    # leaves it as written; ldv-heading-directive reports it, #12. A heading in a list item or a quote is body
+    # text, judged with its block below.)
     includes: list[IncludeDirective] = []
     all_notes: list[tuple[Quote, Line]] = []
     for block_section, block_index, block in document.iter_indexed_blocks():

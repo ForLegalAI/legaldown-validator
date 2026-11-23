@@ -78,10 +78,10 @@ from .parser import (
     parse,
     quote_content,
 )
-from .positions import Locator
+from .positions import Locator, frontmatter_aliases, frontmatter_scalars
 from .validator import validate
 from .validator.conditions import Condition
-from .validator.core import is_template
+from .validator.core import frontmatter_value_paths, is_template
 from .validator.fragments import (
     EMPTY_CHAIN,
     Files,
@@ -102,6 +102,7 @@ from .validator.fragments import (
 )
 from .validator.helpers import is_positive_numeric, is_valid_money_amount, legaldown_attachments
 from .validator.patterns import (
+    ALIAS_REMOVED_RULE,
     DURATION_UNITS,
     FILE_SPELLING_DUPLICATE_RULE,
     IDENTIFIER_RE,
@@ -760,64 +761,6 @@ def _top_entry(lines: list[str], key: str) -> tuple[int, int] | None:
 
 _WHEN_RE = re.compile(r"[ \t]+when[ \t]*:")
 _DASH_RE = re.compile(r"[ \t]*-(?:[ \t]+|$)")
-# What may stand before a quote that opens a quoted YAML scalar: the line
-# start, a sequence dash, a key's colon, or a flow collection's bracket or
-# comma. A quote anywhere else is a character of a plain scalar.
-_SCALAR_OPENERS = frozenset("-:,[{?")
-
-
-def _scan_scalar(line: str, start: int, quote: str) -> int:
-    """The offset of *quote*'s matching close, scanning *line* from *start*
-    (just past the opening quote, or 0 for one carried from a previous line):
-    ``""`` doubles for a literal ``'``, a backslash escapes for ``"``.
-    ``len(line)`` when it does not close on this line."""
-    end = start
-    while end < len(line):
-        if quote == '"' and line[end] == "\\":
-            end += 2
-            continue
-        if line[end] == quote:
-            if quote == "'" and line[end + 1:end + 2] == "'":
-                end += 2
-                continue
-            return end
-        end += 1
-    return end
-
-
-def _quoted_scalars(line: str, carry: str = "") -> tuple[list[tuple[int, int, str]], str]:
-    """``(start, end, quote)`` of every quoted scalar on frontmatter *line*,
-    in block and flow style alike (``- {name: a, legal_name: "..."}``), so a
-    placeholder is filled wherever §3.10 lets it stand; a comment ends the
-    scan. *carry* is the quote a previous line's scalar left open, which
-    *line* then starts inside (``start`` ``-1``); the second of the pair
-    returned is *line*'s own such quote, when its last scalar runs on."""
-    spans: list[tuple[int, int, str]] = []
-    index = 0
-    if carry:
-        end = _scan_scalar(line, 0, carry)
-        spans.append((-1, end + 1, carry))
-        if end >= len(line):
-            return spans, carry
-        index = end + 1
-    while index < len(line):
-        char = line[index]
-        before = line[:index].rstrip(" \t")
-        if char == "#" and (index == 0 or line[index - 1] in " \t"):
-            break
-        if char in "\"'" and (index == 0 or line[index - 1] in " \t[{,") and (
-            not before or before[-1] in _SCALAR_OPENERS
-        ):
-            end = _scan_scalar(line, index + 1, char)
-            spans.append((index, end + 1, char))
-            if end >= len(line):
-                return spans, char
-            index = end + 1
-            continue
-        index += 1
-    return spans, ""
-
-
 def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -> None:
     lines = front.lines
     front.questions = _top_entry(lines, "questions")
@@ -825,11 +768,32 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
     if front.attachments is not None:
         front.items = _attachment_items(lines, front.attachments, document, questions)
     skip = set(range(*front.questions)) if front.questions else set()
-    carry = ""
+    # The quoted strings of the value fields, as YAML reads them (§3.10, ``positions.frontmatter_scalars``): after
+    # an anchor or a tag too (an alias's is its anchor's, where it is written), never a quote inside a block or
+    # plain scalar, and nowhere but a value field, the blanks the validator counts (#12). Offsets are in the
+    # lines joined by LF.
+    values = frontmatter_value_paths(document)
+    scalars = sorted({
+        (scalar.start, scalar.end, scalar.quote)
+        for path, scalar in frontmatter_scalars("\n".join(lines)).items()
+        if scalar.quote and path in values
+    })  # in order, and apart
+    first = 0  # the first scalar that does not end before the line
+    offset = 0
     for index, line in enumerate(lines):
-        entering = carry
-        scalars, carry = _quoted_scalars(line, carry)
-        if index in skip or (not entering and _is_comment(line)) or "{{" not in line:
+        at, offset = offset, offset + len(line) + 1
+        if index in skip or "{{" not in line:
+            continue
+        while first < len(scalars) and scalars[first][1] <= at:
+            first += 1
+        within = []
+        for start, end, q in islice(scalars, first, None):
+            if start >= at + len(line):
+                break
+            within.append((start - at, end - at, q))
+        # (A line YAML reads as a comment holds no quoted scalar; one that goes on a scalar, or that YAML breaks
+        # after its comment, does.)
+        if not within and _is_comment(line):
             continue
         for directive in lex(line).directives:
             if directive.name == "placeholder" and directive.malformed:
@@ -837,18 +801,19 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
                 # joins the lines, so the validator reads it whole. Any other
                 # is left as written: YAML drops one in a comment, and one
                 # the scalar's own escapes (\") confuse here is not filled.
-                if any(start < directive.start and end > len(line) for start, end, _q in scalars):
+                if any(start < directive.start and end > len(line) for start, end, _q in within):
                     front.malformed.append(directive)
             elif directive.name == "placeholder":
-                # Only a quoted scalar can hold one (§3.10); any other is
-                # left for the validator, never filled with unescaped text.
+                # Only a value field's quoted string can hold one (§3.10); any
+                # other is no blank, and left as written for the validator.
                 quote = next((
-                    q for start, end, q in scalars
+                    q for start, end, q in within
                     if start < directive.start and directive.end < end
                 ), "")
-                front.occurrences.append(_Occurrence(
-                    directive, index, directive.start, directive.end, quote,
-                ))
+                if quote:
+                    front.occurrences.append(_Occurrence(
+                        directive, index, directive.start, directive.end, quote,
+                    ))
 
 
 def _attachment_items(lines: list[str], entry: tuple[int, int], document: Document,
@@ -2562,6 +2527,32 @@ def _emit_frontmatter(front: _Frontmatter, decision: _Decision, answers: _Answer
         value = _frontmatter_value(occ, answers)
         if value is not None:
             lines[occ.line] = lines[occ.line][:occ.start] + value + lines[occ.line][occ.end:]
+    return front.text(lines, frozenset(_dropped(front, decision)))
+
+
+def _dangling_aliases(front: _Frontmatter, decision: _Decision) -> list[Diagnostic]:
+    """An alias that would name nothing once the lines assembly removes are gone (an anchor in the questions, an
+    attachment's ``when``, an attachment that is absent): the validator's ``ldv-frontmatter-alias-removed``, at
+    the alias, for the template is not assembled (#12)."""
+    drop = _dropped(front, decision)
+    text = "\n".join(front.lines)
+    starts = [0, *(i + 1 for i, char in enumerate(text) if char == "\n")]
+    found = []
+    for alias, anchor in frontmatter_aliases(text):
+        alias_line, anchor_line = bisect.bisect_right(starts, alias) - 1, bisect.bisect_right(starts, anchor) - 1
+        if anchor_line in drop and alias_line not in drop:
+            found.append(Diagnostic(
+                ALIAS_REMOVED_RULE, "error",
+                "This alias names an anchor that assembly removes, so the assembled frontmatter could not be "
+                "read; the template is not assembled.",
+                line=2 + alias_line,  # (the frontmatter's first line is the file's second)
+            ))
+    return found
+
+
+def _dropped(front: _Frontmatter, decision: _Decision) -> set[int]:
+    """The frontmatter's lines assembly removes (§15.7.2): the questions, and the attachments' that are absent
+    or are their ``when``."""
     drop: set[int] = set()
     for item, kept in zip(front.items, decision.attachments, strict=True):
         if not kept:
@@ -2572,7 +2563,7 @@ def _emit_frontmatter(front: _Frontmatter, decision: _Decision, answers: _Answer
         drop.update(range(*front.attachments))
     if front.questions is not None:
         drop.update(range(*front.questions))
-    return front.text(lines, frozenset(drop))
+    return drop
 
 
 # ── Step 7: identifiers ──────────────────────────────────────────
@@ -2768,6 +2759,8 @@ def _emit_result(
     emitted while *diagnostics* hold an Error (§15.7.2 step 1)."""
     if any(d.level == "error" for d in diagnostics):
         return AssemblyResult(diagnostics=diagnostics)
+    if t.front is not None and (dangling := _dangling_aliases(t.front, decision)):
+        return AssemblyResult(diagnostics=[*diagnostics, *dangling])
     head = _emit_frontmatter(t.front, decision, resolved) if t.front is not None else ""
     main = _emit(t.main, decision.removed[""], resolved)
     subs = {

@@ -294,16 +294,29 @@ class TestMoneyAndDuration:
         assert 'governing_law: "9 EUR"\n' in result.output
 
     @pytest.mark.parametrize("front,expected", [
-        # A party written in flow style: its quoted scalar is a scalar like
-        # any other, and was once left unfilled because only a block value
-        # was recognized.
-        ('x: [{a: b, name: "{{placeholder: who}}"}]\n', 'x: [{a: b, name: "Smith \\"S\\" Ltd"}]\n'),
-        ("x: {name: '{{placeholder: who}}'}\n", "x: {name: 'Smith \"S\" Ltd'}\n"),
-        ('x:\n  - "{{placeholder: who}}"\n', 'x:\n  - "Smith \\"S\\" Ltd"\n'),
+        # A value field written in flow style: its quoted scalar is a scalar
+        # like any other, and was once left unfilled because only a block
+        # value was recognized.
+        ('supersedes: {title: "{{placeholder: who}}", file: old.pdf}\n',
+         'supersedes: {title: "Smith \\"S\\" Ltd", file: old.pdf}\n'),
+        ("supersedes: {title: '{{placeholder: who}}', file: old.pdf}\n",
+         "supersedes: {title: 'Smith \"S\" Ltd', file: old.pdf}\n"),
+        ('subtitle:\n  "{{placeholder: who}}"\n', 'subtitle:\n  "Smith \\"S\\" Ltd"\n'),
     ])
-    def test_in_any_quoted_scalar(self, front, expected):
+    def test_in_any_quoted_scalar_of_a_value_field(self, front, expected):
         result = assemble(_template("Hi.\n", front=front), {"who": 'Smith "S" Ltd'})
         assert expected in result.output
+
+    @pytest.mark.parametrize("front", [
+        'x: [{a: b, name: "{{placeholder: who}}"}]\n',
+        'x:\n  - "{{placeholder: who}}"\n',
+        'keywords: ["{{placeholder: who}}"]\n',
+    ])
+    def test_not_outside_a_value_field(self, front):
+        """§3.10 recognizes a placeholder in a value field only: one in a key
+        the model does not read is no blank, and is left as written (#12)."""
+        result = assemble(_template("Hi.\n", front=front), {"who": "x"})
+        assert front in result.output
 
     def test_not_in_a_plain_scalar_that_holds_a_quote(self):
         """`It's "..."` is one plain scalar; its quotes are characters, and
@@ -1189,19 +1202,19 @@ class TestMalformed:
 
     @pytest.mark.parametrize("quote", ['"', "'"])
     def test_a_blank_on_a_later_line_of_a_quoted_scalar_is_filled(self, quote):
-        front = f"note: {quote}Long text\n  for {{{{placeholder: name}}}} here{quote}\n"
+        front = f"governing_law: {quote}Long text\n  for {{{{placeholder: name}}}} here{quote}\n"
         result = assemble(_template("# A\n\nText.\n", _TEXT, front=front), {"name": "O'Brien \"Jr\""})
         written = "O''Brien \"Jr\"" if quote == "'" else "O'Brien \\\"Jr\\\""
         assert f"  for {written} here{quote}\n" in result.output
 
     @pytest.mark.parametrize("quote", ['"', "'"])
     def test_a_blank_across_later_lines_of_a_quoted_scalar_is_refused(self, quote):
-        front = f"note: {quote}Long text\n  for {{{{placeholder:\n  name}}}}{quote}\n"
+        front = f"governing_law: {quote}Long text\n  for {{{{placeholder:\n  name}}}}{quote}\n"
         result = assemble(_template("# A\n\nText.\n", _TEXT, front=front), {"name": "Ann"})
         assert _rules(result) == [("directive-malformed", "error")]
 
     def test_a_blank_across_frontmatter_lines_is_refused(self):
-        front = 'note: "For {{placeholder:\n  name}}"\n'
+        front = 'governing_law: "For {{placeholder:\n  name}}"\n'
         result = assemble(_template("# A\n\nText.\n", _TEXT, front=front), {"name": "Ann"})
         assert _rules(result) == [("directive-malformed", "error")]
 

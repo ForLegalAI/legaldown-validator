@@ -358,9 +358,10 @@ def test_a_term_from_the_amended_original_is_always_present():
     assert "def-duplicate-id" in result.rules("error")
 
 
-def test_a_question_used_by_a_placeholder_in_a_heading_is_used():
+def test_a_question_only_a_placeholder_in_a_heading_names_is_unused():
+    # Assembly leaves a directive in a section's heading as written (§4.2, §11.4): it asks nothing (#12).
     frontmatter = "questions:\n  name:\n    type: text\n"
-    assert "question-unused" not in _rules("# Fees for {{placeholder: name}}\n\nText.", frontmatter)
+    assert "question-unused" in _rules("# Fees for {{placeholder: name}}\n\nText.", frontmatter)
 
 
 def test_a_preamble_list_item_carries_no_condition():

@@ -1363,6 +1363,106 @@ Decisions the specification leaves open:
   not implemented); the Warning of §17.5 says that the existence of attachment files is not checked
   ([below](#constructs-beyond-the-level-175)).
 
+## What takes content out of validation (#12)
+
+Two constructs follow CommonMark and the specification, yet take content out of validation without a word, and
+the specification has no rule id for either
+([#12](https://github.com/ForLegalAI/legaldown-validator/issues/12)). This implementation reports them with ids of
+its own (§16.1, `ldv-`; `legaldown.grammar.FENCE_UNCLOSED_RULE`, `HEADING_DIRECTIVE_RULE`). No fixture expects
+or forbids them, and no fixture case draws either.
+
+- **`ldv-fence-unclosed`**, a **Warning**: a fenced code block that is never closed runs to the end of the file
+  (CommonMark), so that every later heading, directive and paragraph is code, which no rule reads (§11.4). One stray
+  ```` ``` ```` turns every later section into code. It is reported at the fence's opening line, and the message
+  says how much the block holds (its lines, and how many of them are headings and directives). The construct is
+  valid, so it is a Warning. A fence that its list item or block quote ends is **not** reported: CommonMark closes
+  it with its container, and what follows the container is read as usual, so nothing past it is lost. A fence in a
+  container that itself runs to the end of the file (the last item of the last list, the last quote) is reported, as
+  nothing but the end of the file closes it. A document built in code (no source map) is judged the same, without a
+  line. The validator only reports it: the parser does not close the fence, as that would change what CommonMark
+  reads.
+- **`ldv-heading-directive`**, an **Error**: heading text must not contain a directive (§4.2), and a directive is
+  recognized in body text only (§11.4), so one in a section's heading is literal text: it
+  is shown as written, and what it was to do is not done. A `{{def:}}` there declares nothing (its uses are `term-undefined`), and assembly does not
+  fill a `{{placeholder:}}` there, so the validator agrees: neither it nor a `{{choose:}}` in a section's heading uses its
+  question (a question no other part uses is `question-unused`), and the final check counts no such placeholder
+  as an unfilled blank (§15.9), which `ldv-heading-directive` already reports (a `{{choose:}}` there is still a
+  template construct for the final check, since it makes the document a template wherever it is, §15.1). It is reported once for each heading, at its first line, naming the directives
+  (each `{{name:` opener, well-formed or malformed, §11.4; not one in a code span or comment, nor `\{{`; a `{{`
+  that opens no directive is no directive there either). The usual cause is a setext heading: a
+  paragraph directly above a `---` (or `===`) line is a heading, and the message names that line and how to keep
+  the paragraph. It is an Error because §4.2 is a MUST NOT and the directive is lost whatever it was for; the
+  specification's `heading-hardcoded-number` is a Warning, but it is the numbering of §4.2 and a heuristic, while a
+  directive is known for sure. No rule of the specification's covers it, so the id is this implementation's own,
+  but for `{{choose:}}`, which §15.5 gives to `choose-invalid`: a `{{choose:}}` in a heading is left to that
+  rule, and not reported twice. A heading in a list item or a block quote is a heading too, and is reported as a
+  **Warning** (this implementation reads its text as body text, so its directives are checked and assembly fills
+  them: nothing is lost here, but §4.2 forbids them and another tool may not read them; the message says so; a `{{choose:}}` there, which `choose-invalid` does not look at, is reported too). A heading in a
+  drafting note is not reported, as assembly removes the note (§15.6). The rule does not
+  stop assembly: like any rule outside `TEMPLATE_RULES`, it is in `Template.validation`, not in `problems`.
+
+Both judge each file by itself. An include fragment or an attachment file validated on its own
+(`validate(fragment=True)`) is judged as such, and an unclosed fence there says it runs to the end of the fragment
+(and that a tool that splices the fragment's text, §12.2, would read what follows the include into it). In the
+combined document (§16.11) each file is judged at its place, as every file keeps its own structure there (a fence a
+fragment leaves open does not run into the document): the combined pass, which reads the fragments too, reports
+each finding once, in the file it is in, however often the fragment is included (`merge_diagnostics`). Neither rule is
+in `HOST_ONLY` or `WHOLE_DOCUMENT_RULES`: the two passes agree on the document's own parts. As every check of a
+fragment's content, they run over the fragments in the combined pass only: when it is not made (an include that
+was not read), `ldv-check-skipped` says the combined-document checks were not performed.
+
+**A directive where §11.4 recognizes none is no blank and asks nothing.** §11.4 recognizes directives in body text,
+and in frontmatter only as §3.10 specifies: a `{{placeholder:}}` written as a quoted YAML string in a value field.
+Assembly fills exactly those (and the body's, a heading in a list item or quote included), and leaves every other
+as written, so the validator reads them the same way:
+
+- A `{{placeholder:}}` or `{{choose:}}` in a section's heading (`ldv-heading-directive`), a `{{choose:}}` in
+  frontmatter (`choose-invalid`), a `{{placeholder:}}` in an identifier, structural or format-checked field
+  (`placeholder-in-structural-field`), and one in a value field that is not a quoted string (below) does not use its
+  question: a question no other part uses is `question-unused`, whose message says where it is named. Nor is such a
+  placeholder a blank of the final check, which does not report it as `placeholder-unfilled`, as the rule above
+  already does, nor is it checked as one (its type and parameters, `result.blanks`): assembly gives it no type
+  either. A `{{choose:}}` there is still a
+  template construct for the final check, since it makes the document a template wherever it is (§15.1).
+- `insertion-boundary` (§15.7.3) is not judged in a section's heading, where nothing is inserted; it is in a
+  heading in a list item or quote.
+- **`ldv-frontmatter-placeholder-unquoted`**, an **Error** (`legaldown.grammar.FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE`):
+  a `{{placeholder:}}` in a frontmatter value field that is not written as a quoted YAML string — a plain scalar
+  (`title: Lease {{placeholder:q}}`, valid YAML when no `: ` follows), a literal (`|`) or a folded (`>`) block
+  scalar — at the field's line. §3.10 says a placeholder in frontmatter MUST be a quoted string (an unquoted `{{`
+  at the start of a value is a flow mapping, and `frontmatter-invalid-yaml`); without this rule it would be lost
+  without a word. How a value is written is read from the source, so a document built in code (no source map) has
+  none to judge.
+
+**The validator's frontmatter blanks are what assembly fills.** Both read the frontmatter through
+`positions.frontmatter_scalars` (each scalar by its path, its YAML style, and where its quoted string is written) and
+the value fields `validator.core.frontmatter_value_paths` names, so assembly fills a placeholder exactly where the
+validator counts a blank, at every position of the frontmatter; the tests compare the two over each:
+
+- A value field's quoted string is one, after an anchor or a tag too (`&t "..."`, `!!str "..."`); a block or plain
+  scalar is none, even when a line of it begins with a quote (`title: |` over `"Lease {{placeholder: q}}"`).
+- A placeholder anywhere else — a key (`"{{placeholder: q}}": x`, `? "..."`), a list or mapping under a key the model
+  does not read (`keywords: ["..."]`, `date: "..."`), a comment — is no blank, and assembly leaves it as written.
+  One in an identifier, structural or format-checked field is `placeholder-in-structural-field`, which refuses the
+  template (`Template.problems`); one in a key or under a key the model does not read is
+  **`ldv-frontmatter-placeholder-unread`**, a **Warning** (`legaldown.grammar.FRONTMATTER_PLACEHOLDER_UNREAD_RULE`), at
+  its line, so that it does not stay as written without a word (§3.10 does not forbid it there, so no more than
+  a Warning). A comment is no part of the YAML, and draws nothing.
+- An alias to an anchored value (`subtitle: *t`) is the anchor's value: a blank wherever it is used (the final check
+  reports it at the anchor and at the alias), which assembly fills through the anchor, where it is written, so every
+  alias reads the answer.
+- A placeholder written across a line break of a quoted value (`"Lease {{placeholder:` over `q}}"`) is
+  `directive-malformed` for both, at the field's line: §11.5 does not let a directive span lines, though YAML folds
+  the value onto one. It is no blank, and assembly refuses the template.
+- **`ldv-frontmatter-alias-removed`**, an **Error** of a template (`legaldown.grammar.ALIAS_REMOVED_RULE`, in
+  `TEMPLATE_RULES`): an alias to an anchor in what assembly removes (§15.7.2) — the `questions`, an attachment's
+  `when`, an attachment whose condition can be false — at the alias, as the assembled frontmatter would name nothing
+  there and could not be read (the whole `attachments` entry is removable when every attachment has a `when`). An
+  alias removed with its anchor, or itself removed, is not reported; one in another attachment under the same
+  condition is, conservatively. Assembly, if it
+  is asked to assemble such a template all the same, reports the same rule at the alias for the answers that remove
+  the anchor, and writes nothing.
+
 ## Constructs beyond the level (§17.5)
 
 §17.5: an implementation that meets a construct whose processing lies beyond its claimed level "MUST NOT
@@ -1377,9 +1477,12 @@ expects or forbids it. It is a Warning for every output, so `is_valid` and the e
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
 Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
 validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
-(any frontmatter mapping, #126, #131) and not a skipped one, and a third, **`ldv-file-spelling-duplicate`**, an
+(any frontmatter mapping, #126, #131) and not a skipped one, a third, **`ldv-file-spelling-duplicate`**, an
 Error of validation and of assembly for a second path to a file already named ([Include
-fragments](#include-fragments-122-1611-1612), #123).
+fragments](#include-fragments-122-1611-1612), #123), and five more for what takes content out of validation,
+**`ldv-fence-unclosed`**, **`ldv-heading-directive`**, **`ldv-frontmatter-placeholder-unquoted`**,
+**`ldv-frontmatter-placeholder-unread`** and **`ldv-frontmatter-alias-removed`**
+([above](#what-takes-content-out-of-validation-12)).
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct
