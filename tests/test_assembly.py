@@ -734,18 +734,29 @@ class TestLineStartsInContext:
         ('- a\n\n      code\n  {{choose: x, true="", false="T"}}\n      more\n', "- a\n\n      code\n  more\n"),
         ('    more\n{{choose: x, true="", false="T"}}\n    - d\n', "    more\n\\- d\n"),
         ('> x\n>\n>     code\n> y\n{{choose: x, true="", false="T"}}\n>     more\n', "> x\n>\n>     code\n> y\n>     more\n"),
-        # A line the template has as code stays code, where it joins the code before it (they merge, and the
-        # validator warns), and a line in a fenced block or an HTML block is left as it is: no escape keeps it out.
-        ('> x\n>\n>     code\n{{choose: x, true="", false="T"}}\n>     more\n', "> x\n>\n>     code\n>     more\n"),
-        ('- ```\n  a\n{{choose: x, true="", false="T"}}\n    more\n', "- ```\n  a\n    more\n"),
-        ('> <div>\n{{choose: x, true="", false="T"}}\n>     more\n', "> <div>\n>     more\n"),
     ])
     def test_a_line_that_would_join_indented_code_loses_its_indentation(self, body, written):
         assert self._assembled(body, {"x": True}, _BOOL) == written
 
     @pytest.mark.parametrize(("body", "written"), [
-        ('{{choose: x, true="", false="T"}}\n    [a]: /url\n', "[a]: /url\n"),
-        ('- x\n\n  {{choose: x, true="", false="T"}}\n      [a]: /url\n', "- x\n\n  [a]: /url\n"),
+        # A line the template has as code stays code, where it joins the code before it (they merge, and the
+        # validator warns), and a line in a fenced block or an HTML block is left as it is: §15.7.3's removal of
+        # the indentation is for indented code, and its backslash for a line that would begin a block.
+        ('> x\n>\n>     code\n{{choose: x, true="", false="T"}}\n>     more\n', "> x\n>\n>     code\n>     more\n"),
+        ('- ```\n  a\n{{choose: x, true="", false="T"}}\n    more\n', "- ```\n  a\n    more\n"),
+        ('> <div>\n{{choose: x, true="", false="T"}}\n>     more\n', "> <div>\n>     more\n"),
+    ])
+    def test_a_line_that_joins_a_fence_an_html_block_or_code_of_its_own_is_left(self, body, written):
+        assert self._assembled(body, {"x": True}, _BOOL) == written
+
+    @pytest.mark.parametrize(("body", "written"), [
+        # Where the line is a definition once the indentation that would make code of it goes, the backslash form
+        # keeps it text, as the template has it (#120 review: the definition was not displayed).
+        ('{{choose: x, true="", false="T"}}\n    [a]: /url\n', "\\[a]: /url\n"),
+        ('- x\n\n  {{choose: x, true="", false="T"}}\n      [a]: /url\n', "- x\n\n  \\[a]: /url\n"),
+        ('x\n\n    code\n{{choose: x, true="", false="T"}}\n    [a]: /u\n', "x\n\n    code\n\\[a]: /u\n"),
+        # A line that is a definition as it is written stays one: §15.7.3 escapes no definition.
+        ('{{choose: x, true="", false="T"}}\n[a]: /url\n', "[a]: /url\n"),
         ('> a\n> {{choose: x, true="", false="T"}}\n> [a]: /url\n', "> a\n> \n> [a]: /url\n"),
         ('a | b\n{{choose: x, true="", false="T"}}\n|---|---|\n', "a | b\n|---|---|\n"),
     ])
@@ -781,9 +792,8 @@ class TestLineStartsInContext:
         # The line after it becomes a link reference definition, which is not displayed, or a part of a table: the
         # line-start check escapes neither (§15.7.3 names no such construct, "No other character is escaped"), and
         # the line's indentation goes as indented code would (pinned in test_a_definition_or_a_table_is_not_escaped).
-        ('{{choose: x, true="", false="T"}}\n    [a]: /url\n', "becomes a link reference definition"),
         ('{{choose: x, true="", false="T"}}\n[a]: /url\n', "becomes a link reference definition"),
-        ('- x\n\n  {{choose: x, true="", false="T"}}\n      [a]: /url\n', "becomes a link reference definition"),
+        ('- x\n\n  {{choose: x, true="", false="T"}}\n  [a]: /url\n', "becomes a link reference definition"),
         ('> a\n> {{choose: x, true="", false="T"}}\n> [a]: /url\n', "becomes a link reference definition"),
         ('a | b\n{{choose: x, true="", false="T"}}\n|---|---|\n', "the line above it becomes part of a table"),
         ('- a | b\n  {{choose: x, true="", false="T"}}\n  |---|---|\n', "becomes part of a table"),
@@ -793,6 +803,10 @@ class TestLineStartsInContext:
         ('- ```\n  a\n{{choose: x, true="", false="T"}}\n    more\n', "joins a code block before it"),
         ('> <div>\n{{choose: x, true="", false="T"}}\n>     more\n', "joins an HTML block before it"),
         ('> x\n>\n>     code\n{{choose: x, true="", false="T"}}\n>     more\n', "joins a code block before it"),
+        # The line that joins is named, not the blank line before it; a bare line between two blocks that it merges
+        # says so (#120 review).
+        ('x\n\n    code\n{{choose: x, true="", false="T"}}\n\n    more\n', "a line after it joins a code block"),
+        ('    a | b\n>     |---|---|\n> {{choose: x, true="", false="T"}}\n>     ```\n', "read as one block"),
         # A drafting note before it is removed first: the bare "-" underlines "text" (#120 review).
         ('text\n> [!DRAFTING]\n> n\n- {{choose: x, true="", false="T"}}\n', "the underline of a heading"),
     ])
@@ -821,6 +835,8 @@ class TestLineStartsInContext:
         # The line after a deleted line has the line-start check, which escapes what it begins (#120 review).
         '{{choose: x, true="", false="T"}}\n2. b\n',
         'text\n\n{{choose: x, true="", false="T"}}\n    code\n',
+        '{{choose: x, true="", false="T"}}\n    [a]: /url\n',  # escaped, as it is text in the template
+        'x\n\n    code\n{{choose: x, true="", false="T"}}\n    more\n',  # its indentation goes
         # ... and keeps the indentation that holds the line in its item (the assembler writes "  2\\. b", "  code").
         '- a\n\n  {{choose: x, true="", false="T"}}\n  2. b\n',
         '- a\n\n  {{choose: x, true="", false="T"}}\n      code\n',

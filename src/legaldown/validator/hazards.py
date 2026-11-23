@@ -1384,11 +1384,18 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
         line = changed[at]
         head, body = line[:frame.prefix], line[frame.prefix:]
         column = frame.keep if frame.full and not begun[at + 1]["item"] else 0
-        for form in assembly._forms(body, column):
+        def read(form: str) -> tuple[bool, bool, tuple]:
+            nonlocal begun_after
             changed[at] = head + form
-            begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
-            if keeps():
-                break
+            found = assembly._signatures(changed)
+            begun_after = found[0]
+            return keeps(), assembly._hides(begun_after[at] - begun[at + 1]), found
+
+        forms = assembly._forms(body, column)
+        if forms:
+            pick, found = assembly._pick(forms, read)
+            changed[at] = head + forms[pick]
+            begun_after, containers_after, _layout, _leaf = found or assembly._signatures(changed)
 
     def moved(line: int) -> int:  # a line of *changed* as the line of *window* it is
         return line + 1 if deleted and line >= at else line
@@ -1410,8 +1417,12 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
             continue
         after = line - 1 if deleted and line > at else line
         if line == at and begun[line] != begun_after[after]:
+            changed_kinds = (begun_after[after] - begun[line]) + (begun[line] - begun_after[after])
+            if changed_kinds["in-code"] or changed_kinds["in-fence"] or changed_kinds["in-html"]:
+                return "the lines around it are read as one block, a code or HTML block, that the template has apart"
             return "its markers begin other blocks than the template's"
-        where = "the line above it" if line < at else "the line after it" if line == at + 1 else "a line after it"
+        named = line == at + 1 and window[line].strip(" \t")  # (a blank line is in a block only between its lines)
+        where = "the line above it" if line < at else "the line after it" if named else "a line after it"
         if begun[line] != begun_after[after]:
             extra = begun_after[after] - begun[line]
             if extra["definition"]:

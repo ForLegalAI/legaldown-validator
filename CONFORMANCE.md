@@ -1764,8 +1764,8 @@ Assembly edits the template's source and so inherits a few limits of the parser'
      choices alone that step 5 deletes can leave what held it empty (`1.` / `   {{choose:}}` / blank / `   more`:
      the empty item ends at the blank line, and `more` is outside it).
   4a. *A definition or a table after a deleted line*: the line after one that step 5 deletes can become a link
-     reference definition, which is not displayed (`{{choose:}}` / `    [a]: /url`: the indentation goes, as
-     indented code would, and `[a]: /url` is a definition; so too in an item, and after a bare `> ` in a quote), or
+     reference definition, which is not displayed (`{{choose:}}` / `[a]: /url`; so too in an item, and after a bare
+     `> ` in a quote; where the line would be one only once the indentation that makes it code goes, see 4b), or
      a part of a table (`a | b` / `{{choose:}}` / `|---|---|`: the delimiter row now follows the header). §15.7.3
      names neither among the constructs the line-start check prevents ("No other character is escaped"), so the
      assembler writes them as they are; its readings record both (`assembly._signatures`: `definition`, `table`)
@@ -1778,8 +1778,14 @@ Assembly edits the template's source and so inherits a few limits of the parser'
      A line that would join an *indented* code block loses its leading spaces and tabs (`more`), as §15.7.3 prevents
      indented code, and a backslash where that begins something else (`    - d` gives `\- d`); a line the template
      has as code itself is left (two code blocks merge, as after a removed drafting note). A line that would join a
-     *fenced* code block or an HTML block has no escape in §15.7.3, whose backslash is for a line that would
-     begin one, so it is left, and the validator warns of it (below). A paragraph that a lazy line continues is
+     *fenced* code block or an HTML block has no escape in §15.7.3, whose removal of the indentation is for indented
+     code and whose backslash is for a line that would begin a block, so it is left, and the validator warns of it
+     (below); so too a fence in a list item that the line reaches only by its indentation, which removing it
+     would take out of the item: that removal is not one §15.7.3 names for it. *An interpretation*: where removing
+     the indentation that would make indented code of a line leaves a link reference definition or a part of a
+     table, which §15.7.3 does not escape, the check writes the backslash form instead (`    [a]: /url` after a
+     deleted line gives `\[a]: /url`), so that the text the template has is displayed, as "renders them exactly as
+     written" asks; a definition that the line is as written stays one (`assembly._pick`, `_hides`). A paragraph that a lazy line continues is
      compared by the containers each line is in (`_Entry`), which the readings already have.
   5. *What counts as "content"* (an interpretation, not a gap): for an insertion that begins a continuation line
      in a list item (`- a` / blank / `  {{placeholder: x}} more`), the content is taken to begin after the

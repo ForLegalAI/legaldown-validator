@@ -1907,7 +1907,9 @@ def _signatures(
     §15.7.3 names: ``item``, ``quote``, ``heading`` (ATX), ``setext`` (for the underline
     of a heading that began on an earlier line), ``code``, ``rule`` and ``html``; and two it does
     not, ``definition`` (a link reference definition) and ``table`` (at its header), which the
-    check does not escape (``_ESCAPABLE``) but which a reading compared must see (#120); and the
+    check does not escape (``_ESCAPABLE``) but which a reading compared must see (#120); on every
+    line of a code or HTML block after its first, ``in-code``, ``in-fence`` or ``in-html``
+    (``_CONTINUED``), blank lines in it included; and the
     innermost container each line lies in (``_Entry``), as the parser's layout has it, quotes
     and list items alike. Only line *last* if it is given (no containers then), and then also the
     paragraph it lies in, if that is in list items alone: the content columns of the items around
@@ -2611,12 +2613,35 @@ def _fix(
     form stays."""
     head, body = candidate[:prefix], candidate[prefix:]
     forms = _forms(body, column)
-    tail = None
-    for form in forms:
+
+    def read(form: str) -> tuple[bool, bool, _Tail | None]:
         tail = _kept(head + form, before, template, plain, prefix, frame, perturbed)
-        if tail is not None:
-            return head + form, tail
-    return head + (forms[-1] if forms else body), None
+        return tail is not None, tail is not None and _hides(tail.begun - template), tail
+
+    at, tail = _pick(forms, read)
+    return head + (forms[at] if forms else body), tail
+
+
+def _hides(begun: Counter[str]) -> bool:
+    """Whether *begun*, what a form of a line begins that its template line does not, is a link reference definition
+    or a part of a table: constructs that §15.7.3 does not escape, a definition of which is not displayed."""
+    return bool(begun["definition"] or begun["table"])
+
+
+def _pick(forms: list[str], read: Callable[[str], tuple[bool, bool, Any]]) -> tuple[int, Any]:
+    """Which of *forms* ``_fix`` writes, and what *read* gave for it: *read* says of a form whether the check keeps it
+    (``_keeps``) and whether it begins a definition or a table that the template line does not (``_hides``). The first
+    form kept that begins neither, else the first kept (#120: where removing the indentation of a line that would
+    join indented code makes a definition of it, the backslash form keeps it text, as the template has it), else the
+    last, with nothing read. The validator picks by the same rule (``hazards._reads_otherwise``)."""
+    found = [(at, *read(form)) for at, form in enumerate(forms)]
+    for at, kept, hides, payload in found:
+        if kept and not hides:
+            return at, payload
+    for at, kept, _hidden, payload in found:
+        if kept:
+            return at, payload
+    return len(forms) - 1, None
 
 
 # ── Frontmatter steps (2, 3, 5, 6) ───────────────────────────────
