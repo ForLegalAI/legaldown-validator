@@ -1029,14 +1029,16 @@ Decisions the specification leaves open:
   that closes it, and is followed no further; a file included from two places (a diamond) is no cycle. A
   document that includes itself is a cycle too, in a template as well. Files are the same file when the
   loader reads one file for both paths: with `file_loader` (the default, and `load_template`'s), the file it
-  reads, **symbolic links followed** as it follows them (its device and inode, or its real path when it is not
-  there, as the command line tells its targets apart; #123), so a link to a file is that file, and
-  `a.lgd` and `../doc/a.lgd` from a document in `doc` are two files when `doc` is a link that leads
-  elsewhere (the link is followed before the `..`); with a `resolve=` that cannot say (a loader may have an
+  reads, its real path, **symbolic links followed** as it follows them (#123), so a link to a file is that file,
+  and `a.lgd` and `../doc/a.lgd` from a document in `doc` are two files when `doc` is a link that leads
+  elsewhere (the loader is asked for `../doc/a.lgd` as it is, and follows the link before the `..`; a path is
+  otherwise normalized as text before the loader is asked for it, so an include `../x.lgd` in a fragment
+  reached through a linked directory is read beside the link, not where it leads); with a `resolve=` that cannot say (a loader may have an
   `identify(path)` method returning the file it reads, as `file_loader`'s has, `legaldown.files.loader_identity`), the
   paths joined to the document's directory and normalized (`./a.lgd`, `sub/../a.lgd` and, from a document
-  in `dir`, `../dir/a.lgd`), with no link followed. With `file_loader` a hard link, and another case of a
-  name on a file system that ignores case, are the file too. A file is read once, judged once, and named in a finding by the path it was first met by, in
+  in `dir`, `../dir/a.lgd`), with no link followed. A hard link, and another case of a name on a file system
+  that ignores case, are other files (not the device and inode: a hard link is a name someone gave a file, as a
+  checkout that links files alike does, and some mounts give two files one inode). A file is read once, judged once, and named in a finding by the path it was first met by, in
   the order the validator reads them (the includes, each followed as it is met, then the attachment files).
   **`ldv-file-spelling-duplicate`** ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123)), an
   Error, reports a second path to a file already named, by an include (the document's or, outside a template,

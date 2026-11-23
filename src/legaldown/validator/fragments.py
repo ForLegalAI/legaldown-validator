@@ -97,7 +97,7 @@ class Files:
     which a path may name itself.
 
     A file is the same file when the loader reads one file for both paths (``key``): with ``file_loader``,
-    the file it reads (``identify``: symbolic links followed, a hard link is the file); with a loader that cannot say, the
+    the file it reads (``identify``: its real path, symbolic links followed); with a loader that cannot say, the
     path from the document's directory, however it is written (``a.lgd``, and ``../dir/a.lgd`` from a
     document in ``dir``). It is read once, judged once, and named in a finding by the path it was first
     met by. A second path to a file already named by an include or a LegalDown attachment file is
@@ -197,10 +197,10 @@ class Files:
         key = self.key(relative)
         if key not in self._own:
             # The file system is asked only for a file the loader has: it is the loader's. (A link is followed
-            # here whatever the loader: the document's own file is the file it is, however it is reached, a hard
-            # link to it too.)
-            self._own[key] = self.read(relative) is not None and _same_file(
-                within(self._path.parent, relative, self._reach.root), self._path
+            # here whatever the loader: the document's own file is the file it is, however it is reached.)
+            self._own[key] = (
+                self.read(relative) is not None
+                and within(self._path.parent, relative, self._reach.root) == self._path.resolve()
             )
         return self._own[key]
 
@@ -222,17 +222,6 @@ class Files:
                 relative, parse(text, on_frontmatter_error="keep"), text
             )
         return self._read[key]
-
-
-def _same_file(target: Path | None, path: Path) -> bool:
-    """Whether *target* (a resolved path, or None) is the file at *path*: the same real path, or the same file
-    by its device and inode (a hard link, another case of a name where the file system ignores case)."""
-    if target is None:
-        return False
-    try:
-        return target == path.resolve() or os.path.samefile(target, path)
-    except (OSError, ValueError, RuntimeError):  # not there, or no path at all
-        return False
 
 
 def _line(line: Line) -> int | None:
@@ -758,7 +747,7 @@ class IncludeOutcome:
     many of those were left out for the size of the combined document, *attachments_unshaped* how many
     were not read for their shape (``attachment-has-frontmatter``, ``attachment-has-h1``), and
     *attachments_uncompared* how many were not compared with the paths named before them (no loader, or a path
-    that is not read: ``ldv-file-spelling-duplicate``, #123)."""
+    that leads out of the document's directory and is not read: ``ldv-file-spelling-duplicate``, #123)."""
     filled: set[int] = field(default_factory=set)
     unread: list[UnreadInclude] = field(default_factory=list)
     nested: int = 0
@@ -1205,9 +1194,10 @@ def check_includes(
         holds_includes: dict[str, bool] = {}  # whether each file has include paragraphs
         include_keys = {files.key(path) for path in findings}  # the files already checked as includes
         for index, _attachment, written in entries:
-            relative = files.relative(written)
+            relative, problem = files.relative_check(written)
             if relative is None:
-                uncompared += 1
+                # Not compared: valid, and not read without a root that holds it (any other path is refused).
+                uncompared += problem == "leads-out"
             elif files.is_own(relative):
                 continue
             if relative is not None and (named := files.respelled(relative)) is not None:

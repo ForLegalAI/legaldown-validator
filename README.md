@@ -631,10 +631,10 @@ validate(document, document_root="/srv/contracts")
   same file. The second path to a file already named by an include or a LegalDown attachment file is
   `ldv-file-spelling-duplicate` (Error), at its line, and assembly refuses the template for it: name the file
   by one path ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123)). Which paths are one file is
-  the loader's to say: `file_loader` follows symbolic links (a link to a file is that file, and so is a hard
-  link, while a linked directory can make `a.lgd` and `../doc/a.lgd` two files); a `resolve=` that cannot say
-  is taken to read a path from the document's directory as it is normalized. The conditions on the two are not
-  looked at: a file has one path.
+  the loader's to say: `file_loader` follows symbolic links (a link to a file is that file, and a linked
+  directory can make `a.lgd` and `../doc/a.lgd` two files; a hard link is another file); a `resolve=` that
+  cannot say is taken to read a path from the document's directory as it is normalized. The conditions on the
+  two are not looked at: a file has one path.
 
 A reference-style image (`![alt][r]`, `![alt][]` or `![alt]`, with `[r]: path`) is judged by the destination
 of the definition it names, once, at the line where the definition is written. [CONFORMANCE.md](CONFORMANCE.md)

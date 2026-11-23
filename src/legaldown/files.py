@@ -187,8 +187,7 @@ def file_loader(base: str | os.PathLike[str], *, root: str | os.PathLike[str] | 
     the root is read, whatever *base* is.
 
     It also says which file it reads for a path (``loader_identity``): two paths are one
-    file when it reads one file for both — symbolic links followed, and a hard link or
-    another case of a name on a file system that ignores case is the file it names (#123).
+    file when it reads one file for both, symbolic links followed (#123).
     """
     # Made absolute now: a later change of the working directory changes nothing it reads.
     return _FileLoader(Path(os.path.abspath(base)), None if root is None else Path(os.path.abspath(root)))
@@ -211,17 +210,12 @@ class _FileLoader:
             return None
 
     def identify(self, relative: str) -> str | None:
-        """The file read for *relative*: its device and inode when it is there, else (or where every inode is
-        0, as on some FAT and network mounts) its real path, symbolic links followed; None when no file is read
-        for it (it is absolute, or leads out of the directory or the root)."""
+        """The file read for *relative*: its real path, symbolic links followed, whether or not it is there;
+        None when no file is read for it (it is absolute, or leads out of the directory or the root). Not its
+        device and inode: a hard link is another name a person gave the file (a checkout that links files
+        alike, say), and some mounts give two files one inode, whose texts are not one."""
         target = within(self._directory, relative, self._boundary)
-        if target is None:
-            return None
-        try:
-            status = target.stat()
-        except (OSError, ValueError):  # not there
-            return str(target)
-        return f"{status.st_dev}:{status.st_ino}" if status.st_ino else str(target)
+        return None if target is None else str(target)
 
 
 def loader_identity(load_file: LoadFile, relative: str) -> str | None:

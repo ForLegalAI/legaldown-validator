@@ -219,9 +219,8 @@ def test_the_file_loader_says_which_file_it_reads(tmp_path):
     _write(root / "doc" / "a.lgd", "A.\n")
     load_file = file_loader(root / "doc", root=root)
     assert loader_identity(load_file, "a.lgd") == loader_identity(load_file, "../doc/a.lgd")
-    status = (root / "doc" / "a.lgd").stat()
-    assert loader_identity(load_file, "a.lgd") == f"{status.st_dev}:{status.st_ino}"
-    # A file that is not there is its real path.
+    assert loader_identity(load_file, "a.lgd") == str((root / "doc" / "a.lgd").resolve())
+    # A file that is not there has one too.
     assert loader_identity(load_file, "none.lgd") == str((root / "doc" / "none.lgd").resolve())
     assert loader_identity(load_file, "../../x.lgd") is None  # out of the root: no file is read
     assert loader_identity({}.get, "a.lgd") is None  # a loader that cannot say
@@ -261,18 +260,28 @@ def test_a_link_to_a_file_already_named_is_that_file(tmp_path):
     assert _refused(load_template(path, document_root=root)) == validated
 
 
-def test_a_hard_link_to_a_file_already_named_is_that_file(tmp_path):
+def test_a_hard_link_is_another_file(tmp_path):
+    # A name someone gave a file (a checkout that links files alike, say): read, judged and written as its own.
     root = tmp_path / "root"
     _write(root / "doc" / "a.lgd", _PART)
     try:
         (root / "doc" / "hard.lgd").hardlink_to(root / "doc" / "a.lgd")
     except OSError:
         pytest.skip("cannot make a hard link")
-    text = _template("{{include: a.lgd}}\n\n{{include: hard.lgd}}\n")
-    path = _write(root / "doc" / "t.lgd", text)
-    validated = _validated(validate(load(path), document_root=root))
-    assert [line for line, _ in validated] == [_line(text, "hard.lgd")]
-    assert _refused(load_template(path, document_root=root)) == validated
+    path = _write(root / "doc" / "t.lgd", _template("{{include: a.lgd}}\n\n{{include: hard.lgd}}\n"))
+    assert _validated(validate(load(path), document_root=root)) == []
+    result = load_template(path, document_root=root).form(_ANSWERS).assemble()
+    assert result.ok and result.files == {"a.lgd": "Hello Ann.\n", "hard.lgd": "Hello Ann.\n"}
+
+
+def test_a_path_refused_on_its_own_is_not_an_attachment_left_uncompared():
+    files = {"b.lgd": "B.\n"}
+    text = (
+        "---\ntitle: D\nattachments:\n  - id: one\n    title: One\n    file: https://example.com/a.lgd\n"
+        "  - id: two\n    title: Two\n    file: b.lgd\n---\n\n# Scope {#scope}\n\nSee {{attach: one}} and {{attach: two}}.\n"
+    )
+    skipped = [d.message for d in validate(parse(text), resolve=files.get).diagnostics if d.rule == "ldv-check-skipped"]
+    assert not any(RULE in message for message in skipped)
 
 
 # ── Validation and assembly ask the same of the same paths ─────────────────────
