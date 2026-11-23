@@ -2220,7 +2220,8 @@ def _check(
     # Every blank, wherever it is, with its line, for the final check (§15.9). Not one in a section's heading:
     # a directive is recognized in body text only (§11.4), so assembly leaves it as written, and it is no blank
     # (ldv-heading-directive reports it, #12). One in a heading in a list item or a quote is body text, which
-    # assembly fills, and is collected with the body's below.
+    # assembly fills, and is collected with the body's below. (A {{choose:}} in a section's heading is still a
+    # template construct for the final check: it makes the document a template wherever it is, §15.1.)
     placeholders: list[tuple[Directive, Line]] = [
         (directive, where.key(*path))
         for text, path in frontmatter_texts
@@ -2239,6 +2240,13 @@ def _check(
         directive.positional for directive, _misplaced, _line, asks in misplaced_chooses if asks and directive.positional
     }
     asked_in_notes: set[str] = set()
+    # ... and the questions a section heading's directives name, for the message of question-unused.
+    named_in_headings = {
+        directive.positional
+        for text in headings
+        for directive in lex_fragment(text).directives
+        if directive.name in ("placeholder", "choose") and directive.positional
+    }
 
     # Every condition in a condition position (§15.3): on what, as written,
     # and its line; and, of each, where it is in the document (for ``undeclared_findings``).
@@ -2662,7 +2670,11 @@ def _check(
                     + (
                         "; only drafting notes do, so it is no blank of the document and needs no answer "
                         "(§15.7.2), though assembly still lists it among the template's questions."
-                        if qid in asked_in_notes else "."
+                        if qid in asked_in_notes else
+                        "; a section's heading names it, but a directive there is not recognized (§4.2, §11.4) "
+                        "and assembly leaves it as written, though it still lists the question among the "
+                        "template's questions."
+                        if qid in named_in_headings else "."
                     ),
                     line=where.key("questions", qid),
                 )

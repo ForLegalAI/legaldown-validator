@@ -824,10 +824,12 @@ def test_def_term_variable_sees_through_quoted_values(paragraph):
     assert "def-term-variable" in result.rules("error")
 
 
-def test_the_final_check_covers_headings():
+def test_the_final_check_leaves_a_headings_placeholder_to_ldv_heading_directive():
+    # It is no blank: assembly leaves it as written (§4.2, §11.4), and ldv-heading-directive reports it (#12).
     source = f"---\ntitle: T\n{_SIDES}---\n\n# Lease of {{{{placeholder: premises}}}}\n\nText.\n"
     result = validate(parse(source), final=True)
-    assert "placeholder-unfilled" in result.rules("error")
+    assert "placeholder-unfilled" not in result.rules("error")
+    assert "ldv-heading-directive" in result.rules("error")
 
 
 @pytest.mark.parametrize(
