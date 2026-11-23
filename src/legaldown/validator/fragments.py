@@ -1207,7 +1207,9 @@ def check_includes(
         # Each LegalDown attachment file is read too (§12.4): for its shape, and in a template for the
         # ``{{include:}}`` it must not hold (§16.12), once for each file however often it is attached.
         checked = walk.attachment_keys
+        include_keys = {files.key(path) for path in findings}  # the files already checked as includes
         holds_includes: dict[str, bool] = {}  # whether each file has include paragraphs
+        read: list[tuple[int, FragmentFile, str]] = []
         for index, _attachment, written in entries:
             relative = files.relative(written)
             if relative is not None and files.is_own(relative):
@@ -1219,15 +1221,18 @@ def check_includes(
             # (A file that was also an include was checked above, and is a finding of its own; however either
             # is spelled, it is one file, named by the path it was first met by.)
             key = files.key(relative)
-            # (The files checked as includes, those of the attachment files before it too, #141.)
-            if key not in checked and key not in {files.key(path) for path in findings}:
+            if key not in checked and key not in include_keys:
                 checked.add(key)
                 for finding in fragment_findings(
                     fragment, kind="attachment", template=template, lex_fragment=lex_fragment
                 ):
                     result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
-            # One copy for each entry, with what its include paragraphs take in (#141). In a template it holds none
-            # (template-fragment-invalid, §15.3, §16.12): one that does is left out, its includes not followed.
+            read.append((index, fragment, key))
+        # One copy for each entry, with what its include paragraphs take in (#141), once every entry's shape is judged
+        # (a file an attachment file includes and the attachments name is an attachment file, whatever their order).
+        # In a template it holds none (template-fragment-invalid, §15.3, §16.12): one that does is left out, its
+        # includes not followed.
+        for index, fragment, key in read:
             if not fragment.spliceable:
                 continue
             if walk.full:

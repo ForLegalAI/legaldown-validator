@@ -144,7 +144,7 @@ def _includes(
         parts.append(f"{_join(rules)} for the fragments not read")
     # The combined document holds what the includes were followed into (#117, #141): what refers across a
     # fragment not in it and the document is judged as if the fragment were not there.
-    if outcome.combined is None:
+    if outcome.combined is None and (paragraphs or unread):  # (an attachment file left out is the attachments')
         parts.append(
             "the combined-document checks (§16.11), such as a reference or a term into a fragment, "
             "or an auto-generated identifier the fragments and the document share"

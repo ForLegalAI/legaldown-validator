@@ -746,7 +746,7 @@ def test_a_file_that_is_attached_and_included_by_an_attachment_file_has_its_shap
     entries = {"a": ("a", "a.lgd"), "b": ("b", "b.lgd")}
     text = _attached(*(entries[name] for name in order)) + _SCOPE + "See {{attach: a}} {{attach: b}}.\n"
     result = _run(text, {"a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "# B\n\nText.\n"})
-    assert len(_found(result, "include-has-h1", "attachment-has-h1")) == 1
+    assert _found(result, "include-has-h1", "attachment-has-h1") == [("attachment-has-h1", "b.lgd", 1)]
 
 
 def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
