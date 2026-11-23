@@ -1156,9 +1156,9 @@ def _definitions(output: str) -> tuple[tuple[str, str, str], ...]:
 SKIP_BARE_MARKERS: ContextVar[bool] = ContextVar("skip_bare_markers", default=False)
 #: The most lines that the bare-marker check reads in one validation, the document and its fragments together (each
 #: line it may leave bare is read in a window of the blocks around it: the template's reading of the window once,
-#: and for the line up to five more, charged before it is read). Past it, the first line not read is reported for
+#: and for the line up to nine more, charged before it is read; and the template's reading of the whole body, twice). Past it, the first line not read is reported for
 #: the rest.
-BARE_BUDGET = 200000
+BARE_BUDGET = 320000
 _BARE_ADVICE = (
     "give the line text that every answer keeps, or make what holds it conditional ({when=...}), so that it goes whole"
 )
@@ -1260,7 +1260,8 @@ def _bare_markers(
         ordered = sorted(found, key=lambda occ: occ.start, reverse=True)
         plain = emptied = texts[number]
         for occ in ordered:
-            plain = plain[:occ.start] + assembly._WORD + plain[occ.end:]
+            if _inserted(occ, declared):
+                plain = plain[:occ.start] + assembly._WORD + plain[occ.end:]
             emptied = emptied[:occ.start] + emptied[occ.end:]
         plains[number] = plain
         if number in source.notes or any(
@@ -1276,9 +1277,19 @@ def _bare_markers(
     kept = [number for number in range(len(plains)) if number not in source.notes]
     slot = {number: index for index, number in enumerate(kept)}
     plains = [plains[number] for number in kept]
-    firsts = {slot[number]: min(occ.start for occ in found) for number, found in by_line.items() if number in slot}
+    firsts = {
+        slot[number]: min(occ.start for occ in inserted)
+        for number, found in by_line.items()
+        if number in slot and (inserted := [occ for occ in found if _inserted(occ, declared)])
+    }
     found_lines = _read_bare(assembly, plains, firsts, [(slot[n], e, d) for n, e, d in candidates], budget)
     return [each.__class__(kept[each.line], each.source, each.what, each.more) for each in found_lines]
+
+
+def _inserted(occ: Any, declared: dict) -> bool:
+    """Whether the assembler inserts something for *occ* once its question is answered (``assembly._fill``): every
+    choice, and every placeholder but one of a decision question (placeholder-question-mismatch), which it leaves."""
+    return occ.directive.name == "choose" or question_type(declared, occ.qid) not in DECISION_QUESTION_TYPES
 
 
 def _all_empty(choices: list, declared: dict) -> bool:
@@ -1309,6 +1320,11 @@ def _read_bare(
     """``_bare_markers`` of the template's lines *plains* (without its drafting notes, each insertion a word; *firsts*:
     the column of the first insertion of each line that holds one), for the *candidates*: each line, the line with
     its choices empty, and its first choice's source."""
+    if budget[0] < 2 * len(plains):
+        budget[0] = 0  # (nothing is read: the first line is reported, for all of them)
+        first, emptied, directive = min(candidates)
+        return [BareMarkers(first, directive, "", len(candidates) - 1)]
+    budget[0] -= 2 * len(plains)
     # The template as the assembler reads it: a line whose insertion begins its content without the blanks before it.
     reading = assembly._Reading(list(plains), [
         assembly._Line(plain, number, check=True, first=firsts[number], plain=plain, slot=number)
@@ -1325,9 +1341,10 @@ def _read_bare(
         begin = units[at - 1][0] if at > 0 else 0
         end = units[at + 1][1] if at + 1 < len(units) else len(plains)
         end = max(end, number + 1)
-        # The window written (the line-start check of the line after the candidate: the template's reading of the
-        # window, and the window to that line) and read, and the template's reading of it once.
-        cost = (end - begin) * (4 + ((begin, end) not in readings))
+        # The window written (the line-start check of the line after the candidate, ``_written_window``: the
+        # template's reading of the window, twice when it strips a line, the output to that line, and the line in
+        # each of the forms the check tries, four) and read, and the template's reading of it once.
+        cost = (end - begin) * (9 + ((begin, end) not in readings))
         if budget[0] < cost:
             # The rest are not read: the first is reported, for all of them (a Warning for each says no more).
             budget[0] = 0
@@ -1337,7 +1354,7 @@ def _read_bare(
         budget[0] -= cost
         if (begin, end) not in readings:
             readings[begin, end] = assembly._signatures(template[begin:end])[:2]
-        window_firsts = {line - begin: column for line, column in firsts.items() if begin <= line < end}
+        window_firsts = {line - begin: firsts[line] for line in range(begin, end) if line in firsts}
         what = _reads_otherwise(
             assembly, plains[begin:end], template[begin:end], readings[begin, end], number - begin, emptied, window_firsts
         )
