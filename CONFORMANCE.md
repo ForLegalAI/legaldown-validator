@@ -1095,7 +1095,8 @@ Decisions the specification leaves open:
   made for them again.
 - **The combined document** ([#117](https://github.com/ForLegalAI/legaldown-validator/issues/117); §12.2,
   §15.7.2 step 7, §16.11). §16.11 requires the combined document, "including all inclusions", to be validated. When
-  every include paragraph was followed into a fragment, `validate` runs its checks a second time over the
+  something is to be spliced (an include paragraph was followed into a fragment, or an attachment file is spliced;
+  partial when not every include was, below), `validate` runs its checks a second time over the
   document with each fragment spliced in at its include (`validator/combined.py`), and the document's findings
   are that pass's, but for the rules only the document's own pass can make (`combined.HOST_ONLY`: the `include-*`
   rules, `template-fragment-invalid`, `heading-skip`, `attachment-has-frontmatter`, `attachment-has-h1`,
@@ -1152,9 +1153,14 @@ Decisions the specification leaves open:
     decided by **the document alone** (§15.1: "any LegalDown document that declares questions, carries a `when=`
     condition, or contains a `{{choose:}}"), as the assembler decides it from the template it is given, and the
     combined pass runs under it: a fragment's conditions are judged as the document's template status dictates.
-    In a document that is no template the combined pass does not collect a fragment's conditions and `{{choose:}}`
-    at all (a document that is none has none of its own), so no rule that they cause is made, under `final` too
-    (`template-construct-present`).
+    In a document that is no template the combined pass does not judge a fragment's conditions and `{{choose:}}`
+    (a document that is none has none of its own), so no rule that they cause is made, but for the final check:
+    under `final` they are what remains in the combined document, and §15.9 rejects "a `when=` condition, a
+    `{{choose:}}` directive, or a drafting note" whatever made the document what it is, so each is
+    `template-construct-present` at its line in the fragment or attachment file, as the document's own would be
+    ([#141](https://github.com/ForLegalAI/legaldown-validator/issues/141); a condition counts where §15.1 counts the
+    document's, in a marker position; the differential compares the final findings with the spliced text's, where they
+    make the document a template). The document itself cannot hold one and be no template, so it draws nothing new.
     A document that is no template gives what it gave before the fragments were validated for a fragment's
     condition or `{{choose:}}` (no `condition-invalid`, `choose-invalid` or `template-fragment-invalid` for them,
     `index.is_template` false, assembly as before); in a template they are judged, in the fragment, and a fragment
@@ -1162,31 +1168,54 @@ Decisions the specification leaves open:
     (`placeholder-type-inconsistent`, `insertion-boundary`, `def-term-variable`, ...) stops the assembly of a
     template, **in whichever file it is**, as it does when the files are one document (§15.7.2);
     `Template.problems` leaves out only what assembly said of a file itself (`template-fragment-invalid`).
-    `condition-reference-unsafe` counts when the template was validated with its fragments in
+    `condition-reference-unsafe` counts when the template was validated with all its fragments in
     (`Template` knows from the validation) or includes none; when the walk was cut short or a fragment could not
-    be read, the validator cannot see what the fragments declare, and it is advice, as it was.
+    be read, the validator cannot see what that fragment declares, and it is advice, as it was, in a partial
+    combined document too (below).
   - *Size.* The fragments spliced in may come to at most **50,000 blocks and 200,000 lines**, counted for each
     time a fragment is included (the walk is bounded by the headings and includes it counts, not by what a
     fragment holds, so N includes of a fragment of M blocks would make a document of N x M). Past either, no
-    combined document is made, as for an include not followed, and the Warning of §17.5 says
+    combined document is made at all (not a partial one: the cap is on its cost), and the Warning of §17.5 says
     "building the combined document of more than ... blocks or ... lines of fragments". The caps are this
     implementation's own.
-  - *All or nothing.* For the includes: the combined document is made only when every include paragraph (the document's and the
-    fragments') was followed into a fragment: nothing unread (no loader, a path that leads out of the directory
-    with no `document_root`, a file that cannot be read), refused (`include-cycle`, a path finding, a file that is
-    not a fragment: frontmatter or a level-1 heading), cut short by a cap (32 deep, 10,000 entries), or left alone in
-    a template's fragment. Otherwise the document is validated as before, a reference into a fragment is as
-    `ref-broken` as it was, and the Warning of §17.5 names the combined-document checks. A partial combined
-    document would make `question-unused`, `def-unreferenced` and `condition-reference-unsafe` wrong for what the
-    missing fragment holds. When it is made, the Warning no longer names them, and a document with includes that
-    is otherwise skipped nothing has none. The attachment files are each on their own (below): one not read leaves
-    the body and the others as they are.
+  - *Partial combined documents* ([#141](https://github.com/ForLegalAI/legaldown-validator/issues/141)). What the
+    walk followed is spliced even when an include paragraph (the document's or a fragment's) was not followed into a
+    fragment: unread (no loader, a path that leads out of the directory with no `document_root`, a file that cannot
+    be read), refused (`include-cycle`, a path finding, a file that is not a fragment: frontmatter or a level-1
+    heading), cut short by a cap (32 deep, 10,000 entries), or left alone in a template's fragment. That include stays
+    the paragraph it is (as in the text, where nothing is spliced for it), and the fragments that were followed are
+    judged with the document: a reference into one resolves, its own findings are reported. What the parts not in it
+    could change is handled so: a finding that a declaration or a use they make may settle (`ref-broken`,
+    `term-undefined`, `amend-term-undefined`, `amend-term-unresolvable`, `def-unreferenced`,
+    `attachment-unreferenced`: `combined.SETTLED_ELSEWHERE`) is made, as the document's own pass made it of every
+    part before, and its message ends "The combined document was checked without the fragments of the includes that
+    were not followed, which may settle this; §17.5."; `question-unused` is not made, as before; a duplicate, a
+    collision, a circle or a use before a declaration among the parts that were read is real whatever the others
+    hold, and is reported as it is. `ValidationResult` is not marked combined, so `Template.problems` keeps
+    `condition-reference-unsafe` as advice. The Warning of §17.5 names "the combined-document checks (§16.11) for what
+    the includes not followed would bring in", with the includes not read counted as before. A fragment that was read
+    and is not one (and so not spliced) has its findings at the include that named it. The differential
+    (`test_a_partial_combined_document_equals_validating_the_text_with_what_was_read_spliced`) removes a fragment of
+    random documents and compares with the text of the others spliced, the include of the missing one left as it is.
+    The findings in the fragments that were read are new, and may change an exit status. When nothing was spliced
+    (no include followed, no attachment file spliced), there is no combined document, and the Warning says so as
+    before. The attachment files are each on their own (below): one not read leaves the body and the others as they
+    are.
   - *Cost.* The document is validated twice, itself and combined, and the files it imports from (an amended
-    original, attachment files) are read once, whichever check wants them. The
-    document's own pass is not shortened when a combined document will be made (it is not known until the
-    includes are followed, near its end), and the units and markers of the document are not reused, since the
-    combined structure reads them differently; so the work is about twice the document's and linear in the
-    size of the combined document (bounded, above).
+    original, attachment files) are read once, whichever check wants them. Of the document's own pass only the rules
+    of `HOST_ONLY` are kept, so when a combined document is likely (an include paragraph or a LegalDown attachment
+    file of the document names a file that is read and is a fragment; this reads only what the walk reads) that pass
+    records only them (a finding of another rule is dropped before its line is looked for) and skips the checks that
+    make nothing else (`condition-never-true`, `definition-circular`, `definition-used-before-declaration`,
+    `condition-reference-unsafe`, `question-unused`, `raw-html`); should no combined document be made after all (past
+    the size cap, say), the document is validated again in full, from the files already read (#141). The rest of the
+    pass is kept: it builds `ValidationResult.index` and what the `include-*` rules, `heading-skip` and the Warning
+    need. The units and markers of the document are not reused, since the combined structure reads them differently.
+    On a document of 1,500 sections with one small include the validation went from 1.6 to 1.2 times the cost of the
+    document alone; the work stays linear in the size of the combined document (bounded, above). The differential
+    (`test_the_documents_own_pass_that_makes_only_what_it_keeps_changes_nothing`) compares every diagnostic, in order,
+    the index, and what the loader is asked, with the pass in full, over every case of the combined-document tests,
+    random documents, partial ones and documents that combine nothing, with and without `final`.
   - *Attachment files* ([#135](https://github.com/ForLegalAI/legaldown-validator/issues/135); §12.4, §15.7.2 step 7,
     §16.10). The LegalDown attachment files follow the body, each after the other in the order the attachments are
     declared, one copy for each entry, spliced as a fragment is (its preamble blocks go on in the last section of
@@ -1201,17 +1230,30 @@ Decisions the specification leaves open:
     fragment in the sense of §12.2; its shape is checked of the file as it is (`attachment-has-frontmatter` at the
     first key, `attachment-has-h1` at each level-1 heading, once for each file however often it is attached, and not
     for a file that is also an include, which is `include-has-*`'s), and a file that has either is not spliced. The
-    combined document is made when the includes were all followed and something is to be spliced, so a document with
-    no include but a readable attachment file has one. An attachment file that holds an include paragraph is not
-    spliced either (its includes are not followed, so what it refers to in them would be taken for missing); it is
-    judged as before and counted among the files not spliced. Unlike the includes, the attachments are no
-    all-or-nothing: each is an appendix of its own, so one not read leaves the body and the others as they are, and
+    combined document is made when something is to be spliced, so a document with
+    no include but a readable attachment file has one. The include paragraphs of an attachment file are followed
+    as a fragment's are (#141; §12.4 allows "all standard LegalDown body syntax" in it, and §16.11 asks for the
+    combined document "including all inclusions"), with the same walk: each is judged from the attachment file's
+    directory, at its line there (`include-file-missing`, `include-cycle` with the attachment first in the chain,
+    `include-has-*`, the path rules), within the depth and count caps, and what it takes in is counted in the
+    attachment files' budget. What they take in is part of the attachment (`Combined.unit_of`): a heading of it that
+    the body declares too is `attachment-anchor-duplicate`, its definitions are the attachment's (a use earlier in the
+    same attachment is a use before the declaration), it has the presence of the entry, and its findings are in the
+    order of the attachment, at the include. An include not followed leaves the combined document partial (above).
+    `include-heading-skip` and `include-anchor-duplicate` are not judged for them: §12.4 says attachment files "are
+    not standalone LegalDown documents for purposes of §4.1", and the identifiers are the combined pass's
+    `attachment-anchor-duplicate`. The Warning counts them ("2 includes in LegalDown attachment files"), at the first
+    such attachment's `file` when the document has no include paragraph. In a template an include in an attachment
+    file is `template-fragment-invalid` (§15.3, §16.12): it is not followed, the file is not spliced, and it is
+    counted among the files not spliced, as before. Unlike an include not followed, an attachment not spliced leaves
+    the combined document whole: each is an appendix of its own, so one not read leaves the body and the others as they are, and
     the Warning of §17.5 says how many were not spliced ("attachment-anchor-duplicate and the combined-document
     checks ... for 1 LegalDown attachment file not spliced into the combined document"), and nothing of them
     when all are in. The attachment files have a budget of their own (the 50,000 blocks and 200,000 lines of
     *Size*, counted for each entry), which the walk of the includes does not share and they cannot change: past it
     the attachment file and those after it are not spliced, the combined document of the includes is made all the
-    same, and the Warning says how many were left out for the size, also for a document with no include (not when an include was not followed: that is what the Warning then blames). The
+    same, and the Warning says how many were left out for the size, also for a document with no include or with an
+    include not followed (not when the includes were past the size themselves: that is what the Warning then blames). The
     Warning names `attachment-has-frontmatter` and `attachment-has-h1` only for the attachment files not read for
     their shape (not read, or a path refused), not for one whose definitions were not imported but was read. A
     definition of an attachment file is document-wide (§7.2, §12.4): a use in the body before it is no
@@ -1231,7 +1273,11 @@ Decisions the specification leaves open:
     fragment's and an attachment file's image and link reference definition, at its line in that file: `../x.png`
     in `sub/part.lgd` stays within a root at the document's directory, and `../../x.png` leaves it. The depth of
     each directory below the root is worked out once, not for each path. The existence of an image is not
-    judged (for the document itself neither). `ValidationResult.index` is the document's own (its sections are the
+    judged (for the document itself neither), and is ruled out here (#141): §8.7 and §17.4 make it a Full-level check
+    but §16 gives it no rule id and no level, and a `LoadFile` returns a file's text (`str`, or None for a file that
+    is not there *or is not UTF-8 text*), so an image, which is binary, cannot be told from a missing file through it;
+    judging existence would need another loader contract (an existence probe), which this issue does not add. The
+    Warning of §17.5 keeps naming "the existence of image paths (§8.7), which has no rule id" as not performed. `ValidationResult.index` is the document's own (its sections are the
     document's, paired with `document.sections`). The cap does not bound the blocks a fragment holds, as
     assembly's splice does not: the work is linear in the size of the combined document.
 - **What of a fragment is reported by the document that includes it.** The fragment is not
@@ -1312,8 +1358,8 @@ validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warn
 
 | Category (§17.4) | Construct | Not performed |
 |---|---|---|
-| Includes (§12, §16.11) | an include paragraph | the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document) when the combined document was not put together, which is when an include was not followed (below, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)); with every include followed and nothing else skipped, no Warning. For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the size of the combined document (50,000 blocks or 200,000 lines of fragments spliced in), the combined-document checks. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
-| Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file not read, also `attachment-has-frontmatter` and `attachment-has-h1`; for one not spliced into the combined document (not read, or not a fragment: it has frontmatter, a level-1 heading or an include paragraph, or is past the size of the combined document) `attachment-anchor-duplicate` and the combined-document checks (a reference into an attachment's section), with the count; and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below). With every one read and spliced, only `attachment-file-missing` |
+| Includes (§12, §16.11) | an include paragraph, or one in a LegalDown attachment file | the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document) when the combined document was not put together (nothing was followed, or past its size), and for what the includes not followed would bring in when it is partial (an include was not followed, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117), [#141](https://github.com/ForLegalAI/legaldown-validator/issues/141)); with every include followed and nothing else skipped, no Warning. For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the size of the combined document (50,000 blocks or 200,000 lines of fragments spliced in), the combined-document checks. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
+| Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file not read, also `attachment-has-frontmatter` and `attachment-has-h1`; for one not spliced into the combined document (not read, or not a fragment: it has frontmatter or a level-1 heading, or an include paragraph in a template, or is past the size of the combined document) `attachment-anchor-duplicate` and the combined-document checks (a reference into an attachment's section), with the count; and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below). With every one read and spliced, only `attachment-file-missing` |
 | Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (for any reason, see below), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
 | Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch`; and `translation-implicit-id` and `translation-authoritative-absent` for the linked files, whose identifiers are not read (the document's own are checked, Core, §17.2) |
 | Declared paths (§17.4) | `supersedes.file` (the object form), an image path | `supersedes-file-missing`; the existence of image paths (§8.7), which has no rule id |
