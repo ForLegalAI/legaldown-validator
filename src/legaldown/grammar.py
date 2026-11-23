@@ -35,6 +35,7 @@ from .validator.helpers import (
     slugify_identifier,
 )
 from .validator.patterns import (
+    BARE_MARKERS_RULE,
     DURATION_UNITS,
     FINAL_CHECK_RULES,
     FRONTMATTER_KEY_DUPLICATE_RULE,
@@ -96,6 +97,7 @@ __all__ = [
     "SKIPPED_RULE",
     "INCLUDE_LIMIT_RULE",
     "FRONTMATTER_KEY_DUPLICATE_RULE",
+    "BARE_MARKERS_RULE",
     # Rules over them
     "slugify_identifier",
     "format_section_number",

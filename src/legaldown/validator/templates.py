@@ -600,7 +600,7 @@ def check_template_body(
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, quote_ranges, text_fragments
-    from .hazards import check_definition_hazards  # hazards -> templates
+    from .hazards import check_bare_markers, check_definition_hazards  # hazards -> templates
     from .units import include_key, paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
@@ -707,6 +707,11 @@ def check_template_body(
             document, result, where=where, template=template, markers=markers,
             combined=combined, cache=cache,
         )
+        if template:
+            check_bare_markers(
+                document, result, where=where, template=template, markers=markers,
+                combined=combined, cache=cache,
+            )
     if template:
         _check_fragments(document, [(i.path, i.line) for i in includes if i.path and not i.in_note], result, where)
     return BodyScan(all_notes, includes)

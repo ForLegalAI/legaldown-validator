@@ -39,6 +39,9 @@ INCLUDE_LIMIT_RULE = IMPLEMENTATION_RULE_PREFIX + "include-limit"
 # Error for the same key written twice, a Warning for different keys (the specification only warns of a padded
 # language code).
 FRONTMATTER_KEY_DUPLICATE_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-key-duplicate"
+# And the Warning for a line of a template that an empty choice leaves as bare container markers, or deletes, where
+# the output then reads otherwise than the template: §15.7.3 gives the assembler no escape for it (#120).
+BARE_MARKERS_RULE = IMPLEMENTATION_RULE_PREFIX + "bare-markers"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 

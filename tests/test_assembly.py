@@ -31,6 +31,7 @@ from legaldown import (
     validate,
 )
 from legaldown.assembly import frontmatter_diagnostic
+from legaldown.grammar import BARE_MARKERS_RULE
 
 
 def assemble(template, answers, *, load_file=None):
@@ -168,6 +169,25 @@ def _rules(result: AssemblyResult) -> list[tuple[str, str]]:
 
 _BOOL = "  x:\n    type: boolean\n"
 _TEXT = "  name:\n    type: text\n"
+
+#: Spec questions #120, open: an empty insertion leaves the template's own markers bare and holding no paragraph,
+#: and §15.7.3 gives a backslash no position where those markers begin the construct. The line after such a line
+#: gets no line-start check either: §15.7.2 step 5 deletes a line that "was not blank before ... and is blank
+#: after" the insertions, blank being empty or only spaces and tabs, and a line of bare markers (``> ``) is not
+#: blank, so conformers, who must be byte for byte the same, leave the lines after it as the template has them.
+_OPEN_QUESTIONS_120 = [
+    'text\n- {{choose: x, true="", false="T"}}\n',  # the bare "-" underlines "text"
+    '- - - {{choose: x, true="", false="T"}}\n',  # three bare markers are a thematic break
+    '* * * {{choose: x, true="", false="T"}}\n',
+    '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n',  # a lazy line detaches
+    '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n',
+    '> text\n> {{choose: x, true="", false="T"}}\n> <x>\n',  # <x> now begins an HTML block
+    '> {{choose: x, true="", false="T"}}\n> 2. b\n',  # 2. now begins a list
+    '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n',  # the line is now indented code
+    # Likewise a bare item that its next line was indented to: the item holds no paragraph and the
+    # line, short of its content column, is indented code. The indentation is the template's.
+    '   2. {{choose: x, true="", false="T"}}\n    {{placeholder: name}} x\n',
+]
 
 
 # ── Step 1: answers ──────────────────────────────────────────────
@@ -463,7 +483,9 @@ class TestLineStartsInContext:
         assert written == "> a\n> \\===\n> ===\n"
 
     @pytest.mark.parametrize(("body", "answers", "written"), [
-        # The template line's own indentation stays: the line is in the item that it was written in.
+        # The template line's own indentation stays: the line is in the item that it was written in. An
+        # interpretation of §15.7.3, recorded as spec question #120 case 5 (CONFORMANCE.md): the content begins
+        # after the template line's own indentation, as the parenthetical on the backslash's position says.
         ("- a\n\n  {{placeholder: name}} more\n", {"name": "b"}, "- a\n\n  b more\n"),
         ("- a\n\n  {{placeholder: name}}\n", {"name": "# h"}, "- a\n\n  \\# h\n"),
         ("1. a\n\n   {{placeholder: name}} more\n", {"name": "2. b"}, "1. a\n\n   2\\. b more\n"),
@@ -671,27 +693,11 @@ class TestLineStartsInContext:
     def test_indented_code_after_a_deleted_line_stays_in_its_item(self, body, written):
         assert self._assembled(body, {"x": True}, _BOOL) == written
 
-    @pytest.mark.parametrize("body", [
-        # Open question for the specification (#120): §15.7.3 gives a backslash no position where the
-        # construct is begun by the template's own markers, which an empty insertion leaves bare and
-        # holding no paragraph. Pinned as written: the output keeps the markers. The line after such a
-        # line gets no line-start check either: §15.7.2 step 5 deletes a line that "was not blank before
-        # ... and is blank after" the insertions, blank being empty or only spaces and tabs, and a line
-        # of bare markers (``> ``) is not blank, so conformers, who must be byte for byte the same,
-        # leave the lines after it as the template has them.
-        'text\n- {{choose: x, true="", false="T"}}\n',  # the bare "-" underlines "text"
-        '- - - {{choose: x, true="", false="T"}}\n',  # three bare markers are a thematic break
-        '* * * {{choose: x, true="", false="T"}}\n',
-        '> 2. {{choose: x, true="", false="T"}}\n\tcode\n> 2. {{placeholder: name}}\n',  # a lazy line detaches
-        '  > {{choose: x, true="", false="T"}}\n  lazy\na\n  > {{placeholder: name}}-y\n',
-        '> text\n> {{choose: x, true="", false="T"}}\n> <x>\n',  # <x> now begins an HTML block
-        '> {{choose: x, true="", false="T"}}\n> 2. b\n',  # 2. now begins a list
-        '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n',  # the line is now indented code
-        # Likewise a bare item that its next line was indented to: the item holds no paragraph and the
-        # line, short of its content column, is indented code (#120). The indentation is the template's.
-        '   2. {{choose: x, true="", false="T"}}\n    {{placeholder: name}} x\n',
-    ])
+    @pytest.mark.parametrize("body", _OPEN_QUESTIONS_120)
     def test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question(self, body):
+        """Spec question #120, pinned (CONFORMANCE.md, "Spec questions"): the output as §15.7.3 and §15.7.2
+        step 5 write it, though it reads otherwise than the template. The validator warns of each
+        (``test_the_validator_warns_of_each_open_question``)."""
         template = _template(body, _BOOL + _TEXT)
         written = _body(assemble(template, {"x": True, "name": "- - -"}))
         assert written.removeprefix("\n") == {
@@ -707,6 +713,56 @@ class TestLineStartsInContext:
             '> a\n>\n> {{choose: x, true="", false="T"}}\n>     code\n': "> a\n>\n> \n>     code\n",
             '   2. {{choose: x, true="", false="T"}}\n    {{placeholder: name}} x\n': "   2. \n    \\- - - x\n",
         }[body]
+
+    @pytest.mark.parametrize("body", _OPEN_QUESTIONS_120)
+    def test_the_validator_warns_of_each_open_question(self, body):
+        """The assembler cannot keep these from reading otherwise without a change to the specification, so the
+        validator tells the template's author, with a Warning of its own at the line the choice leaves bare (#120)."""
+        found = [(d.rule, d.level, d.line) for d in validate(parse(_template(body, _BOOL + _TEXT))).diagnostics
+                 if d.rule == BARE_MARKERS_RULE]
+        assert found == [(BARE_MARKERS_RULE, "warning", _template(body, _BOOL + _TEXT).split("\n").index(
+            next(line for line in body.split("\n") if "{{choose" in line)) + 1)]
+
+    @pytest.mark.parametrize(("body", "what"), [
+        ('text\n- {{choose: x, true="", false="T"}}\n', "the underline of a heading"),
+        ('> text\n> - {{choose: x, true="", false="T"}}\n', "the underline of a heading"),
+        ('- a\n  - {{choose: x, true="", false="T"}}\n', "the underline of a heading"),  # an empty item interrupts nothing
+        ('- - - {{choose: x, true="", false="T"}}\n', "a thematic break"),
+        ('> text\n> {{choose: x, true="", false="T"}}\n> <x>\n', "begins other blocks"),
+        ('> {{choose: x, true="", false="T"}}\nlazy\n', "leaves the item or quote"),
+        ('- {{choose: x, true="", false="T"}}\n\n  b\n', "leaves the item or quote"),  # an empty item ends at a blank line
+        # A line of nothing but choices that step 5 deletes can leave what held it empty (#120, the comment).
+        ('1.\n   {{choose: x, true="", false="T"}}\n\n   more\n', "leaves the item or quote"),
+        ('> {{choose: x, true="", false="T"}} {{choose: x, true="", false="U"}}\n> 2. b\n', "begins other blocks"),
+    ])
+    def test_what_the_warning_says(self, body, what):
+        [found] = [d for d in validate(parse(_template(body, _BOOL))).diagnostics if d.rule == BARE_MARKERS_RULE]
+        assert what in found.message and "#120" in found.message
+
+    @pytest.mark.parametrize("body", [
+        '- {{choose: x, true="", false="T"}}\n- b\n',  # an empty item among items
+        '1. {{choose: x, true="", false="T"}}\n2. b\n',
+        '> {{choose: x, true="", false="T"}}\n> b\n',  # an empty quote line before a paragraph
+        '> {{choose: x, true="", false="T"}}\n',
+        '- a\n- {{choose: x, true="", false="T"}}\n',
+        'a\n{{choose: x, true="", false="T"}}\nb\n',  # deleted, and the paragraph reads on
+        '- {{choose: x, true="", false="T"}}\n  more\n',  # the item holds the line after it
+        'text\n\n- {{choose: x, true="", false="T"}}\n',
+        '- {{choose: x, true="T", false="U"}}\n\n  b\n',  # no phrase is empty
+        '- {{choose: x, true="", false="T"}} more\n\n  b\n',  # text stays
+        '> [!DRAFTING]\n> - {{choose: x, true="", false="T"}}\n\n  b\n',  # removed with the note
+        '| a |\n|---|\n| {{choose: x, true="", false="T"}} |\n',
+    ])
+    def test_a_line_that_reads_as_the_template_does_is_not_warned_of(self, body):
+        assert [d for d in validate(parse(_template(body, _BOOL))).diagnostics if d.rule == BARE_MARKERS_RULE] == []
+
+    def test_a_fragment_is_judged_at_its_own_lines(self):
+        body = "Text.\n\n{{include: part.lgd}}\n"
+        part = 'text\n- {{choose: x, true="", false="T"}}\n'
+        found = validate(parse(_template(body, _BOOL), filename="t.lgd"), resolve={"part.lgd": part}.get).diagnostics
+        assert [(d.rule, d.file, d.line) for d in found if d.rule == BARE_MARKERS_RULE] == [
+            (BARE_MARKERS_RULE, "part.lgd", 2)
+        ]
 
 
 # ── Drafts: blanks left unanswered ───────────────────────────────

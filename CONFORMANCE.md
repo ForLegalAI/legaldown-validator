@@ -1305,7 +1305,8 @@ expects or forbids it. It is a Warning for every output, so `is_valid` and the e
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
 Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
 validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
-(any frontmatter mapping, #126, #131) and not a skipped one.
+(any frontmatter mapping, #126, #131) and not a skipped one, and a third, **`ldv-bare-markers`**, a Warning for a
+template line that an empty choice leaves as bare markers which read otherwise ([Assembly](#spec-questions-120), #120).
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct
@@ -1540,11 +1541,48 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   leaves as bare markers (`> `) is not checked: it is not blank, so step 5 does not delete it
   (§15.7.2), and `> text` / `> ` / `> <x>` keeps `<x>`, which begins an HTML block there. The
   specification gives no position for these; the output keeps the template's markers as written
-  (open question #120). Inserted text in the one top-level block of a long list item, each answer
+  (spec questions #120, [below](#spec-questions-120)). Inserted text in the one top-level block of a long list item, each answer
   beginning a block (`- `, `# `), is read against that block's earlier lines: quadratic in the size of
   the block. A block quote is read from the last block of its content on (of a list in it, its last item;
   in quotes nested in it, to `MAX_QUOTE_DEPTH`), as the body is read from its last top-level block, so a
   long quote of items and deleted choices is linear (#139, `tests/test_scaling_assembly.py`).
+- <a id="spec-questions-120"></a>**Spec questions (#120), open.** The assembler follows §15.7.3 and §15.7.2 step 5
+  as written; in these cases the output reads otherwise than the template, and only a change to the specification
+  can change the output. `tests/test_assembly.py` pins each one as it is written now
+  (`_OPEN_QUESTIONS_120`, `test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question`), to be updated when
+  the specification settles it:
+  1. *An empty item becomes a setext underline*: `text` / `- {{choose: x, true="", false="T"}}`, x true, gives
+     `- `, which underlines `text` (an empty item cannot interrupt a paragraph). §15.7.3 gives no position for a
+     backslash.
+  2. *Bare markers become a thematic break*: `- - - {{choose:}}`, `* * * {{choose:}}` with an empty phrase.
+  3. *Lazy lines detach*: after an empty phrase leaves a bare marker, the lazy lines after it, and the template's
+     own `>` or `2.` markers, begin new blocks (`> 2. ` / tab-indented `code`; `  > ` / `  lazy`; a bare `   2. `
+     whose next line, short of its content column, is then indented code). The position rule cannot prevent it.
+  4. *A bare container-marker line is not blank*: step 5 deletes only a line that becomes empty or spaces and
+     tabs, so a line reduced to `> ` stays, and the line after it gets no line-start check: `> text` / `> ` /
+     `> <x>` begins an HTML block (kind 7) at `<x>`; `> 2. b` a list, `>     code` indented code. Likewise a line of
+     choices alone that step 5 deletes can leave what held it empty (`1.` / `   {{choose:}}` / blank / `   more`:
+     the empty item ends at the blank line, and `more` is outside it).
+  5. *What counts as "content"* (an interpretation, not a gap): for an insertion that begins a continuation line
+     in a list item (`- a` / blank / `  {{placeholder: x}} more`), the content is taken to begin after the
+     template line's own indentation, which is kept (`  y more`), so the line stays in the item. This follows the
+     parenthetical on the backslash's position ("after the template line's own indentation and container
+     markers"); read literally, "every space and tab at the start of the content is removed" would take the line out
+     of the item. `test_an_insertion_that_begins_the_content_keeps_the_items_indentation` pins it.
+
+  The validator tells the template's author of cases 1 to 4 (the validator's side of #120): **`ldv-bare-markers`**,
+  a Warning of this implementation's own (`legaldown.grammar.BARE_MARKERS_RULE`), at a line of a template whose
+  choices all have a phrase that is empty (or spaces), with nothing else on the line but quote and list markers,
+  where the template read with that line so emptied (or deleted, when nothing is left: step 5) reads otherwise
+  than the template read with each insertion a word, as the assembler reads it (`assembly._Reading`): the line's
+  markers are a setext underline or a thematic break, or a line of the blocks around it begins other constructs
+  or lies in other containers (`assembly._signatures`, `validator/hazards.py`: `check_bare_markers`). Each such
+  line is read with its own choices empty and every other insertion a word, in all of its conditional units, in the
+  blocks around it (the one before, its own, the one after: a list by its items, a quote by the blocks of its
+  content), so that the cost is linear in the lines; a line in a drafting note or a table is none. At most
+  `hazards.BARE_BUDGET` lines are read in one validation; past it, the first line not read is reported once, for
+  itself and the rest. Two such lines empty at once, and a unit removed beside one, are not read together. The
+  insertion-boundary Error is not used: the specification has no rule these break, the assembler does what it says.
 - Removing a drafting note or unit can join what it separated: indented code after a removed note
   that followed a list becomes a paragraph of the list's last item, and two code blocks separated
   only by a removed note merge. §15.7.2 step 2 removes the lines; the template author keeps such
