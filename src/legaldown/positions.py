@@ -127,21 +127,31 @@ class WrittenEntry:
     line: int
     start: int
     resolved: tuple[str, str]
+    #: True for an entry merged in (``<<``) from another mapping (#133): its *line* is then that of the ``<<`` of
+    #: the map that merges it, where the map reads it, and *merged_from* the line where it is written.
+    merged: bool = False
+    merged_from: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Ignored:
-    """An *entry* of a ``STRIPPED_MAPS`` map that the model does not hold, because of *by*, the entry it keeps
-    for the key instead, or, if it keeps none, the last entry written, which it *skipped* for the reason given
-    (an empty or blank key, a null, empty or blank value); "" if it keeps one. *why*: ``"repeated"`` (the same
-    YAML key written again: invalid YAML), ``"text"`` (a different YAML key that the model reads as the same
-    text, as ``1`` and ``'1'``), ``"stripped"`` (padding) or ``"value"`` (keys that Python holds as one though
-    their text differs, as ``1`` and ``1.0``, or ``1`` and ``true``)."""
+    """An *entry* of a ``STRIPPED_MAPS`` map that the model does not hold, because of *by*: the entry that
+    repeats it, the entry the model keeps for the key instead, or the last entry written of the key, which the
+    model *skipped* for the reason given (an empty or blank key, a null, empty or blank value); *skipped* is ""
+    when *by* is not skipped. *kept* is the entry the model keeps for the key, None if it keeps none: when *by*
+    is skipped and the model keeps an entry all the same, it is one that strips alike, written before *by* or
+    after it (#133). *itself* is the reason the model skips *entry* itself, when it is the last of its key and loses
+    to such an earlier entry; "" otherwise. *why*: ``"repeated"`` (the same YAML key written again: invalid
+    YAML), ``"text"`` (a different YAML key that the model reads as the same text, as ``1`` and ``'1'``),
+    ``"stripped"`` (padding) or ``"value"`` (keys that Python holds as one though their text differs, as ``1``
+    and ``1.0``, or ``1`` and ``true``)."""
 
     entry: WrittenEntry
     by: WrittenEntry
     why: str
     skipped: str
+    kept: WrittenEntry | None = None
+    itself: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,22 +164,34 @@ class StrippedMap:
 
 
 class _Written(NamedTuple):
-    """An entry written in a ``STRIPPED_MAPS`` map: its key node, the key's source text, its line and start."""
+    """An entry of a ``STRIPPED_MAPS`` map: its key node, the key's source text, its line and start, and whether
+    it is merged in (``<<``) from another mapping."""
 
     node: yaml.Node
     text: str
     line: int
     start: int
+    merged: bool = False
+    merged_from: int | None = None
+
+
+#: Where each mapping key written as an alias is (``parser._StrDateSafeLoader.alias_keys``): by the id of its
+#: entry, the entry and the start and end index of the alias in the YAML's text.
+AliasKeys = dict[int, tuple[tuple[yaml.Node, yaml.Node], int, int]]
+
+
+def _key_span(entry: tuple[yaml.Node, yaml.Node], aliases: AliasKeys | None) -> tuple[int, int]:
+    """The start and end index of the key of mapping entry *entry* where it is written: an aliased key at its
+    alias (``*k``), as *aliases* has it, not at its anchor, whose node it shares (#133)."""
+    held = aliases.get(id(entry)) if aliases else None
+    if held is not None and held[0] is entry:
+        return held[1], held[2]
+    return entry[0].start_mark.index, entry[0].end_mark.index
 
 
 def _key_text(block: str, key: yaml.Node) -> str:
     """The source text of the key node *key* in the YAML *block*: quotes, escapes and an anchor as written."""
     return block[key.start_mark.index : key.end_mark.index]
-
-
-def _key_line(breaks: list[int], first_line: int, key: yaml.Node) -> int:
-    """The file line of the key node *key* (an aliased key is its anchor's)."""
-    return line_at(breaks, key.start_mark.index, first_line)
 
 
 def stripped_nodes(root: yaml.Node) -> dict[str, yaml.Node]:
@@ -183,28 +205,65 @@ def stripped_nodes(root: yaml.Node) -> dict[str, yaml.Node]:
 
 
 def written_maps(
-    root: yaml.Node, block: str, breaks: list[int], first_line: int, nodes: dict[str, yaml.Node] | None = None
+    root: yaml.Node,
+    block: str,
+    breaks: list[int],
+    first_line: int,
+    nodes: dict[str, yaml.Node] | None = None,
+    loader: Any = None,
 ) -> dict[str, list[_Written]]:
     """The entries of each ``STRIPPED_MAPS`` map written in the frontmatter's YAML *root* (the last one, if the
-    map is written twice, which is the one read), in the order of the source. *block* is the YAML's text, whose
-    *breaks* are its line feeds (``line_breaks``). Taken before the maps are flattened, which brings the keys
-    of a ``<<`` source in as if written there. An aliased key is one node, at its anchor's line and with its text, as in
-    ``frontmatter_keys``. *nodes* are the maps found already (``stripped_nodes``)."""
-    return {
-        name: [
-            _Written(key, _key_text(block, key), _key_line(breaks, first_line, key), key.start_mark.index)
-            for key, _item in value.value
-            if isinstance(key, yaml.ScalarNode) and key.tag != "tag:yaml.org,2002:merge"
-        ]
-        for name, value in (stripped_nodes(root) if nodes is None else nodes).items()
-        if isinstance(value, yaml.MappingNode)
-    }
+    map is written twice, which is the one read). *block* is the YAML's text, whose *breaks* are its line feeds
+    (``line_breaks``); *nodes* are the maps found already (``stripped_nodes``). Without a *loader*, the entries
+    written in the map, in the order of the source, an aliased key at its anchor's line and with its text. With
+    the parser's *loader* (``parser._StrDateSafeLoader``), each map is flattened, and its entries are those of
+    the mapping the reader builds the map from: the entries merged in (``<<``) first, each marked as merged, at
+    the line of the ``<<`` that merges it into this map (the first, if more than one has it) and with the line
+    where it is written, then those written in the map (#133); an aliased key is at its alias."""
+    found: dict[str, list[_Written]] = {}
+    for name, value in (stripped_nodes(root) if nodes is None else nodes).items():
+        if not isinstance(value, yaml.MappingNode):
+            continue
+        own: set[int] | None = None
+        aliases: AliasKeys | None = None
+        merged_at: dict[int, int] = {}  # the line of the `<<` that merges each entry in, by the entry's id
+        if loader is not None:
+            loader.flatten_mapping(value)
+            own = {id(entry) for entry in loader.merges.get(value, (value.value, []))[0]}
+            aliases = loader.alias_keys
+            for merge in loader.merge_keys.get(value, []):
+                at = line_at(breaks, _key_span(merge, aliases)[0], first_line)
+                sources = merge[1].value if isinstance(merge[1], yaml.SequenceNode) else [merge[1]]
+                for source in sources:
+                    for pair in source.value if isinstance(source, yaml.MappingNode) else ():
+                        merged_at.setdefault(id(pair), at)
+        entries = []
+        for entry in value.value:
+            key = entry[0]
+            if not isinstance(key, yaml.ScalarNode) or key.tag == "tag:yaml.org,2002:merge":
+                continue
+            start, end = _key_span(entry, aliases)
+            line = line_at(breaks, start, first_line)
+            if own is not None and id(entry) not in own:
+                entries.append(_Written(key, block[start:end], merged_at.get(id(entry), line), start, True, line))
+            else:
+                entries.append(_Written(key, block[start:end], line, start))
+        found[name] = entries
+    return found
 
 
 def _why(text: str, other: str) -> str:
     """How two keys that the model holds as one differ: in nothing but how they are written (``"text"``), in
     padding, or in their value."""
     return "text" if text == other else "stripped" if text.strip() == other.strip() else "value"
+
+
+def _judged(entry: WrittenEntry) -> bool:
+    """Whether ``read_maps`` reports *entry*, which a later entry of its slot (the same key to the model's dict)
+    takes the place of: not an entry merged in (``<<``), which is merge precedence then, as in every other mapping
+    (``repeated_keys``), or a repeat in its source, which the source's check reports. Entries of two slots that
+    the model reads as one once stripped or read as text are two keys to YAML, and always reported (#133)."""
+    return not entry.merged
 
 
 def read_maps(
@@ -244,6 +303,8 @@ def read_maps(
                         each.line,
                         each.start,
                         (tags.get(each.node, each.node.tag), each.node.value),
+                        each.merged,
+                        each.merged_from,
                     ),
                     text,
                 )
@@ -252,24 +313,40 @@ def read_maps(
             for slot, found in raw.items()
         }
         reasons = {slot: str_dict_skip(slot, held.get(slot), skip_blank=skip_blank) for slot in slots}  # "": kept
+        order = {slot: place for place, slot in enumerate(slots)}  # the order in which the model reads the slots
         kept: dict[str, list[tuple[Any, WrittenEntry]]] = {}  # the slots the model keeps, by the key it holds them under
         for slot, found in slots.items():
             if not reasons[slot]:
                 kept.setdefault(found[-1][0].key, []).append((slot, found[-1][0]))
         stays = {key: found[-1][1] for key, found in kept.items()}
-        ignored = []
+        ignored: list[Ignored] = []
         for key, found in kept.items():  # a slot replaced by a later one that strips alike
-            ignored += [Ignored(entry, stays[key], _why(str(slot), str(found[-1][0])), "") for slot, entry in found[:-1]]
+            for slot, entry in found[:-1]:
+                # Two slots are two keys to YAML, merged in or not: the model alone reads them as one.
+                ignored.append(Ignored(entry, stays[key], _why(str(slot), str(found[-1][0])), "", stays[key]))
         for slot, found in slots.items():  # the entries of a slot replaced by its last
             last, last_text = found[-1]
-            by = stays.get(last.key, last)  # the entry the model keeps for the key, else the last written
-            skipped = "" if last.key in stays else reasons[slot]
+            keeps = kept.get(last.key, [])
+            # A slot whose last entry is skipped, after a slot that strips alike and that the model keeps: the
+            # entry it would have replaced is read instead, and that last entry is reported (#133). A skipped last
+            # entry before the slot kept is replaced by it anyway, and is no collision itself then (#116); the
+            # entries of its slot before it are still reported below.
+            loses = bool(reasons[slot]) and bool(keeps) and order[keeps[-1][0]] < order[slot]
+            if loses:  # two slots, as above
+                why = _why(str(slot), str(keeps[-1][0]))
+                ignored.append(Ignored(last, stays[last.key], why, "", stays[last.key], reasons[slot]))
+            # The slot's last entry, when skipped, is named with the entry the model keeps for the key, if any,
+            # written before it or after (#133).
+            skipped = reasons[slot]
+            by = last if skipped else stays[last.key]  # the entry the model keeps for the key, else the last written
             for place, (entry, text) in enumerate(found[:-1]):
-                # A key written again is named by the entry that repeats it, unless the model keeps none.
+                # A key written again is named by the entry that repeats it, unless that is the skipped last entry
+                # (or, when the model keeps no entry of the key, any entry of a slot whose last is skipped).
                 again = next((each for each, _text in found[place + 1:] if each.resolved == entry.resolved), None)
-                ignored.append(
-                    Ignored(entry, again if again and not skipped else by, "repeated" if again else _why(text, last_text), skipped)
-                )
+                why = "repeated" if again else _why(text, last_text)
+                named = again if again and (not skipped or (keeps and again is not last)) else by
+                if _judged(entry):
+                    ignored.append(Ignored(entry, named, why, skipped if named is last else "", stays.get(entry.key)))
         maps[name] = StrippedMap(stays, tuple(sorted(ignored, key=lambda each: (each.entry.line, each.entry.start))))
     return maps
 
@@ -279,10 +356,16 @@ class Repeated:
     """A key of a frontmatter mapping that the model does not hold, because a later key of the mapping takes
     its place (#131): its *written* text, *line* and *start*, in the mapping at *path* (``""`` for the root).
     *why*: ``"repeated"`` (the same YAML key written again, of the same YAML type: invalid YAML), ``"text"`` (a
-    different YAML key that the model reads as the same text, as ``1`` and ``'1'``) or ``"value"`` (keys of
-    other types that Python holds as one, in a question's ``default``, where the YAML types stay: ``1`` and ``1.0``).
-    *by_written* and *by_line* are the key that repeats it, or the one the model holds; *by_line* is None
-    when that is the same node (an aliased key)."""
+    different YAML key that the model reads as the same text, as ``1`` and ``'1'``), ``"value"`` (keys of
+    other types that Python holds as one, in a question's ``default``, where the YAML types stay: ``1`` and
+    ``1.0``) or ``"merge"`` (a merge key ``<<`` written again in the mapping, which the reader merges all the
+    same, #133). *by_written* and *by_line* are the key that repeats it, or the one the model holds (always a line: an
+    aliased key is at its alias, #133). An aliased
+    key is where its alias is written (#133). *field* is the top-level frontmatter key the mapping is under (the
+    key itself in the root), whose part of the model the finding describes (``Locator.repeats``, #133), None
+    if it is no text or if the frontmatter shares a collection (an alias, a ``<<`` source), when it may be held
+    under more than one field and is judged against the whole metadata; *mapping_line* and *mapping_column* are where the mapping starts, which tells two mappings
+    apart whose paths are cut alike (#133)."""
 
     path: str
     written: str
@@ -290,7 +373,10 @@ class Repeated:
     start: int
     why: str
     by_written: str
-    by_line: int | None
+    by_line: int
+    field: str | None = None
+    mapping_line: int | None = None
+    mapping_column: int | None = None
 
 
 _PLAIN_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
@@ -338,6 +424,27 @@ def metadata_unchanged(metadata: Any, snapshot: list[Any]) -> bool:
     return next(held, held) is held
 
 
+#: The key of ``metadata_fields_snapshot`` that holds the snapshot of the whole metadata (no field is a number).
+WHOLE_METADATA = 0
+
+
+def metadata_fields_snapshot(metadata: Any, repeats: Sequence[Repeated]) -> dict[str | int | None, list[Any]]:
+    """What ``Locator.repeats`` compares to tell whether the findings *repeats* still describe *metadata*
+    (#133): under None, the metadata object itself; for each field of it that a finding is under
+    (``Repeated.field``), ``metadata_snapshot`` of that field's value; and under ``WHOLE_METADATA``, when a
+    finding is under no one field (``Repeated.field`` None), that of the whole metadata. A finding under a key
+    that is no field of the model (a key it does not read) depends on the metadata object alone."""
+    names = {each.name for each in dataclasses.fields(metadata)} if dataclasses.is_dataclass(metadata) else set()
+    seen: dict[str | int | None, list[Any]] = {None: [metadata]}
+    for each in repeats:
+        if each.field is None:
+            if WHOLE_METADATA not in seen:
+                seen[WHOLE_METADATA] = list(metadata_snapshot(metadata))
+        elif each.field in names and each.field not in seen:
+            seen[each.field] = list(metadata_snapshot(getattr(metadata, each.field)))
+    return seen
+
+
 _SEGMENT_WIDTH = 40  # the most of a key that a step of a path writes out: a key may be as long as the frontmatter
 
 
@@ -364,8 +471,9 @@ def _segment(slot: Any, key: yaml.Node, block: str) -> str:
 def _path_text(path: tuple[Any, ...] | None, block: str) -> str:
     """The path of a mapping as text. A path is the steps from the root, each linked to the one before it, so
     that a step is made for a mapping or sequence entered, not for each entry: ``(before, step)``, a step being
-    ``("k", slot, key)``, ``("i", position)`` for a sequence entry or ``("m", position)`` for a source of a merge,
-    whose position is None unless the sources are a list."""
+    ``("k", slot, key)``, ``("i", position)`` for a sequence entry or ``("m", position, merge)`` for a source of a
+    merge, whose position is None unless the sources are a list, and *merge* the number of its ``<<`` (from 1)
+    when the mapping writes more than one, None otherwise (``x.<<#2[0]``, #133)."""
     steps = []
     while path is not None:
         path, (kind, *step) = path
@@ -374,7 +482,8 @@ def _path_text(path: tuple[Any, ...] | None, block: str) -> str:
         elif kind == "i":
             steps.append(f"[{step[0]}]")
         else:
-            steps.append(".<<" if step[0] is None else f".<<[{step[0]}]")
+            number = "" if len(step) < 2 or step[1] is None else f"#{step[1]}"
+            steps.append(f".<<{number}" if step[0] is None else f".<<{number}[{step[0]}]")
     return "".join(reversed(steps)).removeprefix(".")
 
 
@@ -390,6 +499,8 @@ def repeated_keys(
     merges: dict[yaml.Node, tuple[list[tuple[yaml.Node, yaml.Node]], list[yaml.Node]]],
     resolved: dict[yaml.Node, str],
     skip: set[yaml.Node],
+    aliases: AliasKeys | None = None,
+    merge_keys: dict[yaml.Node, list[tuple[yaml.Node, yaml.Node]]] | None = None,
 ) -> tuple[Repeated, ...]:
     """Each key written in a mapping of the frontmatter's YAML *root* that a later key of the same mapping
     replaces (#131), as the model's dict does: the keys that ``construct`` builds equal are one, and the last
@@ -410,9 +521,11 @@ def repeated_keys(
     found in one pass over its entries, so the work is linear. The key of a pair in an ``!!omap`` or
     ``!!pairs`` may be a sequence or a mapping, which no dict holds: it is never a repeat. The path of a mapping
     names the keys and sequence positions above it, and ``<<`` for a source (``sides[0].parties[1]``,
-    ``x.<<[0]``); it is written out for a mapping with a finding alone."""
+    ``x.<<[0]``); it is written out for a mapping with a finding alone. A key written as an alias is where the
+    alias is, as *aliases* has it (``parser._StrDateSafeLoader.alias_keys``), and a merge key written again in a
+    mapping, as *merge_keys* has them (``parser._StrDateSafeLoader.merge_keys``), is reported too (#133)."""
     found: list[Repeated] = []
-    reported: set[tuple[int, int]] = set()  # a dropped key in its mapping, which may be walked for other owners too
+    reported: set[tuple[int, int]] = set()  # a dropped entry in its mapping, which may be walked for other owners too
     # A node is judged once as a mapping of its own, and once for each mapping that merges it.
     seen: set[tuple[int, int]] = set()
     slots: dict[int, Any] = {}  # the key each key node builds, once
@@ -439,12 +552,15 @@ def repeated_keys(
                 held.add(id(entry))
         return held
 
+    # A collection reached twice (an alias, a `<<` source) is part of more than one field of the model.
+    shared = bool(merges)
     Item = tuple[yaml.Node, "tuple[Any, ...] | None", "yaml.Node | None"]  # node, path, mapping it is merged into
     containers = (yaml.MappingNode, yaml.SequenceNode)
     stack: list[Item] = [(root, None, None)]
     while stack:
         node, path, owner = stack.pop()
         if (id(node), id(owner) if owner else 0) in seen or (owner and (id(node), 0) in seen):
+            shared = True
             continue
         seen.add((id(node), id(owner) if owner else 0))
         children: list[Item] = []
@@ -464,7 +580,13 @@ def repeated_keys(
                         children.append((entry[1], (path, ("k", slot, entry[0])), None))
                 else:
                     groups.setdefault(slot, []).append(entry)
-            where = None
+            mapping = _Mapping(node, path, block, breaks, first_line)
+            merged_twice = (merge_keys or {}).get(node, [])
+            for entry, again in zip(merged_twice, merged_twice[1:], strict=False):
+                # `<<` written again: one key to YAML, which a strict reader rejects; this one merges both (#133).
+                if (id(node), id(entry)) not in reported:
+                    reported.add((id(node), id(entry)))
+                    found.append(mapping.repeat(entry, "merge", again, aliases))
             for slot, group in groups.items():
                 if held is not None:
                     # The entry the mapping that merges this one holds, as the reader flattened it: the last one
@@ -476,75 +598,109 @@ def repeated_keys(
                         continue  # an entry of a later source, or of the mapping, takes its place: not read
                     group = [entry for entry in group if entry is not kept[-1]] + kept[-1:]
                 if len(group) > 1 and node not in skip:
-                    where = _path_text(path, block) if where is None else where
-                    for key, repeat in _replaced(group, where, block, breaks, first_line, slot_of, resolved):
-                        if (id(node), id(key)) not in reported:
-                            reported.add((id(node), id(key)))
+                    for entry, repeat in _replaced(group, mapping, slot_of, resolved, aliases):
+                        if (id(node), id(entry)) not in reported:
+                            reported.add((id(node), id(entry)))
                             found.append(repeat)
                 if isinstance(group[-1][1], containers):
                     children.append((group[-1][1], (path, ("k", slot, group[-1][0])), None))
-            for source in sources:
+            for number, source in enumerate(sources, 1):
+                merge = number if len(sources) > 1 else None  # which `<<`, when it is written more than once
                 for index, each in enumerate(source.value) if isinstance(source, yaml.SequenceNode) else [(None, source)]:
-                    children.append((each, (path, ("m", index)), owner))
+                    children.append((each, (path, ("m", index, merge)), owner))
         stack.extend(reversed(children))
+    if shared:
+        # What a finding describes may be held under other fields as well: it is judged against the whole metadata.
+        return tuple(dataclasses.replace(each, field=None) for each in found)
     return tuple(found)
+
+
+class _Mapping:
+    """A mapping that ``repeated_keys`` judges: what a finding in it says of it, worked out once it has one."""
+
+    def __init__(self, node: yaml.Node, path: tuple[Any, ...] | None, block: str, breaks: list[int], first_line: int):
+        self.node, self.path, self.block, self.breaks, self.first_line = node, path, block, breaks, first_line
+        self._where: tuple[str, str | None, int, int] | None = None
+        self._texts: dict[int, str] = {}  # the text of each key named, by its start: cut from the source once
+
+    def _text(self, start: int, end: int) -> str:
+        if start not in self._texts:
+            self._texts[start] = self.block[start:end]
+        return self._texts[start]
+
+    def where(self, slot: Any) -> tuple[str, str | None, int, int]:
+        """The mapping's path as text, the top-level key it is under (*slot*, the key of the finding, for the
+        root), and the line and column where it starts."""
+        if self._where is None:
+            steps = []
+            path = self.path
+            while path is not None:
+                path, step = path
+                steps.append(step)
+            top = next((step[1] for step in reversed(steps) if step[0] == "k"), _NO_SLOT)
+            start = self.node.start_mark.index
+            self._where = (
+                _path_text(self.path, self.block),
+                top,  # type: ignore[assignment]
+                line_at(self.breaks, start, self.first_line),
+                start - self.block.rfind("\n", 0, start),
+            )
+        path, top, line, column = self._where
+        field = slot if top is _NO_SLOT else top
+        return path, field if isinstance(field, str) else None, line, column
+
+    def repeat(
+        self, entry: tuple[yaml.Node, yaml.Node], why: str, by: tuple[yaml.Node, yaml.Node], aliases: AliasKeys | None,
+        slot: Any = None,
+    ) -> Repeated:
+        """The finding for *entry*, dropped for *why*, naming *by*: each at the key as written (an alias at its alias)."""
+        start, end = _key_span(entry, aliases)
+        by_start, by_end = _key_span(by, aliases)
+        path, field, line, column = self.where(slot)
+        return Repeated(
+            path,
+            self._text(start, end),
+            line_at(self.breaks, start, self.first_line),
+            start,
+            why,
+            self._text(by_start, by_end),
+            line_at(self.breaks, by_start, self.first_line),
+            field,
+            line,
+            column,
+        )
 
 
 def _replaced(
     group: list[tuple[yaml.Node, yaml.Node]],
-    where: str,
-    block: str,
-    breaks: list[int],
-    first_line: int,
+    mapping: _Mapping,
     slot_of: Callable[[yaml.Node], Any],
     resolved: dict[yaml.Node, str],
-) -> list[tuple[yaml.Node, Repeated]]:
-    """The keys of *group*, the entries of a mapping that its dict holds as one, but the last: each key node
-    once, as the first of its entries is written (``repeated_keys``), with what is found of it. A key is
-    written again when a later key of the group has the type YAML gave it (``resolved``) and the text it has,
-    as ``read_maps`` judges the keys of ``translations``: ``fr`` and ``"fr"``. Otherwise the model reads
+    aliases: AliasKeys | None,
+) -> list[tuple[tuple[yaml.Node, yaml.Node], Repeated]]:
+    """The entries of *group*, the entries of a mapping that its dict holds as one, but the last, with what is
+    found of each (``repeated_keys``). A key is written again when a later key of the group has the type YAML
+    gave it (``resolved``) and the text it has, as ``read_maps`` judges the keys of ``translations``: ``fr`` and
+    ``"fr"``, and an alias of it, which is the same node (named at the alias, #133). Otherwise the model reads
     different keys as one: as text, when both are text in the model, else by their value (``1`` and ``0x1``)."""
-    last = group[-1][0]
-    texts: dict[int, str] = {}  # the text of each key node, cut from the source once
-
-    def text(node: yaml.Node) -> str:
-        if id(node) not in texts:
-            texts[id(node)] = _key_text(block, node)
-        return texts[id(node)]
-
-    # By the type YAML gave each key and its text: the nearest later key of the same, and the nearest of those that is another
-    # node, so that one pass from the end finds, for each entry, the key that repeats it.
-    after: dict[tuple[str, str], tuple[yaml.Node, yaml.Node | None]] = {}
-    dropped: dict[int, tuple[yaml.Node, yaml.Node | None, yaml.Node | None]] = {}  # by node: later key, another node's
-    for index in range(len(group) - 1, -1, -1):
-        key = group[index][0]
-        read = (resolved.get(key, key.tag), key.value)
-        later, other = after.get(read, (None, None))
-        again = later if later is not key else other  # the nearest later key that is another node
-        if index < len(group) - 1:
-            dropped[id(key)] = (key, later, again)  # overwritten by the node's first entry
-        after[read] = (key, again)
+    last = group[-1]
+    # By the type YAML gave each key and its text: the nearest later entry of the same, so that one pass from the
+    # end finds, for each entry, the entry that repeats it.
+    after: dict[tuple[str, str], tuple[yaml.Node, yaml.Node]] = {}
     out = []
-    for key, later, again in dropped.values():
-        if later is not None:
-            why, by = "repeated", again  # None: only the same node (an aliased key) repeats it
-        else:
-            why = "text" if isinstance(slot_of(key), str) and isinstance(slot_of(last), str) else "value"
-            by = last
-        out.append(
-            (
-                key,
-                Repeated(
-                    where,
-                    text(key),
-                    _key_line(breaks, first_line, key),
-                    key.start_mark.index,
-                    why,
-                    text(key if by is None else by),
-                    None if by is None else _key_line(breaks, first_line, by),
-                ),
-            )
-        )
+    for index in range(len(group) - 1, -1, -1):
+        entry = group[index]
+        key = entry[0]
+        read = (resolved.get(key, key.tag), key.value)
+        if index < len(group) - 1:
+            later = after.get(read)
+            if later is not None:
+                why, by = "repeated", later
+            else:
+                why = "text" if isinstance(slot_of(key), str) and isinstance(slot_of(last[0]), str) else "value"
+                by = last
+            out.append((entry, mapping.repeat(entry, why, by, aliases, slot_of(key))))
+        after[read] = entry
     return out
 
 
@@ -625,9 +781,9 @@ class SourceMap:
     #: Each ``STRIPPED_MAPS`` map as the model read it, by name (``read_maps``).
     maps: dict[str, StrippedMap] = field(default_factory=dict)
     #: The keys of the other frontmatter mappings that a later key replaces (``repeated_keys``, #131), and,
-    #: when there are any, ``metadata_snapshot`` of the metadata as parsed: they describe its source text.
+    #: when there are any, ``metadata_fields_snapshot`` of the metadata as parsed: they describe its source text.
     repeats: tuple[Repeated, ...] = ()
-    metadata_seen: list[Any] = field(default_factory=list, compare=False, repr=False)
+    metadata_seen: dict[str | int | None, list[Any]] = field(default_factory=dict, compare=False, repr=False)
     #: The offset of each line of ``lines`` in the source as given to ``parse`` (``line_starts``, #150):
     #: given by ``parse`` when that source starts with a byte-order mark or ends a line at CR, so that
     #: ``lines`` joined with LF is not it; else worked out from ``lines`` once asked for.
@@ -652,7 +808,7 @@ class SourceMap:
         if len(path) == 2 and path[0] in self.maps and isinstance(path[1], str):
             stays = self.maps[path[0]].stays.get(path[1])
             if stays is not None:
-                return stays.line
+                return stays.line if stays.merged_from is None else stays.merged_from  # where it is written
         while path:
             if path in self.keys:
                 return self.keys[path]
@@ -901,13 +1057,28 @@ class Locator:
 
     def repeats(self) -> list[Repeated]:
         """The keys of the frontmatter mappings (``translations`` and ``field_types`` apart: ``ignored``) that a
-        later key of the same mapping replaces, in source order; none without a source map, or for metadata
-        changed since it was parsed."""
+        later key of the same mapping replaces, in source order; none without a source map, or when the
+        metadata was replaced since it was parsed, and none under a field of the metadata that was changed
+        since (``metadata_fields_snapshot``, #133): an edit elsewhere leaves them be."""
         if not self._map or not self._map.repeats:
             return []
-        if not metadata_unchanged(self._document.metadata, self._map.metadata_seen):
+        metadata, seen = self._document.metadata, self._map.metadata_seen
+        if seen.get(None, [None])[0] is not metadata:
             return []
-        return sorted(self._map.repeats, key=lambda each: (each.line, each.start))
+        fresh: dict[str | int, bool] = {}
+
+        def unchanged(name: str | None) -> bool:
+            if name is None:
+                if WHOLE_METADATA not in fresh:
+                    fresh[WHOLE_METADATA] = metadata_unchanged(metadata, seen.get(WHOLE_METADATA, []))
+                return fresh[WHOLE_METADATA]
+            if name not in seen:
+                return True  # under no field of the model
+            if name not in fresh:
+                fresh[name] = metadata_unchanged(getattr(metadata, name), seen[name])
+            return fresh[name]
+
+        return sorted((each for each in self._map.repeats if unchanged(each.field)), key=lambda each: (each.line, each.start))
 
     def has(self, *path: Any) -> bool:
         """True if the frontmatter node at *path* is written."""

@@ -189,22 +189,38 @@ def test_a_key_written_as_an_equals_sign_is_a_different_key_from_the_quoted_one(
 
 # ── aliases ──
 
-def test_a_key_aliased_into_two_mappings_is_reported_under_each():
-    front = "x: {&k a: 1, *k : 2}\ny: {*k : 1, *k : 2}\n"
+def test_a_key_aliased_into_two_mappings_is_reported_under_each_at_the_alias():
+    # #133: an alias key is where the alias is written, though the reader gives it its anchor's node.
+    front = "x: {&k a: 1, *k : 2}\ny:\n  *k : 1\n  *k : 2\n"
     assert _found(front) == [
-        (2, "error", "The `x` key `&k a` is written again: this entry is ignored."),
-        (2, "error", "The `y` key `&k a` is written again: this entry is ignored."),
+        (2, "error", "The `x` key `&k a` is written again at line 2: this entry is ignored."),
+        (4, "error", "The `y` key `*k` is written again at line 5: this entry is ignored."),
     ]
 
 
-def test_a_key_used_three_or_more_times_in_a_mapping_is_reported_once():
-    front = "x: {&k a: 1, *k : 2, *k : 3, *k : 4}\n"
-    assert _found(front) == [(2, "error", "The `x` key `&k a` is written again: this entry is ignored.")]
+def test_a_key_used_three_or_more_times_in_a_mapping_is_reported_at_each_entry_dropped():
+    front = "x:\n  &k a: 1\n  *k : 2\n  *k : 3\n  *k : 4\n"
+    assert _found(front) == [
+        (3, "error", "The `x` key `&k a` is written again at line 4: this entry is ignored."),
+        (4, "error", "The `x` key `*k` is written again at line 5: this entry is ignored."),
+        (5, "error", "The `x` key `*k` is written again at line 6: this entry is ignored."),
+    ]
 
 
-def test_an_aliased_key_that_is_also_written_again_cites_the_other_node():
-    front = "x: {&k a: 1, *k : 2, a: 3}\n"
-    assert _found(front) == [(2, "error", "The `x` key `&k a` is written again at line 2: this entry is ignored.")]
+def test_an_aliased_key_that_is_also_written_again_cites_the_nearest_repeat():
+    front = "x:\n  &k a: 1\n  *k : 2\n  a: 3\n"
+    assert _lines(front) == [(3, "error"), (4, "error")]
+    assert _found(front)[1][2] == "The `x` key `*k` is written again at line 5: this entry is ignored."
+
+
+def test_an_aliased_key_is_reported_at_its_own_line_not_its_anchor_in_another_mapping():
+    # #133: the anchor is in `a`, the alias that is dropped in `b`.
+    front = "a:\n  &k t: 1\nb:\n  *k : 1\n  t: 2\n"
+    assert _found(front) == [(5, "error", "The `b` key `*k` is written again at line 6: this entry is ignored.")]
+    # and an alias that stays names nothing but the entry it replaces
+    assert _found("a:\n  &k t: 1\nb:\n  t: 1\n  *k : 2\n") == [
+        (5, "error", "The `b` key `t` is written again at line 6: this entry is ignored.")
+    ]
 
 
 def test_a_mapping_shared_through_an_alias_is_reported_once_under_the_first_path():
@@ -311,20 +327,21 @@ def test_a_source_judged_for_all_its_keys_and_for_some_is_reported_once():
 def test_a_key_written_twice_among_two_merges_is_judged_as_the_reader_orders_them():
     # `<<` twice: PyYAML 6.0.4 keeps the first entry of a one-character key it merges, so the earlier source's `k`
     # is held and the later source's entries of it are never read.
+    # (The second `<<` itself is reported apart, #133: `_beyond_merges` leaves it out here.)
     assert yaml.safe_load("x:\n  <<: {k: 1}\n  <<: {k: 2, k: 3}\n") == {"x": {"k": 1}}
-    assert _found("x:\n  <<: {k: 1}\n  <<: {k: 2, k: 3}\n") == []
+    assert _beyond_merges("x:\n  <<: {k: 1}\n  <<: {k: 2, k: 3}\n") == []
     # the earlier source's entry is held, so what its value repeats is read
-    assert [m for _l, _lvl, m in _found("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {k: 1}\n")] == [
-        "The `x.<<.k` key `a` is written again at line 3: this entry is ignored."
+    assert [m for _l, _lvl, m in _beyond_merges("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {k: 1}\n")] == [
+        "The `x.<<#1.k` key `a` is written again at line 3: this entry is ignored."
     ]
     # a longer key goes the other way: the later source's entries are over the earlier's, and a key repeated
     # inside the later source is a repeat there
-    ((line, level, message),) = _found("x:\n  <<: {key: 1}\n  <<: {key: 2, key: 3}\n")
-    assert (line, level) == (4, "error") and message.startswith("The `x.<<` key `key` is written again at line 4")
-    assert _found("x:\n  <<: {key: {a: 1, a: 2}}\n  <<: {key: 1}\n") == []
+    ((line, level, message),) = _beyond_merges("x:\n  <<: {key: 1}\n  <<: {key: 2, key: 3}\n")
+    assert (line, level) == (4, "error") and message.startswith("The `x.<<#2` key `key` is written again at line 4")
+    assert _beyond_merges("x:\n  <<: {key: {a: 1, a: 2}}\n  <<: {key: 1}\n") == []
     # but a key only the earlier source has still is
-    assert [m for _l, _lvl, m in _found("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {j: 1}\n")] == [
-        "The `x.<<.k` key `a` is written again at line 3: this entry is ignored."
+    assert [m for _l, _lvl, m in _beyond_merges("x:\n  <<: {k: {a: 1, a: 2}}\n  <<: {j: 1}\n")] == [
+        "The `x.<<#1.k` key `a` is written again at line 3: this entry is ignored."
     ]
 
 
@@ -332,14 +349,34 @@ def test_a_list_of_sources_and_a_second_merge_are_judged_as_the_reader_holds_the
     # PyYAML 6.0.4 reads a list of sources first to last. A one-character key is merged once: the first source's
     # `a` is held, over the second source's and over a second `<<`.
     front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}}]\n  <<: {a: 1}\n"
-    assert [m.split(" key ")[0] for _l, _lvl, m in _found(front)] == ["The `x.<<[0].a`"]
+    assert [m.split(" key ")[0] for _l, _lvl, m in _beyond_merges(front)] == ["The `x.<<#1[0].a`"]
     front = "x:\n  <<: [{a: {b: 1, b: 2}}, {a: {c: 1, c: 2}}]\n"
     assert [m.split(" key ")[0] for _l, _lvl, m in _found(front)] == ["The `x.<<[0].a`"]
     # A longer key: the last source's entry is held, and a second `<<` over both.
     front = "x:\n  <<: [{ab: {b: 1, b: 2}}, {ab: {c: 1, c: 2}}]\n"
     assert [m.split(" key ")[0] for _l, _lvl, m in _found(front)] == ["The `x.<<[1].ab`"]
     front = "x:\n  <<: [{ab: {b: 1, b: 2}}, {ab: {c: 1, c: 2}}]\n  <<: {ab: 1}\n"
-    assert _found(front) == []
+    assert _beyond_merges(front) == []
+
+
+def _beyond_merges(front):
+    # The findings but those of a `<<` written twice.
+    return [found for found in _found(front) if " key `<<` " not in found[2]]
+
+
+def test_a_merge_key_written_twice_in_a_mapping_is_an_error_at_each_but_the_last():
+    # #133: `<<` is a key like any other to YAML, which a strict reader rejects written twice; PyYAML merges both.
+    assert _found("x:\n  <<: {a: 1}\n  <<: {b: 2}\n") == [
+        (3, "error", "The `x` key `<<` is written again at line 4: YAML allows a mapping one merge key, and a strict "
+         "reader rejects the second; write one `<<` with a list of sources.")
+    ]
+    assert _lines("x:\n  <<: {a: 1}\n  c: 1\n  <<: {b: 2}\n  <<: {d: 2}\n") == [(3, "error"), (5, "error")]
+    # at the root, in `translations` too, and once for a mapping that is also a source of another
+    assert _lines("<<: {a: 1}\n<<: {b: 2}\n") == [(2, "error")]
+    assert _lines("translations:\n  <<: {fr: a}\n  <<: {de: b}\n") == [(3, "error")]
+    assert _lines("x: &x\n  <<: {a: 1}\n  <<: {b: 2}\ny:\n  <<: *x\n") == [(3, "error")]
+    # one `<<` with a list of sources is the form YAML allows
+    assert _found("x:\n  <<: [{a: 1}, {b: 2}]\n") == []
 
 
 def test_a_mapping_of_thousands_of_sources_takes_linear_time():
@@ -398,7 +435,8 @@ def test_a_long_key_is_cut_short_in_the_path_of_the_findings_under_it():
     assert time.perf_counter() - start < 10
     assert len(found) == 7_999
     assert all(len(message) < 200 for _line, _level, message in found)
-    assert found[0][2].startswith("The `k" + "x" * 39 + "…` key `a` is written again at line 5")
+    # a key cut in a step may make two paths alike, so the mapping's place is said (#133)
+    assert found[0][2].startswith("The `k" + "x" * 39 + "…` (the mapping at line 4, column 3) key `a` is written again at line 5")
 
 
 def test_a_lone_surrogate_in_a_key_is_escaped_in_the_path_and_czech_letters_are_not():
@@ -412,7 +450,7 @@ def test_a_lone_surrogate_in_a_key_is_escaped_in_the_path_and_czech_letters_are_
 def test_a_step_is_cut_before_it_is_escaped_and_closed_after():
     # a 60-character quoted key: the cut is in the text, and the step keeps its closing bracket
     ((_line, _level, message),) = _found('"' + "ab c" * 15 + '": {a: 1, a: 2}\n')
-    assert message.startswith('The `["' + "ab c" * 10 + '…"]` key `a`')
+    assert message.startswith('The `["' + "ab c" * 10 + '…"]` (the mapping at line 2, column 65) key `a`')
     # a surrogate at the cut: the escape is whole or it is not there
     for before in (36, 38, 39, 40):
         ((_line, _level, message),) = _found('"' + "x" * before + "\\ud800" + "y" * 30 + '": {a: 1, a: 2}\n')
@@ -422,7 +460,7 @@ def test_a_step_is_cut_before_it_is_escaped_and_closed_after():
         message.encode("utf-8")
     # a typed key: the brace is closed too
     ((_line, _level, message),) = _found(_questions("      ? " + "0" * 60 + "1\n      : {a: 1, a: 2}\n"))
-    assert message.startswith("The `questions.q1.default{" + "0" * 40 + "…}` key `a`")
+    assert message.startswith("The `questions.q1.default{" + "0" * 40 + "…}` (the mapping at line 7, column 9) key `a`")
 
 
 def test_a_key_is_cut_short_where_a_message_names_it():
@@ -516,13 +554,72 @@ def test_a_metadata_changed_after_parsing_draws_no_stale_finding():
 
 
 def test_an_edit_in_place_draws_no_stale_finding_either():
-    document = parse(_source("title: a\ntitle: b\nsides:\n  - name: X\n    parties: [{name: P}, {name: Q}]\n"))
+    document = parse(_source("sides:\n  - name: X\n    name: Z\n    parties: [{name: P}, {name: Q}]\n"))
     assert len([d for d in validate(document).diagnostics if d.rule == RULE]) == 1
     document.metadata.sides[0].parties.clear()
     assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
-    document = parse(_source("title: a\ntitle: b\nsides:\n  - name: X\n"))
+    document = parse(_source("sides:\n  - name: X\n    name: Z\n"))
     document.metadata.sides[0].name = "Y"
     assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
+
+
+def test_an_edit_of_another_field_leaves_the_findings_under_a_field_be():
+    # #133: each finding is judged against the field of the metadata it is under, not the whole metadata.
+    front = "title: a\ntitle: b\nsides:\n  - name: X\n    name: Y\n    parties: [{name: P}]\nx: {a: 1, a: 2}\n"
+    document = parse(_source(front))
+    lines = lambda: [d.line for d in validate(document).diagnostics if d.rule == RULE]  # noqa: E731
+    assert lines() == [2, 5, 8]
+    document.metadata.sides[0].parties.clear()  # `sides` is edited: its finding goes, the others stay
+    assert lines() == [2, 8]
+    document.metadata.title = "new"
+    assert lines() == [8]  # `x` is no field of the model: only replacing the metadata drops it
+    document.metadata = type(document.metadata)()
+    assert lines() == []
+    # A frontmatter that shares a collection (an alias, a `<<` source) may hold a mapping under more than one field:
+    # its findings are judged against the whole metadata, as before #133.
+    for front in ("<<: {title: a, title: b}\nversion: '1'\n", "base: &b {subtitle: A, subtitle: B}\n<<: *b\n",
+                  "x: &x {a: 1, a: 2}\nsides: [*x]\nversion: '1'\n"):
+        document = parse(_source(front))
+        assert len(lines()) == 1
+        document.metadata.version = "2"
+        assert lines() == [], front
+
+
+def test_two_sources_of_two_merge_keys_are_told_apart():
+    # #133: each `<<` of a mapping that writes more than one is numbered in the path.
+    found = _beyond_merges("x: {<<: {a: 1, a: 2}, <<: {b: 1, b: 2}}\n")
+    assert [message.split(" key ")[0] for _l, _lvl, message in found] == ["The `x.<<#1`", "The `x.<<#2`"]
+    found = _beyond_merges("x:\n  <<: [{a: 1, a: 2}]\n  <<: [{bb: 1}, {bb: 1, bb: 2}]\n")
+    assert [message.split(" key ")[0] for _l, _lvl, message in found] == ["The `x.<<#1[0]`", "The `x.<<#2[1]`"]
+
+
+def test_short_paths_whose_keys_are_cut_alike_are_told_apart():
+    front = f"x:\n  {'b' * 50}X:\n    k: 1\n    k: 2\n  {'b' * 50}Y:\n    k: 1\n    k: 2\n"
+    first, second = _found(front)
+    assert "(the mapping at line 4, column 5)" in first[2] and "(the mapping at line 7, column 5)" in second[2]
+
+
+def test_paths_that_are_cut_alike_in_one_run_each_name_their_own_mapping():
+    # #133: the subject of a cut path is worked out for each mapping, not once for its text.
+    long = "a" * 50
+    front = f"{long}:\n  {'b' * 50}X:\n    k: 1\n    k: 2\n  {'b' * 50}Y:\n    k: 1\n    k: 2\n"
+    first, second = _found(front)
+    assert "(the mapping at line 4, column 5)" in first[2] and "(the mapping at line 7, column 5)" in second[2]
+
+
+def test_a_cut_path_without_a_known_mapping_place_says_none():
+    import dataclasses
+
+    document = parse(_source("x: {a: 1, a: 2}\n"))
+    (repeat,) = document.source_map.repeats
+    document.source_map.repeats = (dataclasses.replace(repeat, path="k" * 90, mapping_line=None, mapping_column=None),)
+    (message,) = [d.message for d in validate(document).diagnostics if d.rule == RULE]
+    assert "(the mapping" not in message and message.startswith("The `…kkk")
+
+
+def test_a_merge_key_written_twice_in_translations_names_the_map_as_its_check_does():
+    ((_line, _level, message),) = _found("translations:\n  <<: {fr: a}\n  <<: {de: b}\n")
+    assert message.startswith("The translations key `<<` is written again at line 4")
 
 
 def test_a_metadata_that_refers_to_itself_or_shares_much_is_judged_in_linear_time():
@@ -546,15 +643,20 @@ def test_a_number_too_large_to_write_is_not_written():
     document = parse(_source(key))
     assert document.frontmatter_error is None
     ((_line, _level, message),) = _found(key)
-    assert message.startswith("The `questions.q1.default{0xffff") and "…}` key `a` is written again" in message
+    assert message.startswith("The `questions.q1.default{0xffff") and "…}` (the mapping at line 7, column 9) key `a` is written again" in message
     assert len(message) < 200  # the key is cut short, not copied into the finding
     # no repeat of it: nothing to say, and the document is read
     assert _found(f"questions:\n  q1:\n    type: text\n    default:\n      ? {huge}\n      : 1\n") == []
 
 
 def test_a_key_written_as_nothing_is_shown_readably():
+    # #133: `(empty)`, not `''`, which is the key written as an empty string, shown as written
     ((_line, _level, message),) = _found("x:\n  ? \n  : 1\n  ? \n  : 2\n")
-    assert message == "The `x` key `\'\'` is written again at line 5: this entry is ignored."
+    assert message == "The `x` key (empty) is written again at line 5: this entry is ignored."
+    ((_line, _level, message),) = _found("x:\n  '': 1\n  '': 2\n")
+    assert message == "The `x` key `''` is written again at line 4: this entry is ignored."
+    ((_line, _level, message),) = _found("x:\n  ? \n  : 1\n  '': 2\n")
+    assert message.startswith("The `x` key (empty) is the same key as `''` once read as text")
 
 
 def test_the_findings_are_data_of_the_document_not_of_the_run():
@@ -609,5 +711,52 @@ def test_a_deep_mapping_is_walked_without_recursion():
     deep = "".join("  " * i + f"k{i}:\n" for i in range(depth)) + "  " * depth + "a: 1\n" + "  " * depth + "a: 2\n"
     (found,) = _found(deep)
     # a long path keeps its end
-    assert found[2].startswith("The `…") and ".k298.k299` key `a` is written again" in found[2]
+    assert found[2].startswith("The `…") and ".k298.k299` (the mapping at line 302, column 601) key `a`" in found[2]
     assert _found(deep.replace("a: 2", "b: 2")) == []
+
+
+def test_two_long_paths_that_end_alike_are_told_apart():
+    # #133: a path longer than 80 characters keeps its end, and says where its mapping starts.
+    def nest(top):
+        keys = [top, *(f"k{i}" for i in range(30))]
+        return "".join("  " * i + f"{key}:\n" for i, key in enumerate(keys)) + "  " * 31 + "a: 1\n" + "  " * 31 + "a: 2\n"
+
+    first, second = _found(nest("x") + nest("y"))
+    cut = lambda message: message.split("` ")[0]  # noqa: E731
+    assert cut(first[2]) == cut(second[2])  # the same cut path
+    assert first[2] != second[2]
+    assert "(the mapping at line 33, column 63) key `a`" in first[2]
+    assert "(the mapping at line 66, column 63) key `a`" in second[2]
+    # a short path says nothing more
+    assert "(the mapping" not in _found("x: {a: 1, a: 2}\n")[0][2]
+
+
+# ── the parser's composer is PyYAML's ──
+
+@pytest.mark.parametrize("text", [
+    "a: 1\nb: {c: [1, {d: 2}], &k e: f}\n*k : g\n",
+    "x: &m\n  <<: [{a: 1}, {b: 2}]\n  !!str c: !custom d\ny: *m\n? [1, 2]\n: {}\n",
+    "!!omap\n- a: 1\n- b: 2\n",
+    "? \n: 1\n'': 2\n",
+])
+def test_the_parsers_mapping_composer_builds_what_pyyamls_builds(text):
+    # #133: the loader writes PyYAML's `compose_mapping_node` out to note where an alias key is; a release of PyYAML
+    # that composes a mapping otherwise shows here.
+    def shape(node, seen):
+        if id(node) in seen:
+            return ("alias", seen[id(node)])
+        seen[id(node)] = len(seen)
+        marks = (node.start_mark.index, node.end_mark.index, node.tag, type(node).__name__)
+        if isinstance(node, yaml.MappingNode):
+            return (*marks, node.flow_style, tuple((shape(k, seen), shape(v, seen)) for k, v in node.value))
+        if isinstance(node, yaml.SequenceNode):
+            return (*marks, node.flow_style, tuple(shape(each, seen) for each in node.value))
+        return (*marks, node.value, node.style)
+
+    ours = parser._StrDateSafeLoader(text)
+    theirs = yaml.SafeLoader(text)
+    try:
+        assert shape(ours.get_single_node(), {}) == shape(theirs.get_single_node(), {})
+    finally:
+        ours.dispose()
+        theirs.dispose()

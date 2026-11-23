@@ -38,7 +38,7 @@ from ..markdown import (
     strip_comments,
 )
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
-from ..positions import Locator
+from ..positions import STRIPPED_MAPS, Locator
 from ..specification import SPEC_VERSION, parse_version
 from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
@@ -168,11 +168,13 @@ def _shown(key: str) -> str:
     """A key as it is written in the source, for a message: its line breaks (and the indentation after them)
     folded to a space, cut short (``…``) after ``_SHOWN_WIDTH`` characters (a key may be as long as the frontmatter,
     and a message names it for each entry it replaces), between backticks (a longer fence if it holds backticks,
-    padded, as CommonMark does)."""
+    padded, as CommonMark does). A key written as nothing is ``(empty)``, without backticks, so that it is not
+    taken for the key ``''`` (#133)."""
     text = re.sub(r"\s*\n\s*", " ", key[: 10 * _SHOWN_WIDTH]).strip()
     if len(text) > _SHOWN_WIDTH or len(key) > 10 * _SHOWN_WIDTH:
         text = text[:_SHOWN_WIDTH] + "…"
-    text = text or "''"  # a key written as nothing
+    if not text:
+        return "(empty)"  # a key written as nothing: not `''`, which is a key written as an empty string (#133)
     fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
     pad = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{pad}{text}{pad}{fence}"
@@ -190,10 +192,12 @@ def _key_clause(why: str, by_written: str, again: str = "") -> str:
     }[why]
 
 
-def _key_ignored(subject: str, written: str, clause: str, stays: str = "") -> str:
+def _key_ignored(subject: str, written: str, clause: str, stays: str = "", merged_from: int | None = None) -> str:
     """The message of ``ldv-frontmatter-key-duplicate``: the key *written* of *subject* (a map or a mapping) is
-    *clause* (``_key_clause``), and ignored, with *stays* saying which entry the model keeps."""
-    return f"The {subject} key {_shown(written)} {clause}: this entry is ignored{stays}."
+    *clause* (``_key_clause``), and ignored, with *stays* saying which entry the model keeps. *merged_from* is
+    the line where an entry merged in (``<<``) is written (#133)."""
+    merged = "" if merged_from is None else f", merged in from line {merged_from},"
+    return f"The {subject} key {_shown(written)}{merged} {clause}: this entry is ignored{stays}."
 
 
 def _key_read(line: int) -> str:
@@ -1534,19 +1538,27 @@ def _check(
     # document it accepts. Judged against the model, not for one edited since it was parsed.
     if not mode.empty_metadata:
         for map_name, each in where.ignored():
-            if (each.by.key in getattr(document.metadata, map_name)) == bool(each.skipped):
+            if (each.entry.key in getattr(document.metadata, map_name)) != (each.kept is not None):
                 continue
             entry, by = each.entry, each.by
-            again = f" at line {by.line}" if by.start != entry.start else ""  # an aliased key is one node
+            again = f" at line {by.line}" if by.start != entry.start else ""
             what = _key_clause(each.why, by.written, "" if each.skipped else again)
-            if each.skipped:
+            if each.itself:
+                # Skipped itself, after an entry that strips alike, which is read instead (#133).
+                what = f"is skipped ({each.itself}), and {what.removeprefix('is ')}"
+            if each.skipped and each.kept is not None:
+                # the entry that repeats it is skipped, and one that strips alike, before or after it, is read (#133)
+                stays = f", the entry at line {by.line} is skipped ({each.skipped}){_key_read(each.kept.line)}"
+            elif each.skipped:
                 stays = f", and the entry at line {by.line} is skipped ({each.skipped}), so no entry is kept"
             elif each.why != "repeated" and again:
                 stays = _key_read(by.line)
             else:
                 stays = ""
             report = result.error if each.why == "repeated" else result.warning
-            report(FRONTMATTER_KEY_DUPLICATE_RULE, _key_ignored(map_name, entry.written, what, stays), line=entry.line)
+            # An entry merged in is at the `<<` of the map that merges it, and says where it is written (#133).
+            message = _key_ignored(map_name, entry.written, what, stays, entry.merged_from)
+            report(FRONTMATTER_KEY_DUPLICATE_RULE, message, line=entry.line)
 
     # ── Keys of any other frontmatter mapping that a later key replaces (#131) ──
     # The reader keeps the last of the keys a mapping holds as one and says nothing of the others: a `title:` or
@@ -1555,18 +1567,36 @@ def _check(
     # under the same rule and levels. `translations` and `field_types` are left to #126; a path names the mapping.
     # A key written over one merged in (`<<`) replaces it, as YAML says, and is no repeat.
     if not mode.empty_metadata:
-        paths: dict[str, str] = {}  # the path of each mapping, shown once
+        paths: dict[tuple[str, int | None, int | None], str] = {}  # the path of each mapping, shown once
         for each in where.repeats():
-            at = "" if each.by_line is None else f" at line {each.by_line}"
-            what = _key_clause(each.why, each.by_written, at)
-            stays = _key_read(each.by_line) if each.why != "repeated" and each.by_line is not None else ""
-            report = result.error if each.why == "repeated" else result.warning
-            if each.path not in paths:
-                # a long path keeps its end, which names the mapping
-                cut = each.path if len(each.path) <= _SHOWN_WIDTH else "…" + each.path[1 - _SHOWN_WIDTH:]
-                paths[each.path] = _shown(cut) if cut else "frontmatter"
-            subject = paths[each.path]
-            report(FRONTMATTER_KEY_DUPLICATE_RULE, _key_ignored(subject, each.written, what, stays), line=each.line)
+            at = f" at line {each.by_line}"
+            report = result.error if each.why in ("repeated", "merge") else result.warning
+            mapping = (each.path, each.mapping_line, each.mapping_column)
+            if mapping not in paths:
+                # A long path keeps its end, which names the mapping, and says where the mapping starts, so that
+                # two whose paths end alike are told apart (#133). `translations` and `field_types` are named as
+                # their own check names them (a `<<` written twice there).
+                # A key cut short in a step (`…`) may make two paths alike as well.
+                if len(each.path) <= _SHOWN_WIDTH and "…" not in each.path:
+                    plain = each.path in STRIPPED_MAPS
+                    paths[mapping] = each.path if plain else _shown(each.path) if each.path else "frontmatter"
+                else:
+                    cut = _shown(each.path if len(each.path) <= _SHOWN_WIDTH else "…" + each.path[1 - _SHOWN_WIDTH:])
+                    known = each.mapping_line is not None and each.mapping_column is not None
+                    where_at = f" (the mapping at line {each.mapping_line}, column {each.mapping_column})" if known else ""
+                    paths[mapping] = cut + where_at
+            subject = paths[mapping]
+            if each.why == "merge":
+                # `<<` written again: the reader merges both, so no entry is ignored as such (#133).
+                message = (
+                    f"The {subject} key {_shown(each.written)} is written again{at}: YAML allows a mapping one "
+                    f"merge key, and a strict reader rejects the second; write one `<<` with a list of sources."
+                )
+            else:
+                what = _key_clause(each.why, each.by_written, at)
+                stays = _key_read(each.by_line) if each.why != "repeated" else ""
+                message = _key_ignored(subject, each.written, what, stays)
+            report(FRONTMATTER_KEY_DUPLICATE_RULE, message, line=each.line)
 
     # ── Metadata dates (§16.6) ──
     for field_name, field_value in (

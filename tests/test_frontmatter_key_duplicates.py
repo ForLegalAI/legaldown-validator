@@ -68,10 +68,86 @@ def test_no_collision_no_finding():
     assert _found("translations:\n  fr: a.lgd\n  ' cs ': b.lgd\nfield_types:\n  a: x\n  b: y\n") == []
 
 
-def test_a_blank_sibling_is_skipped_not_a_collision():
-    assert _found("translations:\n  fr: a.lgd\n  ' fr': ''\n") == []  # #116: a blank entry is skipped
-    assert _found("translations:\n  fr: a.lgd\n  ' fr':\n") == []
+def test_a_blank_sibling_before_the_entry_kept_is_skipped_not_a_collision():
+    assert _found("translations:\n  ' fr': ''\n  fr: a.lgd\n") == []  # #116: a blank entry is skipped
+    assert _found("translations:\n  ' fr':\n  fr: a.lgd\n") == []
     assert _found("field_types:\n  a: x\n  ' a': ' '\n") == [(RULE, "warning", 4)]  # a blank description is kept
+
+
+@pytest.mark.parametrize("front,reason", [
+    ("translations:\n  fr: a.lgd\n  ' fr': ''\n", "its value is empty"),
+    ("translations:\n  fr: a.lgd\n  ' fr':\n", "its value is null"),
+    ("translations:\n  ' fr': a.md\n  fr: ''\n", "its value is empty"),
+    ("field_types:\n  ' a': x\n  a: ''\n", "its value is empty"),
+])
+def test_a_blank_entry_after_an_earlier_one_that_strips_alike_is_reported(front, reason):
+    # #133: the last written loses to the earlier entry, which the model reads instead: not what "the last stays"
+    # says, so the blank entry is reported at its line, naming the entry read.
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert (diagnostic.level, diagnostic.line) == ("warning", 5)
+    assert f"` is skipped ({reason}), and the same key as " in diagnostic.message
+    assert diagnostic.message.endswith("once stripped: this entry is ignored, and the entry at line 4 is the one read.")
+
+
+def test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_before_it():
+    # #133: `' fr'` is written again at line 6, which is skipped; the entry read is `fr` at line 4, not line 6.
+    front = "translations:\n  fr: a\n  ' fr': b\n  ' fr': ''\n"
+    assert parse(_source(front)).metadata.translations == {"fr": "a"}
+    found = sorted((d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE)
+    assert found == [
+        (5, "error", "The translations key `' fr'` is written again: this entry is ignored, the entry at line 6 is "
+         "skipped (its value is empty), and the entry at line 4 is the one read."),
+        (6, "warning", "The translations key `' fr'` is skipped (its value is empty), and the same key as `fr` once "
+         "stripped: this entry is ignored, and the entry at line 4 is the one read."),
+    ]
+    # judged against the model: once it no longer holds the key, neither is said
+    document = parse(_source(front))
+    document.metadata.translations = {}
+    assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
+
+
+def test_a_key_merged_in_is_reported_at_the_merge_of_each_map_that_merges_it():
+    # #133: at the `<<` of the map, which reads it, saying where it is written: not at the source, which is in
+    # neither map and still holds it.
+    front = "b: &b {fr: a.md}\ntranslations: {<<: *b, ' fr': c.md}\nfield_types: {<<: *b, ' fr': c}\n"
+    found = [(d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (4, "warning", "The translations key `fr`, merged in from line 3, is the same key as `' fr'` once stripped: "
+         "this entry is ignored, and the entry at line 4 is the one read."),
+        (5, "warning", "The field_types key `fr`, merged in from line 3, is the same key as `' fr'` once stripped: "
+         "this entry is ignored, and the entry at line 5 is the one read."),
+    ]
+    # one map, in block style, with a list of sources: at the line of its `<<`
+    front = "b: &b\n  fr: a.md\ntranslations:\n  de: d.md\n  <<: [{cs: c.md}, *b]\n  ' fr': c.md\n"
+    found = [(d.line, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (7, "The translations key `fr`, merged in from line 4, is the same key as `' fr'` once stripped: this entry "
+         "is ignored, and the entry at line 8 is the one read."),
+    ]
+
+
+def test_a_key_merged_in_that_strips_like_a_written_key_is_reported_where_it_is_written():
+    # #133: YAML keeps both keys, and the model reads them as one: the merged entry is dropped.
+    front = "b: &b {fr: a.lgd}\ntranslations: {<<: *b, ' fr': b.lgd}\n"
+    assert parse(_source(front)).metadata.translations == {"fr": "b.lgd"}
+    (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert (diagnostic.level, diagnostic.line) == ("warning", 4)  # at the `<<` (`test_..._at_the_merge_of_each_map`)
+    assert diagnostic.message == (
+        "The translations key `fr`, merged in from line 3, is the same key as `' fr'` once stripped: this entry is "
+        "ignored, and the entry at line 4 is the one read."
+    )
+    # in a block mapping, from a list of sources, and between two sources too
+    front = "b: &b\n  fr: a.lgd\nfield_types:\n  <<: [*b]\n  'fr ': b\n"
+    assert _found(front) == [(RULE, "warning", 6)]
+    assert _found("translations:\n  <<: [{fr: a.lgd}, {' fr': b.lgd}]\n") == [(RULE, "warning", 4)]
+    # A key written over the same merged key replaces it, as YAML says, and a merged key that the model reads as
+    # the same text as a written one (`1` and `'1'`) is merge precedence, as in every other mapping: neither is said.
+    assert _found("b: &b {fr: a.lgd}\ntranslations: {<<: *b, fr: b.lgd}\n") == []
+    assert _found("b: &b {1: a.lgd}\ntranslations: {<<: *b, '1': b.lgd}\n") == []
+    # `!!int 1` is read as the text `1` too, so it is the same key to the reader's dict as `'1'`: precedence
+    assert _found("b: &b {!!int 1: x.md}\ntranslations: {<<: *b, '1': y.md}\n") == []
+    # and the entry read is found at its line
+    assert parse(_source("b: &b {fr: a.lgd}\ntranslations: {<<: *b}\n")).source_map.key("translations", "fr") == 3
 
 
 def test_the_mix_of_an_exact_repeat_and_a_padded_key():
@@ -100,7 +176,7 @@ def test_a_repeat_names_the_entry_that_repeats_it_not_the_one_the_model_keeps():
     assert diagnostic.message == "The translations key `fr` is written again at line 5: this entry is ignored."
 
 
-def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
+def test_the_entry_is_skipped_only_if_it_is_the_last_of_its_key():
     # `1`, `1` and `"1": ""`: one key to the model, whose last entry is blank, so none is kept.
     front = 'translations:\n  1: x\n  1: y\n  "1": ""\n'
     assert parse(_source(front)).metadata.translations == {}
@@ -112,8 +188,37 @@ def test_the_entry_is_blank_only_if_it_is_the_one_the_model_would_keep():
         "and the entry at line 6 is skipped (its value is empty), so no entry is kept.",
     ]
     # a blank entry that is not the last of its key is no reason to say so
-    front = "translations:\n  a: x\n  a: ''\n  ' a': z\n"
+    front = "translations:\n  a: ''\n  a: x\n  ' a': z\n"
     assert not any("skipped" in d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE)
+
+
+def test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_after_it():
+    # #133: `fr` is written again at line 5, which is skipped too, and `' fr'` at line 6 is the entry read: as when
+    # the entry read is written before (`test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_before_it`).
+    front = "translations:\n  fr: ''\n  fr: ''\n  ' fr': a.md\n"
+    assert parse(_source(front)).metadata.translations == {"fr": "a.md"}
+    found = [(d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (4, "error", "The translations key `fr` is written again: this entry is ignored, the entry at line 5 is "
+         "skipped (its value is empty), and the entry at line 6 is the one read."),
+    ]
+    # the entry that repeats it is named when it is not the skipped one, which names the entry read in turn
+    front = "translations:\n  a: x\n  a: y\n  a: ''\n  ' a': z\n"
+    found = [(d.line, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (4, "The translations key `a` is written again at line 5: this entry is ignored."),
+        (5, "The translations key `a` is written again: this entry is ignored, the entry at line 6 is skipped (its "
+         "value is empty), and the entry at line 7 is the one read."),
+    ]
+    front = "translations:\n  a: x\n  a: ''\n  ' a': z\n"
+    assert [d.message for d in validate(parse(_source(front))).diagnostics if d.rule == RULE] == [
+        "The translations key `a` is written again: this entry is ignored, the entry at line 5 is skipped (its value "
+        "is empty), and the entry at line 6 is the one read."
+    ]
+    # the same with a key read as the same text, and in field_types
+    front = "field_types:\n  1: a\n  '1': ''\n  ' 1': b\n"
+    ((_line, _level, message),) = [(d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert message.endswith("the entry at line 5 is skipped (its value is empty), and the entry at line 6 is the one read.")
 
 
 # ── the same key written twice, or read as one ──
@@ -276,12 +381,26 @@ def test_the_message_says_why_the_model_keeps_none(front, reason):
     assert diagnostic.message.endswith(f"the entry at line 5 is skipped ({reason}), so no entry is kept.")
 
 
-def test_an_aliased_key_written_again_is_at_its_anchor_and_does_not_cite_itself():
-    # The YAML reader gives the alias its anchor's node, and so its line: the position is not recovered.
+def test_an_aliased_key_written_again_names_the_alias_at_its_own_line():
+    # #133: the YAML reader gives the alias its anchor's node, but the parser keeps where the alias is written.
     front = "translations:\n  &k fr: a.lgd\n  *k : b.lgd\n"
     assert _found(front) == [(RULE, "error", 4)]
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert diagnostic.message == "The translations key `&k fr` is written again: this entry is ignored."
+    assert diagnostic.message == "The translations key `&k fr` is written again at line 5: this entry is ignored."
+    assert parse(_source(front)).source_map.key("translations", "fr") == 5
+
+
+def test_an_anchor_and_its_alias_across_stripped_slots_are_each_at_their_own_line():
+    # #133: `&k fr`, `' fr'`, `*k`: the alias replaces the anchor's entry (an Error at the anchor), and `' fr'`
+    # replaces the alias's slot (a Warning at the alias), not two findings at the anchor's line.
+    front = "translations:\n  &k fr: a\n  ' fr': b\n  *k : c\n"
+    assert parse(_source(front)).metadata.translations == {"fr": "b"}
+    found = [(d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (4, "error", "The translations key `&k fr` is written again at line 6: this entry is ignored."),
+        (6, "warning", "The translations key `*k` is the same key as `' fr'` once stripped: this entry is ignored, "
+         "and the entry at line 5 is the one read."),
+    ]
 
 
 def test_a_repeat_whose_last_entry_is_blank_is_still_judged_after_an_unrelated_edit():
@@ -310,11 +429,12 @@ def test_a_model_edited_after_parsing_draws_no_stale_finding():
 
 
 def test_a_null_by_its_tag_is_skipped_as_the_model_skips_it():
-    # The model drops `!!null "x"`, so `a: x` stays and the padded key is no entry.
+    # The model drops `!!null "x"`, so `a: x` stays, and the padded key after it is reported as losing to it (#133).
     front = "field_types:\n  a: x\n  ' a': !!null \"x\"\n"
     document = parse(_source(front))
     assert document.metadata.field_types == {"a": "x"}
-    assert _found(front) == []
+    (diagnostic,) = [d for d in validate(document).diagnostics if d.rule == RULE]
+    assert diagnostic.line == 5 and "is skipped (its value is null)" in diagnostic.message
     assert document.source_map.key("field_types", "a") == 4
 
 
@@ -417,8 +537,10 @@ def test_read_maps_agrees_with_the_model_on_generated_maps(seed):
         ignored = {each.entry.line for each in found.ignored} if found else set()
         for each in found.ignored if found else ():
             assert each.entry.key == each.by.key, front
-            if each.why != "repeated":  # a repeat is named by the entry that repeats it, which may be ignored too
-                assert each.by.line not in ignored and (each.skipped or stays[each.by.key] is each.by), front
+            if each.why != "repeated" and not each.skipped:
+                # a repeat is named by the entry that repeats it, and a skipped entry may be reported too (#133)
+                assert each.by.line not in ignored and stays[each.by.key] is each.by, front
+            assert each.kept is stays.get(each.entry.key), front
         for index, row in enumerate(rows):
             # Every row is accounted for: it stays, it is reported, or the model skips it.
             line = 4 + index

@@ -67,7 +67,7 @@ from .positions import (
     document_shape,
     frontmatter_keys,
     line_breaks,
-    metadata_snapshot,
+    metadata_fields_snapshot,
     read_maps,
     repeated_keys,
     stripped_nodes,
@@ -97,6 +97,34 @@ class _StrDateSafeLoader(yaml.SafeLoader):
         self.merges: dict[yaml.Node, tuple[list[tuple[yaml.Node, yaml.Node]], list[yaml.Node]]] = {}
         #: The tag YAML resolved each scalar to, for those ``_read_as_written`` reads as text.
         self.resolved: dict[yaml.Node, str] = {}
+        #: Where each mapping key written as an alias (``*k``) is, by the id of its entry: the entry, and the
+        #: start and end index of the alias. The reader gives an alias its anchor's node, whose marks are the
+        #: anchor's, so this is taken from the alias event as the key is composed (#133).
+        self.alias_keys: dict[int, tuple[tuple[yaml.Node, yaml.Node], int, int]] = {}
+        #: For each mapping that merges keys in: its merge entries (``<<``), in the order written (#133).
+        self.merge_keys: dict[yaml.Node, list[tuple[yaml.Node, yaml.Node]]] = {}
+
+    def compose_mapping_node(self, anchor: Any) -> yaml.MappingNode:
+        # PyYAML's own (6.0.4), but for the alias keys it notes: in place rather than around it, as a wrapper
+        # would add a frame to each level of nesting, which the reader reads by recursion.
+        start_event = self.get_event()
+        tag = start_event.tag
+        if tag is None or tag == "!":
+            tag = self.resolve(yaml.MappingNode, None, start_event.implicit)
+        node = yaml.MappingNode(tag, [], start_event.start_mark, None, flow_style=start_event.flow_style)
+        if anchor is not None:
+            self.anchors[anchor] = node
+        while not self.check_event(yaml.MappingEndEvent):
+            alias = self.peek_event() if self.check_event(yaml.AliasEvent) else None
+            item_key = self.compose_node(node, None)
+            item_value = self.compose_node(node, item_key)
+            entry = (item_key, item_value)
+            node.value.append(entry)
+            if alias is not None:
+                self.alias_keys[id(entry)] = (entry, alias.start_mark.index, alias.end_mark.index)
+        end_event = self.get_event()
+        node.end_mark = end_event.end_mark
+        return node
 
     def flatten_mapping(self, node: yaml.MappingNode) -> None:
         # The reader reads a `=` key as text; the tag it resolved to is kept (a `'='` key is text from the start).
@@ -105,6 +133,7 @@ class _StrDateSafeLoader(yaml.SafeLoader):
                 self.resolved[key] = key.tag
         # Once: flattening deletes the merge keys, and it recurses into each source through this method.
         if any(key.tag == _MERGE_TAG for key, _value in node.value):
+            self.merge_keys[node] = [entry for entry in node.value if entry[0].tag == _MERGE_TAG]
             self.merges[node] = (
                 [entry for entry in node.value if entry[0].tag != _MERGE_TAG],
                 [value for key, value in node.value if key.tag == _MERGE_TAG],
@@ -339,7 +368,7 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
         breaks = line_breaks(block)
         keys = {(): 1, **frontmatter_keys(node, breaks, 2)}
         stripped = stripped_nodes(node)
-        written = written_maps(node, block, breaks, 2, stripped)
+        written = written_maps(node, block, breaks, 2, stripped, loader)
         not_line_editable = _not_line_editable(node)
         _read_as_written(loader, node)
         metadata = loader.construct_document(node)
@@ -356,6 +385,8 @@ def _split_frontmatter(source: str, keep_error: bool = False) -> _Frontmatter:
             loader.merges,
             loader.resolved,
             set(stripped.values()),
+            loader.alias_keys,
+            loader.merge_keys,
         )
     except FrontmatterError as exc:
         if not keep_error:
@@ -2142,7 +2173,7 @@ def parse(
         keys=front.keys,
         maps=front.maps,
         repeats=front.repeats,
-        metadata_seen=list(metadata_snapshot(document.metadata)) if front.repeats else [],
+        metadata_seen=metadata_fields_snapshot(document.metadata, front.repeats) if front.repeats else {},
         layout=layout,
         shape=document_shape(document),
         starts=None if written == source else written_line_starts(written),
