@@ -734,6 +734,8 @@ class TestLineStartsInContext:
         # A line of nothing but choices that step 5 deletes can leave what held it empty (#120, the comment).
         ('1.\n   {{choose: x, true="", false="T"}}\n\n   more\n', "leaves the item or quote"),
         ('> {{choose: x, true="", false="T"}} {{choose: x, true="", false="U"}}\n> 2. b\n', "begins other blocks"),
+        # A drafting note before it is removed first: the bare "-" underlines "text" (#120 review).
+        ('text\n> [!DRAFTING]\n> n\n- {{choose: x, true="", false="T"}}\n', "the underline of a heading"),
     ])
     def test_what_the_warning_says(self, body, what):
         [found] = [d for d in validate(parse(_template(body, _BOOL))).diagnostics if d.rule == BARE_MARKERS_RULE]

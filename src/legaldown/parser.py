@@ -2064,8 +2064,9 @@ def quote_blocks(block: Block, *, depth: int = 0, quotes: int | None = None) -> 
     is a ``heading`` block, not a section, and no directive is lifted into
     block fields (§4.1). *depth*: how many list items and quotes *block* is
     in, the count before entering it; *quotes*: how many of those are quotes
-    (by default all *depth* of them, as the count was before #139: pass it to
-    read a quote in list items as the validator does). A quote in ``MAX_QUOTE_DEPTH`` quotes
+    (by default all *depth* of them, as the count was before #139, which is not
+    the validator's count: pass it to read a quote in list items as the
+    validator does). A quote in ``MAX_QUOTE_DEPTH`` quotes
     is not read into blocks: it is one paragraph of its text as written
     (the validator reads no directives in its fenced code there), or no
     block when it holds none. Raises ``ValueError`` for a block that is not a quote."""

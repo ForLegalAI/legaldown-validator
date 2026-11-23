@@ -1157,8 +1157,6 @@ SKIP_BARE_MARKERS: ContextVar[bool] = ContextVar("skip_bare_markers", default=Fa
 #: The most lines that the bare-marker check reads in one validation, the document and its fragments together (each
 #: line it may leave bare is read in a window of the blocks around it, twice). Past it, every such line is reported.
 BARE_BUDGET = 100000
-#: What a line holds once its choices are empty that is left as markers alone: quote markers and list item markers.
-_BARE_RE = re.compile(r"(?:[ \t]*(?:>|[-*+]|[0-9]{1,9}[.)]))+[ \t]*")
 _BARE_ADVICE = (
     "give the line text that every answer keeps, or make what holds it conditional ({when=...}), so that it goes whole"
 )
@@ -1225,7 +1223,7 @@ def _judge_bare(
     budget: list[int],
 ) -> tuple[int | None, list[BareMarkers]]:
     """The file line of the first line of the body, and the lines of *document*'s body that ``check_bare_markers``
-    reports. Nothing here raises: a body that cannot be read so has its candidate lines reported, if they are known."""
+    reports. Nothing here raises: of a body that cannot be read so, nothing is reported (the check only advises)."""
     try:
         lines, first, judged = _body(document, where)
     except Exception:  # noqa: BLE001 - a check that no template can stop
@@ -1269,20 +1267,34 @@ def _bare_markers(
             for occ in found
         ):
             continue
-        if is_blank(emptied) or _BARE_RE.fullmatch(emptied):
+        # (What the assembler takes for bare markers: ``_Line.bare``.)
+        if is_blank(emptied) or assembly._BARE_MARKERS_RE.fullmatch(emptied):
             candidates.append((number, emptied, ordered[-1].directive.source))
     if not candidates:
         return []
+    # Drafting notes are removed before anything else (step 2): the lines are read without them, as written.
+    kept = [number for number in range(len(plains)) if number not in source.notes]
+    slot = {number: index for index, number in enumerate(kept)}
+    plains = [plains[number] for number in kept]
+    found_lines = _read_bare(assembly, plains, [(slot[n], e, d) for n, e, d in candidates], budget)
+    return [each.__class__(kept[each.line], each.source, each.what, each.more) for each in found_lines]
+
+
+def _read_bare(
+    assembly: Any, plains: list[str], candidates: list[tuple[int, str, str]], budget: list[int]
+) -> list[BareMarkers]:
+    """``_bare_markers`` of the template's lines *plains* (without its drafting notes), for the *candidates*: each
+    line, the line with its choices empty, and its first choice's source."""
     units = _units(assembly, plains)
     starts = [start for start, _end in units]
     found_lines: list[BareMarkers] = []
-    template: dict[tuple[int, int], tuple] = {}  # the template's reading of a window, once
+    readings: dict[tuple[int, int], tuple] = {}  # the template's reading of a window, once
     for number, emptied, directive in sorted(candidates):
         at = max(bisect_left(starts, number + 1) - 1, 0)
         begin = units[at - 1][0] if at > 0 else 0
         end = units[at + 1][1] if at + 1 < len(units) else len(plains)
         end = max(end, number + 1)
-        cost = (end - begin) * (1 + ((begin, end) not in template))
+        cost = (end - begin) * (1 + ((begin, end) not in readings))
         if budget[0] < cost:
             # The rest are not read: the first is reported, for all of them (a Warning for each says no more).
             budget[0] = 0
@@ -1290,9 +1302,9 @@ def _bare_markers(
             found_lines.append(BareMarkers(number, directive, "", rest))
             break
         budget[0] -= cost
-        if (begin, end) not in template:
-            template[begin, end] = assembly._signatures(plains[begin:end])[:2]
-        what = _reads_otherwise(assembly, plains[begin:end], template[begin, end], number - begin, emptied)
+        if (begin, end) not in readings:
+            readings[begin, end] = assembly._signatures(plains[begin:end])[:2]
+        what = _reads_otherwise(assembly, plains[begin:end], readings[begin, end], number - begin, emptied)
         if what:
             found_lines.append(BareMarkers(number, directive, what))
     return found_lines
