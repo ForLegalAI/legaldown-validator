@@ -70,6 +70,27 @@ def test_a_tilde_fence_and_a_lone_fence_at_the_end_are_reported():
     assert "Nothing follows it" in _message(result, FENCE_UNCLOSED_RULE)
 
 
+def test_backticks_after_an_unclosed_fence_are_code_too():
+    # The fence's opening line is matched alone: a later backtick is no part of it.
+    for text in (FM + "# A\n\n```\nsee `x`\n", FM + "# A\n\n```\ncode\n    ```\n"):
+        assert _found(validate(parse(text))) == [(FENCE_UNCLOSED_RULE, "warning", "", _at(text, "```"))], text
+
+
+def test_a_setext_heading_it_holds_is_counted():
+    text = FM + "# A\n\n```\nPayment\n=======\n\nText {{ref: x}}\n\n---\n\nAfter a rule.\n"
+    assert "8 lines with 1 heading and 1 directive" in _message(validate(parse(text)), FENCE_UNCLOSED_RULE)
+
+
+def test_text_a_model_puts_after_its_closing_fence_is_no_open_fence():
+    from legaldown import Block
+
+    document = parse(FM + "# A\n\nText.\n")
+    document.sections[0].blocks.append(Block(kind="code", text="```\nx\n```\n{{ref: missing}}"))
+    result = validate(document)
+    assert "ref-broken" in result.rules("error")
+    assert _found(result) == []
+
+
 def test_a_fence_in_the_preamble_is_reported():
     text = FM + "Intro.\n\n```\n# A\n"
     assert parse(text).sections == []
@@ -163,6 +184,18 @@ def test_a_heading_in_a_list_item_or_a_quote_is_reported_at_its_line():
         (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Inner")),
         (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "### Quoted")),
     ]
+
+
+def test_a_setext_heading_in_a_list_item_or_a_quote_names_its_underline():
+    text = FM + "# Terms\n\n- Item {{ref: terms}}\n  ---\n\n> Quoted {{ref: terms}}\n> ===\n"
+    result = validate(parse(text))
+    assert _found(result) == [
+        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "- Item")),
+        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "> Quoted")),
+    ]
+    first, second = (d.message for d in result.diagnostics if d.rule == HEADING_DIRECTIVE_RULE)
+    assert f"'---' line under it at line {_at(text, '  ---')}" in first
+    assert f"'===' line under it at line {_at(text, '> ===')}" in second
 
 
 def test_a_choose_in_a_heading_is_left_to_choose_invalid():

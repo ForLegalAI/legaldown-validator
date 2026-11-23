@@ -9,12 +9,13 @@ not reported: the container closes it, and what follows the container is read as
 that itself runs to the end of the file is, as nothing but the end of the file closes it.
 
 **``ldv-heading-directive``** (Error). Heading text must not contain a directive (§4.2), and a directive is
-recognized in body text only (§11.4), so one written in a heading is literal text that no rule checks: a
-``{{def:}}`` declares nothing, and the term it was to define is ``term-undefined`` where it is used. It is
+recognized in body text only (§11.4), so one written in a section's heading is literal text that no rule
+checks: a ``{{def:}}`` declares nothing, and the term it was to define is ``term-undefined`` where it is used;
+assembly leaves a ``{{placeholder:}}`` there unfilled. It is
 an Error, as §4.2 is a MUST NOT and the directive is lost whatever it was meant to do; no rule of the
 specification's covers it (``heading-hardcoded-number`` is the numbering of §4.2, and a heuristic). The
-usual cause is a setext heading: a paragraph directly above a ``---`` line is a heading, and the message
-says so. A heading in a list item or a quote is a heading too, and is reported the same way (this implementation
+usual cause is a setext heading: a paragraph directly above a ``---`` or ``===`` line is a heading, and the
+message names that line. A heading in a list item or a quote is a heading too, and is reported the same way (this implementation
 reads its text as body text, so its directives are checked as well). A ``{{choose:}}`` in a section's heading is
 left to ``choose-invalid``, the specification's rule for it (§15.5).
 
@@ -30,7 +31,7 @@ from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 from ..directives import Lexed
-from ..markdown import FENCE_OPEN_RE, closes_fence, code_content
+from ..markdown import FENCE_OPEN_RE, closes_fence, code_content, fence_end
 from ..models import LIST_KINDS, Block, Document
 from ..positions import Locator
 from .patterns import FENCE_UNCLOSED_RULE, HEADING_DIRECTIVE_RULE
@@ -43,8 +44,9 @@ if TYPE_CHECKING:
 #: What a file is called in a message, by what it is to the document (None: the document itself).
 _NAMES: dict[FragmentKind | None, str] = {None: "document", "include": "fragment", "attachment": "attachment file"}
 
-# An ATX heading's line in a code block's content, for the count of what the block holds.
+# An ATX heading's line, and a setext underline, in a code block's content: for the count of what it holds.
 _ATX_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
+_SETEXT_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 
 
 def _files(
@@ -94,13 +96,18 @@ def _innermost_last(block: Block) -> Block | None:
         depth += 1
 
 
-def _unclosed(block: Block) -> bool:
-    """True if *block* is a fenced code block without its closing fence."""
+def _open_fence(block: Block) -> str | None:
+    """The fence of *block* if it is a fenced code block that no line of it closes, else None. (A block built
+    in code may hold text after its closing fence, which is no code, ``definitions.block_fragments``.)"""
     if block.kind != "code" or not block.text:
-        return False
+        return None
     lines = block.text.split("\n")
     opening = FENCE_OPEN_RE.match(lines[0])
-    return opening is not None and not (len(lines) > 1 and closes_fence(lines[-1], opening.group("fence")))
+    if opening is None:
+        return None
+    fence = opening.group("fence")
+    end = fence_end(lines, 0, fence)
+    return None if end - 1 > 0 and closes_fence(lines[end - 1], fence) else fence
 
 
 def _count(number: int, noun: str) -> str:
@@ -111,13 +118,24 @@ def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
-def _fence_message(block: Block, name: str, lex_fragment: Callable[[str], Lexed]) -> str:
+def _headings_in(lines: list[str]) -> int:
+    """How many of *lines*, read as LegalDown, would be headings: ATX lines, and the last line of a paragraph
+    over a setext underline (a ``---`` after a blank line is a thematic break)."""
+    return sum(
+        1 for number, line in enumerate(lines)
+        if _ATX_RE.match(line) or (
+            number + 1 < len(lines) and _SETEXT_RE.match(lines[number + 1])
+            and line.strip() and not _SETEXT_RE.match(line)
+        )
+    )
+
+
+def _fence_message(block: Block, fence: str, name: str, lex_fragment: Callable[[str], Lexed]) -> str:
     lines = code_content(block).text.splitlines()
-    fence = FENCE_OPEN_RE.match(block.text).group("fence")  # type: ignore[union-attr]  # _unclosed
     if not lines:
         held = "Nothing follows it"
     else:
-        headings = sum(1 for line in lines if _ATX_RE.match(line))
+        headings = _headings_in(lines)
         directives = len(lex_fragment("\n".join(lines)).directives)
         among = [_count(number, noun) for number, noun in ((headings, "heading"), (directives, "directive")) if number]
         held = (
@@ -153,12 +171,14 @@ def check_unclosed_fences(
             continue
         section, index, top = last
         block = _innermost_last(top)
-        if block is None or not _unclosed(block):
+        fence = _open_fence(block) if block is not None else None
+        if block is None or fence is None:
             continue
-        lines = locator.nested_lines(section, index)
-        # The block the file ends with is the last of its top-level block's, in pre-order.
-        line = lines[-1] if lines else locator.block(section, index)
-        result.warning(FENCE_UNCLOSED_RULE, _fence_message(block, name, lex_fragment), line=spot(line))
+        # The block the file ends with is the last of its top-level block's, in pre-order. (No line when the
+        # layout no longer fits the model: the container's would not be the fence's.)
+        spans = locator.nested_spans(section, index)
+        line = spans[-1][0] if spans else None
+        result.warning(FENCE_UNCLOSED_RULE, _fence_message(block, fence, name, lex_fragment), line=spot(line))
 
 
 def _shown(directives: list[str]) -> str:
@@ -166,6 +186,42 @@ def _shown(directives: list[str]) -> str:
     if len(directives) > 2:
         quoted.append(f"{len(directives) - 2} more")
     return _join(quoted)
+
+
+def _heading_message(text: str, found: list[str], underline: tuple[int, str] | None) -> str:
+    """The message of ``ldv-heading-directive`` for the heading *text* holding the directives *found*, with
+    its setext *underline* (its line and what is written there), if it has one."""
+    lost = (
+        "it is not recognized there (§11.4), so it is shown as written and what it was to do is not done"
+        if len(found) == 1 else
+        "they are not recognized there (§11.4), so they are shown as written and what they were to do is not done"
+    )
+    setext = ""
+    if underline is not None:
+        line, written = underline
+        keep = (
+            "put a blank line before it to keep the paragraph, and the line a thematic break"
+            if written.startswith("-") else "remove it, or put a blank line before it, to keep the paragraph"
+        )
+        setext = (
+            f" The '{written}' line under it at line {line} is what makes this paragraph a heading (a setext "
+            f"heading, CommonMark): {keep}."
+        )
+    return (
+        f"The heading '{text}' holds {_shown(found)}, but heading text must not contain a directive (§4.2): "
+        f"{lost}.{setext}"
+    )
+
+
+def _underline(locator: Locator, line: int | None) -> tuple[int, str] | None:
+    """A setext underline at *line* of the file, and what is written there: without the indentation and
+    the ``>`` of the containers it is in."""
+    body = locator.body()
+    if line is None or body is None:
+        return None
+    lines, first = body
+    written = lines[line - first] if 0 <= line - first < len(lines) else ""
+    return line, re.sub(r"^[ \t>]*", "", written).strip() or "---"
 
 
 def _nested_headings(top: Block) -> Iterator[tuple[int, Block]]:
@@ -195,43 +251,22 @@ def check_heading_directives(
         for index, section in enumerate(own.sections):
             # (A ``{{choose:}}`` in a heading is ``choose-invalid``'s, §15.5.)
             found = [d.source for d in lex_fragment(section.title).directives if d.name != "choose"]
-            if not found:
-                continue
-            underline = locator.underline(index)
-            setext = ""
-            if underline is not None:
-                body = locator.body()
-                written = body[0][underline - body[1]].strip() if body is not None else "---"
-                setext = (
-                    f" The '{written}' line under it at line {underline} is what makes this paragraph a "
-                    f"heading (a setext heading, CommonMark): "
-                    + (
-                        "put a blank line before it to keep the paragraph, and the line a thematic break."
-                        if written.startswith("-") else "remove it, or put a blank line before it, to keep the paragraph."
-                    )
+            if found:
+                underline = _underline(locator, locator.underline(index))
+                result.error(
+                    HEADING_DIRECTIVE_RULE, _heading_message(section.title, found, underline),
+                    line=spot(locator.heading(index)),
                 )
-            read = (
-                "it is not read as one (§11.4), so nothing checks it and it is shown as written"
-                if len(found) == 1 else
-                "they are not read as directives (§11.4), so nothing checks them and they are shown as written"
-            )
-            result.error(
-                HEADING_DIRECTIVE_RULE,
-                f"The heading '{section.title}' holds {_shown(found)}, but heading text must not contain a "
-                f"directive (§4.2): {read}.{setext}",
-                line=spot(locator.heading(index)),
-            )
         for section_index, block_index, top in own.iter_indexed_blocks():
-            lines: list[int] | None = None
+            spans: list[tuple[int, int]] | None = None
             for number, block in _nested_headings(top):
                 found = [d.source for d in lex_fragment(block.text).directives]
                 if not found:
                     continue
-                if lines is None:
-                    lines = locator.nested_lines(section_index, block_index) or []
+                if spans is None:
+                    spans = locator.nested_spans(section_index, block_index) or []
+                start, end = spans[number] if number < len(spans) else (None, None)
+                underline = _underline(locator, end - 1) if start is not None and end - start > 1 else None
                 result.error(
-                    HEADING_DIRECTIVE_RULE,
-                    f"The heading '{block.text}' holds {_shown(found)}, but heading text must not contain "
-                    f"a directive (§4.2).",
-                    line=spot(lines[number] if number < len(lines) else None),
+                    HEADING_DIRECTIVE_RULE, _heading_message(block.text, found, underline), line=spot(start)
                 )

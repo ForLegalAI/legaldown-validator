@@ -1297,8 +1297,8 @@ or forbids them, and no fixture case draws either.
   line. The validator only reports it: the parser does not close the fence, as that would change what CommonMark
   reads.
 - **`ldv-heading-directive`**, an **Error**: heading text must not contain a directive (§4.2), and a directive is
-  recognized in body text only (§11.4), so one in a section's heading is literal text: nothing checks it, and it
-  is shown as written. A `{{def:}}` there declares nothing (its uses are `term-undefined`), and assembly does not
+  recognized in body text only (§11.4), so one in a section's heading is literal text: it
+  is shown as written, and what it was to do is not done. A `{{def:}}` there declares nothing (its uses are `term-undefined`), and assembly does not
   fill a `{{placeholder:}}` there. It is reported once for each heading, at its first line, naming the directives
   (well-formed or malformed; not one in a code span or comment, nor `\{{`). The usual cause is a setext heading: a
   paragraph directly above a `---` (or `===`) line is a heading, and the message names that line and how to keep
