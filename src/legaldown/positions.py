@@ -136,6 +136,8 @@ class FrontmatterScalar:
     start: int
     end: int
     split: bool = False
+    #: The scalar's value, as YAML reads it.
+    value: str = ""
     #: Not found where the model reads it (the validator's own marker, never given by ``frontmatter_scalars``).
     unread: bool = False
 
@@ -157,14 +159,14 @@ def frontmatter_scalars(text: str) -> dict[tuple[Any, ...], FrontmatterScalar]:
     def scalar(node: yaml.ScalarNode) -> FrontmatterScalar:
         start, quote = spans.get(node.end_mark.index, (node.start_mark.index, ""))
         if node.style not in ('"', "'"):
-            return FrontmatterScalar("", node.start_mark.index, node.end_mark.index)
+            return FrontmatterScalar("", node.start_mark.index, node.end_mark.index, value=node.value)
         rows = text[start:node.end_mark.index].split("\n")
         # Malformed on its row for want of the "}}" that a later row of the value holds.
         split = any(
             d.name == "placeholder" and d.malformed and "}}" not in row[d.start:] and "}}" in "\n".join(rows[number + 1:])
             for number, row in enumerate(rows[:-1]) for d in lex(row).directives
         )
-        return FrontmatterScalar(quote, start, node.end_mark.index, split)
+        return FrontmatterScalar(quote, start, node.end_mark.index, split, node.value)
 
     def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
         if id(node) in seen:
@@ -245,9 +247,10 @@ def frontmatter_removed(text: str) -> list[tuple[int, int, bool]]:
     return found
 
 
-def frontmatter_placeholders(text: str) -> list[tuple[tuple[tuple[Any, ...], ...], int]]:
+def frontmatter_placeholders(text: str) -> list[tuple[tuple[tuple[Any, ...], ...], int, int, bool]]:
     """Every written scalar of the frontmatter's YAML *text* that holds ``{{placeholder``, key or value, once
-    each: ``(paths, offset)``, every path that reaches it and the offset where it is written. A value's path is
+    each: ``(paths, start, end, key)``, every path that reaches it, the offsets where it is written (``end`` is
+    a value's ``FrontmatterScalar.end``) and whether it is a key. A value's path is
     as ``frontmatter_scalars`` gives it (an entry of a sequence that is no mapping is ``(*path, "-", n)``, which no
     field has), a key's the path of the entry it names; a scalar an alias or a merge reaches is reached at each
     of their paths too. Empty when *text* cannot be read."""
@@ -255,11 +258,11 @@ def frontmatter_placeholders(text: str) -> list[tuple[tuple[tuple[Any, ...], ...
         root = yaml.compose(text, Loader=yaml.SafeLoader)
     except (yaml.YAMLError, ValueError, KeyError, RecursionError):
         return []
-    found: dict[int, tuple[int, list[tuple[Any, ...]]]] = {}  # by the written node
+    found: dict[int, tuple[int, int, bool, list[tuple[Any, ...]]]] = {}  # by the written node
 
-    def reach(node: yaml.ScalarNode, path: tuple[Any, ...]) -> None:
+    def reach(node: yaml.ScalarNode, path: tuple[Any, ...], key: bool = False) -> None:
         if "{{placeholder" in node.value:
-            found.setdefault(id(node), (node.start_mark.index, []))[1].append(path)
+            found.setdefault(id(node), (node.start_mark.index, node.end_mark.index, key, []))[3].append(path)
 
     def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
         if id(node) in seen:
@@ -275,7 +278,7 @@ def frontmatter_placeholders(text: str) -> list[tuple[tuple[tuple[Any, ...], ...
                     continue
                 inner = (*path, key.value if isinstance(key, yaml.ScalarNode) else "?")
                 if isinstance(key, yaml.ScalarNode):
-                    reach(key, inner)
+                    reach(key, inner, key=True)
                 else:
                     walk(key, (*path, "?"), seen)
                 walk(value, inner, seen)
@@ -290,7 +293,7 @@ def frontmatter_placeholders(text: str) -> list[tuple[tuple[tuple[Any, ...], ...
 
     if root is not None:
         walk(root, (), frozenset())
-    return [(tuple(paths), offset) for offset, paths in sorted(found.values())]
+    return [(tuple(paths), start, end, key) for start, end, key, paths in sorted(found.values(), key=lambda f: f[:2])]
 
 
 #: The frontmatter maps whose keys the model reads stripped (``models._parse_str_dict``), each with

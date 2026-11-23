@@ -2313,14 +2313,20 @@ def _pass(
         for directive in named(field_value, "placeholder"):
             field_line = where.key(*field_path)
             if fm_scalar is None:
-                # Without the source (a document built in code) nothing tells how a value is written: as §3.10
-                # asks. With it, a value whose written scalar is not at its path (keys the model reads stripped
-                # alike, one merged in) is none that assembly fills: no blank. The written scalar, which no field
-                # reaches, is ldv-frontmatter-placeholder-unread's, below, once (#12).
-                fm_scalar = where.frontmatter_scalars().get(field_path) or (
-                    FrontmatterScalar('"', 0, 0) if where.frontmatter_text() is None
-                    else FrontmatterScalar("", 0, 0, unread=True)
-                )
+                # How the value is written. Without the source (a document built in code), or for a value that
+                # is not the source's (metadata changed in code since), nothing tells: as §3.10 asks. A value read
+                # from the source whose written scalar is not at its path (keys the model reads stripped alike, one
+                # merged in) is none that assembly fills: no blank. Its written scalar, which no field reaches, is
+                # ldv-frontmatter-placeholder-unread's, below, once (#12).
+                fm_scalars = where.frontmatter_scalars()
+                fm_scalar = fm_scalars.get(field_path)
+                if fm_scalar is not None and fm_scalar.value.strip() != field_value.strip():
+                    fm_scalar = None  # changed since it was parsed
+                if fm_scalar is None:
+                    fm_read = where.frontmatter_text() is not None and any(
+                        each.value.strip() == field_value.strip() for each in fm_scalars.values()
+                    )
+                    fm_scalar = FrontmatterScalar("", 0, 0, unread=True) if fm_read else FrontmatterScalar('"', 0, 0)
                 if fm_scalar.split:
                     # §11.5: a directive does not span lines. YAML folds the quoted value onto one, but it is
                     # written on two, where assembly reads it (and refuses it, as malformed).
@@ -2331,6 +2337,10 @@ def _pass(
                         line=field_line,
                     )
             if fm_scalar.unread:
+                if directive.positional:
+                    unrecognized.setdefault(
+                        directive.positional, "a frontmatter value the model does not read as it is written (§3.10)"
+                    )
                 continue
             if not fm_scalar.quote:
                 result.error(
@@ -2356,10 +2366,15 @@ def _pass(
     # field_types are structural, placeholder-in-structural-field's.)
     if (fm_text := where.frontmatter_text()) is not None and "{{placeholder" in fm_text:
         fields = {path for _value, path in value_fields} | {path for _label, _value, path in structural_fields}
-        for fm_paths, fm_at in frontmatter_placeholders(fm_text):
-            # A written scalar any field reaches (through an alias or a merge too) is that field's.
+        fm_scalars = where.frontmatter_scalars()
+        for fm_paths, fm_at, fm_end, fm_key in frontmatter_placeholders(fm_text):
+            # A written scalar that a field reads (through an alias or a merge too) is that field's: one the field's
+            # own key, or a later one, overrides at the same path is not (#12).
             if any(
-                fm_path in fields or fm_path[:1] in (("questions",), ("translations",), ("field_types",))
+                fm_path[:1] in (("questions",), ("translations",), ("field_types",))
+                or (fm_path in fields and (fm_key or (
+                    (fm_read := fm_scalars.get(fm_path)) is not None and fm_read.end == fm_end
+                )))
                 for fm_path in fm_paths
             ):
                 continue

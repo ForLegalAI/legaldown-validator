@@ -388,3 +388,29 @@ def test_a_value_the_model_reads_from_no_written_scalar_is_no_blank_and_is_repor
     final = validate(document, final=True)
     assert "placeholder-unfilled" not in final.rules()
     assert [d.line for d in final.diagnostics if d.rule == UNREAD_RULE] == [2]  # once, where it is written
+
+
+def test_a_scalar_the_fields_own_key_overrides_is_unread():
+    # Merged in, or written first, under a field the model then reads from a later key: assembly leaves it.
+    for text in (
+        _with_party('pbase: &pb {legal_name: "{{placeholder: q}}"}\ntitle: T\n', "        <<: *pb\n"),
+        _source('title: "{{placeholder: q}}"\ntitle: T\n'),
+    ):
+        final = validate(parse(text), final=True)
+        assert "placeholder-unfilled" not in final.rules(), text
+        assert [d.line for d in final.diagnostics if d.rule == UNREAD_RULE] == [2], text
+        assert _left_in_frontmatter(Template(text).form({"q": "Main St"}).assemble().output), text
+
+
+def test_a_placeholder_set_in_code_on_a_parsed_document_is_a_blank():
+    document = parse(_source("title: T\n"))
+    document.metadata.title = "{{placeholder: q}}"
+    assert "placeholder-unfilled" in validate(document, final=True).rules()
+
+
+def test_question_unused_says_why_for_a_value_read_from_no_written_scalar():
+    text = _with_party(
+        'pbase: &pb {" Reg": "{{placeholder: q}}"}\ntitle: T\n', '        <<: *pb\n        "Reg ": other\n'
+    ).replace("---\n\n", _Q + "---\n\n")
+    (message,) = [d.message for d in validate(parse(text)).diagnostics if d.rule == "question-unused"]
+    assert "does not read as it is written" in message
