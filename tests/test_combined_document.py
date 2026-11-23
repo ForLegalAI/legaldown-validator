@@ -832,6 +832,36 @@ def test_a_template_whose_only_attachment_file_holds_includes_is_validated_once(
     assert calls == [False]
 
 
+_LEFT_OUT = {
+    "p.lgd": "## P\n\nText.\n",
+    "a.lgd": "## A\n\n{{include: big.lgd}}\n\n{{include: gone.lgd}}\n",  # within the budget alone, and not with big
+    "big.lgd": "## Big\n\n" + "Text.\n\n" * 6,
+}
+
+
+def test_an_attachment_file_left_out_after_its_includes_are_followed_leaves_no_unread_include_behind(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 5)
+    text = _attached(("a", "a.lgd")) + _SCOPE + "See {{attach: a}}.\n\n{{include: p.lgd}}\n"
+    result = _run(text, _LEFT_OUT)
+    warnings = [d.message for d in result.diagnostics if d.rule == SKIPPED_RULE]
+    # The attachments Warning says it was left out; nothing of its includes is said as if it were in.
+    assert any("(1 past the size the combined document may have" in message for message in warnings)
+    assert not any("not read" in message or "include in LegalDown" in message for message in warnings)
+    assert core._check(parse(text, filename="main.lgd"), False, _Loader(_LEFT_OUT), core._DOCUMENT).combined
+
+
+def test_an_attachment_file_left_out_after_its_includes_are_followed_leaves_no_cap_behind(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 5)
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_INCLUDE_EXPANDED", 3)  # the body spends 1, a.lgd the rest
+    text = _attached(("a", "a.lgd")) + _SCOPE + "See {{attach: a}}.\n\n{{include: p.lgd}}\n"
+    warnings = [d.message for d in _run(text, _LEFT_OUT).diagnostics if d.rule == SKIPPED_RULE]
+    assert not any("includes and headings" in message for message in warnings), warnings
+    # ... which a.lgd taken in does reach.
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 50_000)
+    warnings = [d.message for d in _run(text, _LEFT_OUT).diagnostics if d.rule == SKIPPED_RULE]
+    assert any("past 3 includes and headings" in message for message in warnings), warnings
+
+
 def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
     text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: gone.lgd}}\n"
     result = _run(text, {"a.lgd": "## A {#a when=x}\n\nText.\n"})

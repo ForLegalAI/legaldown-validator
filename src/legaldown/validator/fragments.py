@@ -1108,7 +1108,10 @@ class _Walk:
             return False
         plan = Plan()
         if includes:
-            complete = self.complete
+            # What the walk of its includes changes of the outcome, put back if the file is not taken.
+            complete, incomplete, spent = self.complete, self.incomplete, self._budget.spent
+            unread, caps, nested = len(self._outcome.unread), len(self._outcome.caps), self._outcome.nested
+            counted, met_at = set(self._nested), dict(self.met_at)
             self._measured = [0, 0]
             self._attaching = True
             # What the walk finds is held until it is known whether the file is taken: if not, the combined pass will
@@ -1123,6 +1126,17 @@ class _Walk:
                 real.diagnostics.extend(found)
                 self._measured = None
                 self._attaching = False
+            if not self._fits(blocks, lines):
+                # Left out: the combined document, the Warning of §17.5 and the budget of the walk are as they were
+                # (no attachment file is followed after it). What it found in the files stays reported, and the
+                # path findings are the document's to keep (``kept``).
+                self.complete, self.incomplete, self._budget.spent = complete, incomplete, spent
+                del self._outcome.unread[unread:]
+                del self._outcome.caps[caps:]
+                self._outcome.nested, self._nested, self.met_at = nested, counted, met_at
+                self._full = True
+                self.kept.extend(each for each in found if each.rule in ("path-not-relative", "path-outside-root"))
+                return False
             # The include paragraphs of a LegalDown attachment file are counted as its own, once, whatever else
             # includes it and in whichever order (for the Warning of §17.5, #141): not among the fragments'.
             if fragment.path not in self._counted:
@@ -1134,11 +1148,6 @@ class _Walk:
                 self._outcome.attached_includes += own
                 if self._outcome.attached_includes_entry is None:
                     self._outcome.attached_includes_entry = index
-            if not self._fits(blocks, lines):
-                self.complete = complete
-                self._full = True
-                self.kept.extend(each for each in found if each.rule in ("path-not-relative", "path-outside-root"))
-                return False
         else:
             blocks, lines = fragment.size
         self._attached[0] += blocks

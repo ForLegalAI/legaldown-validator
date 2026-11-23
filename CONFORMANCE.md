@@ -1283,7 +1283,8 @@ Decisions the specification leaves open:
     directory, at its line there (`include-file-missing`, `include-cycle` with the attachment first in the chain,
     `include-has-*`, the path rules; a cycle is said from the attachment file: "the attachment file s.lgd ->
     s.lgd"), within the depth and count caps, and what it takes in is counted in the attachment files' budget: an
-    attachment file left out for it leaves the combined document as complete as it was, though what its includes
+    attachment file left out for it leaves the combined document, the Warning of §17.5 (no include of it counted,
+    none not read, no cap it reached) and the count of includes followed as they were, though what its includes
     could not follow is reported in it (`include-file-missing`, `include-cycle`, the shape of what they read); the
     rest of its content is not judged, as for any attachment file not spliced, but for `path-not-relative` and
     `path-outside-root` on its include paths, which the walk judged and the document keeps (`Combined.kept`). A file that the attachments name and
