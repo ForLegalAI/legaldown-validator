@@ -885,6 +885,8 @@ def passes(monkeypatch):
         return real(host, whole, places, combined)
 
     monkeypatch.setattr(core, "merge_diagnostics", spy)
+    # (The document's own pass in full, as it is when no combined document is expected: else it keeps HOST_ONLY alone.)
+    monkeypatch.setattr(core, "_may_combine", lambda document, files: False)
     return given
 
 
@@ -1215,6 +1217,71 @@ def test_the_combined_pass_equals_validating_the_spliced_text_with_the_includes_
     assert counted(combined.diagnostics) == counted(oracle.diagnostics)
     assert [e.identifier for e in combined.index.sections] == [e.identifier for e in oracle.index.sections]
     assert counted(merged.diagnostics, owned=False) == counted(oracle.diagnostics, owned=False)
+
+
+def _host_only_cases() -> list[tuple[str, dict[str, str], dict[str, Any]]]:
+    """Every case of this file's differentials, with and without the final check, and some that combine nothing."""
+    cases: list[tuple[str, dict[str, str]]] = [*_CASES, *_ORACLE_CASES]
+    for seed in range(25):
+        cases.append(_random_case(seed))
+        cases.append(_attachment_includes(seed))
+        text, files = _random_case(seed)
+        cases.append((text, {name: body for name, body in files.items() if name != "b.lgd"}))
+    cases += [
+        (_FRONT + _SCOPE + "{{include: gone.lgd}}\n\nSee {{ref: nope}}.\n", {}),  # nothing read: no combined document
+        (_FRONT + _SCOPE + "{{include: main.lgd}}\n", {"main.lgd": "Text.\n"}),
+        (_FRONT + _SCOPE + "{{include: a.lgd}}\n", {"a.lgd": "# H1\n\nText {{ref: nope}}.\n"}),  # read, and no fragment
+        (_TEMPLATE_FRONT + _SCOPE + "{{include: a.lgd}} {when=x}\n\n{{placeholder: p}}\n", {"a.lgd": "## A {#a}\n\nT {{ref: a}}.\n"}),
+        ("---\ntitle: [unclosed\n---\n\n" + _SCOPE + "{{include: a.lgd}}\n", {"a.lgd": "## A\n\n{{ref: nope}}\n"}),
+    ]
+    return [(text, files, {"final": final}) for text, files in cases for final in (False, True)]
+
+
+def test_the_documents_own_pass_that_makes_only_what_it_keeps_changes_nothing(monkeypatch):
+    # The differential of #141: when a combined document is expected the document's own pass makes only the rules of
+    # HOST_ONLY (the rest is the combined pass's); the result is what the pass in full gives, finding for finding, in
+    # order, with the same index, and the loader is asked what it was asked.
+    def run(case, may_combine):
+        text, files, options = case
+        loader = _Loader(files)
+        with monkeypatch.context() as patched:
+            if not may_combine:
+                patched.setattr(core, "_may_combine", lambda document, files: False)
+            result = validate(parse(text, filename="main.lgd", on_frontmatter_error="keep"), resolve=loader, **options)
+        return result, sorted(loader.asked)
+
+    shortened = 0
+    for case in _host_only_cases():
+        (fast, fast_asked), (slow, slow_asked) = run(case, True), run(case, False)
+        assert fast.diagnostics == slow.diagnostics, case
+        assert fast.index == slow.index, case
+        assert fast_asked == slow_asked, case
+        document = parse(case[0], filename="main.lgd", on_frontmatter_error="keep")
+        shortened += core._may_combine(document, core.Files(_Loader(case[1]), document, None))
+    assert shortened > len(_host_only_cases()) // 2
+
+
+def test_the_documents_own_pass_is_shortened_only_when_a_combined_document_is_made(monkeypatch):
+    calls = []
+    real = core._pass
+
+    def spy(*args, **kwargs):
+        calls.append((kwargs.get("host_only", False), args[5] if len(args) > 5 else kwargs.get("combined")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(core, "_pass", spy)
+    text = _FRONT + _SCOPE + "{{include: a.lgd}}\n"
+    _run(text, {"a.lgd": "## A\n\nText.\n"})
+    assert [(host_only, combined is not None) for host_only, combined in calls] == [(True, False), (False, True)]
+    # Past the size of the combined document none is made: the document is validated again, in full.
+    calls.clear()
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 0)
+    _run(text, {"a.lgd": "## A\n\nText.\n"})
+    assert [(host_only, combined is not None) for host_only, combined in calls] == [(True, False), (False, False)]
+    # Nothing to splice: nothing is attempted.
+    calls.clear()
+    _run(text, {})
+    assert [(host_only, combined is not None) for host_only, combined in calls] == [(False, False)]
 
 
 @pytest.mark.parametrize("seed", range(40))

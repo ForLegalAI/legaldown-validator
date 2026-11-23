@@ -292,6 +292,11 @@ class _Recorder(ValidationResult):
     #: one in the combined document (``Spot.instance``), else None. Kept only by the recorder of the combined
     #: pass, which is given a list (``merge_diagnostics`` reads it); None for any other.
     places: list[int | None] | None = field(default=None, repr=False, compare=False)
+    #: The rules recorded, when not all are: the others are dropped before their line is looked for (the pass over
+    #: a document that is validated combined too keeps only ``combined.HOST_ONLY``, #141). None: every rule.
+    keep: frozenset[str] | None = field(default=None, repr=False, compare=False)
+    #: Whether a combined document was made and validated (``combined`` says whether it was complete).
+    spliced: bool = False
 
     @contextmanager
     def at(self, line: Line) -> Iterator[None]:
@@ -318,7 +323,7 @@ class _Recorder(ValidationResult):
         """The diagnostic ``_record`` makes, as a list of one, or of none when its
         reason is suppressed, with the place of the fragment it is at (``Spot``). *fallback*: a *line*
         of None is the line ``at`` gives."""
-        if depends is not None and depends in self.suppress:
+        if (depends is not None and depends in self.suppress) or (self.keep is not None and rule not in self.keep):
             return [], None  # before the line is looked for: a finding dropped costs nothing
         if line is None and fallback and self._lines:
             line = self._lines[-1]

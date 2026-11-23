@@ -40,7 +40,7 @@ from ..markdown import (
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
 from ..positions import STRIPPED_MAPS, Locator
 from ..specification import SPEC_VERSION, parse_version
-from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
+from .combined import HOST_ONLY, Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
     ALWAYS,
     DecisionUse,
@@ -114,7 +114,7 @@ from .templates import (
     check_template_body,
     question_type,
 )
-from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
+from .units import FoundMarker, Units, find_markers, iter_include_paragraphs, marker_matches, own_presence
 
 if TYPE_CHECKING:
     from ..definitions import DefinitionRef
@@ -1366,6 +1366,56 @@ def _check(
     document_root: str | os.PathLike[str] | None = None,
     combined: Combined | None = None,
 ) -> _Recorder:
+    """The validation of *document* (``_pass``). A document whose includes and attachment files are read is
+    validated twice, as itself and combined (§16.11), and of the pass over itself only the rules of
+    ``combined.HOST_ONLY`` are kept (``merge_diagnostics``): when a combined document is likely, that pass makes
+    only those (*host_only*, #141), and should none be made after all, the document is validated again in full.
+    The files are read once for both (``Files``). The findings are the same either way."""
+    if combined is not None or mode.fragment or resolve is None:
+        return _pass(document, final, resolve, mode, document_root, combined)
+    files = Files(resolve, document, document_root)
+    if _may_combine(document, files):
+        result = _pass(document, final, resolve, mode, document_root, files=files, host_only=True)
+        if result.spliced:
+            return result
+    return _pass(document, final, resolve, mode, document_root, files=files)
+
+
+def _may_combine(document: Document, files: Files) -> bool:
+    """Whether the validation of *document* is likely to splice something into a combined document: an include
+    paragraph of it, or a LegalDown attachment file, names a file that is read and is a fragment. It reads only
+    what the walk of the includes reads (``check_includes``), so a loader is asked for nothing more."""
+    lexed = cache(lex)
+    for _section, _block, directive in iter_include_paragraphs(document, lexed):
+        written = directive.positional or ""
+        if not written.endswith(LEGALDOWN_EXTENSIONS):
+            continue
+        relative, _problem = files.locate("", written)
+        if relative is not None and not files.is_own(relative) and (target := files.read(relative)) is not None and target.spliceable:
+            return True
+    if document.frontmatter_error is not None:
+        return False  # (its frontmatter is not read: it declares no attachment)
+    for _index, _attachment, written in legaldown_attachments(document.metadata):
+        relative = files.relative(written)
+        if relative is not None and not files.is_own(relative) and (target := files.read(relative)) is not None and target.spliceable:
+            return True
+    return False
+
+
+def _pass(
+    document: Document,
+    final: bool,
+    resolve: LoadFile | None,
+    mode: _Mode,
+    document_root: str | os.PathLike[str] | None = None,
+    combined: Combined | None = None,
+    *,
+    files: Files | None = None,
+    host_only: bool = False,
+) -> _Recorder:
+    # *files*: what the validation reads, given by ``_check``. *host_only*: the pass makes only the rules of
+    # ``combined.HOST_ONLY`` (the recorder drops the others before their line is looked for, and the checks that
+    # make nothing else are not run), for a document whose combined document is expected (``_check``).
     # *combined*: the document is the combined document of another (§16.11, #117), validated once more
     # as the document it is with its fragments in: ``document`` is its own, and the validation reads
     # the files, the lexing and the locations of the document that holds the includes.
@@ -1377,8 +1427,10 @@ def _check(
     if unreadable is not None:
         mode = _UNREADABLE_FRONTMATTER
     result = _Recorder(
-        suppress=mode.suppress, fragment=mode.fragment, places=[] if combined is not None else None
+        suppress=mode.suppress, fragment=mode.fragment, places=[] if combined is not None else None,
+        keep=HOST_ONLY if host_only else None,
     )
+    full = not host_only  # (the checks that make no rule of HOST_ONLY run only in a full pass)
     # A fragment's own frontmatter, if it wrongly has any, is reported below
     # and then not read: the host's frontmatter is the one that declares.
     # Everything after this reads the document as a body-only one, whose
@@ -1391,7 +1443,7 @@ def _check(
     # The files the document refers to, each read and parsed once: the original it
     # amends, its attachment files, and its include fragments (#35). A fragment
     # validated on its own reads none: its own includes are the host's concern.
-    files = combined.files if combined is not None else (
+    files = combined.files if combined is not None else files if files is not None else (
         Files(resolve, document, document_root) if resolve is not None else None
     )
     # The paths the document names (§2.3, #104), from the directory it is in.
@@ -2563,7 +2615,8 @@ def _check(
                 "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
                 line=line, depends=depends if host_declares else None,
             )
-    _check_never_true(document, markers, units, questions, result, where)
+    if full:
+        _check_never_true(document, markers, units, questions, result, where)
 
     # Circular definitions (§16.3, §7.2): one Warning for each set of
     # definitions explained in terms of each other, where the last of them, in
@@ -2574,7 +2627,7 @@ def _check(
         registered,
         term_uses,
         exclusivity if template else None,
-    ):
+    ) if full else ():
         result.warning(
             "definition-circular",
             circular_message(registered[number][0].id for number in circle),
@@ -2600,7 +2653,7 @@ def _check(
         ]
     for number, earlier in used_before_declaration(
         written, uses, _imported_definitions, exclusivity if template else None
-    ):
+    ) if full else ():
         ref = written[number][0]
         declared = definition_line(ref)
         times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
@@ -2629,7 +2682,7 @@ def _check(
     }
     targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
     covered: dict[tuple[str, str, Presence], bool] = {}  # references of one target and presence are alike
-    for kind, uses in references.items():
+    for kind, uses in references.items() if full else ():
         for target, presence, in_note, line in uses:
             declared = targets_of[kind].get(target)
             if in_note or not declared or (kind == "term" and original_unread):
@@ -2659,7 +2712,7 @@ def _check(
         ("include" in body_directives or bool(legaldown_attachments(meta)))
         if combined is None else combined.attachments_out > 0 or combined.partial
     )
-    if isinstance(questions, dict) and not reads_other_files:
+    if isinstance(questions, dict) and not reads_other_files and full:
         for qid in questions:
             if qid not in used_questions:
                 result.warning(
@@ -2686,7 +2739,8 @@ def _check(
         document, lex_fragment, result, template=template, where=where, markers=markers, combined=combined,
         cache=imports,
     )
-    _check_raw_html(document, lex_fragment, result, where)
+    if full:
+        _check_raw_html(document, lex_fragment, result, where)
     check_heading_images(document, lex_fragment, file_references, where, reference_images)
     reference_images.check(file_references)
     file_references.finish()
@@ -2776,6 +2830,7 @@ def _check(
         assert whole.places is not None and len(whole.places) == len(whole.diagnostics)
         result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, whole.places, included.combined)
         result.combined = not included.combined.partial
+        result.spliced = True
 
     # §17.5: a Warning for each check category the constructs of the document call for and this
     # validation did not perform, last, once all that was read and checked is known.
