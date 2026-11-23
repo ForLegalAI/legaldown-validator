@@ -1240,8 +1240,8 @@ Decisions the specification leaves open:
     s.lgd"), within the depth and count caps, and what it takes in is counted in the attachment files' budget: an
     attachment file left out for it leaves the combined document as complete as it was, though what its includes
     could not follow is reported in it (`include-file-missing`, `include-cycle`, the shape of what they read); the
-    rest of its content is not judged, as for any attachment file not spliced, and that includes `path-not-relative`
-    and `path-outside-root` on its include paths, which are the combined pass's. A file that the attachments name and
+    rest of its content is not judged, as for any attachment file not spliced, but for `path-not-relative` and
+    `path-outside-root` on its include paths, which the walk judged and the document keeps (`Combined.kept`). A file that the attachments name and
     an attachment file includes is judged as an attachment file (`attachment-has-*`), once, whatever the order of the
     entries: every entry's shape is judged before any attachment's includes are followed. What they take in is part of the attachment (`Combined.unit_of`): a heading of it that
     the body declares too is `attachment-anchor-duplicate`, its definitions are the attachment's (a use earlier in the

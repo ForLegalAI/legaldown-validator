@@ -116,6 +116,9 @@ class Combined:
     #: Of each fragment that was read and is not one (§12.2: it is reported and not spliced), the file and line of the
     #: include that first named it, for its findings to be put there (``position``).
     met_at: dict[str, tuple[str, int | None]] = field(default_factory=dict)
+    #: The findings of the document's own pass (by ``id``) that it keeps although their rules are not ``HOST_ONLY``:
+    #: the path rules on the includes of an attachment file left out of the combined document for its size.
+    kept: set[int] = field(default_factory=set)
     #: What the document's own pass read the link reference definitions of its files as (``paths.ReferenceImages``),
     #: for the combined pass not to read them again (#121).
     definition_reads: dict[Any, Any] = field(default_factory=dict)
@@ -487,6 +490,6 @@ def merge_diagnostics(
         if combined.partial and d.rule in SETTLED_ELSEWHERE:
             d = replace(d, message=d.message + NOT_IN_IT)
         merged.append((d, number))
-    merged += [(d, None) for d in host if d.rule in HOST_ONLY]
+    merged += [(d, None) for d in host if d.rule in HOST_ONLY or id(d) in combined.kept]
     merged.sort(key=lambda each: combined.position(*each))
     return [d for d, _number in merged]

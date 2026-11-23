@@ -861,6 +861,9 @@ class _Walk:
         self.met_at: dict[str, tuple[str, int | None]] = {}
         #: The files checked as LegalDown attachment files (``Files.key``), for ``shape`` not to check them again.
         self.attachment_keys: set[str] = set()
+        #: Findings of this walk that the document keeps although their rules are the combined pass's: those on the
+        #: include paths of an attachment file left out of it (``attach``, ``Combined.kept``).
+        self.kept: list[Any] = []
 
     def shape(self, fragment: FragmentFile) -> None:
         """The findings on *fragment* as a file, once however often it is included, and not for a file already
@@ -959,7 +962,8 @@ class _Walk:
             return None
         self.shape(target)
         if not target.spliceable:  # a file that is not a fragment is reported, not spliced
-            self.met_at.setdefault(target.path, (file, _line(include.line)))
+            if self._files.key(target.path) not in self.attachment_keys:  # (an attachment file's are at its entry)
+                self.met_at.setdefault(target.path, (file, _line(include.line)))
             return None
         return target
 
@@ -1052,10 +1056,16 @@ class _Walk:
             complete = self.complete
             self._measured = [0, 0]
             self._attaching = True
+            # What the walk finds is held until it is known whether the file is taken: if not, the combined pass will
+            # not judge its include paths, and the document's must keep those findings (``kept``).
+            real = self._result
+            self._result = _Recorder(suppress=real.suppress, fragment=real.fragment)
             try:
                 self.expand(fragment, self.extend(EMPTY_CHAIN, fragment), plan)
                 blocks, lines = self._measured
             finally:
+                found, self._result = self._result.diagnostics, real
+                real.diagnostics.extend(found)
                 self._measured = None
                 self._attaching = False
             if fresh:  # (counted apart from those of the fragments, for the Warning of §17.5)
@@ -1067,6 +1077,7 @@ class _Walk:
             if not self._fits(blocks, lines):
                 self.complete = complete
                 self._full = True
+                self.kept.extend(each for each in found if each.rule in ("path-not-relative", "path-outside-root"))
                 return False
         else:
             blocks, lines = fragment.size
@@ -1251,6 +1262,7 @@ def check_includes(
             document, where, walk.plan, files, lex_fragment, walk.attached, partial=not walk.complete
         )
         outcome.combined.met_at = walk.met_at
+        outcome.combined.kept = {id(each) for each in walk.kept}
     built = outcome.combined is not None
     outcome.attachments_out = len(entries) - (len(walk.attached) if built and walk is not None else 0)
     outcome.attachments_capped = capped if walk is not None and not walk.oversized else 0  # (else the includes are to blame)

@@ -749,6 +749,19 @@ def test_a_file_that_is_attached_and_included_by_an_attachment_file_has_its_shap
     assert _found(result, "include-has-h1", "attachment-has-h1") == [("attachment-has-h1", "b.lgd", 1)]
 
 
+@pytest.mark.parametrize("body", ["", "{{include: p.lgd}}\n"])
+def test_an_attachment_file_left_out_for_what_its_includes_bring_in_keeps_its_include_path_findings(body, monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_LINES", 20)
+    text = _attached(("a", "a.lgd")) + _SCOPE + "See {{attach: a}}.\n\n" + body
+    files = {"p.lgd": "## P\n\nText.\n", "a.lgd": "## A\n\n{{include: /abs.lgd}}\n\n{{include: b.lgd}}\n", "b.lgd": "Text.\n\n" * 30}
+    result = _run(text, files)
+    assert _found(result, "path-not-relative") == [("path-not-relative", "a.lgd", 3)]
+    message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "attachment file declared" in d.message)
+    assert "(1 past the size the combined document may have" in message
+    # (Nothing of the includes was left undone: the attachment file left out is the attachments Warning's to say.)
+    assert not [d for d in result.diagnostics if d.rule == SKIPPED_RULE and "include in LegalDown" in d.message]
+
+
 def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
     text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: gone.lgd}}\n"
     result = _run(text, {"a.lgd": "## A {#a when=x}\n\nText.\n"})
