@@ -1873,8 +1873,8 @@ def _chain(entry: _Entry | None) -> Iterator[_Entry]:
 
 
 #: How deep the line-start check reads quotes into blocks for the layout (``_signatures``): twice as deep as the
-#: validator does (``MAX_QUOTE_DEPTH``), so that an item in a quote past its depth keeps its line, and no deeper in
-#: items and quotes together, which each read the text in them again.
+#: validator does (``MAX_QUOTE_DEPTH``), so that an item in a quote past its depth keeps its line, and past it no
+#: deeper in items and quotes together, which each read the text in them again.
 _LAYOUT_QUOTE_DEPTH = 2 * MAX_QUOTE_DEPTH
 
 
@@ -1948,7 +1948,8 @@ def _signatures(
                     push("i", first, stop)
                 walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around, held)
             if block.kind == "quote":
-                read = held < _LAYOUT_QUOTE_DEPTH and depth < _LAYOUT_QUOTE_DEPTH
+                # (What the validator reads, at least: a quote in fewer than MAX_QUOTE_DEPTH quotes, in any items.)
+                read = held < MAX_QUOTE_DEPTH or (held < _LAYOUT_QUOTE_DEPTH and depth < _LAYOUT_QUOTE_DEPTH)
                 if last is None:
                     push("q" if read else "cap", start, end)
                 if read:

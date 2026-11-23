@@ -572,6 +572,11 @@ class TestLineStartsInContext:
              "> " * 17 + "- a\n" + "> " * 17 + "\n" + "> " * 17 + "  " + written + "\n")
             for answer, written in (("y", "y"), ("# h", "\\# h"), ("> q", "\\> q"))
         ),
+        # ... in thirty-two nested items, deeper than the layout reads quotes past the validator's depth:
+        ("".join("  " * k + "- a\n" for k in range(32)) + "  " * 32 + "> - a\n" + "  " * 32 + ">\n"
+         + "  " * 32 + ">   {{placeholder: name}}\n", "# h",
+         "".join("  " * k + "- a\n" for k in range(32)) + "  " * 32 + "> - a\n" + "  " * 32 + ">\n"
+         + "  " * 32 + ">   \\# h\n"),
         # ... and in thirty, whatever else the template holds (#139 review: a budget of its size decided it).
         ("> " * 30 + "- a\n" + "> " * 30 + "\n" + "> " * 30 + "  {{placeholder: name}}\n", "y",
          "> " * 30 + "- a\n" + "> " * 30 + "\n" + "> " * 30 + "  y\n"),
