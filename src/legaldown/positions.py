@@ -109,6 +109,22 @@ def frontmatter_keys(root: yaml.Node, breaks: list[int], first_line: int) -> dic
     return keys
 
 
+def quoted_scalars(text: str) -> list[tuple[int, int, str]]:
+    """Every scalar of the YAML *text* written as a quoted string, which is where §3.10 lets a placeholder
+    stand: ``(start, end, quote)``, the offsets in *text* of its opening quote and just past its closing one,
+    and the quote. Read by YAML's own scanner, so that an anchor or a tag before it (``&t "..."``) does not
+    hide it, and a quote in a block or plain scalar (``|`` over ``"..."``) is no quote. Empty when *text*
+    cannot be read; ``Locator.unquoted_values`` reads the same scalar styles of the composed frontmatter."""
+    try:
+        return [
+            (token.start_mark.index, token.end_mark.index, token.style)
+            for token in yaml.scan(text, Loader=yaml.SafeLoader)
+            if isinstance(token, yaml.ScalarToken) and token.style in ('"', "'")
+        ]
+    except (yaml.YAMLError, ValueError, KeyError, RecursionError):  # (as the parser reads it)
+        return []
+
+
 #: The frontmatter maps whose keys the model reads stripped (``models._parse_str_dict``), each with
 #: whether it skips an entry that is blank once stripped: two keys that strip alike are one entry (#126).
 STRIPPED_MAPS = {"translations": True, "field_types": False}

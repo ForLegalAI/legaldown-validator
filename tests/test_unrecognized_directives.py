@@ -150,3 +150,52 @@ def test_no_insertion_boundary_is_judged_in_a_section_heading():
 def test_insertion_boundary_is_still_judged_in_a_heading_in_a_list_item():
     text = _source("title: T\n", _Q, "# Fees\n\n- ## Of&{{placeholder: q}}\n")
     assert "insertion-boundary" in _rules(text)
+
+
+# ── Core and assembly agree on which frontmatter placeholders are blanks (§3.10) ─────────────────────────────
+
+#: Frontmatter value fields as YAML writes them, each with whether §3.10 recognizes the placeholder in it.
+_WRITTEN = [
+    ('title: "Lease {{placeholder: q}}"\n', True),
+    ("title: 'Lease {{placeholder: q}}'\n", True),
+    ('title: "Lease of\n  {{placeholder: q}}"\n', True),
+    ('title: &t "Lease {{placeholder: q}}"\n', True),
+    ('title: !!str "Lease {{placeholder: q}}"\n', True),
+    ('title: &t !!str "Lease {{placeholder: q}}"\n', True),
+    ("title: Lease {{placeholder:q}}\n", False),
+    ("title: |\n  Lease {{placeholder: q}}\n", False),
+    ('title: |\n  "Lease {{placeholder: q}}"\n', False),
+    ("title: >-\n  'Lease {{placeholder: q}}'\n", False),
+    ('title: Lease "{{placeholder:q}}"\n', False),
+]
+
+
+def _blanks_and_fills(fields: str) -> tuple[bool, bool]:
+    """Whether core counts the title's placeholder a blank (the final check reports it), and whether assembly
+    fills it."""
+    text = _source(fields, _Q)
+    final = validate(parse(text), final=True)
+    blank = any(d.rule == "placeholder-unfilled" for d in final.diagnostics)
+    output = Template(text).form({"q": "Main St"}).assemble().output
+    title = parse(output).metadata.title
+    return blank, "Main St" in title and "{{placeholder" not in title
+
+
+def test_core_counts_as_blanks_exactly_the_placeholders_assembly_fills():
+    for fields, recognized in _WRITTEN:
+        assert _blanks_and_fills(fields) == (recognized, recognized), fields
+
+
+def test_an_alias_to_an_anchored_placeholder_is_filled_through_its_anchor():
+    text = _source('title: &t "Lease {{placeholder: q}}"\nsubtitle: *t\n', _Q)
+    final = validate(parse(text), final=True)
+    assert [d.line for d in final.diagnostics if d.rule == "placeholder-unfilled"] == [2, 3]
+    assert _unused(text) == set()
+    assembled = parse(Template(text).form({"q": "Main St"}).assemble().output)
+    assert (assembled.metadata.title, assembled.metadata.subtitle) == ("Lease Main St", "Lease Main St")
+
+
+def test_a_quote_in_a_filled_value_is_escaped_for_its_own_style():
+    for fields in ('title: &t "Lease {{placeholder: q}}"\n', "title: !!str 'Lease {{placeholder: q}}'\n"):
+        output = Template(_source(fields, _Q)).form({"q": "O'Neil \"Jr\""}).assemble().output
+        assert parse(output).metadata.title == "Lease O'Neil \"Jr\"", fields

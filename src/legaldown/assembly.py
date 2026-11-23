@@ -78,6 +78,7 @@ from .parser import (
     parse,
     quote_content,
 )
+from .positions import quoted_scalars
 from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
@@ -757,64 +758,6 @@ def _top_entry(lines: list[str], key: str) -> tuple[int, int] | None:
 
 _WHEN_RE = re.compile(r"[ \t]+when[ \t]*:")
 _DASH_RE = re.compile(r"[ \t]*-(?:[ \t]+|$)")
-# What may stand before a quote that opens a quoted YAML scalar: the line
-# start, a sequence dash, a key's colon, or a flow collection's bracket or
-# comma. A quote anywhere else is a character of a plain scalar.
-_SCALAR_OPENERS = frozenset("-:,[{?")
-
-
-def _scan_scalar(line: str, start: int, quote: str) -> int:
-    """The offset of *quote*'s matching close, scanning *line* from *start*
-    (just past the opening quote, or 0 for one carried from a previous line):
-    ``""`` doubles for a literal ``'``, a backslash escapes for ``"``.
-    ``len(line)`` when it does not close on this line."""
-    end = start
-    while end < len(line):
-        if quote == '"' and line[end] == "\\":
-            end += 2
-            continue
-        if line[end] == quote:
-            if quote == "'" and line[end + 1:end + 2] == "'":
-                end += 2
-                continue
-            return end
-        end += 1
-    return end
-
-
-def _quoted_scalars(line: str, carry: str = "") -> tuple[list[tuple[int, int, str]], str]:
-    """``(start, end, quote)`` of every quoted scalar on frontmatter *line*,
-    in block and flow style alike (``- {name: a, legal_name: "..."}``), so a
-    placeholder is filled wherever §3.10 lets it stand; a comment ends the
-    scan. *carry* is the quote a previous line's scalar left open, which
-    *line* then starts inside (``start`` ``-1``); the second of the pair
-    returned is *line*'s own such quote, when its last scalar runs on."""
-    spans: list[tuple[int, int, str]] = []
-    index = 0
-    if carry:
-        end = _scan_scalar(line, 0, carry)
-        spans.append((-1, end + 1, carry))
-        if end >= len(line):
-            return spans, carry
-        index = end + 1
-    while index < len(line):
-        char = line[index]
-        before = line[:index].rstrip(" \t")
-        if char == "#" and (index == 0 or line[index - 1] in " \t"):
-            break
-        if char in "\"'" and (index == 0 or line[index - 1] in " \t[{,") and (
-            not before or before[-1] in _SCALAR_OPENERS
-        ):
-            end = _scan_scalar(line, index + 1, char)
-            spans.append((index, end + 1, char))
-            if end >= len(line):
-                return spans, char
-            index = end + 1
-            continue
-        index += 1
-    return spans, ""
-
-
 def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -> None:
     lines = front.lines
     front.questions = _top_entry(lines, "questions")
@@ -822,11 +765,15 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
     if front.attachments is not None:
         front.items = _attachment_items(lines, front.attachments, document, questions)
     skip = set(range(*front.questions)) if front.questions else set()
-    carry = ""
+    # The quoted scalars, as YAML reads them (§3.10, ``positions.quoted_scalars``): after an anchor or a tag
+    # too, and never a quote inside a block or plain scalar. Offsets are in the lines joined by LF.
+    scalars = quoted_scalars("\n".join(lines))
+    offset = 0
     for index, line in enumerate(lines):
-        entering = carry
-        scalars, carry = _quoted_scalars(line, carry)
-        if index in skip or (not entering and _is_comment(line)) or "{{" not in line:
+        at, offset = offset, offset + len(line) + 1
+        within = [(start - at, end - at, q) for start, end, q in scalars if start < at + len(line) and end > at]
+        continued = any(start < 0 for start, _end, _q in within)  # the line goes on a scalar of the one before
+        if index in skip or (not continued and _is_comment(line)) or "{{" not in line:
             continue
         for directive in lex(line).directives:
             if directive.name == "placeholder" and directive.malformed:
@@ -834,13 +781,13 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
                 # joins the lines, so the validator reads it whole. Any other
                 # is left as written: YAML drops one in a comment, and one
                 # the scalar's own escapes (\") confuse here is not filled.
-                if any(start < directive.start and end > len(line) for start, end, _q in scalars):
+                if any(start < directive.start and end > len(line) for start, end, _q in within):
                     front.malformed.append(directive)
             elif directive.name == "placeholder":
                 # Only a quoted scalar can hold one (§3.10); any other is
                 # left for the validator, never filled with unescaped text.
                 quote = next((
-                    q for start, end, q in scalars
+                    q for start, end, q in within
                     if start < directive.start and directive.end < end
                 ), "")
                 front.occurrences.append(_Occurrence(

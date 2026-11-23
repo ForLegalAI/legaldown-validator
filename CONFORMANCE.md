@@ -1348,12 +1348,13 @@ as written, so the validator reads them the same way:
   scalar — at the field's line. §3.10 says a placeholder in frontmatter MUST be a quoted string (an unquoted `{{`
   at the start of a value is a flow mapping, and `frontmatter-invalid-yaml`); without this rule it would be lost
   without a word. How a value is written is read from the source, so a document built in code (no source map) has
-  none to judge. How a value is written is YAML's to say (its scalar style), as §3.10 means it. Assembly, which
-  scans the frontmatter's lines for quotes, agrees on every common form, and differs from the specification in two
-  that are not: it fills a placeholder in a block scalar whose line begins with a quote (`title: |` over
-  `"Lease {{placeholder: q}}"`), which this rule reports, and does not fill one in a quoted string with an anchor or
-  a tag before it (`&t "..."`, `!!str "..."`), which the validator counts as a blank. Both are assembly's to
-  change; the validator follows §3.10.
+  none to judge. How a value is written is YAML's to say (its scalar style), as §3.10 means it, and the validator
+  and assembly read it alike (`positions.quoted_scalars`, YAML's own scanner): assembly fills exactly the
+  placeholders the validator counts as blanks. A quoted string after an anchor or a tag (`&t "..."`, `!!str "..."`)
+  is one, and a quote at the start of a line of a block scalar (`title: |` over `"Lease {{placeholder: q}}"`) is
+  none. An alias to an anchored value (`subtitle: *t`) is the anchor's value: it is a blank wherever it is used
+  (the final check reports it at the anchor and at the alias), and assembly fills it through the anchor, where it is
+  written, so every alias reads the answer. The tests compare the two over these forms.
 
 ## Constructs beyond the level (§17.5)
 
