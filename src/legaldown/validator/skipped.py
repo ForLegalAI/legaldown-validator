@@ -129,7 +129,7 @@ def _includes(
         # across fragments (§16.11) go with it.
         rules += ["include-has-frontmatter", "include-has-h1", "include-heading-skip", "include-cycle",
                   "include-anchor-duplicate"]
-        if not paragraphs:  # (only the includes of attachment files, which §4.1 and those identifiers do not judge)
+        if all(each.attached for each in unread):  # (of attachment files: §4.1 and those identifiers do not judge them)
             rules = [rule for rule in rules if rule not in ("include-heading-skip", "include-anchor-duplicate")]
         if template:
             rules.append("the parts of template-fragment-invalid that read a fragment")

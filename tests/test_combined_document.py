@@ -732,6 +732,23 @@ def test_an_attachment_file_left_out_for_the_budget_leaves_the_combined_document
     assert core._check(parse(text, filename="main.lgd"), False, _Loader(files), core._DOCUMENT).combined
 
 
+def test_the_warning_names_the_heading_and_identifier_rules_only_for_includes_of_the_body_not_read():
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}}.\n\n{{include: p.lgd}}\n"
+    files = {"p.lgd": "## P\n\nText.\n", "s.lgd": "## S\n\n{{include: gone.lgd}}\n"}
+    message = _warning(_run(text, files)).message
+    assert "include-has-h1 and include-cycle for the fragments not read" in message and "include-heading-skip" not in message
+    message = _warning(_run(text, {"s.lgd": files["s.lgd"]})).message
+    assert "include-heading-skip" in message and "include-anchor-duplicate" in message
+
+
+@pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
+def test_a_file_that_is_attached_and_included_by_an_attachment_file_has_its_shape_judged_once(order):
+    entries = {"a": ("a", "a.lgd"), "b": ("b", "b.lgd")}
+    text = _attached(*(entries[name] for name in order)) + _SCOPE + "See {{attach: a}} {{attach: b}}.\n"
+    result = _run(text, {"a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "# B\n\nText.\n"})
+    assert len(_found(result, "include-has-h1", "attachment-has-h1")) == 1
+
+
 def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
     text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: gone.lgd}}\n"
     result = _run(text, {"a.lgd": "## A {#a when=x}\n\nText.\n"})

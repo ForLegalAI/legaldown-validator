@@ -699,9 +699,11 @@ NOT_CHECKED = " (not checked past that point)"
 
 @dataclass(frozen=True, slots=True)
 class UnreadInclude:
-    """An include paragraph whose fragment was not read, and why."""
+    """An include paragraph whose fragment was not read, and why; *attached*: it was met following the includes of
+    a LegalDown attachment file (#141), whose headings and identifiers the include rules do not judge."""
     include: IncludeDirective
     reason: UnreadReason
+    attached: bool = False
 
 
 @dataclass(slots=True)
@@ -857,10 +859,13 @@ class _Walk:
         self._full = False  # the budget of the attachment files is spent
         #: Of each file read that is not a fragment, where the include that first named it is (``Combined.met_at``).
         self.met_at: dict[str, tuple[str, int | None]] = {}
+        #: The files checked as LegalDown attachment files (``Files.key``), for ``shape`` not to check them again.
+        self.attachment_keys: set[str] = set()
 
     def shape(self, fragment: FragmentFile) -> None:
-        """The findings on *fragment* as a file, once however often it is included."""
-        if fragment.path not in self._findings:
+        """The findings on *fragment* as a file, once however often it is included, and not for a file already
+        checked as an attachment file (``attachment_keys``): its shape is one finding, whatever uses it."""
+        if fragment.path not in self._findings and self._files.key(fragment.path) not in self.attachment_keys:
             self._findings[fragment.path] = fragment_findings(
                 fragment, kind="include", template=self._template, lex_fragment=self._lex_fragment
             )
@@ -892,7 +897,7 @@ class _Walk:
             if first:
                 self._result.error(rule, message, line=include.line, file=file)
                 if reason is not None:
-                    self._outcome.unread.append(UnreadInclude(include, reason))
+                    self._outcome.unread.append(UnreadInclude(include, reason, self._attaching))
 
         if not include.path:
             refuse(
@@ -924,7 +929,7 @@ class _Walk:
                 )
             elif problem == "leads-out":  # valid, and not read without a root that holds it (#109)
                 if first:
-                    self._outcome.unread.append(UnreadInclude(include, "leads-out"))
+                    self._outcome.unread.append(UnreadInclude(include, "leads-out", self._attaching))
             else:
                 refuse(
                     "include-file-missing",
@@ -1201,9 +1206,8 @@ def check_includes(
     else:
         # Each LegalDown attachment file is read too (§12.4): for its shape, and in a template for the
         # ``{{include:}}`` it must not hold (§16.12), once for each file however often it is attached.
-        checked: set[str] = set()
+        checked = walk.attachment_keys
         holds_includes: dict[str, bool] = {}  # whether each file has include paragraphs
-        include_keys = {files.key(path) for path in findings}  # the files already checked as includes
         for index, _attachment, written in entries:
             relative = files.relative(written)
             if relative is not None and files.is_own(relative):
@@ -1215,7 +1219,8 @@ def check_includes(
             # (A file that was also an include was checked above, and is a finding of its own; however either
             # is spelled, it is one file, named by the path it was first met by.)
             key = files.key(relative)
-            if key not in checked and key not in include_keys:
+            # (The files checked as includes, those of the attachment files before it too, #141.)
+            if key not in checked and key not in {files.key(path) for path in findings}:
                 checked.add(key)
                 for finding in fragment_findings(
                     fragment, kind="attachment", template=template, lex_fragment=lex_fragment
