@@ -1250,9 +1250,9 @@ def validate(
         attachment files that were read and are fragments follow the body in it, each on its own,
         with the fragments their own includes take in (§12.4; one not read leaves the others as they
         are). An include not followed stays the paragraph it is: a ``ref-broken``, ``term-undefined``,
-        ``def-unreferenced`` or ``attachment-unreferenced`` (and the amendment's term rules) says that
-        what it would bring in may settle it, and the Warning names the combined-document checks for
-        it as not made (#141).
+        ``def-unreferenced``, ``attachment-unreferenced`` or ``condition-reference-unsafe`` (and the
+        amendment's term rules) says that what it would bring in may settle it, and the Warning names
+        the combined-document checks for it as not made (#141).
     document_root:
         The directory every file the document refers to must lie within
         (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an

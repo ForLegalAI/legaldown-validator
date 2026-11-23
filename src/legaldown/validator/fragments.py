@@ -778,9 +778,13 @@ def closes(files: Files, chain: IncludeChain, relative: str) -> bool:
     return files.key(relative) in chain.keys or files.is_own(relative)
 
 
-def cycle_message(files: Files, source: str, chain: IncludeChain, relative: str) -> str:
-    """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*."""
-    said = " -> ".join(["the document", *chain.paths, "the document" if files.is_own(relative) else relative])
+def cycle_message(
+    files: Files, source: str, chain: IncludeChain, relative: str, *, attachment: bool = False
+) -> str:
+    """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*:
+    the document's, or, with *attachment*, one that begins at the attachment file it names first."""
+    start = [f"the attachment file {chain.paths[0]}", *chain.paths[1:]] if attachment else ["the document", *chain.paths]
+    said = " -> ".join([*start, "the document" if files.is_own(relative) else relative])
     return (
         f"'{source}' closes a circular include chain ({said}); a file cannot include "
         f"itself, directly or through others (§12.2)."
@@ -849,6 +853,7 @@ class _Walk:
         self.attached: list[tuple[int, FragmentFile, Plan]] = []
         self._attached = [0, 0]
         self._measured: list[int] | None = None  # what an attachment file's includes bring in, while they are followed
+        self._attaching = False  # the includes followed are an attachment file's (``attach``): its chain has no document
         self._full = False  # the budget of the attachment files is spent
         #: Of each file read that is not a fragment, where the include that first named it is (``Combined.met_at``).
         self.met_at: dict[str, tuple[str, int | None]] = {}
@@ -928,7 +933,11 @@ class _Walk:
                 )
             return None
         if closes(self._files, chain, relative):
-            refuse("include-cycle", cycle_message(self._files, include.source, chain, relative), None)
+            refuse(
+                "include-cycle",
+                cycle_message(self._files, include.source, chain, relative, attachment=self._attaching),
+                None,
+            )
             return None
         if (cap := too_deep(chain)) is not None:
             if cap + NOT_CHECKED not in self._outcome.caps:
@@ -1011,6 +1020,10 @@ class _Walk:
             if cap not in self._outcome.caps:
                 self._outcome.caps.append(cap)
 
+    def _fits(self, blocks: int, lines: int) -> bool:
+        """Whether *blocks* and *lines* more of attachment files are within their budget."""
+        return self._attached[0] + blocks <= MAX_SPLICED_BLOCKS and self._attached[1] + lines <= MAX_SPLICED_LINES
+
     @property
     def full(self) -> bool:
         """Whether the budget of the attachment files is spent (``attach``)."""
@@ -1023,29 +1036,35 @@ class _Walk:
         attachment file, which is the first of the chain: what they cannot follow leaves the combined document
         partial (``complete``), as an include of the body does. They may bring in no more than ``MAX_SPLICED_BLOCKS``
         blocks and ``MAX_SPLICED_LINES`` lines (counted for each entry, with what its includes bring in); past that it
-        and the attachment files after it are not taken, and False is returned."""
-        if self._full:
+        and the attachment files after it are not taken, and False is returned. An attachment file not taken leaves
+        the combined document as complete as it was: what its includes did not follow is not missing from it."""
+        if self._full or not self._fits(*fragment.size):
+            self._full = True
             return False
         plan = Plan()
         if includes:
             fresh = fragment.path not in self._includes
+            complete = self.complete
             self._measured = [0, 0]
+            self._attaching = True
             try:
                 self.expand(fragment, self.extend(EMPTY_CHAIN, fragment), plan)
                 blocks, lines = self._measured
             finally:
                 self._measured = None
+                self._attaching = False
             if fresh:  # (counted apart from those of the fragments, for the Warning of §17.5)
                 own = sum(len(each) for each in self._includes[fragment.path].values())
                 self._outcome.nested -= own
                 self._outcome.attached_includes += own
                 if self._outcome.attached_includes_entry is None:
                     self._outcome.attached_includes_entry = index
+            if not self._fits(blocks, lines):
+                self.complete = complete
+                self._full = True
+                return False
         else:
             blocks, lines = fragment.size
-        if self._attached[0] + blocks > MAX_SPLICED_BLOCKS or self._attached[1] + lines > MAX_SPLICED_LINES:
-            self._full = True
-            return False
         self._attached[0] += blocks
         self._attached[1] += lines
         self.attached.append((index, fragment, plan))

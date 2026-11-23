@@ -575,8 +575,8 @@ fragment are judged as `path-not-relative` (an absolute path or a URI scheme, "r
 root, its `../../x.png` leaves it). An include that was not followed (missing, unreadable, a path that leads out,
 not a fragment, a cycle, a cap, an include in a template's fragment) stays the paragraph it is and the combined document
 is **partial** ([#141](https://github.com/ForLegalAI/legaldown-validator/issues/141)): the fragments that were followed are
-judged with the document all the same, a `ref-broken`, `term-undefined`, `def-unreferenced`, `attachment-unreferenced`
-(or `amend-term-*`) finding adds that the fragments not followed may settle it, `question-unused` is not made, and the
+judged with the document all the same, a `ref-broken`, `term-undefined`, `def-unreferenced`, `attachment-unreferenced`,
+`condition-reference-unsafe` (or `amend-term-*`) finding adds that the fragments not followed may settle it, `question-unused` is not made, and the
 Warning of §17.5 names the combined-document checks for what was not followed. Under `final`, a `{{choose:}}`, a
 `when=` or a drafting note that a fragment brings into a document that is no template is `template-construct-present` at
 its line in the fragment (§15.9). The LegalDown

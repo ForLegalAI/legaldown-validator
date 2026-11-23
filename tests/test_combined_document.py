@@ -707,11 +707,36 @@ def test_an_include_of_an_attachment_file_not_followed_is_reported_there_and_lea
     ]
     assert next(d for d in result.diagnostics if d.rule == "ref-broken").message.endswith(NOT_IN_IT)
     cycle = [d.message for d in result.diagnostics if d.rule == "include-cycle"]
-    assert "(the document -> s.lgd -> s.lgd)" in cycle[0] and "(the document -> s.lgd -> the document)" in cycle[1]
+    assert "(the attachment file s.lgd -> s.lgd)" in cycle[0] and "(the attachment file s.lgd -> the document)" in cycle[1]
     warning = _warning(result)
     assert warning.line == _at(text, "file: s.lgd")
     assert warning.message.startswith("3 includes in LegalDown attachment files; 1 include not read (1 could not be read")
     assert "for what the includes not followed would bring in" in warning.message
+    # (Of the includes of attachment files, include-heading-skip and include-anchor-duplicate are judged by nothing.)
+    assert "include-heading-skip" not in warning.message and "include-anchor-duplicate" not in warning.message
+
+
+def test_an_attachment_file_left_out_for_the_budget_leaves_the_combined_document_whole(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 4)
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}} {{ref: nope}}.\n\n{{include: p.lgd}}\n"
+    files = {
+        "p.lgd": "## P\n\nText.\n",
+        "s.lgd": "## S\n\nA.\n\n{{include: big.lgd}}\n\n{{include: gone.lgd}}\n",  # within the budget, and not with big
+        "big.lgd": "## Big\n\n" + "Text.\n\n" * 5,
+    }
+    result = _run(text, files)
+    broken = next(d for d in result.diagnostics if d.rule == "ref-broken")
+    assert not broken.message.endswith(NOT_IN_IT)
+    message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "attachment file declared" in d.message)
+    assert "for 1 LegalDown attachment file not spliced into the combined document (1 past the size" in message
+    assert core._check(parse(text, filename="main.lgd"), False, _Loader(files), core._DOCUMENT).combined
+
+
+def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
+    text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: gone.lgd}}\n"
+    result = _run(text, {"a.lgd": "## A {#a when=x}\n\nText.\n"})
+    (unsafe,) = [d for d in result.diagnostics if d.rule == "condition-reference-unsafe"]
+    assert unsafe.message.endswith(NOT_IN_IT)
 
 
 def test_an_attachment_files_includes_in_a_template_are_not_followed_and_it_is_left_out():

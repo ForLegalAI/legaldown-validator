@@ -1187,7 +1187,8 @@ Decisions the specification leaves open:
     judged with the document: a reference into one resolves, its own findings are reported. What the parts not in it
     could change is handled so: a finding that a declaration or a use they make may settle (`ref-broken`,
     `term-undefined`, `amend-term-undefined`, `amend-term-unresolvable`, `def-unreferenced`,
-    `attachment-unreferenced`: `combined.SETTLED_ELSEWHERE`) is made, as the document's own pass made it of every
+    `attachment-unreferenced`, and `condition-reference-unsafe`, which an unconditional declaration there would
+    cover: `combined.SETTLED_ELSEWHERE`) is made, as the document's own pass made it of every
     part before, and its message ends "The combined document was checked without the fragments of the includes that
     were not followed, which may settle this; §17.5."; `question-unused` is not made, as before; a duplicate, a
     collision, a circle or a use before a declaration among the parts that were read is real whatever the others
@@ -1235,8 +1236,10 @@ Decisions the specification leaves open:
     as a fragment's are (#141; §12.4 allows "all standard LegalDown body syntax" in it, and §16.11 asks for the
     combined document "including all inclusions"), with the same walk: each is judged from the attachment file's
     directory, at its line there (`include-file-missing`, `include-cycle` with the attachment first in the chain,
-    `include-has-*`, the path rules), within the depth and count caps, and what it takes in is counted in the
-    attachment files' budget. What they take in is part of the attachment (`Combined.unit_of`): a heading of it that
+    `include-has-*`, the path rules; a cycle is said from the attachment file: "the attachment file s.lgd ->
+    s.lgd"), within the depth and count caps, and what it takes in is counted in the attachment files' budget: an
+    attachment file left out for it leaves the combined document as complete as it was, though what its includes
+    could not follow is reported in it. What they take in is part of the attachment (`Combined.unit_of`): a heading of it that
     the body declares too is `attachment-anchor-duplicate`, its definitions are the attachment's (a use earlier in the
     same attachment is a use before the declaration), it has the presence of the entry, and its findings are in the
     order of the attachment, at the include. An include not followed leaves the combined document partial (above).

@@ -440,6 +440,8 @@ SETTLED_ELSEWHERE: frozenset[str] = frozenset({
     "amend-term-unresolvable",
     "def-unreferenced",
     "attachment-unreferenced",
+    # (A reference that no declaration covers under some answers: an unconditional one may be among what is not in it.)
+    "condition-reference-unsafe",
 })
 
 #: What a finding of ``SETTLED_ELSEWHERE`` adds to its message in a ``partial`` combined document.
