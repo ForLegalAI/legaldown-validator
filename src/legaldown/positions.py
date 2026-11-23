@@ -1139,7 +1139,7 @@ class Locator:
             written = FRONTMATTER_RE.match("\n".join(self._map.lines))
             try:
                 root = yaml.compose(written.group(1) or "", Loader=yaml.SafeLoader) if written else None
-            except yaml.YAMLError:
+            except (yaml.YAMLError, ValueError, KeyError, RecursionError):  # (as the parser reads it)
                 root = None
 
             def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:

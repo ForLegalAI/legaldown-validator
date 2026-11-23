@@ -97,7 +97,7 @@ def test_a_quoted_placeholder_is_a_blank_as_assembly_fills_it():
     assert 'title: "Lease Main St"' in assembled.output
 
 
-def test_a_party_field_and_a_flow_mapping_are_judged_by_their_own_quotes():
+def test_party_fields_are_judged_by_their_own_quotes_in_block_and_flow_style():
     text = _source("title: T\n", _Q).replace(
         "legal_name: Acme\n", 'legal_name: "{{placeholder: q}}"\n        address: Street {{placeholder:q}}\n'
     )
@@ -105,6 +105,30 @@ def test_a_party_field_and_a_flow_mapping_are_judged_by_their_own_quotes():
     lines = [d.line for d in result.diagnostics if d.rule == FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE]
     assert lines == [text.split("\n").index("        address: Street {{placeholder:q}}") + 1]
     assert _unused(text) == set()  # the quoted one asks
+    flow = _source("title: T\n", _Q).replace(
+        "      - name: beta\n        type: legal_entity\n        legal_name: Beta\n",
+        '      - {name: beta, type: legal_entity, legal_name: "{{placeholder: q}}"}\n',
+    )  # (in flow style an unquoted {{ is no valid YAML at all)
+    assert FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE not in _rules(flow) and _unused(flow) == set()
+    assert "legal_name: \"Main St\"" in Template(flow).form({"q": "Main St"}).assemble().output
+
+
+def test_an_unquoted_placeholders_type_is_still_checked_against_the_blank():
+    # Assembly reads it for the blank's type, though it does not fill it.
+    text = _source("title: Lease {{placeholder:q, type=date}}\n", body="# A\n\nPay {{placeholder: q}}.\n")
+    assert "placeholder-type-inconsistent" in _rules(text)
+
+
+def test_a_question_a_quoted_frontmatter_choose_names_says_so():
+    text = _source('title: "Lease {{choose: x, true=\\"A\\", false=\\"B\\"}}"\n', _X)
+    (message,) = [d.message for d in validate(parse(text)).diagnostics if d.rule == "question-unused"]
+    assert "in a {{choose:}} in frontmatter (§15.5)" in message
+
+
+def test_frontmatter_too_deep_to_read_again_is_still_a_diagnostic():
+    text = "---\na: " + "[" * 3000 + "\n---\n\n# A\n"
+    document = parse(text, on_frontmatter_error="keep")
+    assert "frontmatter-invalid-yaml" in validate(document).rules()
 
 
 def test_a_document_built_in_code_has_no_quotes_to_judge():

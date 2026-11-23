@@ -1335,8 +1335,10 @@ as written, so the validator reads them the same way:
   frontmatter (`choose-invalid`), a `{{placeholder:}}` in an identifier, structural or format-checked field
   (`placeholder-in-structural-field`), and one in a value field that is not a quoted string (below) does not use its
   question: a question no other part uses is `question-unused`, whose message says where it is named. Nor is such a
-  placeholder a blank: it is not checked as one (its type, its parameters, `result.blanks`), and the final check
-  does not report it as `placeholder-unfilled`, as the rule above already does. A `{{choose:}}` there is still a
+  placeholder a blank of the final check, which does not report it as `placeholder-unfilled`, as the rule above
+  already does. (An unquoted value field's placeholder is still checked as one for its type and parameters, and
+  is in `result.blanks`: assembly still reads it for the blank's type, though it does not fill it, so its type
+  must agree with the blank's other occurrences, `placeholder-type-inconsistent`.) A `{{choose:}}` there is still a
   template construct for the final check, since it makes the document a template wherever it is (§15.1).
 - `insertion-boundary` (§15.7.3) is not judged in a section's heading, where nothing is inserted; it is in a
   heading in a list item or quote.
@@ -1346,7 +1348,12 @@ as written, so the validator reads them the same way:
   scalar — at the field's line. §3.10 says a placeholder in frontmatter MUST be a quoted string (an unquoted `{{`
   at the start of a value is a flow mapping, and `frontmatter-invalid-yaml`); without this rule it would be lost
   without a word. How a value is written is read from the source, so a document built in code (no source map) has
-  none to judge. Assembly agrees with the specification here: it fills a placeholder in a quoted scalar only.
+  none to judge. How a value is written is YAML's to say (its scalar style), as §3.10 means it. Assembly, which
+  scans the frontmatter's lines for quotes, agrees on every common form, and differs from the specification in two
+  that are not: it fills a placeholder in a block scalar whose line begins with a quote (`title: |` over
+  `"Lease {{placeholder: q}}"`), which this rule reports, and does not fill one in a quoted string with an anchor or
+  a tag before it (`&t "..."`, `!!str "..."`), which the validator counts as a blank. Both are assembly's to
+  change; the validator follows §3.10.
 
 ## Constructs beyond the level (§17.5)
 
@@ -1362,7 +1369,7 @@ expects or forbids it. It is a Warning for every output, so `is_valid` and the e
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
 Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
 validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
-(any frontmatter mapping, #126, #131) and not a skipped one, and two more for what takes content out of validation,
+(any frontmatter mapping, #126, #131) and not a skipped one, and three more for what takes content out of validation,
 **`ldv-fence-unclosed`**, **`ldv-heading-directive`** and **`ldv-frontmatter-placeholder-unquoted`**
 ([above](#what-takes-content-out-of-validation-12)).
 

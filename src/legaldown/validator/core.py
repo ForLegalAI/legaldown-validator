@@ -2221,10 +2221,13 @@ def _check(
     # below. (A {{choose:}} where it is not recognized is still a template construct for the final check: it
     # makes the document a template wherever it is, §15.1.)
     placeholders: list[tuple[Directive, Line]] = []
-    unquoted = where.unquoted_values()
+    unquoted: frozenset[tuple[Any, ...]] | None = None  # read once a value field holds a placeholder
+    #: Of each question named only where §11.4 recognizes no directive, why, for question-unused.
+    unrecognized: dict[str, str] = {}
     for field_value, field_path in value_fields:
         for directive in named(field_value, "placeholder"):
             field_line = where.key(*field_path)
+            unquoted = where.unquoted_values() if unquoted is None else unquoted
             if field_path in unquoted:
                 result.error(
                     FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
@@ -2233,10 +2236,25 @@ def _check(
                     f"(\"...\").",
                     line=field_line,
                 )
-                continue
-            placeholders.append((directive, field_line))
+                if directive.positional:
+                    unrecognized.setdefault(directive.positional, "a frontmatter value not written as a quoted string (§3.10)")
+            else:
+                placeholders.append((directive, field_line))
+            # (Its type is checked all the same: assembly reads it for the blank's type, though it does not fill it.)
             with result.at(field_line):
                 _check_placeholder(directive, result, blanks, questions, in_frontmatter=True, line=field_line)
+    for _label, field_value, _path in structural_fields:
+        for directive in named(field_value, "placeholder"):
+            if directive.positional:
+                unrecognized.setdefault(directive.positional, "a frontmatter field that takes no placeholder (§3.10)")
+    for text in headings:
+        for directive in lex_fragment(text).directives:
+            if directive.name in ("placeholder", "choose") and directive.positional:
+                unrecognized.setdefault(directive.positional, "a section's heading (§4.2)")
+    for text, _path in frontmatter_texts:
+        for directive in named(text, "choose"):
+            if directive.positional:
+                unrecognized.setdefault(directive.positional, "a {{choose:}} in frontmatter (§15.5)")
 
     chooses: list[tuple[Directive, Line]] = []
     for directive, misplaced, line in misplaced_chooses:
@@ -2247,13 +2265,6 @@ def _check(
     # answer, and is unused (question-unused). A directive where §11.4 recognizes none (above) asks nothing.
     asked = {directive.positional for directive, _line in placeholders if directive.positional}
     asked_in_notes: set[str] = set()
-    # ... and the questions such a directive names, for the message of question-unused.
-    named_unrecognized = {
-        directive.positional
-        for text in [*headings, *(text for text, _path in frontmatter_texts)]
-        for directive in lex_fragment(text or "").directives
-        if directive.name in ("placeholder", "choose") and directive.positional
-    }
 
     # Every condition in a condition position (§15.3): on what, as written,
     # and its line; and, of each, where it is in the document (for ``undeclared_findings``).
@@ -2678,11 +2689,10 @@ def _check(
                         "; only drafting notes do, so it is no blank of the document and needs no answer "
                         "(§15.7.2), though assembly still lists it among the template's questions."
                         if qid in asked_in_notes else
-                        "; it is named only where a directive is not recognized (a section's heading, a frontmatter "
-                        "field that takes no placeholder, or one not written as a quoted string, §3.10, §4.2, §11.4), "
+                        f"; it is named only where no directive is recognized (§11.4), in {unrecognized[qid]}, "
                         "which assembly leaves as written, though it still lists the question among the template's "
                         "questions."
-                        if qid in named_unrecognized else "."
+                        if qid in unrecognized else "."
                     ),
                     line=where.key("questions", qid),
                 )
