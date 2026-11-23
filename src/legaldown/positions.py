@@ -127,8 +127,10 @@ class WrittenEntry:
     line: int
     start: int
     resolved: tuple[str, str]
-    #: True for an entry merged in (``<<``) from another mapping, where it is written (#133).
+    #: True for an entry merged in (``<<``) from another mapping (#133): its *line* is then that of the ``<<`` of
+    #: the map that merges it, where the map reads it, and *merged_from* the line where it is written.
     merged: bool = False
+    merged_from: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +172,7 @@ class _Written(NamedTuple):
     line: int
     start: int
     merged: bool = False
+    merged_from: int | None = None
 
 
 #: Where each mapping key written as an alias is (``parser._StrDateSafeLoader.alias_keys``): by the id of its
@@ -214,27 +217,37 @@ def written_maps(
     (``line_breaks``); *nodes* are the maps found already (``stripped_nodes``). Without a *loader*, the entries
     written in the map, in the order of the source, an aliased key at its anchor's line and with its text. With
     the parser's *loader* (``parser._StrDateSafeLoader``), each map is flattened, and its entries are those of
-    the mapping the reader builds the map from: the entries merged in (``<<``) first, each where it is written
-    and marked as merged, then those written in the map (#133); an aliased key is at its alias."""
+    the mapping the reader builds the map from: the entries merged in (``<<``) first, each marked as merged, at
+    the line of the ``<<`` that merges it into this map (the first, if more than one has it) and with the line
+    where it is written, then those written in the map (#133); an aliased key is at its alias."""
     found: dict[str, list[_Written]] = {}
     for name, value in (stripped_nodes(root) if nodes is None else nodes).items():
         if not isinstance(value, yaml.MappingNode):
             continue
         own: set[int] | None = None
         aliases: AliasKeys | None = None
+        merged_at: dict[int, int] = {}  # the line of the `<<` that merges each entry in, by the entry's id
         if loader is not None:
             loader.flatten_mapping(value)
             own = {id(entry) for entry in loader.merges.get(value, (value.value, []))[0]}
             aliases = loader.alias_keys
+            for merge in loader.merge_keys.get(value, []):
+                at = line_at(breaks, _key_span(merge, aliases)[0], first_line)
+                sources = merge[1].value if isinstance(merge[1], yaml.SequenceNode) else [merge[1]]
+                for source in sources:
+                    for pair in source.value if isinstance(source, yaml.MappingNode) else ():
+                        merged_at.setdefault(id(pair), at)
         entries = []
         for entry in value.value:
             key = entry[0]
             if not isinstance(key, yaml.ScalarNode) or key.tag == "tag:yaml.org,2002:merge":
                 continue
             start, end = _key_span(entry, aliases)
-            entries.append(
-                _Written(key, block[start:end], line_at(breaks, start, first_line), start, own is not None and id(entry) not in own)
-            )
+            line = line_at(breaks, start, first_line)
+            if own is not None and id(entry) not in own:
+                entries.append(_Written(key, block[start:end], merged_at.get(id(entry), line), start, True, line))
+            else:
+                entries.append(_Written(key, block[start:end], line, start))
         found[name] = entries
     return found
 
@@ -291,6 +304,7 @@ def read_maps(
                         each.start,
                         (tags.get(each.node, each.node.tag), each.node.value),
                         each.merged,
+                        each.merged_from,
                     ),
                     text,
                 )
@@ -794,7 +808,7 @@ class SourceMap:
         if len(path) == 2 and path[0] in self.maps and isinstance(path[1], str):
             stays = self.maps[path[0]].stays.get(path[1])
             if stays is not None:
-                return stays.line
+                return stays.line if stays.merged_from is None else stays.merged_from  # where it is written
         while path:
             if path in self.keys:
                 return self.keys[path]

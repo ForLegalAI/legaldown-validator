@@ -106,19 +106,39 @@ def test_a_repeat_whose_last_entry_is_skipped_names_the_entry_read_before_it():
     assert [d for d in validate(document).diagnostics if d.rule == RULE] == []
 
 
+def test_a_key_merged_in_is_reported_at_the_merge_of_each_map_that_merges_it():
+    # #133: at the `<<` of the map, which reads it, saying where it is written: not at the source, which is in
+    # neither map and still holds it.
+    front = "b: &b {fr: a.md}\ntranslations: {<<: *b, ' fr': c.md}\nfield_types: {<<: *b, ' fr': c}\n"
+    found = [(d.line, d.level, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (4, "warning", "The translations key `fr`, merged in from line 3, is the same key as `' fr'` once stripped: "
+         "this entry is ignored, and the entry at line 4 is the one read."),
+        (5, "warning", "The field_types key `fr`, merged in from line 3, is the same key as `' fr'` once stripped: "
+         "this entry is ignored, and the entry at line 5 is the one read."),
+    ]
+    # one map, in block style, with a list of sources: at the line of its `<<`
+    front = "b: &b\n  fr: a.md\ntranslations:\n  de: d.md\n  <<: [{cs: c.md}, *b]\n  ' fr': c.md\n"
+    found = [(d.line, d.message) for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
+    assert found == [
+        (7, "The translations key `fr`, merged in from line 4, is the same key as `' fr'` once stripped: this entry "
+         "is ignored, and the entry at line 8 is the one read."),
+    ]
+
+
 def test_a_key_merged_in_that_strips_like_a_written_key_is_reported_where_it_is_written():
     # #133: YAML keeps both keys, and the model reads them as one: the merged entry is dropped.
     front = "b: &b {fr: a.lgd}\ntranslations: {<<: *b, ' fr': b.lgd}\n"
     assert parse(_source(front)).metadata.translations == {"fr": "b.lgd"}
     (diagnostic,) = [d for d in validate(parse(_source(front))).diagnostics if d.rule == RULE]
-    assert (diagnostic.level, diagnostic.line) == ("warning", 3)
+    assert (diagnostic.level, diagnostic.line) == ("warning", 4)  # at the `<<` (`test_..._at_the_merge_of_each_map`)
     assert diagnostic.message == (
-        "The translations key `fr` is the same key as `' fr'` once stripped: this entry is ignored, and the entry "
-        "at line 4 is the one read."
+        "The translations key `fr`, merged in from line 3, is the same key as `' fr'` once stripped: this entry is "
+        "ignored, and the entry at line 4 is the one read."
     )
     # in a block mapping, from a list of sources, and between two sources too
     front = "b: &b\n  fr: a.lgd\nfield_types:\n  <<: [*b]\n  'fr ': b\n"
-    assert _found(front) == [(RULE, "warning", 4)]
+    assert _found(front) == [(RULE, "warning", 6)]
     assert _found("translations:\n  <<: [{fr: a.lgd}, {' fr': b.lgd}]\n") == [(RULE, "warning", 4)]
     # A key written over the same merged key replaces it, as YAML says, and a merged key that the model reads as
     # the same text as a written one (`1` and `'1'`) is merge precedence, as in every other mapping: neither is said.

@@ -192,10 +192,12 @@ def _key_clause(why: str, by_written: str, again: str = "") -> str:
     }[why]
 
 
-def _key_ignored(subject: str, written: str, clause: str, stays: str = "") -> str:
+def _key_ignored(subject: str, written: str, clause: str, stays: str = "", merged_from: int | None = None) -> str:
     """The message of ``ldv-frontmatter-key-duplicate``: the key *written* of *subject* (a map or a mapping) is
-    *clause* (``_key_clause``), and ignored, with *stays* saying which entry the model keeps."""
-    return f"The {subject} key {_shown(written)} {clause}: this entry is ignored{stays}."
+    *clause* (``_key_clause``), and ignored, with *stays* saying which entry the model keeps. *merged_from* is
+    the line where an entry merged in (``<<``) is written (#133)."""
+    merged = "" if merged_from is None else f", merged in from line {merged_from},"
+    return f"The {subject} key {_shown(written)}{merged} {clause}: this entry is ignored{stays}."
 
 
 def _key_read(line: int) -> str:
@@ -1554,7 +1556,9 @@ def _check(
             else:
                 stays = ""
             report = result.error if each.why == "repeated" else result.warning
-            report(FRONTMATTER_KEY_DUPLICATE_RULE, _key_ignored(map_name, entry.written, what, stays), line=entry.line)
+            # An entry merged in is at the `<<` of the map that merges it, and says where it is written (#133).
+            message = _key_ignored(map_name, entry.written, what, stays, entry.merged_from)
+            report(FRONTMATTER_KEY_DUPLICATE_RULE, message, line=entry.line)
 
     # ── Keys of any other frontmatter mapping that a later key replaces (#131) ──
     # The reader keeps the last of the keys a mapping holds as one and says nothing of the others: a `title:` or

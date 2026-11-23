@@ -311,8 +311,10 @@ How the rule reads the YAML:
   mapping are judged: one that the mapping's own key, or a source that wins over it, takes the place of is never
   read, and neither is its value. In `translations` and `field_types`, an entry merged in that the model reads as
   one with an entry of another key only once stripped, which YAML keeps apart (`translations: {<<: *b, ' fr': b.lgd}`,
-  where `b` holds `fr`), is dropped by the model alone: it is reported with the map's own entries, at the line where
-  it is written in the source, naming the entry read (#133). Merged keys that are one key to the reader's dict
+  where `b` holds `fr`), is dropped by the model alone: it is reported with the map's own entries, at the line of the
+  `<<` that merges it into the map (the source is in neither map, and still holds it), saying the line where it is
+  written ("The translations key `fr`, merged in from line 2, is the same key as `' fr'` once stripped: …"), and
+  naming the entry read; a source merged into both maps draws a finding in each, at each map's `<<` (#133). Merged keys that are one key to the reader's dict
   (`fr` and `"fr"`, or `1`, `!!int 1` and `'1'`, all read as text) are merge precedence there as everywhere. A repeat inside a source is reported when the source's
   entry is the one held.
 - **A `<<` written twice in one mapping** is the same YAML key written again, which a strict reader rejects: an
