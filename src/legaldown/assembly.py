@@ -1029,6 +1029,8 @@ class _Fragments:
         source.newline = newline
         self._read[path] = source, read  # (the file as ``Files`` knows it: by the spelling it was first met by)
         self.problems += _file_problems(read, kind, self._template, path)
+        if kind == "attachment":
+            self._attached.add(path)  # its checks as an attachment file are made (``attach``)
         return source
 
     def __contains__(self, path: str) -> bool:

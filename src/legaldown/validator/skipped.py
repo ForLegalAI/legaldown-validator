@@ -122,7 +122,8 @@ def _includes(
     unread = outcome.unread
     rules = []
     if any(each.reason in ("no-resolver", "leads-out") for each in unread):
-        rules.append("include-file-missing")
+        # (A path not read is not compared with the others either, #123.)
+        rules += ["include-file-missing", "ldv-file-spelling-duplicate"]
     if unread:
         # Of a fragment not read nothing is known to follow or to join: both checks that look
         # across fragments (§16.11) go with it.

@@ -134,7 +134,7 @@ def test_the_includes_warning_of_the_end_state_is_none_when_everything_was_read(
     # ... and for fragments not read, the rules that read or join them, in this order.
     (unread,) = _warnings(text)
     assert (
-        "include-file-missing, include-has-frontmatter, include-has-h1, include-heading-skip, include-cycle, "
+        "include-file-missing, ldv-file-spelling-duplicate, include-has-frontmatter, include-has-h1, include-heading-skip, include-cycle, "
         "include-anchor-duplicate and the parts of template-fragment-invalid that read a fragment for the "
         "fragments not read; the combined-document checks"
     ) in unread.message
@@ -148,7 +148,7 @@ def test_each_reason_an_include_is_not_read_is_counted_apart():
     assert "1 leads out of the document's directory, which is not read" in warning.message
     # Asked for, and a file that is not there is an Error of its own: that check was made.
     assert [d.rule for d in result.diagnostics if d.rule == "include-file-missing"] == ["include-file-missing"] * 2
-    assert "include-file-missing, include-has-frontmatter" in warning.message  # for the one that leads out
+    assert "include-file-missing, ldv-file-spelling-duplicate, include-has-frontmatter" in warning.message  # for the one that leads out
 
 
 def test_an_include_of_the_document_itself_is_include_cycle_and_not_unread(tmp_path):

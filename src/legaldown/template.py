@@ -197,11 +197,12 @@ class _Snapshot:
     """*resolve* asking each file once, so that reading the template and validating it see the same text; it
     says which file it reads for a path when *resolve* can (``loader_identity``, #123)."""
 
-    __slots__ = ("_resolve", "_seen")
+    __slots__ = ("_resolve", "_seen", "_identities")
 
     def __init__(self, resolve: LoadFile) -> None:
         self._resolve = resolve
         self._seen: dict[str, str | None] = {}
+        self._identities: dict[str, str | None] = {}
 
     def __call__(self, path: str) -> str | None:
         if path not in self._seen:
@@ -210,8 +211,14 @@ class _Snapshot:
 
     def __getattr__(self, name: str) -> Any:
         # Only ``identify``, and only when *resolve* has it, so that a loader that cannot say is not taken for one.
-        if name == "identify" and callable(getattr(self._resolve, "identify", None)):
-            return self._resolve.identify  # type: ignore[attr-defined]
+        if name == "identify" and callable(identify := getattr(self._resolve, "identify", None)):
+            def identified(path: str) -> str | None:
+                # Asked once too, so that assembly and the validation, which asks later, find the same files.
+                if path not in self._identities:
+                    self._identities[path] = identify(path)
+                return self._identities[path]
+
+            return identified
         raise AttributeError(name)
 
 

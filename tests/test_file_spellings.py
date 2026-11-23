@@ -160,7 +160,7 @@ def test_an_attachment_naming_an_included_file_by_another_path_is_the_finding_at
         assert not result.ok and result.files == {}
 
 
-def test_an_include_naming_an_attached_file_by_another_path_is_the_finding_at_the_include(tmp_path):
+def test_the_includes_are_met_before_the_attachments_so_the_finding_is_at_the_entry(tmp_path):
     # The includes are met first, then the attachments: the include is first, whatever the lines.
     root = tmp_path / "root"
     _write(root / "doc" / "a.lgd", "Hello.\n")
@@ -321,3 +321,29 @@ def test_after_the_finding_both_go_on_with_the_one_file_by_its_first_path():
     problems = sorted((d.rule, d.file or "t.lgd", d.line) for d in template.problems)
     assert problems == found
     assert (RULE, "t.lgd", _line(text, "../doc/a.lgd")) in found and ("include-has-h1", "n.lgd", 1) in found
+
+
+def test_a_file_read_first_for_its_definitions_is_named_by_the_path_that_named_it_first(tmp_path):
+    # The validator imports an attachment file's definitions before it walks the includes; the file's findings are
+    # still in the file by the include's path, which named it first, as assembly names them.
+    root = tmp_path / "root"
+    _write(root / "doc" / "a.lgd", "# Heading {#heading}\n\nText.\n")
+    extra = "attachments:\n  - id: sch\n    title: Schedule\n    file: ../doc/a.lgd\n"
+    text = _template("{{include: a.lgd}}\n\nSee {{attach: sch}}.\n", extra)
+    path = _write(root / "doc" / "t.lgd", text)
+    result = validate(load(path), document_root=root)
+    assert [d.file for d in result.diagnostics if d.rule == "include-has-h1"] == ["a.lgd"]
+    problems = load_template(path, document_root=root).problems
+    assert [d.file for d in problems if d.rule == "include-has-h1"] == ["a.lgd"]
+
+
+def test_an_attachment_file_named_by_two_entries_is_judged_as_an_attachment_once(tmp_path):
+    root = tmp_path / "root"
+    _write(root / "doc" / "a.lgd", "Text.\n\n{{include: n.lgd}}\n")
+    text = (
+        "---\ntitle: D\nattachments:\n  - id: one\n    title: One\n    file: a.lgd\n"
+        "  - id: two\n    title: Two\n    file: ../doc/a.lgd\n---\n\n# Scope {#scope}\n\nSee {{attach: one}} and {{attach: two}}.\n"
+    )
+    path = _write(root / "doc" / "t.lgd", text)
+    problems = [(d.rule, d.file, d.line) for d in load_template(path, document_root=root).problems]
+    assert problems == [(RULE, "", _line(text, "file: ../doc/a.lgd")), ("include-file-missing", "a.lgd", 3)]

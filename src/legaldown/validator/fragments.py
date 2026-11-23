@@ -157,7 +157,16 @@ class Files:
         and *relative* names it from now on, when nothing did. Asked by the validator and by assembly in the
         same order (the includes, followed as they are met, then the LegalDown attachment files), so that both
         find the same second path."""
-        first = self._named.setdefault(self.key(relative), relative)
+        key = self.key(relative)
+        if key not in self._named:
+            self._named[key] = relative
+            read = self._read.get(key)
+            if read is not None and read.path != relative:
+                # Read before it was named (for the definitions of an attachment file, which are imported
+                # before the includes are walked): it goes by the path that named it first, as in assembly.
+                read.path = relative
+            return None
+        first = self._named[key]
         return None if first == relative else first
 
     def locate(
@@ -191,10 +200,10 @@ class Files:
         key = self.key(relative)
         if key not in self._own:
             # The file system is asked only for a file the loader has: it is the loader's. (A link is followed
-            # here whatever the loader: the document's own file is the file it is, however it is reached.)
-            self._own[key] = (
-                self.read(relative) is not None
-                and within(self._path.parent, relative, self._reach.root) == self._path.resolve()
+            # here whatever the loader: the document's own file is the file it is, however it is reached, a hard
+            # link to it too.)
+            self._own[key] = self.read(relative) is not None and _same_file(
+                within(self._path.parent, relative, self._reach.root), self._path
             )
         return self._own[key]
 
@@ -216,6 +225,17 @@ class Files:
                 relative, parse(text, on_frontmatter_error="keep"), text
             )
         return self._read[key]
+
+
+def _same_file(target: Path | None, path: Path) -> bool:
+    """Whether *target* (a resolved path, or None) is the file at *path*: the same real path, or the same file
+    by its device and inode (a hard link, another case of a name where the file system ignores case)."""
+    if target is None:
+        return False
+    try:
+        return target == path.resolve() or os.path.samefile(target, path)
+    except (OSError, ValueError, RuntimeError):  # not there, or no path at all
+        return False
 
 
 def _line(line: Line) -> int | None:
