@@ -1246,6 +1246,14 @@ class Locator:
             return self._map.find(leaf.start, leaf.end, needle, leaf.texts, 0, leaf.lifted, 0, self._cache)
         return self.find(section, index, needle)
 
+    def fragment_lines(self, section: int | None, index: int, fragment: int) -> tuple[int, list[str], str] | None:
+        """The block that holds fragment *fragment* of top-level block *index*'s ``block_fragments``, as it is
+        written: the file line it begins on, its lines (with their container markers) and its kind. None
+        without a source map, or when the layout and the model disagree."""
+        if self._map is None or (leaf := self._leaf_for(section, index, fragment)) is None:
+            return None
+        return leaf.start, self._map.lines[leaf.start - 1:leaf.end - 1], leaf.kind
+
     def _leaf_for(self, section: int | None, index: int, fragment: int) -> _Leaf | None:
         """The leaf of top-level block *index* that holds fragment *fragment* of its ``block_fragments``,
         found by a map made once for the block: a list of thousands of items is not scanned for each
@@ -1282,8 +1290,8 @@ class Locator:
         leaves: list[_Leaf] = []
         count = 0
         try:
-            for span, block, depth, base in _walk_spans([self._map.span(section, index)], [top], 0, 0):
-                if block.kind in LIST_KINDS or (block.kind == "quote" and depth < MAX_QUOTE_DEPTH):
+            for span, block, held, base in _walk_spans([self._map.span(section, index)], [top], 0, 0):
+                if block.kind in LIST_KINDS or (block.kind == "quote" and held < MAX_QUOTE_DEPTH):
                     continue  # its blocks hold its text
                 own = [text for text, _position in _own_fragments(block)]
                 first, last = body + base + span.start + 1, body + base + span.end + 1
@@ -1303,23 +1311,25 @@ class Locator:
         return leaves
 
 
-def _walk_spans(spans: Any, blocks: Any, depth: int, base: int) -> Iterator[tuple[Any, Block, int, int]]:
+def _walk_spans(
+    spans: Any, blocks: Any, depth: int, base: int, held: int = 0
+) -> Iterator[tuple[Any, Block, int, int]]:
     """Every block of *blocks* and of their list items and block quotes, in the order
-    ``definitions.nested_blocks`` gives, each as ``(span, block, depth, base)``: its
-    span (``parser._BlockSpan``), the items and quotes it is in, and the line
-    offset *base* its span is counted from (a quote's content is counted from the
-    quote's first line)."""
+    ``definitions.nested_blocks`` gives, each as ``(span, block, held, base)``: its
+    span (``parser._BlockSpan``), the quotes it is in (*held*; *depth* counts the items
+    and quotes), and the line offset *base* its span is counted from (a quote's content
+    is counted from the quote's first line)."""
     from .models import LIST_KINDS
     from .parser import MAX_QUOTE_DEPTH, quote_content
 
     for span, block in zip(spans, blocks, strict=True):
-        yield span, block, depth, base
+        yield span, block, held, base
         if block.kind in LIST_KINDS:
             for item_span, item in zip(span.items, block.items, strict=True):
-                yield from _walk_spans(item_span.blocks, item.blocks, depth + 1, base)
-        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+                yield from _walk_spans(item_span.blocks, item.blocks, depth + 1, base, held)
+        elif block.kind == "quote" and held < MAX_QUOTE_DEPTH:
             children, inner = quote_content(block.text, depth + 1)
-            yield from _walk_spans(inner, children, depth + 1, base + span.start)
+            yield from _walk_spans(inner, children, depth + 1, base + span.start, held + 1)
 
 
 def _lifted(block: Block, own: list[str], first: int, lines: list[str], start: int, end: int) -> _Leaf | None:

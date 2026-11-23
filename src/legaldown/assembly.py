@@ -409,7 +409,7 @@ def _matches(spans: list[_BlockSpan], blocks: list[Block]) -> bool:
 
 def _content(
     spans: list[_BlockSpan] | tuple[_BlockSpan, ...], blocks: list[Block] | tuple[Block, ...],
-    depth: int = 0, base: int = 0,
+    depth: int = 0, base: int = 0, held: int = 0,
 ) -> Iterator[tuple[_BlockSpan, Block, int, bool]]:
     """Every block of *blocks*, of their list items, and of the block quotes
     among them, in document order, as the validator reads them
@@ -417,19 +417,19 @@ def _content(
     block's lines are ``[base + span.start, base + span.end)``, and *leaf*
     tells whether its text is lexed as it stands, holding no blocks, nor
     code or raw HTML (§11.4). A quote's content is read as blocks
-    (``parser.quote_content``), but for one in ``MAX_QUOTE_DEPTH`` items
-    and quotes, whose text is one. *depth*: the items and quotes *blocks*
-    are in."""
+    (``parser.quote_content``), but for one in ``MAX_QUOTE_DEPTH`` quotes,
+    whose text is one. *depth*: the items and quotes *blocks* are in;
+    *held*: the quotes."""
     for span, block in zip(spans, blocks, strict=True):
-        read = block.kind == "quote" and depth < MAX_QUOTE_DEPTH
+        read = block.kind == "quote" and held < MAX_QUOTE_DEPTH
         leaf = not read and block.kind not in (*LIST_KINDS, "code", "rule", "html", "link_definition")
         yield span, block, base, leaf
         for item_span, item in zip(span.items, block.items, strict=True):
-            yield from _content(item_span.blocks, item.blocks, depth + 1, base)
+            yield from _content(item_span.blocks, item.blocks, depth + 1, base, held)
         if read:
             children, inner = quote_content(block.text, depth + 1)
             # The quote's text holds one line per source line.
-            yield from _content(inner, children, depth + 1, base + span.start)
+            yield from _content(inner, children, depth + 1, base + span.start, held + 1)
 
 
 def _pairs(layout: _Layout, document: Document) -> Iterator[tuple[int | None, int, _BlockSpan, Block]]:
@@ -1858,7 +1858,7 @@ def _item_column(line: str, count: int) -> int:
 class _Entry(NamedTuple):
     """One container that a line is in, as the layout has it (``_signatures``); *parent* is the one outside it."""
 
-    kind: str  #: ``i`` (a list item), ``q`` (a block quote), or ``cap`` (a quote in ``MAX_QUOTE_DEPTH``, and those it holds)
+    kind: str  #: ``i`` (a list item), ``q`` (a block quote), or ``cap`` (a quote not read into blocks, and those it holds: ``_signatures``)
     first: int  #: the line it starts on
     ordinal: int  #: of the items that start on that line, which this is (0 for the first)
     parent: _Entry | None
@@ -1880,9 +1880,14 @@ def _signatures(
     innermost container each line lies in (``_Entry``), as the parser's layout has it, quotes
     and list items alike. Only line *last* if it is given (no containers then), and then also the
     paragraph it lies in, if that is in list items alone: the content columns of the items around
-    it, outer first, and the line it starts on."""
+    it, outer first, and the line it starts on.
+
+    A quote in ``MAX_QUOTE_DEPTH`` quotes, which the validator reads as one text, is read into blocks
+    here too, so that the items in it are in the layout (#139), while the text read so, all such quotes
+    together, is no longer than *lines*: past that, a quote is a ``cap`` with no containers inside."""
     layout = _Layout()
     blocks, sections = _parse_body(lines, layout)
+    budget = sum(len(line) + 1 for line in lines)
     begun: defaultdict[int, Counter[str]] = defaultdict(Counter)
     innermost: dict[int, _Entry] = {}
     leaf: list[tuple[tuple[int, ...], int]] = []
@@ -1912,10 +1917,11 @@ def _signatures(
 
     def walk(
         spans: list[_BlockSpan], model: list[Block], base: int, depth: int, opened: tuple[int, ...] | None,
-        around: tuple[int, ...] = (),
+        around: tuple[int, ...] = (), held: int = 0,
     ) -> None:
         """*opened*: the lines the items around these blocks start on, or None in a quote;
-        *around*: their content columns."""
+        *around*: their content columns; *depth*: the items and quotes they are in, *held*: the quotes."""
+        nonlocal budget
         for span, block in zip(spans, model, strict=True):
             start, end = base + span.start, base + span.end
             if last is not None and not start <= last < end:
@@ -1935,13 +1941,17 @@ def _signatures(
                     inner_around = (*around, _item_column(lines[first], inside.count(first)))
                 if last is None:
                     push("i", first, stop)
-                walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around)
+                walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around, held)
             if block.kind == "quote":
+                read = held < MAX_QUOTE_DEPTH
+                if not read and len(block.text) < budget:
+                    budget -= len(block.text)
+                    read = True
                 if last is None:
-                    push("q" if depth < MAX_QUOTE_DEPTH else "cap", start, end)
-                if depth < MAX_QUOTE_DEPTH:
+                    push("q" if read else "cap", start, end)
+                if read:
                     children, inner = quote_content(block.text, depth + 1)
-                    walk(inner, children, start, depth + 1, None)
+                    walk(inner, children, start, depth + 1, None, (), held + 1)
 
     for heading in layout.headings:
         mark(heading.start, heading.end, "heading")
@@ -2187,12 +2197,16 @@ class _Window:
     being open (and on the line before it, for a table), and not on the other lines in it. A
     paragraph that may be a link definition is not one of plain text. After a blank line in items
     (``mode`` "blank"), when the paragraph before it was one of plain text, it is the blank line:
-    a line begins a construct there as it does after any blank line in those items."""
+    a line begins a construct there as it does after any blank line in those items.
+
+    In a block quote it is from the last block of the quote's content on, as in the body (``_quote_window``):
+    a long quote is read by its blocks, a list in it by its items (#139). *top* stays the quote's own line."""
 
     def __init__(self, lines: list[_Line]) -> None:
         self.lines = lines
         self.sync = 0  # where the last top-level block of lines[:known] starts (of a list, its last item)
         self.top = 0  # and where that block starts as a block (of a list, the list)
+        self.inside = False  # *sync* is inside the block quote at *top*, not where a top-level block starts
         self.known = 0
         self.kind = ""  # the kind of that block
         self.mode = ""
@@ -2214,19 +2228,28 @@ class _Window:
         if self.known < k:
             texts = [line.text for line in self.lines[self.sync:k]]
             start, self.kind, top = _last_block(_layout(texts))
-            self.top = self.sync + top
-            self.sync += start
+            self._moved(start, top, k)
             self.known = k
         return [line.text for line in self.lines[self.sync:k]]
+
+    def _moved(self, start: int, top: int, end: int) -> None:
+        """The last top-level block of the lines from *sync* to *end* starts at *start* from *sync* (as a block,
+        at *top*): read from there on, and in a block quote from its last block on."""
+        if not (self.inside and top == 0):  # (the quote that *sync* is inside goes on)
+            self.top, self.inside = self.sync + top, False
+        self.sync += start
+        if self.kind == "quote":
+            inner = _quote_window([line.text for line in self.lines[self.sync:end]])
+            self.sync += inner
+            self.inside = self.inside or inner > 0
 
     def read(self, k: int, before: list[str], tail: _Tail | None) -> None:
         """Line *k*, which was read after *before* as *tail*, is written."""
         if not self.mode and tail is not None:
             window = self.sync
-            self.top = window + tail.top
-            self.sync += tail.start
-            self.known = k + 1
             self.kind = tail.kind
+            self._moved(tail.start, tail.top, k + 1)
+            self.known = k + 1
             if tail.kind == "paragraph":
                 if not self.lines[self.sync].text.lstrip(" ").startswith("[") and self._plain(self.lines[k].text, ()):
                     self.mode, self.chain, self.first = "para", (), self.sync
@@ -2274,6 +2297,40 @@ class _Window:
         their content (by spaces), and what is left of it is plain text (``_plain_text``)."""
         column = chain[-1] if chain else 0
         return text[:column] == " " * column and _plain_text(text[column:])
+
+
+def _quote_window(texts: list[str]) -> int:
+    """Where, in *texts*, the last block of the content of their last top-level block, a block quote, starts
+    (of a list, its last item; and of a quote that is that block, its own last block, and so on): the lines from
+    there on are read as all of *texts* reads them. The blocks before it in the quote are closed, as blocks
+    before the last top-level block are in the body, and the line it starts on has the quote's markers (a lazy
+    line begins no block), which open the quote again. 0 when that is the quote's first line, or when link
+    definitions come right before the block (``_last_block`` reads from them, as a paragraph may hold them).
+    No deeper than ``MAX_QUOTE_DEPTH`` quotes, as each is read again."""
+    layout = _Layout()
+    blocks, sections = _parse_body(texts, layout)
+    pairs = [
+        (span, block)
+        for spans, model in zip(layout.containers(), [blocks, *(body for _heading, body in sections)], strict=True)
+        for span, block in zip(spans, model, strict=True)
+    ]
+    if not pairs or pairs[-1][1].kind != "quote":
+        return 0
+    span, block = pairs[-1]
+    offset = span.start
+    for depth in range(1, MAX_QUOTE_DEPTH + 1):
+        children, inner = quote_content(block.text, depth)
+        if not inner:
+            break
+        start, kind, _top = _last_block(_Layout(preamble=list(inner)))
+        last = inner[-1]
+        if start != (last.items[-1].start if last.items else last.start):
+            break  # link definitions before it
+        offset += start
+        if kind != "quote":
+            break
+        block = children[-1]
+    return offset
 
 
 def _plain_text(text: str) -> bool:

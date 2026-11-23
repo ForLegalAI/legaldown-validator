@@ -558,6 +558,20 @@ class TestLineStartsInContext:
         ("> " * 10 + "- a\n" + "> " * 10 + "\n" + "> " * 10 + "  {{placeholder: name}}\n", "> q",
          "> " * 10 + "- a\n" + "> " * 10 + "\n" + "> " * 10 + "  \\> q\n"),
         ("> " * 20 + "{{placeholder: name}}\n", "# h", "> " * 20 + "\\# h\n"),
+        # An item in a quote in sixteen nested items, and in seventeen nested quotes, past the quotes the validator
+        # reads into blocks: the line keeps its item (#139: "> y" and "> # h", out of the item, a heading).
+        *(
+            ("".join("  " * k + "- a\n" for k in range(16)) + "  " * 16 + "> - a\n" + "  " * 16 + ">\n"
+             + "  " * 16 + ">   {{placeholder: name}}\n", answer,
+             "".join("  " * k + "- a\n" for k in range(16)) + "  " * 16 + "> - a\n" + "  " * 16 + ">\n"
+             + "  " * 16 + ">   " + written + "\n")
+            for answer, written in (("y", "y"), ("# h", "\\# h"))
+        ),
+        *(
+            ("> " * 17 + "- a\n" + "> " * 17 + "\n" + "> " * 17 + "  {{placeholder: name}}\n", answer,
+             "> " * 17 + "- a\n" + "> " * 17 + "\n" + "> " * 17 + "  " + written + "\n")
+            for answer, written in (("y", "y"), ("# h", "\\# h"), ("> q", "\\> q"))
+        ),
         # A lazy line is not in the quote, so its indentation goes no further than the outer item's column.
         ("- > - a\n    {{placeholder: name}}\n", "y", "- > - a\n  y\n"),
     ])

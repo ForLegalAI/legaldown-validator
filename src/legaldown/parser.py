@@ -1450,8 +1450,9 @@ def _item_lines(lines: list[str], column: int, text: dict[int, int]) -> list[str
 # paragraph of text, so that no document recurses without bound.
 MAX_LIST_DEPTH = 64
 # How deep a block quote's content is read as blocks (``quote_content``):
-# a quote in this many list items and quotes is read as one text. Each
-# level reads the text of the quotes in it again.
+# a quote in this many quotes is read as one text. Each level reads the
+# text of the quotes in it again. List items do not count (#139): they
+# have ``MAX_LIST_DEPTH``, which counts the quotes they are in too.
 MAX_QUOTE_DEPTH = 16
 
 
@@ -2056,19 +2057,20 @@ def _read_quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], t
     return tuple(blocks), tuple(layout.preamble)
 
 
-def quote_blocks(block: Block, *, depth: int = 0) -> list[Block]:
+def quote_blocks(block: Block, *, depth: int = 0, quotes: int | None = None) -> list[Block]:
     """The blocks the block quote *block* holds, as the validator reads them:
     each block read afresh, free to change, since the
     validator keeps its own reading of a quote's content. A heading in one
     is a ``heading`` block, not a section, and no directive is lifted into
     block fields (§4.1). *depth*: how many list items and quotes *block* is
-    in, the count before entering it; a quote in ``MAX_QUOTE_DEPTH`` of them
+    in, the count before entering it; *quotes*: how many of those are quotes
+    (by default all *depth* of them). A quote in ``MAX_QUOTE_DEPTH`` quotes
     is not read into blocks: it is one paragraph of its text as written
     (the validator reads no directives in its fenced code there), or no
     block when it holds none. Raises ``ValueError`` for a block that is not a quote."""
     if block.kind != "quote":
         raise ValueError(f"not a block quote: {block.kind}")
-    if depth >= MAX_QUOTE_DEPTH:
+    if (depth if quotes is None else quotes) >= MAX_QUOTE_DEPTH:
         return [Block(kind="paragraph", text=block.text)] if block.text.strip() else []
     # Read again rather than deep-copied from the cache: a copy recurses once
     # per nesting level, and fails on a list nested near MAX_LIST_DEPTH.

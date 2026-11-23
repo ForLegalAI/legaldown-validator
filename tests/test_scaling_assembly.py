@@ -9,8 +9,9 @@ several times the budget (29 s for the 600 lines, 30 s for the 800 below) and a 
 about a tenth of it, so that it fails only on a gross regression, never on a slow machine.
 
 What stays quadratic, and is accepted: lines whose answer begins a block (a ``- `` or
-``# `` in each blank) inside one quote or one item are each read against everything
-before them in it, as that is one top-level block.
+``# `` in each blank) inside one item, or one block of a quote's content, are each read
+against everything before them in it, as that is one top-level block. A block quote is
+read from the last block of its content on (#139).
 """
 from __future__ import annotations
 
@@ -147,6 +148,27 @@ def test_one_emptied_line_does_not_make_the_parser_read_every_line_after_it(shap
     body, _parses, seconds = _assembled(lines, "Ann")
     assert "Ann" in body.splitlines()[-1]
     assert PARSES.lines < 8 * len(lines)  # the template once, and the block of the emptied line
+    assert seconds < 8
+
+
+@pytest.mark.parametrize("shape", ["items", "nested-quote", "paragraphs"])
+def test_a_long_quote_is_read_from_its_last_block(shape: str) -> None:
+    """Items and deleted choices in one block quote (#139): ``> -    a<n>``, a choice that empties its line and
+    ``>     {{placeholder}}``, 800 times. Each checked line is read from the last block of the quote's content
+    on (the item it is in), not from the quote's first line (some eight seconds for 400 groups); so too in a
+    quote in a quote, and after paragraphs in the quote."""
+    if shape == "items":
+        group = ["> -    a", f"> {_EMPTIED}", ">     {{placeholder: pN}}"]
+    elif shape == "nested-quote":
+        group = ["> > -    a", f"> > {_EMPTIED}", "> >     {{placeholder: pN}}"]
+    else:
+        group = ["> a", f"> {_EMPTIED}", "> {{placeholder: pN}}", ">"]
+    lines: list[str] = []
+    while len(lines) < 2400:
+        lines += [line.replace("pN", f"p{len(lines)}") for line in group]
+    body, _parses, seconds = _assembled(lines, "# h")
+    assert "\\# h" in body.splitlines()[-1 - (shape == "paragraphs")]
+    assert PARSES.lines < 8 * len(lines)
     assert seconds < 8
 
 

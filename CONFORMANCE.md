@@ -653,7 +653,10 @@ Where this differs from CommonMark, or is read more simply:
       - A table is the model's (GFM's): `[r]: /etc/x\x7f` as the first line of a table of one cell, with a delimiter
         row under it, is a table cell to the model and a definition to a renderer without tables, and a line without
         a pipe after a table is a row to the model, GFM, markdown-it and `pandoc -f commonmark` and a *definition* to
-        `pandoc -f gfm`, which is not a supported reading: an image of it is not judged.
+        `pandoc -f gfm`, which is not a supported reading: an image of it is not judged. Out of scope (#139): the
+        specification's tables are GFM's, which read the row, and the readings judged are the specification's,
+        `pandoc -f commonmark`'s and markdown-it's; `test_pandoc_gfm_reads_a_definition_after_a_table_that_the_path_rules_do_not_judge`
+        runs `pandoc -f gfm` where pandoc is installed, so that a pandoc that comes to agree is noticed.
       - The title of a definition. Where a reading reads text and the model a definition and its title (markdown-it
         ends `[a]: x\ "![i](/etc/p.png)"` at the backslash, so the line is a paragraph with an image), the text is
         read for images under that reading, at its own lines, as the lines of the reading's paragraphs that the model
@@ -662,9 +665,17 @@ Where this differs from CommonMark, or is read more simply:
         markdown-it's, not pandoc's), but an *inline* image in it is judged: it is displayed by the
         specification's reading, which is text there. The whole text of the reading's paragraph or heading is read, and
         the images that begin on a line the model has as a definition are judged (one that begins in a title and ends
-        below it too); the others are the model's own. A residual (too many findings): the lines of a setext heading's
-        text in a quote or an item are joined, so a reference-style image in the title of a definition that a reading
-        reads there is still that reading's.
+        below it too); the others are the model's own. The model joins the lines of a setext heading in a quote or an
+        item, a space between; they are told apart again from the heading's lines as written, each line's text being
+        the end of it after its markers (`paths._heading_lines`), so that a reference-style image in the title of a
+        definition that a reading reads there is not that reading's (#139).
+      - Text that only a reading has, in a drafting note as that reading reads the quotes around it, is in the note
+        (`ReadText.noted`): its images are judged all the same, and none of them is the image whose existence the
+        check-skipped Warning names (#139).
+      - A definition is judged once however many readings read it, by its line (and file). The model's line of one
+        is unknown only in a file without a source map, or no longer fitting it, which no reading reads again
+        (`read_definitions` needs its lines); so a reading's definition and the model's are never one definition
+        under two names (#139, `test_a_definition_of_a_fragment_that_every_reading_reads_is_one_finding`).
       - A label of white space the specification does not take as blank (`[<NBSP>]: x`, U+3000, and for markdown-it
         U+001C–U+001F, U+0085, U+2028) makes the line text to pandoc and markdown-it, and the next line a line of
         its paragraph, not a definition (`_read_definition` checks it by each reading's own white space).
@@ -850,8 +861,9 @@ paragraph. What the reading does not follow:
   (about one document in 200,000, and older than it): a nested quote whose paragraph has a line with a `|`,
   a lazy line, then a line that looks like a table's delimiter row (`>>a||`, `>     x`, `>>-|-`) ends there,
   where CommonMark (and pandoc, markdown-it) go on with the paragraph and take an unmarked line after it.
-- A quote in 16 or more list items and quotes is read as one text: its directives are checked
-  as a paragraph's.
+- A quote in 16 or more quotes is read as one text: its directives are checked as a paragraph's. List items do
+  not count toward it (they have `MAX_LIST_DEPTH`, which counts the quotes they are in too), so a quote in sixteen
+  nested items is read into blocks as one in none is (#139).
 
 One id appears on both sides of that line. `attachment-file-missing` is defined as *the attachment
 `file` path exists*, which needs the filesystem and is therefore unimplemented — but the validator
@@ -1512,10 +1524,12 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   it. A quote nested more deeply than the parser reads into blocks (`MAX_QUOTE_DEPTH`) has its
   markers taken by the same three-column rule. (Beyond eight nested quotes the parser's own
   reading of a lazy line, which stops following nested quotes there, differs from its reading of
-  the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts list items and quotes together,
-  and a quote past it is read as one text: the items inside it are not in the layout, so a line in
-  one is read as in the quote alone (an item in sixteen nested items, then `> - a` and `>   {{x}}`:
-  the line is taken out of its item; known, and as before). A line short of an item's content column
+  the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts quotes alone (#139), so a quote in
+  sixteen nested items is in the layout with its items. A quote in that many quotes, which the validator reads as
+  one text, is read into blocks for the layout too, so that a line in an item in it keeps its item (`> ` seventeen
+  times, `- a`, and `  {{x}}`), as long as the text read so past the depth, all such quotes together, is no
+  longer than the template; past that, a quote's markers are taken by the three-column rule and the items in it
+  are not in the layout (a line in one is read as in the quote alone). A line short of an item's content column
   that a quote holds (a lazy line) keeps no indentation after its marker, and neither does a line
   that an empty phrase leaves with only a quote's marker. The check cannot give a backslash a position where the
   template's own markers, left bare by an empty phrase, begin the construct (`text` over
@@ -1525,9 +1539,11 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   leaves as bare markers (`> `) is not checked: it is not blank, so step 5 does not delete it
   (§15.7.2), and `> text` / `> ` / `> <x>` keeps `<x>`, which begins an HTML block there. The
   specification gives no position for these; the output keeps the template's markers as written
-  (open question #120). Inserted text in the one top-level block of a long list item or
-  quote, each answer beginning a block (`- `, `# `), is read against that block's earlier lines:
-  quadratic in the size of the block.
+  (open question #120). Inserted text in the one top-level block of a long list item, each answer
+  beginning a block (`- `, `# `), is read against that block's earlier lines: quadratic in the size of
+  the block. A block quote is read from the last block of its content on (of a list in it, its last item;
+  in quotes nested in it, to `MAX_QUOTE_DEPTH`), as the body is read from its last top-level block, so a
+  long quote of items and deleted choices is linear (#139, `tests/test_scaling_assembly.py`).
 - Removing a drafting note or unit can join what it separated: indented code after a removed note
   that followed a list becomes a paragraph of the list's last item, and two code blocks separated
   only by a removed note merge. §15.7.2 step 2 removes the lines; the template author keeps such

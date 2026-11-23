@@ -67,6 +67,30 @@ def test_a_quote_past_the_quote_depth_is_one_text():
     assert quote_blocks(Block(kind="quote", text=""), depth=MAX_QUOTE_DEPTH) == []
 
 
+def test_only_quotes_count_toward_the_quote_depth():
+    """``MAX_QUOTE_DEPTH`` counts the quotes a quote is in, not the list items (#139): *quotes* says how many
+    of the *depth* are quotes, and a quote in many items is read into blocks."""
+    [quote] = _blocks("> one\n>\n> two\n")
+    assert len(quote_blocks(quote, depth=MAX_QUOTE_DEPTH + 4, quotes=0)) == 2
+    assert len(quote_blocks(quote, depth=MAX_QUOTE_DEPTH + 4, quotes=MAX_QUOTE_DEPTH - 1)) == 2
+    assert len(quote_blocks(quote, depth=MAX_QUOTE_DEPTH + 4, quotes=MAX_QUOTE_DEPTH)) == 1
+    note = Block(kind="quote", text="[!DRAFTING]\none\n\ntwo")
+    assert len(drafting_note_blocks(note, depth=MAX_QUOTE_DEPTH, quotes=1)) == 2
+    assert len(drafting_note_blocks(note, depth=MAX_QUOTE_DEPTH)) == 1  # *quotes* defaults to *depth*
+
+
+def test_a_quote_in_many_list_items_is_read_into_blocks():
+    """A quote in sixteen nested items holds blocks, as one in no item does: the directive in its nested
+    item is a fragment of its own, and so is the fenced code's (#139)."""
+    from legaldown.syntax import block_fragments
+
+    items = "".join("  " * k + "- a\n" for k in range(MAX_QUOTE_DEPTH))
+    indent = "  " * MAX_QUOTE_DEPTH
+    [lst] = _blocks(items + indent + "> - b {{placeholder: p}}\n" + indent + ">\n" + indent + "> c\n")
+    fragments = block_fragments(lst)
+    assert [fragment.text for fragment in fragments[-2:]] == ["b {{placeholder: p}}", "c"]
+
+
 def test_a_quote_past_the_quote_depth_is_its_text_as_written_fenced_code_included():
     text = "> not read\n\n```\n{{ref: x}}\n```\n\nafter"
     quote = Block(kind="quote", text=text)
