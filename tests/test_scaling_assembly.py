@@ -181,6 +181,23 @@ def test_a_quote_nested_a_thousand_deep_in_a_long_template_is_assembled() -> Non
     assert seconds < 8
 
 
+def test_items_and_quotes_nested_in_each_other_a_hundred_deep_are_assembled() -> None:
+    """``- a {{p}}`` and ``> b {{p}}`` in turn, each a level deeper, a hundred lines: the layout reads quotes past
+    the validator's depth to a depth of its own, of items and quotes together, not of quotes alone (#139 review:
+    six seconds against 2.6 for 120 lines, before that was bounded; some three seconds now)."""
+    lines, prefix = [], ""
+    for n in range(100):
+        if n % 2 == 0:
+            lines.append(prefix + f"- a {{{{placeholder: p{n}}}}}")
+            prefix += "  "
+        else:
+            lines.append(prefix + f"> b {{{{placeholder: p{n}}}}}")
+            prefix += "> "
+    body, _parses, seconds = _assembled(lines, "# h")
+    assert body.splitlines()[-1].endswith("> b # h")
+    assert seconds < 25
+
+
 def test_a_whole_line_filled_by_an_answer_that_looks_like_markers_is_no_deleted_line() -> None:
     """The answer ``2024.`` (or ``-``, ``>``) fills its line and is only escaped: it holds the paragraph that
     the template has, so the lines after it are read as the template reads them."""

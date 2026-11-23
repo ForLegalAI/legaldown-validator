@@ -1528,7 +1528,7 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts quotes alone (#139), so a quote in
   sixteen nested items is in the layout with its items. A quote in that many quotes, which the validator reads as
   one text, is read into blocks for the layout too, so that a line in an item in it keeps its item (`> ` seventeen
-  times, `- a`, and `  {{x}}`), to twice that depth (32 quotes, at twice the cost); past that, a quote's markers
+  times, `- a`, and `  {{x}}`), to twice that depth (32 quotes, and 32 items and quotes together); past that, a quote's markers
   are taken by the three-column rule and the items in it are not in the layout (a line in one is read as in the
   quote alone). A line short of an item's content column
   that a quote holds (a lazy line) keeps no indentation after its marker, and neither does a line

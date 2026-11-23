@@ -74,6 +74,7 @@ from .parser import (
     _layout,
     _may_interrupt,
     _parse_body,
+    _read_quote_content,
     _row_width_end,
     parse,
     quote_content,
@@ -1872,7 +1873,8 @@ def _chain(entry: _Entry | None) -> Iterator[_Entry]:
 
 
 #: How deep the line-start check reads quotes into blocks for the layout (``_signatures``): twice as deep as the
-#: validator does (``MAX_QUOTE_DEPTH``), at twice the cost, so that an item in a quote past its depth keeps its line.
+#: validator does (``MAX_QUOTE_DEPTH``), so that an item in a quote past its depth keeps its line, and no deeper in
+#: items and quotes together, which each read the text in them again.
 _LAYOUT_QUOTE_DEPTH = 2 * MAX_QUOTE_DEPTH
 
 
@@ -1946,7 +1948,7 @@ def _signatures(
                     push("i", first, stop)
                 walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around, held)
             if block.kind == "quote":
-                read = held < _LAYOUT_QUOTE_DEPTH
+                read = held < _LAYOUT_QUOTE_DEPTH and depth < _LAYOUT_QUOTE_DEPTH
                 if last is None:
                     push("q" if read else "cap", start, end)
                 if read:
@@ -2207,6 +2209,7 @@ class _Window:
         self.sync = 0  # where the last top-level block of lines[:known] starts (of a list, its last item)
         self.top = 0  # and where that block starts as a block (of a list, the list)
         self.inside = False  # *sync* is inside the block quote at *top*, not where a top-level block starts
+        self.descend = 0  # the size of the window at which to look into the quote again (``_moved``)
         self.known = 0
         self.kind = ""  # the kind of that block
         self.mode = ""
@@ -2235,13 +2238,16 @@ class _Window:
     def _moved(self, start: int, top: int, end: int) -> None:
         """The last top-level block of the lines from *sync* to *end* starts at *start* from *sync* (as a block,
         at *top*): read from there on, and in a block quote from its last block on."""
-        if not (self.inside and top == 0):  # (the quote that *sync* is inside goes on)
-            self.top, self.inside = self.sync + top, False
+        if not (self.inside and top == 0) and (self.inside or self.top != self.sync + top):
+            self.top, self.inside, self.descend = self.sync + top, False, 0  # (else the quote *sync* is inside goes on)
         self.sync += start
-        if self.kind == "quote":
+        # Looked into again once the window has doubled since the last look, so that a window that cannot move (one
+        # long paragraph in the quote) is not read twice for each line: the looks cost as much as the window, in all.
+        if self.kind == "quote" and end - self.sync >= self.descend:
             inner = _quote_window([line.text for line in self.lines[self.sync:end]])
             self.sync += inner
             self.inside = self.inside or inner > 0
+            self.descend = 2 * max(end - self.sync, 4)
 
     def read(self, k: int, before: list[str], tail: _Tail | None) -> None:
         """Line *k*, which was read after *before* as *tail*, is written."""
@@ -2319,7 +2325,7 @@ def _quote_window(texts: list[str]) -> int:
     span, block = pairs[-1]
     offset = span.start
     for depth in range(1, MAX_QUOTE_DEPTH + 1):
-        children, inner = quote_content(block.text, depth)
+        children, inner = _read_quote_content(block.text, depth)  # (not the cache: these texts are read once)
         if not inner:
             break
         start, kind, _top = _last_block(_Layout(preamble=list(inner)))

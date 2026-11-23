@@ -2058,8 +2058,8 @@ def _read_quote_content(text: str, depth: int = 0) -> tuple[tuple[Block, ...], t
 
 
 def quote_blocks(block: Block, *, depth: int = 0, quotes: int | None = None) -> list[Block]:
-    """The blocks the block quote *block* holds, as the validator reads them:
-    each block read afresh, free to change, since the
+    """The blocks the block quote *block* holds, as the validator reads them
+    when *quotes* is given (see below): each block read afresh, free to change, since the
     validator keeps its own reading of a quote's content. A heading in one
     is a ``heading`` block, not a section, and no directive is lifted into
     block fields (§4.1). *depth*: how many list items and quotes *block* is

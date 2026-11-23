@@ -694,14 +694,18 @@ class ReferenceImages:
             ):
                 return
             self._definitions()
-        judged_text: set[tuple[object, ...]] = set()
+        # (Both readings that have the text have the image: once, in a drafting note if every reading puts it there.)
+        judged_text: dict[tuple[object, ...], list[Any]] = {}
         for image, at, line, noted in self._text_images:
-            # (Both readings that have the text have the image: once.)
-            if (key := (getattr(line, "instance", 0), at[4:], image.path)) not in judged_text:
-                judged_text.add(key)
-                references.check(
-                    image.path, "image", line, at=at, url=True, literal=image.literal, rest=image.rest, noted=noted
-                )
+            key = (getattr(line, "instance", 0), at[4:], image.path)
+            if key in judged_text:
+                judged_text[key][3] = judged_text[key][3] and noted
+            else:
+                judged_text[key] = [image, at, line, noted]
+        for image, at, line, noted in judged_text.values():
+            references.check(
+                image.path, "image", line, at=at, url=True, literal=image.literal, rest=image.rest, noted=noted
+            )
         if not any(self._used.values()):
             return
         # What is judged, by the definition (where it is written) and the path it is read as: where it lies, its
