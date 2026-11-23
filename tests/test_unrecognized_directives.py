@@ -266,7 +266,7 @@ def test_core_blanks_are_what_assembly_fills_at_every_frontmatter_position():
 def test_a_placeholder_in_a_structural_field_is_refused_by_both():
     text = _source('title: T\namends:\n  title: Original\n  file: "{{placeholder: q}}.lgd"\n')
     assert "placeholder-in-structural-field" in {d.rule for d in Template(text).problems}
-    assert _core_blank_lines(text) == set()
+    assert not _is_blank(text)
 
 
 # ── A placeholder written across two lines of a quoted value ─────────────────────────────────────────────────
@@ -447,3 +447,23 @@ def test_a_split_placeholder_leaves_the_others_of_its_value_checked():
     text = _source('title: "{{placeholder: a, type=bogus}} and {{placeholder:\n  b}}"\n')
     rules = _rules(text)
     assert "placeholder-type-invalid" in rules and "directive-malformed" in rules
+
+
+def test_a_split_placeholder_counted_apart_by_an_escape_is_still_malformed():
+    text = _source('title: "\\\\{{placeholder: a}} {{placeholder:\n  b}}"\n')
+    assert "directive-malformed" in _rules(text)
+    assert not _is_blank(text, "b")
+
+
+def test_a_value_copied_in_code_onto_another_field_is_a_blank_not_unread():
+    document = parse(_source('title: "Lease {{placeholder: q}}"\n'))
+    document.metadata.subtitle = document.metadata.title
+    result = validate(document)
+    assert UNREAD_RULE not in result.rules()
+    assert "placeholder-unfilled" in validate(document, final=True).rules()
+
+
+def test_no_placeholder_in_questions_or_a_when_is_an_unfilled_blank():
+    text = _source('title: T\nquestions:\n  q:\n    type: text\n    prompt: "{{placeholder: q}}"\n')
+    final = validate(parse(text), final=True)
+    assert "placeholder-unfilled" not in final.rules()

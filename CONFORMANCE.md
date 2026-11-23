@@ -1462,7 +1462,7 @@ validator counts a blank, at every position of the frontmatter; the tests compar
   template (`Template.problems`); one in a key or under a key the model does not read is
   **`ldv-frontmatter-placeholder-unread`**, a **Warning** (`legaldown.grammar.FRONTMATTER_PLACEHOLDER_UNREAD_RULE`), at
   its line, so that it does not stay as written without a word (§3.10 does not forbid it there, so no more than
-  a Warning). A comment is no part of the YAML, and draws nothing. The verdict is the written scalar's: one that
+  a Warning; the rule is an Error for the value field of the next sentence but one). A comment is no part of the YAML, and draws nothing. The verdict is the written scalar's: one that
   a value field reaches, through an alias or a merge (`<<: *base`) too, is that field's blank, wherever it is
   written, but not one that the field's own key, or a later one, overrides at the same path (a merged-in
   `legal_name` under the party's own, the first of two `title:`); one no field reads is reported once, however many

@@ -56,7 +56,8 @@ FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatte
 # when, an attachment whose condition can be false, §15.7.2), which would leave it naming nothing (an Error, #12).
 ALIAS_REMOVED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-alias-removed"
 # And a {{placeholder:}} in frontmatter outside every field the model reads (a key, or under a key it does not know),
-# which is no blank and assembly leaves as written (a Warning: §3.10 does not forbid it there, #12).
+# which is no blank and assembly leaves as written (a Warning: §3.10 does not forbid it there, #12); and an Error, in
+# TEMPLATE_RULES, for a value field the model reads from no written scalar at its key (keys stripped alike).
 FRONTMATTER_PLACEHOLDER_UNREAD_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-placeholder-unread"
 # And the Warning for a line of a template that an empty choice leaves as bare container markers, or deletes, where
 # the output then reads otherwise than the template: §15.7.3 gives the assembler no escape for it (#120).

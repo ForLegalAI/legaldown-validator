@@ -2308,9 +2308,13 @@ def _pass(
     placeholders: list[tuple[Directive, Line]] = []
     # ... and every other placeholder the metadata holds, as text, for the final check all the same: §15.9 asks
     # that none remain in the frontmatter, a blank or not (#12).
+    # (Not in what assembly removes, the questions and an attachment's when, nor in the translations and field_types,
+    # which are not the document's text.)
     literal_placeholders: list[tuple[Directive, Line]] = [
         (directive, where.key(*path))
         for _label, text, path in structural_fields
+        if path[:1] not in (("questions",), ("translations",), ("field_types",))
+        and not (path[:1] == ("attachments",) and path[-1:] == ("when",))
         for directive in named(text, "placeholder")
     ]
     #: Of each question named only where §11.4 recognizes no directive, why, for question-unused.
@@ -2330,11 +2334,24 @@ def _pass(
                 if fm_scalar is not None and fm_scalar.value.strip() != field_value.strip():
                     fm_scalar = None  # changed since it was parsed
                 if fm_scalar is None:
-                    fm_read = where.frontmatter_text() is not None and any(
-                        each.value.strip() == field_value.strip() for each in fm_scalars.values()
+                    # Read from the source when its key is written under another spelling the model strips to
+                    # it (`" Reg"`, `"Reg "`) and the value is a written one; else set in code since.
+                    fm_read = (
+                        where.frontmatter_text() is not None
+                        and isinstance(field_path[-1], str)
+                        and any(
+                            raw != field_path[-1] and raw.strip() == field_path[-1].strip()
+                            for raw in where.children(*field_path[:-1])
+                        )
+                        and any(each.value.strip() == field_value.strip() for each in fm_scalars.values())
                     )
                     fm_scalar = FrontmatterScalar("", 0, 0, unread=True) if fm_read else FrontmatterScalar('"', 0, 0)
-            split = place in fm_scalar.split
+            # (By its place among the value's placeholders; where the rows and the value YAML reads count them
+            # apart, an escape or a code span over a line, each is taken for split, as assembly may refuse any.)
+            split = bool(fm_scalar.split) and (
+                place in fm_scalar.split
+                or fm_scalar.placeholders != len(named(field_value, "placeholder"))
+            )
             if split:
                 # §11.5: a directive does not span lines. YAML folds the quoted value onto one, but it is
                 # written on two, where assembly reads it (and refuses it, as malformed).

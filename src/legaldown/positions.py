@@ -136,6 +136,8 @@ class FrontmatterScalar:
     start: int
     end: int
     split: tuple[int, ...] = ()
+    #: How many placeholders its rows hold as written, which *split* counts among.
+    placeholders: int = 0
     #: The scalar's value, as YAML reads it.
     value: str = ""
     #: Not found where the model reads it (the validator's own marker, never given by ``frontmatter_scalars``).
@@ -171,7 +173,7 @@ def frontmatter_scalars(text: str) -> dict[tuple[Any, ...], FrontmatterScalar]:
                 if d.malformed and "}}" not in row[d.start:] and "}}" in "\n".join(rows[number + 1:]):
                     split.append(place)
                 place += 1
-        return FrontmatterScalar(quote, start, node.end_mark.index, tuple(split), node.value)
+        return FrontmatterScalar(quote, start, node.end_mark.index, tuple(split), placeholders=place, value=node.value)
 
     def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
         if id(node) in seen:
