@@ -1357,9 +1357,12 @@ validator counts a blank, at every position of the frontmatter; the tests compar
 - A value field's quoted string is one, after an anchor or a tag too (`&t "..."`, `!!str "..."`); a block or plain
   scalar is none, even when a line of it begins with a quote (`title: |` over `"Lease {{placeholder: q}}"`).
 - A placeholder anywhere else — a key (`"{{placeholder: q}}": x`, `? "..."`), a list or mapping under a key the model
-  does not read (`keywords: ["..."]`, `date: "..."`), a comment — is no blank, and assembly leaves it as written. One
-  in an identifier, structural or format-checked field is `placeholder-in-structural-field`, which refuses the
-  template (`Template.problems`).
+  does not read (`keywords: ["..."]`, `date: "..."`), a comment — is no blank, and assembly leaves it as written.
+  One in an identifier, structural or format-checked field is `placeholder-in-structural-field`, which refuses the
+  template (`Template.problems`); one in a key or under a key the model does not read is
+  **`ldv-frontmatter-placeholder-unread`**, a **Warning** (`legaldown.grammar.FRONTMATTER_PLACEHOLDER_UNREAD_RULE`), at
+  its line, so that it does not stay as written without a word (§3.10 does not forbid it there, so no more than
+  a Warning). A comment is no part of the YAML, and draws nothing.
 - An alias to an anchored value (`subtitle: *t`) is the anchor's value: a blank wherever it is used (the final check
   reports it at the anchor and at the alias), which assembly fills through the anchor, where it is written, so every
   alias reads the answer.
@@ -1369,7 +1372,9 @@ validator counts a blank, at every position of the frontmatter; the tests compar
 - **`ldv-frontmatter-alias-removed`**, an **Error** of a template (`legaldown.grammar.ALIAS_REMOVED_RULE`, in
   `TEMPLATE_RULES`): an alias to an anchor in what assembly removes (§15.7.2) — the `questions`, an attachment's
   `when`, an attachment whose condition can be false — at the alias, as the assembled frontmatter would name nothing
-  there and could not be read. An alias removed with its anchor, or itself removed, is not reported. Assembly, if it
+  there and could not be read (the whole `attachments` entry is removable when every attachment has a `when`). An
+  alias removed with its anchor, or itself removed, is not reported; one in another attachment under the same
+  condition is, conservatively. Assembly, if it
   is asked to assemble such a template all the same, reports the same rule at the alias for the answers that remove
   the anchor, and writes nothing.
 
@@ -1387,9 +1392,9 @@ expects or forbids it. It is a Warning for every output, so `is_valid` and the e
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
 Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
 validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
-(any frontmatter mapping, #126, #131) and not a skipped one, and four more for what takes content out of validation,
-**`ldv-fence-unclosed`**, **`ldv-heading-directive`**, **`ldv-frontmatter-placeholder-unquoted`** and
-**`ldv-frontmatter-alias-removed`**
+(any frontmatter mapping, #126, #131) and not a skipped one, and five more for what takes content out of validation,
+**`ldv-fence-unclosed`**, **`ldv-heading-directive`**, **`ldv-frontmatter-placeholder-unquoted`**,
+**`ldv-frontmatter-placeholder-unread`** and **`ldv-frontmatter-alias-removed`**
 ([above](#what-takes-content-out-of-validation-12)).
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's

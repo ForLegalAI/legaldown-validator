@@ -157,8 +157,10 @@ def frontmatter_scalars(text: str) -> dict[tuple[Any, ...], FrontmatterScalar]:
         if node.style not in ('"', "'"):
             return FrontmatterScalar("", node.start_mark.index, node.end_mark.index)
         rows = text[start:node.end_mark.index].split("\n")
+        # Malformed on its row for want of the "}}" that a later row of the value holds.
         split = any(
-            d.name == "placeholder" and d.malformed for row in rows[:-1] for d in lex(row).directives
+            d.name == "placeholder" and d.malformed and "}}" not in row[d.start:] and "}}" in "\n".join(rows[number + 1:])
+            for number, row in enumerate(rows[:-1]) for d in lex(row).directives
         )
         return FrontmatterScalar(quote, start, node.end_mark.index, split)
 
@@ -226,13 +228,63 @@ def frontmatter_removed(text: str) -> list[tuple[int, int, bool]]:
         if key.value == "questions":
             found.append((key.start_mark.index, value.end_mark.index, True))
         elif key.value == "attachments" and isinstance(value, yaml.SequenceNode):
+            conditional = 0
             for entry in value.value:
                 if not isinstance(entry, yaml.MappingNode):
                     continue
                 for entry_key, entry_value in entry.value:
                     if isinstance(entry_key, yaml.ScalarNode) and entry_key.value == "when":
+                        conditional += 1
                         found.append((entry.start_mark.index, entry.end_mark.index, False))
                         found.append((entry_key.start_mark.index, entry_value.end_mark.index, True))
+            if value.value and conditional == len(value.value):
+                # Every one can be absent, and with them the whole entry goes.
+                found.append((key.start_mark.index, value.end_mark.index, False))
+    return found
+
+
+def frontmatter_placeholders(text: str) -> list[tuple[tuple[Any, ...], int]]:
+    """Every scalar of the frontmatter's YAML *text* that holds ``{{placeholder``, key or value, as ``(path,
+    offset)``: a value by its path as ``frontmatter_scalars`` gives it (an entry of a sequence that is no mapping
+    by ``(*path, "-", n)``, which no field has), a key by the path of the entry it names, and the offset where it
+    is written. Empty when *text* cannot be read."""
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, ValueError, KeyError, RecursionError):
+        return []
+    found: list[tuple[tuple[Any, ...], int]] = []
+
+    def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
+        if id(node) in seen:
+            return  # an alias: it is where its anchor is written
+        seen = seen | {id(node)}
+        if isinstance(node, yaml.ScalarNode):
+            if "{{placeholder" in node.value:
+                found.append((path, node.start_mark.index))
+        elif isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                if isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge":
+                    for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
+                        walk(source, path, seen)
+                    continue
+                inner = (*path, key.value if isinstance(key, yaml.ScalarNode) else "?")
+                if isinstance(key, yaml.ScalarNode):
+                    if "{{placeholder" in key.value:
+                        found.append((inner, key.start_mark.index))
+                else:
+                    walk(key, (*path, "?"), seen)
+                walk(value, inner, seen)
+        elif isinstance(node, yaml.SequenceNode):
+            mappings = 0
+            for number, entry in enumerate(node.value):
+                if isinstance(entry, yaml.MappingNode):
+                    walk(entry, (*path, mappings), seen)
+                    mappings += 1
+                else:
+                    walk(entry, (*path, "-", number), seen)
+
+    if root is not None:
+        walk(root, (), frozenset())
     return found
 
 

@@ -38,7 +38,14 @@ from ..markdown import (
     strip_comments,
 )
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
-from ..positions import STRIPPED_MAPS, FrontmatterScalar, Locator, frontmatter_aliases, frontmatter_removed
+from ..positions import (
+    STRIPPED_MAPS,
+    FrontmatterScalar,
+    Locator,
+    frontmatter_aliases,
+    frontmatter_placeholders,
+    frontmatter_removed,
+)
 from ..specification import SPEC_VERSION, parse_version
 from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
@@ -82,6 +89,7 @@ from .patterns import (
     DURATION_UNITS,
     FRONTMATTER_KEY_DUPLICATE_RULE,
     FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
+    FRONTMATTER_PLACEHOLDER_UNREAD_RULE,
     IDENTIFIER_RE,
     ISO_639_1_CODES,
     KNOWN_CURRENCIES,
@@ -2249,7 +2257,7 @@ def _check(
                 result.error(
                     FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
                     f"'{directive.source}' is not in a quoted YAML string, which a placeholder in frontmatter "
-                    f"must be (§3.10): it is no blank, and assembly leaves it as fm_scalar. Quote the value "
+                    f"must be (§3.10): it is no blank, and assembly leaves it as written. Quote the value "
                     f"(\"...\").",
                     line=field_line,
                 )
@@ -2264,6 +2272,20 @@ def _check(
             placeholders.append((directive, field_line))
             with result.at(field_line):
                 _check_placeholder(directive, result, blanks, questions, in_frontmatter=True, line=field_line)
+    # A placeholder in frontmatter outside any field the model reads (a key, a list or mapping under a key it does
+    # not know): no blank, which assembly leaves as written (#12). (The questions, the translations and the
+    # field_types are structural, placeholder-in-structural-field's.)
+    if (fm_text := where.frontmatter_text()) is not None and "{{placeholder" in fm_text:
+        fields = {path for _value, path in value_fields} | {path for _label, _value, path in structural_fields}
+        for fm_path, fm_at in frontmatter_placeholders(fm_text):
+            if fm_path in fields or fm_path[:1] in (("questions",), ("translations",), ("field_types",)):
+                continue
+            result.warning(
+                FRONTMATTER_PLACEHOLDER_UNREAD_RULE,
+                "A {{placeholder:}} here is in no field of the frontmatter the model reads (§3.10 lets one stand "
+                "in a value field only): it is no blank, and assembly leaves it as written.",
+                line=where.frontmatter_line(fm_at),
+            )
     # An alias to an anchor that assembly removes (§15.7.2: the questions, an attachment's when, an attachment
     # whose condition is false) would name nothing in the assembled frontmatter: refused, at the alias (#12).
     if template and (fm_text := where.frontmatter_text()) is not None and "*" in fm_text:
@@ -2271,6 +2293,7 @@ def _check(
         for fm_alias, fm_anchor in frontmatter_aliases(fm_text):
             if any(start <= fm_alias < end for start, end, always in fm_removed if always):
                 continue  # removed itself
+            # (Conservative: an alias in another attachment under the same condition is reported all the same.)
             if any(start <= fm_anchor < end and not start <= fm_alias < end for start, end, _always in fm_removed):
                 result.error(
                     ALIAS_REMOVED_RULE,

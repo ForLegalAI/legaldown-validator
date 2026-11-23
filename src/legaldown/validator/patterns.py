@@ -50,6 +50,9 @@ FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatte
 # And an alias in a template's frontmatter to an anchor that assembly removes (the questions, an attachment's
 # when, an attachment whose condition can be false, §15.7.2), which would leave it naming nothing (an Error, #12).
 ALIAS_REMOVED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-alias-removed"
+# And a {{placeholder:}} in frontmatter outside every field the model reads (a key, or under a key it does not know),
+# which is no blank and assembly leaves as written (a Warning: §3.10 does not forbid it there, #12).
+FRONTMATTER_PLACEHOLDER_UNREAD_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-placeholder-unread"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 

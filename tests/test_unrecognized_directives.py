@@ -5,7 +5,14 @@ reaches either (§15.7.3). (The heading's own cases are in ``test_hidden_constru
 from __future__ import annotations
 
 from legaldown import Template, parse, validate
-from legaldown.grammar import ALIAS_REMOVED_RULE, FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE, IMPLEMENTATION_RULE_PREFIX
+from legaldown.grammar import (
+    ALIAS_REMOVED_RULE,
+    FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
+    IMPLEMENTATION_RULE_PREFIX,
+)
+from legaldown.grammar import (
+    FRONTMATTER_PLACEHOLDER_UNREAD_RULE as UNREAD_RULE,
+)
 
 _SIDES = (
     "document_type: contract\nsides:\n"
@@ -291,3 +298,34 @@ def test_an_alias_to_an_anchor_in_questions_is_reported_and_one_kept_is_not():
     kept = _source('title: &t "T"\nsubtitle: *t\nquestions:\n  x:\n    type: text\n', body="# A\n\n{{placeholder: x}}\n")
     assert ALIAS_REMOVED_RULE not in validate(parse(kept)).rules()
     assert parse(Template(kept).form({"x": "a"}).assemble().output).metadata.subtitle == "T"
+
+
+def test_an_alias_to_the_whole_attachments_entry_is_reported_when_every_attachment_can_go():
+    text = _source(
+        'title: T\nquestions:\n  x:\n    type: boolean\nattachments: &atts\n  - id: one\n    title: Annex\n'
+        "    file: one.pdf\n    when: x\nother: *atts\n",
+        body="# A\n\nSee {{attach: one}}.\n",
+    )
+    alias = text.split("\n").index("other: *atts") + 1
+    assert [d.line for d in validate(parse(text)).diagnostics if d.rule == ALIAS_REMOVED_RULE] == [alias]
+    result = Template(text, _check=False).form({"x": False}).assemble()
+    assert [d.line for d in result.diagnostics if d.rule == ALIAS_REMOVED_RULE] == [alias]
+
+
+def test_a_placeholder_in_no_field_the_model_reads_is_a_warning():
+    for fields, _recognized in _POSITIONS:
+        text = _source(fields)
+        rules = [(d.rule, d.level) for d in validate(parse(text)).diagnostics if d.rule == UNREAD_RULE]
+        unread = not _recognized and "#" not in fields and "|" not in fields
+        assert rules == ([(UNREAD_RULE, "warning")] if unread else []), fields
+    # Not in a field that takes none (placeholder-in-structural-field), nor in the questions.
+    structural = _source('title: T\namends:\n  title: Original\n  file: "{{placeholder: q}}.lgd"\n')
+    assert UNREAD_RULE not in validate(parse(structural)).rules()
+    asked = _source('title: T\nquestions:\n  q:\n    type: text\n    prompt: "{{placeholder: q}}"\n')
+    assert UNREAD_RULE not in validate(parse(asked)).rules()
+
+
+def test_a_placeholder_closed_on_its_own_line_is_not_said_to_cross_one():
+    text = _source('title: "Lease {{placeholder: q, type=text\\x7d} and\n  more"\n', _Q)
+    messages = [d.message for d in validate(parse(text)).diagnostics if d.rule == "directive-malformed"]
+    assert not any("across a line break" in message for message in messages)
