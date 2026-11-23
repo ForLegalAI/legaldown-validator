@@ -28,13 +28,13 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, Protocol
 
 from ..directives import Lexed, lex
-from ..files import LoadFile, Reach, is_absolute_reference, within
+from ..files import LoadFile, Reach, is_absolute_reference, loader_identity, within
 from ..models import Document, Metadata
 from ..positions import Locator
 from .combined import Combined, Plan, weave
 from .conditions import Exclusivity, Presence, answer_combinations, holds_under
 from .helpers import legaldown_attachments
-from .patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
+from .patterns import FILE_SPELLING_DUPLICATE_RULE, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
 from .templates import BodyScan, IncludeDirective, check_template_body
 from .units import FoundMarker, Units, find_markers, include_key, iter_include_paragraphs
@@ -96,9 +96,12 @@ class Files:
     ``LoadFile`` of the validation; *document* is the document being validated,
     which a path may name itself.
 
-    A file is the same file by the path it has from the document's directory, however it is
-    written (``a.lgd``, and ``../dir/a.lgd`` from a document in ``dir``): ``key``, which does not follow
-    symbolic links. It is read once, judged once, and named in a finding by the path it was first met by."""
+    A file is the same file when the loader reads one file for both paths (``key``): with ``file_loader``,
+    the file's real path, symbolic links followed, as it reads them; with a loader that cannot say, the
+    path from the document's directory, however it is written (``a.lgd``, and ``../dir/a.lgd`` from a
+    document in ``dir``). It is read once, judged once, and named in a finding by the path it was first
+    met by. A second path to a file already named by an include or a LegalDown attachment file is
+    ``ldv-file-spelling-duplicate`` (``respelled``, #123)."""
 
     def __init__(
         self, resolve: LoadFile, document: Document, root: str | os.PathLike[str] | None = None
@@ -114,6 +117,9 @@ class Files:
         self._reach = Reach.of(root, document.path.parent if document.path is not None else None)
         self._read: dict[str, FragmentFile | None] = {}
         self._own: dict[str, bool] = {}
+        self._keys: dict[str, str] = {}
+        #: The path each file was first named by, as an include or a LegalDown attachment file (``respelled``).
+        self._named: dict[str, str] = {}
 
     def relative(self, path: str) -> str | None:
         """*path*, as a document names a file, normalized, when a loader may be asked for it
@@ -132,10 +138,27 @@ class Files:
         return self._reach.root
 
     def key(self, relative: str) -> str:
-        """What makes two spellings of *relative*, a path from the document's directory, one file: that
-        path joined to the directory and normalized. Symbolic links are not followed (a link is another
-        file), nor the case of a name."""
-        return os.path.normpath(os.path.join(self._directory, relative))
+        """What makes two spellings of *relative*, a path from the document's directory, one file: the file the
+        loader reads for it, when it can say (``loader_identity``: ``file_loader`` follows symbolic links, so a
+        link is the file it leads to, and ``a.lgd`` and ``../dir/a.lgd`` are two files when ``dir`` is a link
+        that leads elsewhere, #123); else that path joined to the directory and normalized (nor the case
+        of a name is followed)."""
+        if relative not in self._keys:
+            lexical = os.path.normpath(os.path.join(self._directory, relative))
+            identity = loader_identity(self._resolve, relative)
+            if identity is None and hasattr(self._resolve, "identify"):
+                lexical = "\0" + lexical  # a file the loader reads none for is never one it reads
+            self._keys[relative] = lexical if identity is None else identity
+        return self._keys[relative]
+
+    def respelled(self, relative: str) -> str | None:
+        """The path from the document's directory that first named the file at *relative* (``key``), when that
+        is another path: the file is named twice, two ways (``ldv-file-spelling-duplicate``, #123). Else None,
+        and *relative* names it from now on, when nothing did. Asked by the validator and by assembly in the
+        same order (the includes, followed as they are met, then the LegalDown attachment files), so that both
+        find the same second path."""
+        first = self._named.setdefault(self.key(relative), relative)
+        return None if first == relative else first
 
     def locate(
         self, base: str, written: str
@@ -167,8 +190,8 @@ class Files:
             return bool(self._filename) and relative == self._filename
         key = self.key(relative)
         if key not in self._own:
-            # The file system is asked only for a file the loader has: it is the loader's. (The one place
-            # a link is followed: the document's own file is the file it is, however it is reached.)
+            # The file system is asked only for a file the loader has: it is the loader's. (A link is followed
+            # here whatever the loader: the document's own file is the file it is, however it is reached.)
             self._own[key] = (
                 self.read(relative) is not None
                 and within(self._path.parent, relative, self._reach.root) == self._path.resolve()
@@ -749,6 +772,16 @@ def not_legaldown(include: _NamedInclude) -> str | None:
     )
 
 
+def respelled_message(written: str, first: str) -> str:
+    """The message of ``ldv-file-spelling-duplicate`` (#123) for the path *written*, which names the file that
+    *first* (its path from the document's directory) named before it."""
+    return (
+        f"'{written}' names the file already named '{first}': one file, by two paths. Assembly writes each "
+        f"file it keeps by the path that names it, and cannot write one file by two; name it '{first}' here too, "
+        f"or use the other path throughout."
+    )
+
+
 class IncludeChain(NamedTuple):
     """The files being included, outermost first (*paths*, as they are named), and the same as ``Files.key``
     (*keys*, a set, to tell in one step that a file is among them)."""
@@ -922,6 +955,11 @@ class _Walk:
             if cap + NOT_CHECKED not in self._outcome.caps:
                 self._outcome.caps.append(cap + NOT_CHECKED)
             return None
+        if (named := self._files.respelled(relative)) is not None and first:
+            # Another path to a file already named: reported, and still the one file it is (#123).
+            self._result.error(
+                FILE_SPELLING_DUPLICATE_RULE, respelled_message(include.written, named), line=include.line, file=file
+            )
         target = self._files.read(relative)
         if target is None:
             refuse(
@@ -1147,12 +1185,19 @@ def check_includes(
             relative = files.relative(written)
             if relative is not None and files.is_own(relative):
                 continue
+            if relative is not None and (named := files.respelled(relative)) is not None:
+                # Another path to a file already named, by an include or an attachment (#123).
+                result.error(
+                    FILE_SPELLING_DUPLICATE_RULE, respelled_message(written, named),
+                    line=where.key("attachments", index, "file"),
+                )
             fragment = None if relative is None else files.read(relative)
             if relative is None or fragment is None:
                 unshaped += 1  # not read: refused, leading out of the directory, or not there
                 continue
             # (A file that was also an include was checked above, and is a finding of its own; however either
-            # is spelled, it is one file, named by the path it was first met by.)
+            # is spelled, it is one file, named by the path it was first met by, and another path to it is
+            # ldv-file-spelling-duplicate, above.)
             key = files.key(relative)
             if key not in checked and key not in include_keys:
                 checked.add(key)

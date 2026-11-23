@@ -185,19 +185,43 @@ def file_loader(base: str | os.PathLike[str], *, root: str | os.PathLike[str] | 
     With a document *root* (§2.3), a path may lead out of *base* as long as the file
     it names, once symbolic links are followed, is within the root: nothing outside
     the root is read, whatever *base* is.
+
+    It also says which file it reads for a path (``loader_identity``): two paths are one
+    file when it reads one file for both, symbolic links followed (#123).
     """
     # Made absolute now: a later change of the working directory changes nothing it reads.
-    directory = Path(os.path.abspath(base))
-    boundary = None if root is None else Path(os.path.abspath(root))
+    return _FileLoader(Path(os.path.abspath(base)), None if root is None else Path(os.path.abspath(root)))
 
-    def load_file(relative: str) -> str | None:
-        target = within(directory, relative, boundary)
+
+class _FileLoader:
+    """``file_loader``: a ``LoadFile`` that can say which file it reads (``identify``)."""
+
+    __slots__ = ("_directory", "_boundary")
+
+    def __init__(self, directory: Path, boundary: Path | None) -> None:
+        self._directory = directory
+        self._boundary = boundary
+
+    def __call__(self, relative: str) -> str | None:
+        target = within(self._directory, relative, self._boundary)
         try:
             return target.read_bytes().decode("utf-8") if target is not None and target.is_file() else None
         except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
             return None
 
-    return load_file
+    def identify(self, relative: str) -> str | None:
+        """The file read for *relative*: its real path, symbolic links followed, whether or not it is there;
+        None when no file is read for it (it is absolute, or leads out of the directory or the root)."""
+        target = within(self._directory, relative, self._boundary)
+        return None if target is None else str(target)
+
+
+def loader_identity(load_file: LoadFile, relative: str) -> str | None:
+    """Which file *load_file* reads for *relative*, when it can say (a ``LoadFile`` with an ``identify``
+    method, as ``file_loader``'s has: ``(relative) -> str | None``); None when it cannot, or reads none for
+    it. Two paths with the same identity are one file to the loader (#123)."""
+    identify = getattr(load_file, "identify", None)
+    return identify(relative) if callable(identify) else None
 
 
 def within(base: Path, relative: str, root: str | os.PathLike[str] | Path | None = None) -> Path | None:

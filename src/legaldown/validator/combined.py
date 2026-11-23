@@ -45,7 +45,7 @@ from ..models import Block, Document, Section
 from ..positions import Locator
 from .conditions import ALWAYS, Presence
 from .helpers import legaldown_attachments
-from .patterns import SKIPPED_RULE
+from .patterns import FILE_SPELLING_DUPLICATE_RULE, SKIPPED_RULE
 from .result import Diagnostic, Spot
 from .units import FoundMarker, Units, find_markers, own_presence
 
@@ -349,7 +349,8 @@ class CombinedUnits:
 #: judge (§12.2: a level a fragment fills is not skipped), which ``include-heading-skip`` does under every
 #: combination of answers; the shape of an attachment file (``attachment-has-frontmatter``,
 #: ``attachment-has-h1``) is judged of the file as it is, and the file is not spliced when it has either; and
-#: the Warning of §17.5 is for the whole validation. (A path is judged against the document root from the
+#: the Warning of §17.5 is for the whole validation, and ``ldv-file-spelling-duplicate`` for the paths the
+#: walk of the files followed (#123). (A path is judged against the document root from the
 #: directory of the file it is written in, which the combined pass does, ``Combined.base_of``.)
 HOST_ONLY: frozenset[str] = frozenset({
     "heading-skip",
@@ -363,6 +364,7 @@ HOST_ONLY: frozenset[str] = frozenset({
     "template-fragment-invalid",
     "attachment-has-frontmatter",
     "attachment-has-h1",
+    FILE_SPELLING_DUPLICATE_RULE,
     SKIPPED_RULE,
 })
 

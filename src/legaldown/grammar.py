@@ -36,6 +36,7 @@ from .validator.helpers import (
 )
 from .validator.patterns import (
     DURATION_UNITS,
+    FILE_SPELLING_DUPLICATE_RULE,
     FINAL_CHECK_RULES,
     FRONTMATTER_KEY_DUPLICATE_RULE,
     IDENTIFIER_RE,
@@ -96,6 +97,7 @@ __all__ = [
     "SKIPPED_RULE",
     "INCLUDE_LIMIT_RULE",
     "FRONTMATTER_KEY_DUPLICATE_RULE",
+    "FILE_SPELLING_DUPLICATE_RULE",
     # Rules over them
     "slugify_identifier",
     "format_section_number",

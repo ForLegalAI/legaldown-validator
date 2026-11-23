@@ -78,6 +78,7 @@ from .parser import (
     parse,
     quote_content,
 )
+from .positions import Locator
 from .validator import validate
 from .validator.conditions import Condition
 from .validator.core import is_template
@@ -96,11 +97,13 @@ from .validator.fragments import (
     no_file_message,
     not_legaldown,
     noun,
+    respelled_message,
     too_deep,
 )
 from .validator.helpers import is_positive_numeric, is_valid_money_amount
 from .validator.patterns import (
     DURATION_UNITS,
+    FILE_SPELLING_DUPLICATE_RULE,
     IDENTIFIER_RE,
     INCLUDE_LIMIT_RULE,
     LEGALDOWN_EXTENSIONS,
@@ -914,7 +917,7 @@ def _read(
     # The files the template names, as the validator reads them: *path* says which file the template is (an
     # include of it is a cycle), *root* which paths may be asked for (§2.3).
     files = Files(load_file or (lambda _path: None), replace(document, path=path) if path is not None else document, root)
-    subs, last, problems = _read_files(main, front, load_file, declared, template_like, files)
+    subs, last, problems = _read_files(main, front, load_file, declared, template_like, files, document)
     problems += _malformed(main, *subs.values(), front=front)
     for path in document.metadata.translations.values():
         # A translation group is assembled together (§15.7.2), which this
@@ -1030,6 +1033,24 @@ class _Fragments:
 
     def __contains__(self, path: str) -> bool:
         return path in self._read
+
+    def respelled(self, relative: str, written: str, file: str, line: int | None, report: bool = True) -> bool:
+        """Whether *relative*, as *written* in *file* at *line*, is another path to a file already named
+        (``Files.respelled``, in the validator's order): the template is refused for it with the validator's
+        ``ldv-file-spelling-duplicate``, when *report*, rather than write one file by two paths (#123), and
+        the file is not read again by this path. Not without a loader, which reads nothing (and the validator
+        reads nothing to compare)."""
+        if self._load_file is None:
+            return False
+        named = self._files.respelled(relative)
+        if named is None:
+            return False
+        if report:
+            self.problems.append(Diagnostic(
+                FILE_SPELLING_DUPLICATE_RULE, "error",
+                f"{respelled_message(written, named)} The template is not assembled.", line=line, file=file,
+            ))
+        return True
 
     def meet(self, relative: str, include: _Include) -> None:
         """*include* takes in the file at *relative*, and is followed."""
@@ -1158,6 +1179,8 @@ class _Fragments:
         if (cap := too_deep(chain)) is not None:
             self._limit(cap, file, line)
             return
+        if self.respelled(relative, include.written, file, line, report=first):
+            return
         self.meet(relative, include)
         target = self.read(relative, "include", file, line, report=first, named=include.written)
         if target is not None and self.spliceable(relative):
@@ -1165,7 +1188,7 @@ class _Fragments:
 
 
 def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
-                declared: dict, template: bool, files: Files
+                declared: dict, template: bool, files: Files, document: Document,
                 ) -> tuple[dict[str, _Source], dict[str, _Include], list[Diagnostic]]:
     """Read every include fragment and LegalDown attachment file — the absent
     ones too: their placeholders are the template's (answer-unknown) and their
@@ -1194,16 +1217,25 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
                 "include-cycle", "error", cycle_message(files, include.source, EMPTY_CHAIN, relative), line=line,
             ))
             continue
+        if reading.respelled(relative, include.written, "", line):
+            continue
         reading.meet(relative, include)
         source = reading.read(relative, "include", line=line, named=include.written)
         if source is not None and not template and reading.spliceable(relative):
             reading.expand(source, extend(files, EMPTY_CHAIN, relative))
     attached: set[str] = set()
-    for item in items:
-        if not item.file or item.file in attached:
+    where = Locator(document)
+    for index, item in enumerate(items):
+        if not item.file:
+            continue
+        relative, _problem = files.locate("", item.file)
+        # Each entry, as the validator judges each: another path to a file already named is refused (#123).
+        written = document.metadata.attachments[index].file.strip()
+        if relative is not None and reading.respelled(relative, written, "", where.key("attachments", index, "file")):
+            continue
+        if item.file in attached:
             continue
         attached.add(item.file)
-        relative, _problem = files.locate("", item.file)
         if relative is None:
             reading.refuse(item.file, "attachment")
         elif relative in reading:

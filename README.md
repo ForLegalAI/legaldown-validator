@@ -627,6 +627,13 @@ validate(document, document_root="/srv/contracts")
   names. Without a root `../shared/x.lgd` is valid and **not read**: no loader is asked for it, an
   `{{include:}}` of it is not an `include-file-missing`, and `ldv-check-skipped` says it was not read.
   `file_loader(directory, root=)` is the loader on disk that keeps to the root.
+- Under a root one file can be named two ways: from `root/doc/t.lgd`, `a.lgd` and `../doc/a.lgd` are the
+  same file. The second path to a file already named by an include or a LegalDown attachment file is
+  `ldv-file-spelling-duplicate` (Error), at its line, and assembly refuses the template for it: name the file
+  by one path ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123)). Which paths are one file is
+  the loader's to say: `file_loader` follows symbolic links (a link to a file is that file, and a linked
+  directory can make `a.lgd` and `../doc/a.lgd` two files); a `resolve=` that cannot say is taken to read a
+  path from the document's directory as it is normalized.
 
 A reference-style image (`![alt][r]`, `![alt][]` or `![alt]`, with `[r]: path`) is judged by the destination
 of the definition it names, once, at the line where the definition is written. [CONFORMANCE.md](CONFORMANCE.md)
@@ -815,7 +822,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
 | `LIST_KINDS`, `PARAGRAPH_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; block kinds whose text is a paragraph's (`paragraph`, `definition`, `ref`, `term`: as a section's own block, a marker at the end of one conditions the block as a whole, §5.7); the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
-| `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`, `INCLUDE_LIMIT_RULE`, `FRONTMATTER_KEY_DUPLICATE_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5), the Error of assembly for a document whose includes nest or run past the limits (`"ldv-include-limit"`, #118), and the one for a frontmatter key that another replaces (`"ldv-frontmatter-key-duplicate"`, #126, #131, #133) |
+| `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`, `INCLUDE_LIMIT_RULE`, `FRONTMATTER_KEY_DUPLICATE_RULE`, `FILE_SPELLING_DUPLICATE_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5), the Error of assembly for a document whose includes nest or run past the limits (`"ldv-include-limit"`, #118), the one for a frontmatter key that another replaces (`"ldv-frontmatter-key-duplicate"`, #126, #131, #133), and the Error for a second path to a file already named (`"ldv-file-spelling-duplicate"`, #123) |
 | `slugify_identifier(value, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term text, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
 | `is_valid_iso_date`, `is_valid_numeric`, `is_valid_money_amount`, `is_positive_numeric` | Value checks (§3.10, §10) |
 | `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units can never appear together |
@@ -945,7 +952,7 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, invalid or contradictory conditions, references whose target a condition can remove, identifiers shared by units that can appear together, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term, in a link reference definition's destination or title, or against Markdown punctuation, fragments included twice, what a fragment or attachment file of a template may not hold (a condition, a drafting note, an include, a heading without an identifier); with `--final`, anything left unfilled; on assembly, answers that are invalid, missing, or unknown |
 | **Includes** | An include of a file that is not LegalDown, a fragment that is missing, with frontmatter or a level-1 heading, or whose headings skip a level where it is spliced in; a chain of includes that comes back (`include-cycle`) and an identifier that the document and its fragments declare twice (`include-anchor-duplicate`); the document with its fragments spliced in is validated as the one document it is (the combined document, §16.11); with a template, a fragment that holds what §15.3 forbids |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments; for a LegalDown attachment file that was read: frontmatter, a level-1 heading, and an identifier it shares with the document or another file (`attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`) |
-| **File paths** | A path the document names (`{{include:}}`, an image, `attachments[].file`, `amends.file`, `supersedes.file`, `translations`) that is absolute or begins with a URI scheme (`path-not-relative`), or that leads out of the `document_root` (`path-outside-root`), an image's path as each supported renderer reads it ([File references](#file-references-and-the-document-root)) |
+| **File paths** | A path the document names (`{{include:}}`, an image, `attachments[].file`, `amends.file`, `supersedes.file`, `translations`) that is absolute or begins with a URI scheme (`path-not-relative`), or that leads out of the `document_root` (`path-outside-root`), an image's path as each supported renderer reads it ([File references](#file-references-and-the-document-root)); an include or a LegalDown attachment file that names a file already named by another path, `a.lgd` and then `../doc/a.lgd` from a document in `doc` (`ldv-file-spelling-duplicate`, this implementation's own id, §16.1; an Error, of assembly too, at the second path's line) |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
 | **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2, a `language`, `authoritative` or `translations` key that is not an ISO 639-1 code, an `authoritative` language the document does not declare, a frontmatter key that another replaces, in any mapping: the same key written twice (a merge key `<<` too) or keys the model reads as one (`ldv-frontmatter-key-duplicate`, this implementation's own id, §16.1; an Error for the same key written twice, a Warning for different keys the model reads as one), and in a document that links translations the headings and definitions without an explicit identifier (an Error in a translation, a Warning when `authoritative` is absent) |
 | **Beyond Core** | `ldv-check-skipped` (Warning, this implementation's own id, §16.1): for each category of checks that a construct in the document calls for and the validation did not perform, as §17.5 requires, once and listing exactly what was not done ([below](#scope)) |
@@ -954,7 +961,9 @@ Each check reports at the severity the specification assigns it — Error, Warni
 exceptions are the rules of this implementation's own (§16.1, the prefix `ldv-`): the Warning
 `ldv-check-skipped` ([Scope](#scope)), the Error `ldv-include-limit` of assembly, and
 `ldv-frontmatter-key-duplicate`, an Error for the same key written twice and a Warning for different keys that
-the model reads as one (the specification does not forbid a padded key).
+the model reads as one (the specification does not forbid a padded key), and the Error `ldv-file-spelling-duplicate`
+for a second path to one file, which assembly refuses too: it writes each file at the path that names it, and
+cannot write one file by two.
 
 ## Assembly
 
@@ -1135,7 +1144,7 @@ the combined document is validated too (§16.11, [Include fragments](#include-fr
 is not drawn for a document whose includes were all read and nothing else is skipped. While one is not, the Warning
 names the combined-document checks (a reference or a term into a fragment), and so does the Warning for an
 attachment file not spliced into it (not read, or not a fragment). The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
-(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`, `INCLUDE_LIMIT_RULE`; validation has a second, `ldv-frontmatter-key-duplicate`, `FRONTMATTER_KEY_DUPLICATE_RULE`, which is no skipped check). It is a Warning: the exit status is
+(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`, `INCLUDE_LIMIT_RULE`; validation has a second, `ldv-frontmatter-key-duplicate`, `FRONTMATTER_KEY_DUPLICATE_RULE`, and a third, `ldv-file-spelling-duplicate`, `FILE_SPELLING_DUPLICATE_RULE`, which are no skipped checks). It is a Warning: the exit status is
 unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
 `--ignore ldv-check-skipped` once it has read what it says.
 

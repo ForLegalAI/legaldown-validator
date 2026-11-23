@@ -352,9 +352,12 @@ def test_two_spellings_of_one_file_are_one_file_read_and_judged_once(tmp_path):
     path.write_text(_FRONT + _SCOPE + "{{include: a.lgd}}\n\n{{include: ../dir/a.lgd}}\n", encoding="utf-8")
     loader = _Loader({"a.lgd": "---\ntitle: No\n---\n\nText.\n"})
     result = validate(load(path), resolve=loader, document_root=root)
-    # Asked for once, by the path it was first met by, and reported once, in that file.
+    # Asked for once, by the path it was first met by, and reported once, in that file; the second path to it
+    # is a finding of its own, at its include (#123).
     assert loader.asked == ["a.lgd"]
     assert _found(result) == [("include-has-frontmatter", "a.lgd", 2)]
+    line = (_FRONT + _SCOPE).count("\n") + 3
+    assert _found(result, "ldv-file-spelling-duplicate") == [("ldv-file-spelling-duplicate", "main.lgd", line)]
 
 
 def test_a_cycle_through_another_spelling_of_a_file_is_a_cycle(tmp_path):
@@ -369,7 +372,7 @@ def test_a_cycle_through_another_spelling_of_a_file_is_a_cycle(tmp_path):
     assert _found(validate(load(path), document_root=root)) == [("include-cycle", "a.lgd", 3)]
 
 
-def test_a_symbolic_link_is_another_file_for_the_chain_but_the_depth_cap_ends_it(tmp_path):
+def test_a_symbolic_link_is_the_file_it_leads_to_for_the_chain(tmp_path):
     (tmp_path / "real.lgd").write_text("Text.\n\n{{include: link.lgd}}\n", encoding="utf-8")
     try:
         (tmp_path / "link.lgd").symlink_to(tmp_path / "real.lgd")
@@ -377,10 +380,10 @@ def test_a_symbolic_link_is_another_file_for_the_chain_but_the_depth_cap_ends_it
         pytest.skip("symbolic links are not available")
     path = tmp_path / "main.lgd"
     path.write_text(_FRONT + _SCOPE + "{{include: real.lgd}}\n", encoding="utf-8")
-    # real includes link, which is real: the chain real -> link -> link ... is not told from a link (not resolved)
-    # and stops where the same name comes round.
+    # real includes link, which is real: the loader follows the link, so the chain real -> link closes at once,
+    # at the include of the link in real (#123: a file is the file the loader reads).
     found = _found(validate(load(path)))
-    assert [rule for rule, *_ in found] == ["include-cycle"]
+    assert found == [("include-cycle", "real.lgd", 3)]
 
 
 # ── In a template ────────────────────────────────────────────────────────────
