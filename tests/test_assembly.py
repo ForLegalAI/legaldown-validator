@@ -760,6 +760,9 @@ class TestLineStartsInContext:
         'text\n- {{choose: x, true="", false="T"}}{{choose: x, true="U", false=""}}\n',
         'text\n- {{choose: q, a="", b="T"}}\n',
         'text\n- {{choose: x, yes="", no="T"}}\n',
+        # The line after a deleted line has the line-start check, which escapes what it begins (#120 review).
+        '{{choose: x, true="", false="T"}}\n2. b\n',
+        'text\n\n{{choose: x, true="", false="T"}}\n    code\n',
     ])
     def test_a_line_that_reads_as_the_template_does_is_not_warned_of(self, body):
         assert [d for d in validate(parse(_template(body, _BOOL))).diagnostics if d.rule == BARE_MARKERS_RULE] == []
