@@ -1309,7 +1309,8 @@ or forbids them, and no fixture case draws either.
   but for `{{choose:}}`, which §15.5 gives to `choose-invalid`: a `{{choose:}}` in a heading is left to that
   rule, and not reported twice. A heading in a list item or a block quote is a heading too and is reported the same
   way (this implementation reads its text as body text, so its directives are checked as well, and the message
-  says so; a `{{choose:}}` there is `choose-invalid`'s too). The rule does not
+  says so; a `{{choose:}}` there, which `choose-invalid` does not look at, is reported too). A heading in a
+  drafting note is not reported, as assembly removes the note (§15.6). The rule does not
   stop assembly: like any rule outside `TEMPLATE_RULES`, it is in `Template.validation`, not in `problems`.
 
 Both judge each file by itself. An include fragment or an attachment file validated on its own

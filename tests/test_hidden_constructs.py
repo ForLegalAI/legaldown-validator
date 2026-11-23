@@ -76,6 +76,13 @@ def test_backticks_after_an_unclosed_fence_are_code_too():
         assert _found(validate(parse(text))) == [(FENCE_UNCLOSED_RULE, "warning", "", _at(text, "```"))], text
 
 
+def test_what_it_holds_is_counted_as_legaldown_reads_it():
+    # A list item over '---' is no setext heading, and what a fence in it holds is code.
+    text = FM + "# A\n\n```\n- item\n---\n~~~\n# not a heading {{ref: x}}\n~~~\n"
+    message = _message(validate(parse(text)), FENCE_UNCLOSED_RULE)
+    assert "5 lines, as code" in message
+
+
 def test_a_setext_heading_it_holds_is_counted():
     text = FM + "# A\n\n```\nPayment\n=======\n\nText {{ref: x}}\n\n---\n\nAfter a rule.\n"
     assert "8 lines with 1 heading and 1 directive" in _message(validate(parse(text)), FENCE_UNCLOSED_RULE)
@@ -207,15 +214,25 @@ def test_a_choose_in_a_heading_is_left_to_choose_invalid():
     assert _found(result) == []
 
 
-def test_a_heading_in_a_list_item_says_this_validator_reads_it_and_leaves_choose_alone():
+def test_a_heading_in_a_list_item_says_this_validator_reads_it_and_a_choose_there_is_reported():
+    # (choose-invalid looks at the headings of sections only.)
     text = FM.replace("---\n\n", "questions:\n  x:\n    type: boolean\n---\n\n") + (
         '# Terms\n\n- ## Inner {{ref: nope}}\n- ## Other {{choose: x, true="A", false="B"}}\n'
     )
     result = validate(parse(text))
     assert "ref-broken" in result.rules("error")  # read as body text
-    assert _found(result) == [(HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Inner"))]
-    message = _message(result, HEADING_DIRECTIVE_RULE)
+    assert "choose-invalid" not in result.rules("error")
+    assert _found(result) == [
+        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Inner")),
+        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Other")),
+    ]
+    message = next(d.message for d in result.diagnostics if d.rule == HEADING_DIRECTIVE_RULE)
     assert "this validator reads it as body text" in message and "not done" not in message
+
+
+def test_a_heading_in_a_drafting_note_is_not_reported():
+    text = FM + "# Terms\n\n> [!DRAFTING]\n> ## Note {{ref: terms}}\n>\n> > ### Deeper {{ref: terms}}\n\n> ## Kept {{ref: terms}}\n"
+    assert _found(validate(parse(text))) == [(HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Kept"))]
 
 
 def test_a_line_that_is_no_lf_is_no_line_of_the_count():
@@ -273,6 +290,13 @@ def test_the_documents_own_findings_are_made_once_with_its_fragments_in():
         (FENCE_UNCLOSED_RULE, "warning", "main.lgd", _at(text, "```")),
     ]
     assert "end of the document" in _message(result, FENCE_UNCLOSED_RULE)
+
+
+def test_a_choose_in_a_fragments_heading_is_reported_when_the_document_is_no_template():
+    # The combined pass of a document that is no template collects no {{choose:}} (choose-invalid): this rule does.
+    text = FM + "# Main\n\n{{include: part.lgd}}\n"
+    part = '## Part {{choose: x, true="A", false="B"}}\n\nText.\n'
+    assert _found(_run(text, {"part.lgd": part})) == [(HEADING_DIRECTIVE_RULE, "error", "part.lgd", 1)]
 
 
 def test_an_attachment_file_is_judged_as_one():

@@ -17,7 +17,8 @@ specification's covers it (``heading-hardcoded-number`` is the numbering of §4.
 usual cause is a setext heading: a paragraph directly above a ``---`` or ``===`` line is a heading, and the
 message names that line. A heading in a list item or a quote is a heading too, and is reported the same way (this implementation
 reads its text as body text, so its directives are checked as well). A ``{{choose:}}`` in a section's heading is
-left to ``choose-invalid``, the specification's rule for it (§15.5), in a list item or quote as well.
+left to ``choose-invalid``, the specification's rule for it (§15.5); one in a list item or quote, which that
+rule does not look at, is reported here. A heading in a drafting note is not: assembly removes the note (§15.6).
 
 As every check of a fragment's content, both run over a fragment in the combined pass only: when it does not run
 (an include was not read), ``ldv-check-skipped`` says that the combined-document checks were not made.
@@ -34,7 +35,7 @@ from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 from ..directives import Lexed
-from ..markdown import FENCE_OPEN_RE, closes_fence, code_content, fence_end
+from ..markdown import FENCE_OPEN_RE, closes_fence, code_content, fence_end, is_drafting_marker
 from ..models import LIST_KINDS, Block, Document
 from ..positions import Locator
 from .patterns import FENCE_UNCLOSED_RULE, HEADING_DIRECTIVE_RULE
@@ -46,10 +47,6 @@ if TYPE_CHECKING:
 
 #: What a file is called in a message, by what it is to the document (None: the document itself).
 _NAMES: dict[FragmentKind | None, str] = {None: "document", "include": "fragment", "attachment": "attachment file"}
-
-# An ATX heading's line, and a setext underline, in a code block's content: for the count of what it holds.
-_ATX_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]|$)")
-_SETEXT_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 
 
 def _files(
@@ -121,16 +118,16 @@ def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
-def _headings_in(lines: list[str]) -> int:
-    """How many of *lines*, read as LegalDown, would be headings: ATX lines, and the last line of a paragraph
-    over a setext underline (a ``---`` after a blank line is a thematic break)."""
-    return sum(
-        1 for number, line in enumerate(lines)
-        if _ATX_RE.match(line) or (
-            number + 1 < len(lines) and _SETEXT_RE.match(lines[number + 1])
-            and line.strip() and not _SETEXT_RE.match(line)
-        )
-    )
+def _held(text: str, lex_fragment: Callable[[str], Lexed]) -> tuple[int, int]:
+    """How many headings and directives *text*, the content of a code block, would hold if it were read as
+    LegalDown: parsed as a quote's content is (``parser.quote_content``), where a heading is a block."""
+    from ..definitions import nested_blocks, text_fragments  # the parser builds on that module
+    from ..parser import quote_content
+
+    tops, _spans = quote_content(text, 0)
+    headings = sum(1 for top in tops for block in nested_blocks(top) if block.kind == "heading")
+    directives = sum(len(lex_fragment(fragment).directives) for top in tops for fragment in text_fragments(top))
+    return headings, directives
 
 
 def _fence_message(block: Block, fence: str, name: str, lex_fragment: Callable[[str], Lexed]) -> str:
@@ -138,8 +135,7 @@ def _fence_message(block: Block, fence: str, name: str, lex_fragment: Callable[[
     if not lines:
         held = "Nothing follows it"
     else:
-        headings = _headings_in(lines)
-        directives = len(lex_fragment("\n".join(lines)).directives)
+        headings, directives = _held("\n".join(lines), lex_fragment)
         among = [_count(number, noun) for number, noun in ((headings, "heading"), (directives, "directive")) if number]
         held = (
             f"It holds the rest of the {name}, {_count(len(lines), 'line')}"
@@ -235,13 +231,20 @@ def _underline(locator: Locator, line: int | None) -> tuple[int, str] | None:
 
 def _nested_headings(top: Block) -> Iterator[tuple[int, Block]]:
     """The ``heading`` blocks in the list items and quotes of the top-level block *top*, each with its
-    place among the blocks ``nested_blocks`` gives."""
+    place among the blocks ``nested_blocks`` gives, but for those in a drafting note, which assembly removes
+    before anything else (§15.6, §15.7.2)."""
     from ..definitions import nested_blocks  # the parser builds on that module
 
     if top.kind not in LIST_KINDS and top.kind != "quote":
         return
-    for number, block in enumerate(nested_blocks(top)):
-        if block.kind == "heading":
+    blocks = list(nested_blocks(top))
+    skip_to = 0  # the place past the drafting note the walk is in
+    for number, block in enumerate(blocks):
+        if number < skip_to:
+            continue
+        if block.kind == "quote" and is_drafting_marker(block.text.split("\n", 1)[0].strip()):
+            skip_to = number + len(list(nested_blocks(block)))
+        elif block.kind == "heading":
             yield number, block
 
 
@@ -256,10 +259,15 @@ def check_heading_directives(
 ) -> None:
     """``ldv-heading-directive``: a heading whose text holds a directive (§4.2), once for each heading, at
     its first line."""
+    # A ``{{choose:}}`` in a section's heading is ``choose-invalid``'s (§15.5), but in the combined pass of a
+    # document that is no template, which collects none (``core._check``).
+    chooses_reported = combined is None or combined.template
     for own, locator, spot, _name in _files(document, where, combined, fragment):
         for index, section in enumerate(own.sections):
-            # (A ``{{choose:}}`` in a heading is ``choose-invalid``'s, §15.5.)
-            found = [d.source for d in lex_fragment(section.title).directives if d.name != "choose"]
+            found = [
+                d.source for d in lex_fragment(section.title).directives
+                if not (chooses_reported and d.name == "choose")
+            ]
             if found:
                 underline = _underline(locator, locator.underline(index))
                 result.error(
@@ -269,7 +277,7 @@ def check_heading_directives(
         for section_index, block_index, top in own.iter_indexed_blocks():
             spans: list[tuple[int, int]] | None = None
             for number, block in _nested_headings(top):
-                found = [d.source for d in lex_fragment(block.text).directives if d.name != "choose"]
+                found = [d.source for d in lex_fragment(block.text).directives]
                 if not found:
                     continue
                 if spans is None:
