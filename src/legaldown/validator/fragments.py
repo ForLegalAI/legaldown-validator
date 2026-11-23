@@ -856,6 +856,7 @@ class _Walk:
         self._attached = [0, 0]
         self._measured: list[int] | None = None  # what an attachment file's includes bring in, while they are followed
         self._counted: set[str] = set()  # the attachment files whose include paragraphs are counted (``attach``)
+        self._nested: set[str] = set()  # the fragments whose include paragraphs are counted as *nested*
         self._attaching = False  # the includes followed are an attachment file's (``attach``): its chain has no document
         self._full = False  # the budget of the attachment files is spent
         #: Of each file read that is not a fragment, where the include that first named it is (``Combined.met_at``).
@@ -985,7 +986,9 @@ class _Walk:
             for number, include in enumerate(fragment_includes(fragment, self._lex_fragment)):
                 by_section.setdefault(include.section, []).append((number, include))
             self._includes[fragment.path] = by_section
-            self._outcome.nested += sum(len(each) for each in by_section.values())
+            if fragment.path not in self._counted:  # (an attachment file's are counted as its own, ``attach``)
+                self._outcome.nested += sum(len(each) for each in by_section.values())
+                self._nested.add(fragment.path)
         by_section = self._includes[fragment.path]
         headings: list[Heading] = []
 
@@ -1055,7 +1058,6 @@ class _Walk:
             return False
         plan = Plan()
         if includes:
-            fresh = fragment.path not in self._includes
             complete = self.complete
             self._measured = [0, 0]
             self._attaching = True
@@ -1071,12 +1073,13 @@ class _Walk:
                 real.diagnostics.extend(found)
                 self._measured = None
                 self._attaching = False
-            # Counted once for each attachment file, apart from those of the fragments (for the Warning of §17.5); a file
-            # the body includes too has its includes counted there as well, as they are in both (#141).
+            # The include paragraphs of a LegalDown attachment file are counted as its own, once, whatever else
+            # includes it and in whichever order (for the Warning of §17.5, #141): not among the fragments'.
             if fragment.path not in self._counted:
                 self._counted.add(fragment.path)
                 own = sum(len(each) for each in self._includes[fragment.path].values())
-                if fresh:
+                if fragment.path in self._nested:
+                    self._nested.discard(fragment.path)
                     self._outcome.nested -= own
                 self._outcome.attached_includes += own
                 if self._outcome.attached_includes_entry is None:

@@ -376,7 +376,8 @@ class _Recorder(ValidationResult):
         """Record a Warning-level diagnostic under stable rule id *rule*, at
         *line* (``at``); *depends* is what it needs from outside the document;
         *file* is the file it is in when that is not the document's own (a
-        fragment the document includes, #35)."""
+        fragment the document includes, #35); *unsettleable*: nothing the document could hold
+        elsewhere settles it (``_Recorder.unsettleable``)."""
         self._record(rule, "warning", message, line, depends, file, unsettleable)
 
     def info(
@@ -386,7 +387,8 @@ class _Recorder(ValidationResult):
         """Record an Info-level diagnostic under stable rule id *rule*, at
         *line* (``at``); *depends* is what it needs from outside the document;
         *file* is the file it is in when that is not the document's own (a
-        fragment the document includes, #35)."""
+        fragment the document includes, #35); *unsettleable*: nothing the document could hold
+        elsewhere settles it (``_Recorder.unsettleable``)."""
         self._record(rule, "info", message, line, depends, file, unsettleable)
 
     def result(self) -> ValidationResult:

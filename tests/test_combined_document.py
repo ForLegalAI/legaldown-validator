@@ -809,7 +809,13 @@ def test_the_includes_of_an_attachment_file_the_body_includes_too_are_counted_as
     result = _run(text, {"s.lgd": "## S\n\n{{include: gone.lgd}}\n"})
     message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "paragraph" in d.message)
     assert "1 include in LegalDown attachment files" in message
-    assert "1 include in the fragments they take in" in message  # (it is in an include of the body too)
+    assert "in the fragments they take in" not in message  # (counted once, as the attachment file's)
+    # Whatever the order of the entries, when one attachment file includes another.
+    files = {"a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "## B\n\n{{include: gone.lgd}}\n"}
+    for order in (("a", "b"), ("b", "a")):
+        text = _attached(*((name, f"{name}.lgd") for name in order)) + _SCOPE + "See {{attach: a}} {{attach: b}}.\n"
+        message = next(d.message for d in _run(text, files).diagnostics if d.rule == SKIPPED_RULE and "include" in d.message)
+        assert message.startswith("2 includes in LegalDown attachment files; 1 include not read"), order
 
 
 def test_a_template_whose_only_attachment_file_holds_includes_is_validated_once(monkeypatch):
