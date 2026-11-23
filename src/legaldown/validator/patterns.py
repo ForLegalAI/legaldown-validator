@@ -40,7 +40,8 @@ INCLUDE_LIMIT_RULE = IMPLEMENTATION_RULE_PREFIX + "include-limit"
 # language code).
 FRONTMATTER_KEY_DUPLICATE_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-key-duplicate"
 # And the two for constructs that take content out of validation without a word (#12, ``validator.hidden``): a
-# fenced code block that runs to the end of its file (a Warning), and a directive in heading text (an Error, §4.2).
+# fenced code block that runs to the end of its file (a Warning), and a directive in heading text (an Error, §4.2;
+# a Warning in a list item or quote, which this implementation reads as body text).
 FENCE_UNCLOSED_RULE = IMPLEMENTATION_RULE_PREFIX + "fence-unclosed"
 HEADING_DIRECTIVE_RULE = IMPLEMENTATION_RULE_PREFIX + "heading-directive"
 # §10.7 placeholder types — also the value question types of §15.2.

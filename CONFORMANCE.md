@@ -1307,9 +1307,9 @@ or forbids them, and no fixture case draws either.
   specification's `heading-hardcoded-number` is a Warning, but it is the numbering of §4.2 and a heuristic, while a
   directive is known for sure. No rule of the specification's covers it, so the id is this implementation's own,
   but for `{{choose:}}`, which §15.5 gives to `choose-invalid`: a `{{choose:}}` in a heading is left to that
-  rule, and not reported twice. A heading in a list item or a block quote is a heading too and is reported the same
-  way (this implementation reads its text as body text, so its directives are checked as well, and the message
-  says so; a `{{choose:}}` there, which `choose-invalid` does not look at, is reported too). A heading in a
+  rule, and not reported twice. A heading in a list item or a block quote is a heading too, and is reported as a
+  **Warning** (this implementation reads its text as body text, so its directives are checked and assembly fills
+  them: nothing is lost here, but §4.2 forbids them and another tool may not read them; the message says so; a `{{choose:}}` there, which `choose-invalid` does not look at, is reported too). A heading in a
   drafting note is not reported, as assembly removes the note (§15.6). The rule does not
   stop assembly: like any rule outside `TEMPLATE_RULES`, it is in `Template.validation`, not in `problems`.
 

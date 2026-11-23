@@ -188,8 +188,8 @@ def test_what_is_no_directive_in_a_heading_is_not_reported():
 def test_a_heading_in_a_list_item_or_a_quote_is_reported_at_its_line():
     text = FM + "# Terms\n\n- Item.\n- ## Inner {{ref: terms}}\n\n> Quote.\n>\n> ### Quoted {{ref: terms}}\n"
     assert _found(validate(parse(text))) == [
-        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Inner")),
-        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "### Quoted")),
+        (HEADING_DIRECTIVE_RULE, "warning", "", _at(text, "## Inner")),
+        (HEADING_DIRECTIVE_RULE, "warning", "", _at(text, "### Quoted")),
     ]
 
 
@@ -197,8 +197,8 @@ def test_a_setext_heading_in_a_list_item_or_a_quote_names_its_underline():
     text = FM + "# Terms\n\n- Item {{ref: terms}}\n  ---\n\n> Quoted {{ref: terms}}\n> ===\n"
     result = validate(parse(text))
     assert _found(result) == [
-        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "- Item")),
-        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "> Quoted")),
+        (HEADING_DIRECTIVE_RULE, "warning", "", _at(text, "- Item")),
+        (HEADING_DIRECTIVE_RULE, "warning", "", _at(text, "> Quoted")),
     ]
     first, second = (d.message for d in result.diagnostics if d.rule == HEADING_DIRECTIVE_RULE)
     assert f"'---' line under it at line {_at(text, '  ---')}" in first
@@ -223,8 +223,8 @@ def test_a_heading_in_a_list_item_says_this_validator_reads_it_and_a_choose_ther
     assert "ref-broken" in result.rules("error")  # read as body text
     assert "choose-invalid" not in result.rules("error")
     assert _found(result) == [
-        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Inner")),
-        (HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Other")),
+        (HEADING_DIRECTIVE_RULE, "warning", "", _at(text, "## Inner")),
+        (HEADING_DIRECTIVE_RULE, "warning", "", _at(text, "## Other")),
     ]
     message = next(d.message for d in result.diagnostics if d.rule == HEADING_DIRECTIVE_RULE)
     assert "this validator reads it as body text" in message and "not done" not in message
@@ -232,7 +232,16 @@ def test_a_heading_in_a_list_item_says_this_validator_reads_it_and_a_choose_ther
 
 def test_a_heading_in_a_drafting_note_is_not_reported():
     text = FM + "# Terms\n\n> [!DRAFTING]\n> ## Note {{ref: terms}}\n>\n> > ### Deeper {{ref: terms}}\n\n> ## Kept {{ref: terms}}\n"
-    assert _found(validate(parse(text))) == [(HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Kept"))]
+    assert _found(validate(parse(text))) == [(HEADING_DIRECTIVE_RULE, "warning", "", _at(text, "## Kept"))]
+
+
+def test_a_heading_after_a_drafting_note_deeper_than_the_walk_is_reported():
+    # The note's quotes run past MAX_QUOTE_DEPTH: the place of what follows it is counted as the walk counts it.
+    from legaldown.parser import MAX_QUOTE_DEPTH
+
+    deep = "".join("  " + "> " * level + "q\n" for level in range(2, MAX_QUOTE_DEPTH + 4))
+    text = FM + "# A\n\n- x\n\n  > [!DRAFTING]\n  >\n" + deep + "\n  ## After {{ref: a}}\n"
+    assert _found(validate(parse(text))) == [(HEADING_DIRECTIVE_RULE, "warning", "", _at(text, "## After"))]
 
 
 def test_a_line_that_is_no_lf_is_no_line_of_the_count():

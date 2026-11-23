@@ -934,7 +934,7 @@ The full rule set with severities and examples lives in the specification (§16)
 
 | Area | Checks include |
 |---|---|
-| **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title, raw HTML other than comments; a directive in heading text (`ldv-heading-directive`, an Error, §4.2: it is not read as a directive, §11.4, and the message names the `---` line under a paragraph that made it a setext heading), and a fenced code block that is never closed and so runs to the end of its file, taking every later heading and directive into code (`ldv-fence-unclosed`, a Warning, at its opening line, saying how much it holds; one its list item or quote closes is not reported) — both this implementation's own ids (§16.1, #12) |
+| **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title, raw HTML other than comments; a directive in heading text (`ldv-heading-directive`, an Error, a Warning in a list item or quote, §4.2: it is not read as a directive, §11.4, and the message names the `---` line under a paragraph that made it a setext heading), and a fenced code block that is never closed and so runs to the end of its file, taking every later heading and directive into code (`ldv-fence-unclosed`, a Warning, at its opening line, saying how much it holds; one its list item or quote closes is not reported) — both this implementation's own ids (§16.1, #12) |
 | **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, unquoted values that begin with a curly quote, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
 | **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions and lost letters, markers outside an anchor position |
@@ -955,7 +955,7 @@ exceptions are the rules of this implementation's own (§16.1, the prefix `ldv-`
 `ldv-check-skipped` ([Scope](#scope)), the Error `ldv-include-limit` of assembly, and
 `ldv-frontmatter-key-duplicate`, an Error for the same key written twice and a Warning for different keys that
 the model reads as one (the specification does not forbid a padded key), the Error `ldv-heading-directive` (§4.2 is a
-MUST NOT, and the directive is lost: a `{{placeholder:}}` in a heading is not even filled by assembly) and the
+MUST NOT, and the directive is lost: a `{{placeholder:}}` in a heading is not even filled by assembly; a Warning in a list item or quote, where this implementation reads it) and the
 Warning `ldv-fence-unclosed` (the construct is valid CommonMark), [#12](https://github.com/ForLegalAI/legaldown-validator/issues/12).
 
 ## Assembly

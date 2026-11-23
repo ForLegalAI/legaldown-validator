@@ -8,7 +8,7 @@ Warning, at the fence's opening line, saying how much it holds. A fence that its
 not reported: the container closes it, and what follows the container is read as usual. One in a container
 that itself runs to the end of the file is, as nothing but the end of the file closes it.
 
-**``ldv-heading-directive``** (Error). Heading text must not contain a directive (§4.2), and a directive is
+**``ldv-heading-directive``** (an Error; a Warning in a list item or a quote). Heading text must not contain a directive (§4.2), and a directive is
 recognized in body text only (§11.4), so one written in a section's heading is literal text that no rule
 checks: a ``{{def:}}`` declares nothing, and the term it was to define is ``term-undefined`` where it is used;
 assembly leaves a ``{{placeholder:}}`` there unfilled. It is
@@ -18,7 +18,9 @@ usual cause is a setext heading: a paragraph directly above a ``---`` or ``===``
 message names that line. A heading in a list item or a quote is a heading too, and is reported the same way (this implementation
 reads its text as body text, so its directives are checked as well). A ``{{choose:}}`` in a section's heading is
 left to ``choose-invalid``, the specification's rule for it (§15.5); one in a list item or quote, which that
-rule does not look at, is reported here. A heading in a drafting note is not: assembly removes the note (§15.6).
+rule does not look at, is reported here. A heading in a list item or a quote is a Warning: nothing is lost here, as
+this implementation reads its directives and its assembly fills them, but §4.2 forbids them, and a tool that
+reads the heading as a heading does not recognize them. A heading in a drafting note is not: assembly removes the note (§15.6).
 
 As every check of a fragment's content, both run over a fragment in the combined pass only: when it does not run
 (an include was not read), ``ldv-check-skipped`` says that the combined-document checks were not made.
@@ -122,9 +124,9 @@ def _held(text: str, lex_fragment: Callable[[str], Lexed]) -> tuple[int, int]:
     """How many headings and directives *text*, the content of a code block, would hold if it were read as
     LegalDown: parsed as a quote's content is (``parser.quote_content``), where a heading is a block."""
     from ..definitions import nested_blocks, text_fragments  # the parser builds on that module
-    from ..parser import quote_content
+    from ..parser import _read_quote_content  # (uncached: the rest of a file, read once)
 
-    tops, _spans = quote_content(text, 0)
+    tops, _spans = _read_quote_content(text, 0)
     headings = sum(1 for top in tops for block in nested_blocks(top) if block.kind == "heading")
     directives = sum(len(lex_fragment(fragment).directives) for top in tops for fragment in text_fragments(top))
     return headings, directives
@@ -233,19 +235,27 @@ def _nested_headings(top: Block) -> Iterator[tuple[int, Block]]:
     """The ``heading`` blocks in the list items and quotes of the top-level block *top*, each with its
     place among the blocks ``nested_blocks`` gives, but for those in a drafting note, which assembly removes
     before anything else (§15.6, §15.7.2)."""
-    from ..definitions import nested_blocks  # the parser builds on that module
+    from ..definitions import list_items  # the parser builds on that module
+    from ..parser import MAX_QUOTE_DEPTH, quote_content
 
-    if top.kind not in LIST_KINDS and top.kind != "quote":
-        return
-    blocks = list(nested_blocks(top))
-    skip_to = 0  # the place past the drafting note the walk is in
-    for number, block in enumerate(blocks):
-        if number < skip_to:
-            continue
-        if block.kind == "quote" and is_drafting_marker(block.text.split("\n", 1)[0].strip()):
-            skip_to = number + len(list(nested_blocks(block)))
-        elif block.kind == "heading":
+    number = -1  # the place of the block the walk is at, counted as ``nested_blocks`` walks
+
+    def walk(block: Block, depth: int, in_note: bool) -> Iterator[tuple[int, Block]]:
+        nonlocal number
+        number += 1
+        if block.kind == "heading" and not in_note:
             yield number, block
+        if block.kind in LIST_KINDS:
+            for item in list_items(block):
+                for child in item.blocks:
+                    yield from walk(child, depth + 1, in_note)
+        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+            note = in_note or is_drafting_marker(block.text.split("\n", 1)[0].strip())
+            for child in quote_content(block.text, depth + 1)[0]:
+                yield from walk(child, depth + 1, note)
+
+    if top.kind in LIST_KINDS or top.kind == "quote":
+        yield from walk(top, 0, False)
 
 
 def check_heading_directives(
@@ -284,7 +294,8 @@ def check_heading_directives(
                     spans = locator.nested_spans(section_index, block_index) or []
                 start, end = spans[number] if number < len(spans) else (None, None)
                 underline = _underline(locator, end - 1) if start is not None and end - start > 1 else None
-                result.error(
+                # A Warning: this implementation reads it, and its assembly fills it (see the module's docstring).
+                result.warning(
                     HEADING_DIRECTIVE_RULE, _heading_message(block.text, found, underline, nested=True),
                     line=spot(start),
                 )
