@@ -130,12 +130,12 @@ class FrontmatterScalar:
     """A frontmatter scalar that holds ``{{``: its *quote* (``"`` or ``'``; ``""`` for a plain or block
     scalar, where §3.10 recognizes no placeholder), and, quoted, the offsets ``[start, end)`` of its quoted
     string in the frontmatter's text, from its opening quote, past an anchor or a tag, through its closing one.
-    *split*: a ``{{placeholder:`` in it is written across a line break, which §11.5 does not allow: the
-    lexer reads it malformed on its line, whatever YAML folds the value to."""
+    *split*: the placeholders in it written across a line break, which §11.5 does not allow (the lexer reads
+    each malformed on its line, whatever YAML folds the value to), by their place among its placeholders, from 0."""
     quote: str
     start: int
     end: int
-    split: bool = False
+    split: tuple[int, ...] = ()
     #: The scalar's value, as YAML reads it.
     value: str = ""
     #: Not found where the model reads it (the validator's own marker, never given by ``frontmatter_scalars``).
@@ -162,11 +162,16 @@ def frontmatter_scalars(text: str) -> dict[tuple[Any, ...], FrontmatterScalar]:
             return FrontmatterScalar("", node.start_mark.index, node.end_mark.index, value=node.value)
         rows = text[start:node.end_mark.index].split("\n")
         # Malformed on its row for want of the "}}" that a later row of the value holds.
-        split = any(
-            d.name == "placeholder" and d.malformed and "}}" not in row[d.start:] and "}}" in "\n".join(rows[number + 1:])
-            for number, row in enumerate(rows[:-1]) for d in lex(row).directives
-        )
-        return FrontmatterScalar(quote, start, node.end_mark.index, split, node.value)
+        split: list[int] = []
+        place = 0
+        for number, row in enumerate(rows):
+            for d in lex(row).directives:
+                if d.name != "placeholder":
+                    continue
+                if d.malformed and "}}" not in row[d.start:] and "}}" in "\n".join(rows[number + 1:]):
+                    split.append(place)
+                place += 1
+        return FrontmatterScalar(quote, start, node.end_mark.index, tuple(split), node.value)
 
     def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
         if id(node) in seen:
@@ -1226,6 +1231,7 @@ class Locator:
         # Per leaf, by its id, the marker candidates in its texts and in its lines (``_candidates_in``).
         self._marker_places: dict[int, _MarkerPlaces] = {}
         self._scalars: dict[tuple[Any, ...], FrontmatterScalar] | None = None  # ``frontmatter_scalars``, once
+        self._frontmatter: tuple[str | None, list[int]] | None = None  # ``frontmatter_text`` and its line feeds
 
     def start(self) -> int | None:
         """The document's first line."""
@@ -1319,15 +1325,20 @@ class Locator:
         ``frontmatter_line`` tells their lines."""
         if self._map is None or () not in self._map.keys:
             return None
-        from .parser import FRONTMATTER_RE  # the parser builds on this module
+        if self._frontmatter is None:
+            from .parser import FRONTMATTER_RE  # the parser builds on this module
 
-        written = FRONTMATTER_RE.match("\n".join(self._map.lines))
-        return (written.group(1) or "") if written else None
+            written = FRONTMATTER_RE.match("\n".join(self._map.lines))
+            text = (written.group(1) or "") if written else None
+            self._frontmatter = (text, line_breaks(text or ""))
+        return self._frontmatter[0]
 
     def frontmatter_line(self, index: int) -> int:
         """The file line of offset *index* of ``frontmatter_text`` (its first line is the file's second)."""
-        text = self.frontmatter_text() or ""
-        return 2 + text.count("\n", 0, index)
+        if self.frontmatter_text() is None:
+            return 2
+        assert self._frontmatter is not None
+        return line_at(self._frontmatter[1], index, 2)
 
     def frontmatter_scalars(self) -> dict[tuple[Any, ...], FrontmatterScalar]:
         """``frontmatter_scalars`` of the frontmatter, once; empty without one."""

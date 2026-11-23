@@ -27,6 +27,12 @@ def _source(fields: str, questions: str = "", body: str = "# A\n\nText.\n") -> s
     return f"---\n{fields}{_SIDES}{questions}---\n\n{body}"
 
 
+def _is_blank(text: str, qid: str = "q") -> bool:
+    """Whether the validator counts *qid* a blank of the frontmatter."""
+    blank = validate(parse(text)).index.blanks.get(qid)
+    return blank is not None and blank.in_frontmatter
+
+
 def _unused(text: str) -> set[str]:
     """The questions validate reports question-unused."""
     return {
@@ -64,7 +70,9 @@ def test_a_placeholder_in_a_structural_field_asks_nothing_and_is_no_blank():
     assert "placeholder-in-structural-field" in _rules(text)
     assert _unused(text) == {"q"}
     final = _rules(text, final=True)
-    assert "placeholder-in-structural-field" in final and "placeholder-unfilled" not in final
+    # No blank, yet it stays in the metadata: the final check reports it all the same (§15.9).
+    assert "placeholder-in-structural-field" in final and "placeholder-unfilled" in final
+    assert not _is_blank(text)
 
 
 # ── A placeholder in a value that is not a quoted string ─────────────────────────────────────────────────────
@@ -77,9 +85,11 @@ def test_an_unquoted_placeholder_is_reported_asks_nothing_and_is_no_blank():
     assert "'{{placeholder: q}}'" in found.message and "§3.10" in found.message
     assert _unused(text) == {"q"}
     final = _rules(text, final=True)
-    assert FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE in final and "placeholder-unfilled" not in final
+    assert FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE in final and "placeholder-unfilled" in final
+    assert not _is_blank(text)
+    assert FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE in {d.rule for d in Template(text).problems}
     # ... as assembly agrees: it leaves the value as written.
-    assembled = Template(text).form({"q": "Main St"}).assemble()
+    assembled = Template(text, _check=False).form({"q": "Main St"}).assemble()
     assert "Lease {{placeholder: q}}" in assembled.output
 
 
@@ -182,9 +192,8 @@ def _blanks_and_fills(fields: str) -> tuple[bool, bool]:
     """Whether core counts the title's placeholder a blank (the final check reports it), and whether assembly
     fills it."""
     text = _source(fields, _Q)
-    final = validate(parse(text), final=True)
-    blank = any(d.rule == "placeholder-unfilled" for d in final.diagnostics)
-    output = Template(text).form({"q": "Main St"}).assemble().output
+    blank = _is_blank(text)
+    output = Template(text, _check=False).form({"q": "Main St"}).assemble().output
     title = parse(output).metadata.title
     return blank, "Main St" in title and "{{placeholder" not in title
 
@@ -231,14 +240,16 @@ def _frontmatter_lines(text: str) -> list[str]:
 
 
 def _core_blank_lines(text: str) -> set[int]:
+    """The lines of the frontmatter blanks the validator counts."""
+    if not _is_blank(text):
+        return set()
     final = validate(parse(text), final=True)
     return {d.line for d in final.diagnostics if d.rule == "placeholder-unfilled"}
 
 
 def _assembly_filled_lines(text: str) -> set[int]:
-    template = Template(text)
-    assert template.problems == (), text
-    output = template.form({"q": "Main St"}).assemble().output
+    # (Without the template rules: an unquoted placeholder refuses the template, as it would stay as written.)
+    output = Template(text, _check=False).form({"q": "Main St"}).assemble().output
     before, after = _frontmatter_lines(text), _frontmatter_lines(output)
     assert len(before) == len(after), text
     return {number + 2 for number, (old, new) in enumerate(zip(before, after, strict=True)) if old != new}
@@ -267,7 +278,7 @@ def test_a_placeholder_across_two_lines_is_malformed_for_both():
     assert [(d.rule, d.line) for d in result.diagnostics if d.rule == "directive-malformed"] == [
         ("directive-malformed", 2)
     ]
-    assert "placeholder-unfilled" not in result.rules()
+    assert "placeholder-unfilled" in result.rules() and not _is_blank(text)
     assert "directive-malformed" in {d.rule for d in Template(text).problems}
 
 
@@ -360,9 +371,8 @@ def _left_in_frontmatter(output: str) -> bool:
 
 def test_an_alias_or_a_merge_makes_one_written_scalar_a_blank_for_both():
     for text, expected in _SHARED:
-        final = validate(parse(text), final=True)
-        blank = any(d.rule == "placeholder-unfilled" for d in final.diagnostics)
-        template = Template(text)
+        blank = _is_blank(text)
+        template = Template(text, _check=False)
         filled = not _left_in_frontmatter(template.form({"q": "Main St"}).assemble().output)
         assert blank == filled, text
         if expected is not None:
@@ -386,8 +396,12 @@ def test_a_value_the_model_reads_from_no_written_scalar_is_no_blank_and_is_repor
     values = [cf.value for side in document.metadata.sides for party in side.parties for cf in party.custom_fields]
     assert any("{{placeholder" in value for value in values)  # (the model reads it)
     final = validate(document, final=True)
-    assert "placeholder-unfilled" not in final.rules()
-    assert [d.line for d in final.diagnostics if d.rule == UNREAD_RULE] == [2]  # once, where it is written
+    assert not _is_blank(text)
+    # Left in the metadata, it fails the final check (§15.9); the field it is in is an Error, which refuses the
+    # template; its written scalar, which no field reads, a Warning, once.
+    assert "placeholder-unfilled" in final.rules()
+    assert sorted((d.level, d.line) for d in final.diagnostics if d.rule == UNREAD_RULE) == [("error", 8), ("warning", 2)]
+    assert UNREAD_RULE in {d.rule for d in Template(text).problems}
 
 
 def test_a_scalar_the_fields_own_key_overrides_is_unread():
@@ -397,7 +411,7 @@ def test_a_scalar_the_fields_own_key_overrides_is_unread():
         _source('title: "{{placeholder: q}}"\ntitle: T\n'),
     ):
         final = validate(parse(text), final=True)
-        assert "placeholder-unfilled" not in final.rules(), text
+        assert not _is_blank(text), text
         assert [d.line for d in final.diagnostics if d.rule == UNREAD_RULE] == [2], text
         assert _left_in_frontmatter(Template(text).form({"q": "Main St"}).assemble().output), text
 
@@ -414,3 +428,22 @@ def test_question_unused_says_why_for_a_value_read_from_no_written_scalar():
     ).replace("---\n\n", _Q + "---\n\n")
     (message,) = [d.message for d in validate(parse(text)).diagnostics if d.rule == "question-unused"]
     assert "does not read as it is written" in message
+
+
+def test_a_placeholder_the_model_holds_from_no_written_scalar_fails_the_final_check():
+    text = _with_party(
+        'base: &b {"Ref": "{{placeholder: x}}"}\ntitle: T\n', '        <<: *b\n        "Ref ": "{{placeholder: y}}"\n'
+    )
+    document = parse(text)
+    held = [cf.value for side in document.metadata.sides for party in side.parties for cf in party.custom_fields]
+    final = validate(document, final=True)
+    unfilled = [d.message for d in final.diagnostics if d.rule == "placeholder-unfilled"]
+    for value in held:
+        if "{{placeholder" in value:
+            assert any(value in message for message in unfilled), (value, unfilled)
+
+
+def test_a_split_placeholder_leaves_the_others_of_its_value_checked():
+    text = _source('title: "{{placeholder: a, type=bogus}} and {{placeholder:\n  b}}"\n')
+    rules = _rules(text)
+    assert "placeholder-type-invalid" in rules and "directive-malformed" in rules

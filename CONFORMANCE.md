@@ -1434,9 +1434,10 @@ as written, so the validator reads them the same way:
   frontmatter (`choose-invalid`), a `{{placeholder:}}` in an identifier, structural or format-checked field
   (`placeholder-in-structural-field`), and one in a value field that is not a quoted string (below) does not use its
   question: a question no other part uses is `question-unused`, whose message says where it is named. Nor is such a
-  placeholder a blank of the final check, which does not report it as `placeholder-unfilled`, as the rule above
-  already does, nor is it checked as one (its type and parameters, `result.blanks`): assembly gives it no type
-  either. A `{{choose:}}` there is still a
+  placeholder checked as a blank (its type and parameters, `result.blanks`): assembly gives it no type either. The
+  final check reports every placeholder left in the frontmatter's model as `placeholder-unfilled` all the same,
+  a blank or not (§15.9: none may remain in the frontmatter), but not one in a section's heading, which is no
+  placeholder (§11.4) and is `ldv-heading-directive`'s. A `{{choose:}}` there is still a
   template construct for the final check, since it makes the document a template wherever it is (§15.1).
 - `insertion-boundary` (§15.7.3) is not judged in a section's heading, where nothing is inserted; it is in a
   heading in a list item or quote.
@@ -1467,13 +1468,16 @@ validator counts a blank, at every position of the frontmatter; the tests compar
   `legal_name` under the party's own, the first of two `title:`); one no field reads is reported once, however many
   paths reach it. A value is a blank only where its written scalar is at the path the model reads it from: one the
   model reads from a key that others of its mapping read as the same once stripped (`" Reg"` merged in, `"Reg "`
-  its own) is, when the key it names is not written so, no blank, and its written scalar draws the Warning. A value
+  its own) is, when the key it names is not written so, no blank: the field is
+  `ldv-frontmatter-placeholder-unread` as an **Error**, at its line, as assembly would leave the placeholder the
+  model holds as written (and so is `ldv-frontmatter-placeholder-unquoted`; both are in `TEMPLATE_RULES`, which
+  refuse the template), and its written scalar, which no field reads, draws the Warning. A value
   set in code since the document was parsed is not the source's, and is judged as one built in code (a blank).
 - An alias to an anchored value (`subtitle: *t`) is the anchor's value: a blank wherever it is used (the final check
   reports it at the anchor and at the alias), which assembly fills through the anchor, where it is written, so every
   alias reads the answer.
 - A placeholder written across a line break of a quoted value (`"Lease {{placeholder:` over `q}}"`) is
-  `directive-malformed` for both, at the field's line: §11.5 does not let a directive span lines, though YAML folds
+  `directive-malformed` for both, at the field's line, that directive alone (the others of the value are checked): §11.5 does not let a directive span lines, though YAML folds
   the value onto one. It is no blank, and assembly refuses the template.
 - **`ldv-frontmatter-alias-removed`**, an **Error** of a template (`legaldown.grammar.ALIAS_REMOVED_RULE`, in
   `TEMPLATE_RULES`): an alias to an anchor in what assembly removes (§15.7.2) — the `questions`, an attachment's

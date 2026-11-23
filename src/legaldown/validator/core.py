@@ -2306,11 +2306,18 @@ def _pass(
     # below. (A {{choose:}} where it is not recognized is still a template construct for the final check: it
     # makes the document a template wherever it is, §15.1.)
     placeholders: list[tuple[Directive, Line]] = []
+    # ... and every other placeholder the metadata holds, as text, for the final check all the same: §15.9 asks
+    # that none remain in the frontmatter, a blank or not (#12).
+    literal_placeholders: list[tuple[Directive, Line]] = [
+        (directive, where.key(*path))
+        for _label, text, path in structural_fields
+        for directive in named(text, "placeholder")
+    ]
     #: Of each question named only where §11.4 recognizes no directive, why, for question-unused.
     unrecognized: dict[str, str] = {}
     for field_value, field_path in value_fields:
         fm_scalar = None  # how the value is written (positions.FrontmatterScalar), once it holds a placeholder
-        for directive in named(field_value, "placeholder"):
+        for place, directive in enumerate(named(field_value, "placeholder")):
             field_line = where.key(*field_path)
             if fm_scalar is None:
                 # How the value is written. Without the source (a document built in code), or for a value that
@@ -2327,16 +2334,26 @@ def _pass(
                         each.value.strip() == field_value.strip() for each in fm_scalars.values()
                     )
                     fm_scalar = FrontmatterScalar("", 0, 0, unread=True) if fm_read else FrontmatterScalar('"', 0, 0)
-                if fm_scalar.split:
-                    # §11.5: a directive does not span lines. YAML folds the quoted value onto one, but it is
-                    # written on two, where assembly reads it (and refuses it, as malformed).
-                    result.error(
-                        "directive-malformed",
-                        "A {{placeholder:}} in this value is written across a line break, which a directive "
-                        "may not be (§11.5), though YAML folds the value onto one line: write it on one line.",
-                        line=field_line,
-                    )
+            split = place in fm_scalar.split
+            if split:
+                # §11.5: a directive does not span lines. YAML folds the quoted value onto one, but it is
+                # written on two, where assembly reads it (and refuses it, as malformed).
+                result.error(
+                    "directive-malformed",
+                    f"'{directive.source}' is written across a line break, which a directive may not be (§11.5), "
+                    f"though YAML folds the value onto one line: write it on one line.",
+                    line=field_line,
+                )
             if fm_scalar.unread:
+                # The model reads it, but from no written scalar that assembly fills: it would stay as written.
+                result.error(
+                    FRONTMATTER_PLACEHOLDER_UNREAD_RULE,
+                    f"'{directive.source}' is in a value the model reads under a key that others of its mapping read "
+                    f"as the same once stripped, so it is not the one written at that key: it is no blank, and "
+                    f"assembly leaves it as written. Give the keys different names.",
+                    line=field_line,
+                )
+                literal_placeholders.append((directive, field_line))
                 if directive.positional:
                     unrecognized.setdefault(
                         directive.positional, "a frontmatter value the model does not read as it is written (§3.10)"
@@ -2350,7 +2367,8 @@ def _pass(
                     f"(\"...\").",
                     line=field_line,
                 )
-            if not fm_scalar.quote or fm_scalar.split:
+            if not fm_scalar.quote or split:
+                literal_placeholders.append((directive, field_line))
                 if directive.positional:
                     unrecognized.setdefault(
                         directive.positional,
@@ -2915,7 +2933,7 @@ def _pass(
         result.error_at(position, "heading-skip", message, line=line)
     if final:
         _check_final(
-            placeholders, chooses + final_chooses, body.notes, conditions + final_conditions, questions, result,
+            placeholders + literal_placeholders, chooses + final_chooses, body.notes, conditions + final_conditions, questions, result,
             where.key("questions"),
         )
 

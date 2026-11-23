@@ -61,8 +61,11 @@ TEMPLATE_RULES: frozenset[str] = frozenset({
     "def-term-variable",
     "drafting-note-def",
     "template-fragment-invalid",
-    # An alias to an anchor that assembly removes would leave the frontmatter unreadable (#12).
+    # An alias to an anchor that assembly removes would leave the frontmatter unreadable, and a placeholder
+    # assembly cannot fill would stay in it as written (#12; their Errors: the unread rule's Warnings do not refuse).
     "ldv-frontmatter-alias-removed",
+    "ldv-frontmatter-placeholder-unquoted",
+    "ldv-frontmatter-placeholder-unread",
 })
 
 #: A rule of the validator that a template must satisfy (the safety of a reference, §15.4) when the validator
