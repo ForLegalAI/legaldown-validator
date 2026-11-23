@@ -119,6 +119,9 @@ class Combined:
     #: The findings of the document's own pass (by ``id``) that it keeps although their rules are not ``HOST_ONLY``:
     #: the path rules on the includes of an attachment file left out of the combined document for its size.
     kept: set[int] = field(default_factory=set)
+    #: The findings of the combined pass (by their index among its diagnostics) that nothing it lacks could settle
+    #: (``_Recorder.unsettleable``): a partial document does not say that what is not in it may (``NOT_IN_IT``).
+    unsettleable: set[int] = field(default_factory=set)
     #: What the document's own pass read the link reference definitions of its files as (``paths.ReferenceImages``),
     #: for the combined pass not to read them again (#121).
     definition_reads: dict[Any, Any] = field(default_factory=dict)
@@ -477,7 +480,7 @@ def merge_diagnostics(
     merged: list[tuple[Diagnostic, int | None]] = []
     made: dict[tuple[str, str, int | None, str], dict[int, int]] = {}  # of each finding, how often each place made it
     kept: Counter[tuple[str, str, int | None, str]] = Counter()
-    for d, number in zip(whole, places, strict=True):
+    for position, (d, number) in enumerate(zip(whole, places, strict=True)):
         if d.rule in HOST_ONLY or (OWNED_BY.get(d.rule), d.file, d.line) in owned:
             continue
         if number is not None:
@@ -487,7 +490,7 @@ def merge_diagnostics(
             if made_here[number] <= kept[key]:
                 continue  # a place has made it as often already
             kept[key] = made_here[number]
-        if combined.partial and d.rule in SETTLED_ELSEWHERE:
+        if combined.partial and d.rule in SETTLED_ELSEWHERE and position not in combined.unsettleable:
             d = replace(d, message=d.message + NOT_IN_IT)
         merged.append((d, number))
     merged += [(d, None) for d in host if d.rule in HOST_ONLY or id(d) in combined.kept]

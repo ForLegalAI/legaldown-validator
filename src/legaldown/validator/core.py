@@ -60,6 +60,7 @@ from .fragments import (
     UnreadReason,
     check_includes,
     content_findings,
+    fragment_includes,
     shape_findings,
 )
 from .helpers import (
@@ -1395,10 +1396,18 @@ def _may_combine(document: Document, files: Files) -> bool:
             return True
     if document.frontmatter_error is not None:
         return False  # (its frontmatter is not read: it declares no attachment)
+    template: bool | None = None  # (asked only of an attachment file with include paragraphs)
     for _index, _attachment, written in legaldown_attachments(document.metadata):
         relative = files.relative(written)
-        if relative is not None and not files.is_own(relative) and (target := files.read(relative)) is not None and target.spliceable:
-            return True
+        if relative is None or files.is_own(relative) or (target := files.read(relative)) is None or not target.spliceable:
+            continue
+        # In a template an attachment file with include paragraphs is left out (``check_includes``).
+        if fragment_includes(target, lexed):
+            if template is None:
+                template = _is_template(document, None, lexed)
+            if template:
+                continue
+        return True
     return False
 
 
@@ -1428,6 +1437,7 @@ def _pass(
         mode = _UNREADABLE_FRONTMATTER
     result = _Recorder(
         suppress=mode.suppress, fragment=mode.fragment, places=[] if combined is not None else None,
+        unsettleable=[] if combined is not None else None,
         keep=HOST_ONLY if host_only else None,
     )
     full = not host_only  # (the checks that make no rule of HOST_ONLY run only in a full pass)
@@ -2414,7 +2424,7 @@ def _pass(
                     # Whatever the host holds, a reference with no target is wrong.
                     result.error(
                         "ref-broken" if name == "ref" else "term-undefined",
-                        f"'{directive.source}' has no target.", line=line,
+                        f"'{directive.source}' has no target.", line=line, unsettleable=True,
                     )
                 elif name == "ref":
                     ref_targets.append((value, line))
@@ -2558,6 +2568,7 @@ def _pass(
                 result.error(
                     "ref-broken", f"Broken section reference: '{target}'.", line=line,
                     depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
+                    unsettleable=not IDENTIFIER_RE.fullmatch(target),
                 )
         for target, line in term_targets:
             result.used_terms.add(target)
@@ -2569,6 +2580,7 @@ def _pass(
                             f"Undefined term reference: '{target}' (not found in "
                             f"amendment or imported original).", line=line,
                             depends=Depends.FRONTMATTER,  # `amends` is the frontmatter's
+                            unsettleable=not IDENTIFIER_RE.fullmatch(target),  # (a term is defined by an id, §7.2)
                         )
                     else:
                         # Original unavailable or not LegalDown source:
@@ -2579,12 +2591,14 @@ def _pass(
                             f"amendment; the original document is not available "
                             f"to verify it.", line=line,
                             depends=Depends.FRONTMATTER,
+                            unsettleable=not IDENTIFIER_RE.fullmatch(target),
                         )
                 else:
                     # As for ref-broken: a term is defined by an id (§7.2).
                     result.error(
                         "term-undefined", f"Undefined term reference: '{target}'.", line=line,
                         depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
+                        unsettleable=not IDENTIFIER_RE.fullmatch(target),
                     )
 
     _check_blank_codes(blanks, result)
@@ -2789,6 +2803,8 @@ def _pass(
                 "attachment-unreferenced",
                 f"Attachment '{att_id}' is declared but never referenced via {{{{attach:}}}}.",
                 line=where.key("attachments", index),
+                # (An id that is no identifier is one no {{attach:}} names: attach-undeclared.)
+                unsettleable=not IDENTIFIER_RE.fullmatch(att_id),
             )
 
     # Warn about declared but never-referenced definitions (§7). May
@@ -2828,6 +2844,10 @@ def _pass(
             document_root, combined=included.combined,
         )
         assert whole.places is not None and len(whole.places) == len(whole.diagnostics)
+        assert whole.unsettleable is not None and len(whole.unsettleable) == len(whole.diagnostics)
+        included.combined.unsettleable = {
+            number for number, unsettleable in enumerate(whole.unsettleable) if unsettleable
+        }
         result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, whole.places, included.combined)
         result.combined = not included.combined.partial
         result.spliced = True

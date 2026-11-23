@@ -292,6 +292,9 @@ class _Recorder(ValidationResult):
     #: one in the combined document (``Spot.instance``), else None. Kept only by the recorder of the combined
     #: pass, which is given a list (``merge_diagnostics`` reads it); None for any other.
     places: list[int | None] | None = field(default=None, repr=False, compare=False)
+    #: Of each diagnostic (the same order, kept with *places*), whether it is final whatever else the document holds:
+    #: a reference with no target, or one that is no identifier, which no declaration anywhere can settle (#141).
+    unsettleable: list[bool] | None = field(default=None, repr=False, compare=False)
     #: The rules recorded, when not all are: the others are dropped before their line is looked for (the pass over
     #: a document that is validated combined too keeps only ``combined.HOST_ONLY``, #141). None: every rule.
     keep: frozenset[str] | None = field(default=None, repr=False, compare=False)
@@ -309,12 +312,15 @@ class _Recorder(ValidationResult):
             self._lines.pop()
 
     def _record(
-        self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = ""
+        self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = "",
+        unsettleable: bool = False,
     ) -> None:
         found, place = self._diagnostic(rule, level, message, line, depends, file)
         self.diagnostics.extend(found)
         if self.places is not None:
             self.places.extend([place] * len(found))
+        if self.unsettleable is not None:
+            self.unsettleable.extend([unsettleable] * len(found))
 
     def _diagnostic(
         self, rule: str, level: str, message: str, line: Line, depends: Depends | None, file: str = "",
@@ -339,13 +345,15 @@ class _Recorder(ValidationResult):
         return [found], place
 
     def error(
-        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
+        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = "",
+        unsettleable: bool = False,
     ) -> None:
         """Record an Error-level diagnostic under stable rule id *rule*, at
         *line* (``at``); *depends* is what it needs from outside the document;
         *file* is the file it is in when that is not the document's own (a
-        fragment the document includes, #35)."""
-        self._record(rule, "error", message, line, depends, file)
+        fragment the document includes, #35); *unsettleable*: nothing the document could hold
+        elsewhere settles it (``_Recorder.unsettleable``)."""
+        self._record(rule, "error", message, line, depends, file, unsettleable)
 
     def error_at(self, position: int, rule: str, message: str, *, line: Line = None) -> None:
         """Record an Error-level diagnostic as ``error`` does, but at *position* among the
@@ -358,24 +366,28 @@ class _Recorder(ValidationResult):
         self.diagnostics[position:position] = found
         if self.places is not None:
             self.places[position:position] = [place] * len(found)
+        if self.unsettleable is not None:
+            self.unsettleable[position:position] = [False] * len(found)
 
     def warning(
-        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
+        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = "",
+        unsettleable: bool = False,
     ) -> None:
         """Record a Warning-level diagnostic under stable rule id *rule*, at
         *line* (``at``); *depends* is what it needs from outside the document;
         *file* is the file it is in when that is not the document's own (a
         fragment the document includes, #35)."""
-        self._record(rule, "warning", message, line, depends, file)
+        self._record(rule, "warning", message, line, depends, file, unsettleable)
 
     def info(
-        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = ""
+        self, rule: str, message: str, *, line: Line = None, depends: Depends | None = None, file: str = "",
+        unsettleable: bool = False,
     ) -> None:
         """Record an Info-level diagnostic under stable rule id *rule*, at
         *line* (``at``); *depends* is what it needs from outside the document;
         *file* is the file it is in when that is not the document's own (a
         fragment the document includes, #35)."""
-        self._record(rule, "info", message, line, depends, file)
+        self._record(rule, "info", message, line, depends, file, unsettleable)
 
     def result(self) -> ValidationResult:
         """What was recorded, as the plain ``ValidationResult``."""

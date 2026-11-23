@@ -855,6 +855,7 @@ class _Walk:
         self.attached: list[tuple[int, FragmentFile, Plan]] = []
         self._attached = [0, 0]
         self._measured: list[int] | None = None  # what an attachment file's includes bring in, while they are followed
+        self._counted: set[str] = set()  # the attachment files whose include paragraphs are counted (``attach``)
         self._attaching = False  # the includes followed are an attachment file's (``attach``): its chain has no document
         self._full = False  # the budget of the attachment files is spent
         #: Of each file read that is not a fragment, where the include that first named it is (``Combined.met_at``).
@@ -914,7 +915,9 @@ class _Walk:
             return None
         relative, problem = self._files.locate("" if owner is None else posixpath.dirname(owner.path), include.written)
         if relative is None:
-            what = "an include" if owner is None else "an include in a fragment"
+            # (Worded as ``FileReferences`` words the path of an include, which the combined pass judges again: one
+            # finding reads the same whether or not a combined document is made, #141.)
+            what = "{{include:}}"
             if problem == "not-relative":
                 refuse(
                     "path-not-relative",
@@ -1068,9 +1071,13 @@ class _Walk:
                 real.diagnostics.extend(found)
                 self._measured = None
                 self._attaching = False
-            if fresh:  # (counted apart from those of the fragments, for the Warning of §17.5)
+            # Counted once for each attachment file, apart from those of the fragments (for the Warning of §17.5); a file
+            # the body includes too has its includes counted there as well, as they are in both (#141).
+            if fragment.path not in self._counted:
+                self._counted.add(fragment.path)
                 own = sum(len(each) for each in self._includes[fragment.path].values())
-                self._outcome.nested -= own
+                if fresh:
+                    self._outcome.nested -= own
                 self._outcome.attached_includes += own
                 if self._outcome.attached_includes_entry is None:
                     self._outcome.attached_includes_entry = index

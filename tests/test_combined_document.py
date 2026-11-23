@@ -762,6 +762,70 @@ def test_an_attachment_file_left_out_for_what_its_includes_bring_in_keeps_its_in
     assert not [d for d in result.diagnostics if d.rule == SKIPPED_RULE and "include in LegalDown" in d.message]
 
 
+def test_a_partial_combined_document_does_not_say_what_nothing_could_settle_may_be_settled():
+    # #141: a reference with no target, or a target that is no identifier, names nothing anywhere (§5.2, §6.2,
+    # §7.2): what was not followed cannot settle it, and the finding does not say it might.
+    text = _attached(("Bad Id", "x.pdf"), ("good", "y.pdf")) + _SCOPE + (
+        "See {{ref:}} {{ref: Not An Id}} {{ref: nope}}, {{term:}} {{term: Not Id}} {{term: none}}.\n\n"
+        "{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
+    )
+    result = _run(text, {"part.lgd": "## Part\n\nText.\n"})
+    marked = {
+        (d.rule, d.message.removesuffix(NOT_IN_IT).split("'")[1] if "'" in d.message else ""): d.message.endswith(NOT_IN_IT)
+        for d in result.diagnostics if d.rule in SETTLED_ELSEWHERE
+    }
+    assert marked == {
+        ("ref-broken", "{{ref:}}"): False, ("ref-broken", "Not An Id"): False, ("ref-broken", "nope"): True,
+        ("term-undefined", "{{term:}}"): False, ("term-undefined", "Not Id"): False, ("term-undefined", "none"): True,
+        ("attachment-unreferenced", "Bad Id"): False, ("attachment-unreferenced", "good"): True,
+    }
+    # ... and so for an amendment's terms, defined by an id as any other (§7.2).
+    amends = _FRONT.replace("---\n\n", "amends:\n  title: Original\n  file: orig.lgd\n---\n\n") + _SCOPE + (
+        "The {{term: Not Id}} and {{term: none}}.\n\n{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
+    )
+    files = {"part.lgd": "## Part\n\nText.\n", "orig.lgd": _FRONT + '# O\n\n"Fee" {{def: fee}} due.\n'}
+    found = {
+        d.message.split("'")[1]: d.message.endswith(NOT_IN_IT)
+        for d in _run(amends, files).diagnostics if d.rule == "amend-term-undefined"
+    }
+    assert found == {"Not Id": False, "none": True}
+
+
+def test_a_path_rule_on_an_include_of_a_fragment_reads_the_same_whether_or_not_a_document_is_combined(monkeypatch):
+    text = _FRONT + _SCOPE + "{{include: sub/a.lgd}}\n\n{{include: big.lgd}}\n"
+    files = {"sub/a.lgd": "## A\n\n{{include: /abs/b.lgd}}\n", "big.lgd": "## Big\n\n" + "Text.\n\n" * 10}
+
+    def said():
+        return [(d.file, d.line, d.message) for d in _run(text, files).diagnostics if d.rule == "path-not-relative"]
+
+    combined = said()
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 5)  # past it, no combined document
+    assert said() == combined and len(combined) == 1
+    assert "('/abs/b.lgd' ({{include:}}) is not relative" in "(" + combined[0][2].split("reference ", 1)[1]
+
+
+def test_the_includes_of_an_attachment_file_the_body_includes_too_are_counted_as_an_attachment_files():
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}}.\n\n{{include: s.lgd}}\n"
+    result = _run(text, {"s.lgd": "## S\n\n{{include: gone.lgd}}\n"})
+    message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "paragraph" in d.message)
+    assert "1 include in LegalDown attachment files" in message
+    assert "1 include in the fragments they take in" in message  # (it is in an include of the body too)
+
+
+def test_a_template_whose_only_attachment_file_holds_includes_is_validated_once(monkeypatch):
+    calls = []
+    real = core._pass
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("host_only", False))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(core, "_pass", spy)
+    text = _attached(("s", "s.lgd"), front=_TEMPLATE_FRONT) + _SCOPE + "Maybe. {when=x}\n\nSee {{attach: s}}.\n"
+    _run(text, {"s.lgd": "## S\n\n{{include: deep.lgd}}\n", "deep.lgd": "## Deep\n"})
+    assert calls == [False]
+
+
 def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
     text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: gone.lgd}}\n"
     result = _run(text, {"a.lgd": "## A {#a when=x}\n\nText.\n"})

@@ -1190,7 +1190,9 @@ Decisions the specification leaves open:
     `attachment-unreferenced`, and `condition-reference-unsafe`, which an unconditional declaration there would
     cover: `combined.SETTLED_ELSEWHERE`) is made, as the document's own pass made it of every
     part before, and its message ends "The combined document was checked without the fragments of the includes that
-    were not followed, which may settle this; §17.5."; `question-unused` is not made, as before; a duplicate, a
+    were not followed, which may settle this; §17.5." (not one that nothing could settle: a `{{ref:}}` or `{{term:}}`
+    with no target, a target or an amendment's term that is no identifier, an attachment id that is none, since a
+    section, a definition and an `{{attach:}}` are named by an identifier, §5.2, §7.2); `question-unused` is not made, as before; a duplicate, a
     collision, a circle or a use before a declaration among the parts that were read is real whatever the others
     hold, and is reported as it is. `ValidationResult` is not marked combined, so `Template.problems` keeps
     `condition-reference-unsafe` as advice. The Warning of §17.5 names "the combined-document checks (§16.11) for what
@@ -1209,7 +1211,11 @@ Decisions the specification leaves open:
     records only them (a finding of another rule is dropped before its line is looked for) and skips the checks that
     make nothing else (`condition-never-true`, `definition-circular`, `definition-used-before-declaration`,
     `condition-reference-unsafe`, `question-unused`, `raw-html`); should no combined document be made after all (past
-    the size cap, say), the document is validated again in full, from the files already read (#141). The rest of the
+    the size cap, say), the document is validated again in full, from the files already read (#141). The prediction
+    leaves out an attachment file with include paragraphs in a template, which is not spliced. It does not foresee the
+    size cap: the size is known only once every include, nested ones too, has been walked, which the pass does after
+    the checks it skips; reusing a host-only pass would mean running those checks afterwards with their findings put
+    back in the order of the document, so a document past the cap still costs two passes. The rest of the
     pass is kept: it builds `ValidationResult.index` and what the `include-*` rules, `heading-skip` and the Warning
     need. The units and markers of the document are not reused, since the combined structure reads them differently.
     On a document of 1,500 sections with one small include the validation went from 1.6 to 1.2 times the cost of the
