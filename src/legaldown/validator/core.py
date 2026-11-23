@@ -2313,7 +2313,14 @@ def _pass(
         for directive in named(field_value, "placeholder"):
             field_line = where.key(*field_path)
             if fm_scalar is None:
-                fm_scalar = where.frontmatter_scalars().get(field_path) or FrontmatterScalar('"', 0, 0)
+                # Without the source (a document built in code) nothing tells how a value is written: as §3.10
+                # asks. With it, a value whose written scalar is not at its path (keys the model reads stripped
+                # alike, one merged in) is none that assembly fills: no blank. The written scalar, which no field
+                # reaches, is ldv-frontmatter-placeholder-unread's, below, once (#12).
+                fm_scalar = where.frontmatter_scalars().get(field_path) or (
+                    FrontmatterScalar('"', 0, 0) if where.frontmatter_text() is None
+                    else FrontmatterScalar("", 0, 0, unread=True)
+                )
                 if fm_scalar.split:
                     # §11.5: a directive does not span lines. YAML folds the quoted value onto one, but it is
                     # written on two, where assembly reads it (and refuses it, as malformed).
@@ -2323,6 +2330,8 @@ def _pass(
                         "may not be (§11.5), though YAML folds the value onto one line: write it on one line.",
                         line=field_line,
                     )
+            if fm_scalar.unread:
+                continue
             if not fm_scalar.quote:
                 result.error(
                     FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
@@ -2347,13 +2356,18 @@ def _pass(
     # field_types are structural, placeholder-in-structural-field's.)
     if (fm_text := where.frontmatter_text()) is not None and "{{placeholder" in fm_text:
         fields = {path for _value, path in value_fields} | {path for _label, _value, path in structural_fields}
-        for fm_path, fm_at in frontmatter_placeholders(fm_text):
-            if fm_path in fields or fm_path[:1] in (("questions",), ("translations",), ("field_types",)):
+        for fm_paths, fm_at in frontmatter_placeholders(fm_text):
+            # A written scalar any field reaches (through an alias or a merge too) is that field's.
+            if any(
+                fm_path in fields or fm_path[:1] in (("questions",), ("translations",), ("field_types",))
+                for fm_path in fm_paths
+            ):
                 continue
             result.warning(
                 FRONTMATTER_PLACEHOLDER_UNREAD_RULE,
-                "A {{placeholder:}} here is in no field of the frontmatter the model reads (§3.10 lets one stand "
-                "in a value field only): it is no blank, and assembly leaves it as written.",
+                "A {{placeholder:}} here is in no field of the frontmatter the model reads as it is written "
+                "(§3.10 lets one stand in a value field only; a key that others of its mapping read as the same "
+                "is not told apart): it is no blank, and assembly leaves it as written.",
                 line=where.frontmatter_line(fm_at),
             )
     # An alias to an anchor that assembly removes (§15.7.2: the questions, an attachment's when, an attachment

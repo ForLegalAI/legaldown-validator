@@ -329,3 +329,62 @@ def test_a_placeholder_closed_on_its_own_line_is_not_said_to_cross_one():
     text = _source('title: "Lease {{placeholder: q, type=text\\x7d} and\n  more"\n', _Q)
     messages = [d.message for d in validate(parse(text)).diagnostics if d.rule == "directive-malformed"]
     assert not any("across a line break" in message for message in messages)
+
+
+# ── Aliases, merges and keys the model reads stripped: one written scalar, one verdict ───────────────────────
+
+_PARTY = "legal_name: Acme\n"
+
+
+def _with_party(fields: str, party: str) -> str:
+    """A document with *fields* before the sides, and *party* (indented lines) added to the first party."""
+    return _source(fields).replace(_PARTY, _PARTY + party, 1)
+
+
+#: Each a document holding one written placeholder, and whether it is a blank: reached by a value field, through
+#: an alias or a merge too.
+_SHARED = [
+    (_source('defaults: &d "{{placeholder: q}}"\ntitle: *d\n'), True),
+    (_source('defaults: &d "{{placeholder: q}}"\ntitle: T\nsubtitle: *d\nversion: *d\n'), True),
+    (_with_party('pbase: &pb {" Reg": "{{placeholder: q}}"}\ntitle: T\n', "        <<: *pb\n"), True),
+    (_with_party('pbase: &pb {"Reg": "{{placeholder: q}}"}\ntitle: T\n', "        <<: *pb\n"), True),
+    (_with_party('pbase: &pb {" Reg": "{{placeholder: q}}"}\ntitle: T\n', '        <<: *pb\n        "Reg ": other\n'), None),
+    (_with_party('title: T\n', '        " Reg": "{{placeholder: q}}"\n        "Reg ": "other {{placeholder: q}}"\n'), None),
+    (_source('defaults: &d "{{placeholder: q}}"\ntitle: T\n'), False),
+]
+
+
+def _left_in_frontmatter(output: str) -> bool:
+    return "{{placeholder" in output.split("---\n")[1]
+
+
+def test_an_alias_or_a_merge_makes_one_written_scalar_a_blank_for_both():
+    for text, expected in _SHARED:
+        final = validate(parse(text), final=True)
+        blank = any(d.rule == "placeholder-unfilled" for d in final.diagnostics)
+        template = Template(text)
+        filled = not _left_in_frontmatter(template.form({"q": "Main St"}).assemble().output)
+        assert blank == filled, text
+        if expected is not None:
+            assert blank is expected, text
+
+
+def test_a_scalar_a_value_field_reaches_is_not_unread_and_one_is_reported_once():
+    for text, expected in _SHARED:
+        lines = [d.line for d in validate(parse(text)).diagnostics if d.rule == UNREAD_RULE]
+        assert len(lines) == len(set(lines)), text  # once for each written scalar
+        if expected:
+            assert lines == [], text
+    shared = _source('defaults: &d "{{placeholder: q}}"\nkeywords: [*d, *d]\ntitle: T\n')
+    assert [d.line for d in validate(parse(shared)).diagnostics if d.rule == UNREAD_RULE] == [2]
+
+
+def test_a_value_the_model_reads_from_no_written_scalar_is_no_blank_and_is_reported():
+    # The model reads the custom field 'Reg' from a key it strips; which written value it is, is not told.
+    text = _with_party('pbase: &pb {" Reg": "{{placeholder: q}}"}\ntitle: T\n', '        <<: *pb\n        "Reg ": other\n')
+    document = parse(text)
+    values = [cf.value for side in document.metadata.sides for party in side.parties for cf in party.custom_fields]
+    assert any("{{placeholder" in value for value in values)  # (the model reads it)
+    final = validate(document, final=True)
+    assert "placeholder-unfilled" not in final.rules()
+    assert [d.line for d in final.diagnostics if d.rule == UNREAD_RULE] == [2]  # once, where it is written
