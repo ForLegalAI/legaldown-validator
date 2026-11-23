@@ -282,6 +282,11 @@ def test_a_path_refused_on_its_own_is_not_an_attachment_left_uncompared():
     )
     skipped = [d.message for d in validate(parse(text), resolve=files.get).diagnostics if d.rule == "ldv-check-skipped"]
     assert not any(RULE in message for message in skipped)
+    # Nor one that leaves the root (path-outside-root), as for an include.
+    document = replace(parse(text.replace("https://example.com/a.lgd", "../../x.lgd")), path=Path("/r/doc/t.lgd"))
+    result = validate(document, resolve=files.get, document_root="/r")
+    assert "path-outside-root" in {d.rule for d in result.diagnostics}
+    assert not any(RULE in d.message for d in result.diagnostics if d.rule == "ldv-check-skipped")
 
 
 # ── Validation and assembly ask the same of the same paths ─────────────────────

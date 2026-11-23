@@ -213,9 +213,11 @@ class _FileLoader:
         """The file read for *relative*: its real path, symbolic links followed, whether or not it is there;
         None when no file is read for it (it is absolute, or leads out of the directory or the root). Not its
         device and inode: a hard link is another name a person gave the file (a checkout that links files
-        alike, say), and some mounts give two files one inode, whose texts are not one."""
+        alike, say), and some mounts give two files one inode, whose texts are not one. In the case the system
+        compares paths by (``os.path.normcase``): on Windows two names that differ in case are one file, there
+        or not; elsewhere the case is as written, and not looked up (a macOS volume that ignores case too)."""
         target = within(self._directory, relative, self._boundary)
-        return None if target is None else str(target)
+        return None if target is None else os.path.normcase(str(target))
 
 
 def loader_identity(load_file: LoadFile, relative: str) -> str | None:

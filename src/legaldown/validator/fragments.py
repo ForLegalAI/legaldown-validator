@@ -1196,8 +1196,8 @@ def check_includes(
         for index, _attachment, written in entries:
             relative, problem = files.relative_check(written)
             if relative is None:
-                # Not compared: valid, and not read without a root that holds it (any other path is refused).
-                uncompared += problem == "leads-out"
+                # Not compared: valid, and not read without a root (any other path is refused, leaving a root too).
+                uncompared += problem == "leads-out" and files.root is None
             elif files.is_own(relative):
                 continue
             if relative is not None and (named := files.respelled(relative)) is not None:

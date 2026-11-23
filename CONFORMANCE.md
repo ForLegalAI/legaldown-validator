@@ -1038,7 +1038,10 @@ Decisions the specification leaves open:
   paths joined to the document's directory and normalized (`./a.lgd`, `sub/../a.lgd` and, from a document
   in `dir`, `../dir/a.lgd`), with no link followed. A hard link, and another case of a name on a file system
   that ignores case, are other files (not the device and inode: a hard link is a name someone gave a file, as a
-  checkout that links files alike does, and some mounts give two files one inode). A file is read once, judged once, and named in a finding by the path it was first met by, in
+  checkout that links files alike does, and some mounts give two files one inode), except on Windows, where the
+  path is compared in the case the system compares it by (`os.path.normcase`). A fragment reached through a
+  linked directory and one reached directly name the files beside them by two paths too, and are judged so. A
+  file is read once, judged once, and named in a finding by the path it was first met by, in
   the order the validator reads them (the includes, each followed as it is met, then the attachment files).
   **`ldv-file-spelling-duplicate`** ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123)), an
   Error, reports a second path to a file already named, by an include (the document's or, outside a template,
