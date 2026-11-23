@@ -1155,7 +1155,9 @@ def _definitions(output: str) -> tuple[tuple[str, str, str], ...]:
 #: bare-marker check, which only advises the author, is not made there.
 SKIP_BARE_MARKERS: ContextVar[bool] = ContextVar("skip_bare_markers", default=False)
 #: The most lines that the bare-marker check reads in one validation, the document and its fragments together (each
-#: line it may leave bare is read in a window of the blocks around it, twice). Past it, every such line is reported.
+#: line it may leave bare is read in a window of the blocks around it: the template's reading of the window once,
+#: and for the line up to three more, charged before it is read). Past it, the first line not read is reported for
+#: the rest.
 BARE_BUDGET = 100000
 _BARE_ADVICE = (
     "give the line text that every answer keeps, or make what holds it conditional ({when=...}), so that it goes whole"
@@ -1314,7 +1316,8 @@ def _read_bare(
         begin = units[at - 1][0] if at > 0 else 0
         end = units[at + 1][1] if at + 1 < len(units) else len(plains)
         end = max(end, number + 1)
-        cost = (end - begin) * (1 + ((begin, end) not in readings))
+        # The window emptied, and, after a deleted line, the template's frame of the next and the window escaped.
+        cost = (end - begin) * (3 + ((begin, end) not in readings))
         if budget[0] < cost:
             # The rest are not read: the first is reported, for all of them (a Warning for each says no more).
             budget[0] = 0
@@ -1366,9 +1369,9 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
     changed = window[:at] + ([] if deleted else [emptied]) + window[at + 1:]
     begun, containers = read
     begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
-    if deleted and at < len(changed) and begun[at + 1] != begun_after[at]:
-        # The line after a deleted one has the line-start check (``assembly._Line.after``): what it begins that the
-        # template line does not, the assembler escapes, after its container markers and the indentation it keeps,
+    if deleted and at < len(changed) and begun_after[at] - begun[at + 1]:
+        # The line after a deleted one has the line-start check (``assembly._Line.after``): when it begins what the
+        # template line does not (``assembly._kept``), the assembler escapes it, after its container markers and the indentation it keeps,
         # up to the content column of the items the template line is in (``assembly._Frame.keep``, as ``_fix``).
         frame = assembly._Reading(window, []).frame(at + 1)
         line = changed[at]

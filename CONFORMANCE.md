@@ -1583,7 +1583,8 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   line is read with its own choices empty and every other insertion a word, in all of its conditional units, in the
   blocks around it (the one before, its own, the one after: a list by its items, a quote by the blocks of its
   content), so that the cost is linear in the lines; a line in a drafting note or a table is none. At most
-  `hazards.BARE_BUDGET` lines are read in one validation; past it, the first line not read is reported once, for
+  `hazards.BARE_BUDGET` lines are read in one validation (each line charged for every reading it may need before it
+  is read); past it, the first line not read is reported once, for
   itself and the rest. Two such lines empty at once, and a unit removed beside one, are not read together. The
   insertion-boundary Error is not used: the specification has no rule these break, the assembler does what it says.
 - Removing a drafting note or unit can join what it separated: indented code after a removed note

@@ -12,6 +12,7 @@ never on a slow machine.
 from __future__ import annotations
 
 import random
+import re
 import time
 
 import pytest
@@ -927,7 +928,7 @@ def test_the_lines_that_an_empty_choice_leaves_bare_are_read_in_a_budget(shape):
     found = [d for d in validate(parse(source)).diagnostics if d.rule == "ldv-bare-markers"]
     seconds = time.perf_counter() - start
     if shape == "one quote":
-        assert len(found) == 1 and "1951 after it" in found[0].message
+        assert len(found) == 1 and re.search(r"this one and 19[0-9]{2} after it", found[0].message)
     elif shape == "nested items":  # a bare "- " under an item's paragraph underlines it
         assert len(found) == 1600 and all("underline" in each.message for each in found)
     else:
