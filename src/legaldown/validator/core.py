@@ -38,7 +38,7 @@ from ..markdown import (
     strip_comments,
 )
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
-from ..positions import STRIPPED_MAPS, Locator
+from ..positions import STRIPPED_MAPS, FrontmatterScalar, Locator, frontmatter_aliases, frontmatter_removed
 from ..specification import SPEC_VERSION, parse_version
 from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
@@ -78,6 +78,7 @@ from .paths import FileReferences, ReferenceImages, check_fragment_images, check
 from .patterns import (
     _CONSTRUCT_PRESENT,
     _UNFILLED,
+    ALIAS_REMOVED_RULE,
     DURATION_UNITS,
     FRONTMATTER_KEY_DUPLICATE_RULE,
     FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
@@ -980,6 +981,12 @@ def _check_never_true(
                 f"contradicts those of the sections and list items enclosing it (§15.4).",
                 line=where.find(found.section, found.block, found.source, found.fragment, found.offset),
             )
+
+
+def frontmatter_value_paths(document: Document) -> frozenset[tuple[Any, ...]]:
+    """The paths (as ``positions.SourceMap.key`` takes them) of the frontmatter's value fields, where §3.10 lets a
+    placeholder stand: assembly fills one there, written as a quoted string, and nowhere else (#12)."""
+    return frozenset(path for _value, path in _frontmatter_fields(document.metadata, Locator(document))[1])
 
 
 def is_template(document: Document) -> bool:
@@ -2221,28 +2228,57 @@ def _check(
     # below. (A {{choose:}} where it is not recognized is still a template construct for the final check: it
     # makes the document a template wherever it is, §15.1.)
     placeholders: list[tuple[Directive, Line]] = []
-    unquoted: frozenset[tuple[Any, ...]] | None = None  # read once a value field holds a placeholder
     #: Of each question named only where §11.4 recognizes no directive, why, for question-unused.
     unrecognized: dict[str, str] = {}
     for field_value, field_path in value_fields:
+        fm_scalar = None  # how the value is written (positions.FrontmatterScalar), once it holds a placeholder
         for directive in named(field_value, "placeholder"):
             field_line = where.key(*field_path)
-            unquoted = where.unquoted_values() if unquoted is None else unquoted
-            if field_path in unquoted:
+            if fm_scalar is None:
+                fm_scalar = where.frontmatter_scalars().get(field_path) or FrontmatterScalar('"', 0, 0)
+                if fm_scalar.split:
+                    # §11.5: a directive does not span lines. YAML folds the quoted value onto one, but it is
+                    # written on two, where assembly reads it (and refuses it, as malformed).
+                    result.error(
+                        "directive-malformed",
+                        "A {{placeholder:}} in this value is written across a line break, which a directive "
+                        "may not be (§11.5), though YAML folds the value onto one line: write it on one line.",
+                        line=field_line,
+                    )
+            if not fm_scalar.quote:
                 result.error(
                     FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
                     f"'{directive.source}' is not in a quoted YAML string, which a placeholder in frontmatter "
-                    f"must be (§3.10): it is no blank, and assembly leaves it as written. Quote the value "
+                    f"must be (§3.10): it is no blank, and assembly leaves it as fm_scalar. Quote the value "
                     f"(\"...\").",
                     line=field_line,
                 )
+            if not fm_scalar.quote or fm_scalar.split:
                 if directive.positional:
-                    unrecognized.setdefault(directive.positional, "a frontmatter value not written as a quoted string (§3.10)")
-            else:
-                placeholders.append((directive, field_line))
-            # (Its type is checked all the same: assembly reads it for the blank's type, though it does not fill it.)
+                    unrecognized.setdefault(
+                        directive.positional,
+                        "a frontmatter value not written as a quoted string (§3.10)" if not fm_scalar.quote
+                        else "a frontmatter placeholder written across a line break (§11.5)",
+                    )
+                continue
+            placeholders.append((directive, field_line))
             with result.at(field_line):
                 _check_placeholder(directive, result, blanks, questions, in_frontmatter=True, line=field_line)
+    # An alias to an anchor that assembly removes (§15.7.2: the questions, an attachment's when, an attachment
+    # whose condition is false) would name nothing in the assembled frontmatter: refused, at the alias (#12).
+    if template and (fm_text := where.frontmatter_text()) is not None and "*" in fm_text:
+        fm_removed = frontmatter_removed(fm_text)
+        for fm_alias, fm_anchor in frontmatter_aliases(fm_text):
+            if any(start <= fm_alias < end for start, end, always in fm_removed if always):
+                continue  # removed itself
+            if any(start <= fm_anchor < end and not start <= fm_alias < end for start, end, _always in fm_removed):
+                result.error(
+                    ALIAS_REMOVED_RULE,
+                    "This alias names an anchor that assembly removes (in 'questions', an attachment's 'when', "
+                    "or an attachment whose condition can be false, §15.7.2), so the assembled frontmatter "
+                    "could not be read: write the value here, or the anchor where it stays.",
+                    line=where.frontmatter_line(fm_alias),
+                )
     for _label, field_value, _path in structural_fields:
         for directive in named(field_value, "placeholder"):
             if directive.positional:

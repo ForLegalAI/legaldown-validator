@@ -125,6 +125,117 @@ def quoted_scalars(text: str) -> list[tuple[int, int, str]]:
         return []
 
 
+@dataclass(frozen=True, slots=True)
+class FrontmatterScalar:
+    """A frontmatter scalar that holds ``{{``: its *quote* (``"`` or ``'``; ``""`` for a plain or block
+    scalar, where §3.10 recognizes no placeholder), and, quoted, the offsets ``[start, end)`` of its quoted
+    string in the frontmatter's text, from its opening quote, past an anchor or a tag, through its closing one.
+    *split*: a ``{{placeholder:`` in it is written across a line break, which §11.5 does not allow: the
+    lexer reads it malformed on its line, whatever YAML folds the value to."""
+    quote: str
+    start: int
+    end: int
+    split: bool = False
+
+
+def frontmatter_scalars(text: str) -> dict[tuple[Any, ...], FrontmatterScalar]:
+    """The scalars of the frontmatter's YAML *text* that hold ``{{``, by their path as ``frontmatter_keys``
+    gives it (a sequence's mappings only, merged keys at the path, the mapping's own after them): the scalar
+    the model reads there. An alias is at its own path, with the scalar of its anchor, where it is written.
+    Empty when *text* cannot be read."""
+    from .directives import lex  # the lexer is a leaf module; imported here as the parser's are
+
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, ValueError, KeyError, RecursionError):  # (as the parser reads it)
+        return {}
+    spans = {end: (start, quote) for start, end, quote in quoted_scalars(text)}
+    found: dict[tuple[Any, ...], FrontmatterScalar] = {}
+
+    def scalar(node: yaml.ScalarNode) -> FrontmatterScalar:
+        start, quote = spans.get(node.end_mark.index, (node.start_mark.index, ""))
+        if node.style not in ('"', "'"):
+            return FrontmatterScalar("", node.start_mark.index, node.end_mark.index)
+        rows = text[start:node.end_mark.index].split("\n")
+        split = any(
+            d.name == "placeholder" and d.malformed for row in rows[:-1] for d in lex(row).directives
+        )
+        return FrontmatterScalar(quote, start, node.end_mark.index, split)
+
+    def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
+        if id(node) in seen:
+            return
+        seen = seen | {id(node)}
+        if isinstance(node, yaml.ScalarNode):
+            if "{{" in node.value:
+                found[path] = scalar(node)  # the last written is the model's
+            else:
+                found.pop(path, None)
+        elif isinstance(node, yaml.MappingNode):
+            def merge(key: yaml.Node) -> bool:
+                return isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge"
+
+            for key, value in node.value:  # the keys merged in first (``yaml.SafeLoader.flatten_mapping``)
+                if merge(key):
+                    for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
+                        walk(source, path, seen)
+            for key, value in node.value:
+                if isinstance(key, yaml.ScalarNode) and not merge(key):
+                    walk(value, (*path, key.value), seen)
+        elif isinstance(node, yaml.SequenceNode):
+            entries = [entry for entry in node.value if isinstance(entry, yaml.MappingNode)]
+            for index, entry in enumerate(entries):
+                walk(entry, (*path, index), seen)
+
+    if root is not None:
+        walk(root, (), frozenset())
+    return found
+
+
+def frontmatter_aliases(text: str) -> list[tuple[int, int]]:
+    """Each alias of the frontmatter's YAML *text* and the anchor it names (the last one before it): the
+    offsets ``(alias, anchor)`` in *text* where they are written. Empty when *text* cannot be read."""
+    found: list[tuple[int, int]] = []
+    anchors: dict[str, int] = {}
+    try:
+        for event in yaml.parse(text, Loader=yaml.SafeLoader):
+            if isinstance(event, yaml.AliasEvent):
+                if event.anchor in anchors:
+                    found.append((event.start_mark.index, anchors[event.anchor]))
+            elif getattr(event, "anchor", None):
+                anchors[event.anchor] = event.start_mark.index
+    except (yaml.YAMLError, ValueError, KeyError, RecursionError):
+        return []
+    return found
+
+
+def frontmatter_removed(text: str) -> list[tuple[int, int, bool]]:
+    """What assembly may remove of the frontmatter's YAML *text* (§15.7.2), as offsets ``(start, end, always)``:
+    the ``questions`` entry and each attachment's ``when`` entry, always removed, and each attachment entry with
+    a ``when``, removed when it is false. Empty when *text* cannot be read, or is no mapping."""
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, ValueError, KeyError, RecursionError):
+        return []
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    found: list[tuple[int, int, bool]] = []
+    for key, value in root.value:
+        if not isinstance(key, yaml.ScalarNode):
+            continue
+        if key.value == "questions":
+            found.append((key.start_mark.index, value.end_mark.index, True))
+        elif key.value == "attachments" and isinstance(value, yaml.SequenceNode):
+            for entry in value.value:
+                if not isinstance(entry, yaml.MappingNode):
+                    continue
+                for entry_key, entry_value in entry.value:
+                    if isinstance(entry_key, yaml.ScalarNode) and entry_key.value == "when":
+                        found.append((entry.start_mark.index, entry.end_mark.index, False))
+                        found.append((entry_key.start_mark.index, entry_value.end_mark.index, True))
+    return found
+
+
 #: The frontmatter maps whose keys the model reads stripped (``models._parse_str_dict``), each with
 #: whether it skips an entry that is blank once stripped: two keys that strip alike are one entry (#126).
 STRIPPED_MAPS = {"translations": True, "field_types": False}
@@ -1054,7 +1165,7 @@ class Locator:
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
         # Per leaf, by its id, the marker candidates in its texts and in its lines (``_candidates_in``).
         self._marker_places: dict[int, _MarkerPlaces] = {}
-        self._unquoted: frozenset[tuple[Any, ...]] | None = None  # ``unquoted_values``, once asked
+        self._scalars: dict[tuple[Any, ...], FrontmatterScalar] | None = None  # ``frontmatter_scalars``, once
 
     def start(self) -> int | None:
         """The document's first line."""
@@ -1142,51 +1253,34 @@ class Locator:
     def block(self, section: int | None, index: int) -> int | None:
         return self._map.block(section, index) if self._map else None
 
+    def frontmatter_text(self) -> str | None:
+        """The frontmatter's YAML as written, between its ``---`` lines; None without a source map or
+        frontmatter. Its offsets are what ``frontmatter_scalars`` and ``frontmatter_aliases`` give, and
+        ``frontmatter_line`` tells their lines."""
+        if self._map is None or () not in self._map.keys:
+            return None
+        from .parser import FRONTMATTER_RE  # the parser builds on this module
+
+        written = FRONTMATTER_RE.match("\n".join(self._map.lines))
+        return (written.group(1) or "") if written else None
+
+    def frontmatter_line(self, index: int) -> int:
+        """The file line of offset *index* of ``frontmatter_text`` (its first line is the file's second)."""
+        text = self.frontmatter_text() or ""
+        return 2 + text.count("\n", 0, index)
+
+    def frontmatter_scalars(self) -> dict[tuple[Any, ...], FrontmatterScalar]:
+        """``frontmatter_scalars`` of the frontmatter, once; empty without one."""
+        if self._scalars is None:
+            text = self.frontmatter_text()
+            self._scalars = frontmatter_scalars(text) if text is not None else {}
+        return self._scalars
+
     def unquoted_values(self) -> frozenset[tuple[Any, ...]]:
         """The paths (as ``key`` takes them) of the frontmatter's string values that hold ``{{`` and are not
         written as a quoted YAML string: plain, literal (``|``) or folded (``>``), which §3.10 does not let hold
         a placeholder. Empty without a source map, or when the frontmatter cannot be read again."""
-        if self._unquoted is not None:
-            return self._unquoted
-        found: dict[tuple[Any, ...], bool] = {}
-        if self._map is not None and () in self._map.keys:
-            from .parser import FRONTMATTER_RE  # the parser builds on this module
-
-            written = FRONTMATTER_RE.match("\n".join(self._map.lines))
-            try:
-                root = yaml.compose(written.group(1) or "", Loader=yaml.SafeLoader) if written else None
-            except (yaml.YAMLError, ValueError, KeyError, RecursionError):  # (as the parser reads it)
-                root = None
-
-            def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
-                # As ``frontmatter_keys`` walks it: a sequence's mappings only, merged keys at the path.
-                if id(node) in seen:
-                    return
-                seen = seen | {id(node)}
-                if isinstance(node, yaml.ScalarNode):
-                    if "{{" in node.value:
-                        found[path] = node.style not in ('"', "'")  # the last written is the model's
-                elif isinstance(node, yaml.MappingNode):
-                    def merge(key: yaml.Node) -> bool:
-                        return isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge"
-
-                    # The keys merged in first: the mapping's own replace them (``yaml.SafeLoader.flatten_mapping``).
-                    for key, value in node.value:
-                        if merge(key):
-                            for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
-                                walk(source, path, seen)
-                    for key, value in node.value:
-                        if isinstance(key, yaml.ScalarNode) and not merge(key):
-                            walk(value, (*path, key.value), seen)
-                elif isinstance(node, yaml.SequenceNode):
-                    entries = [entry for entry in node.value if isinstance(entry, yaml.MappingNode)]
-                    for index, entry in enumerate(entries):
-                        walk(entry, (*path, index), seen)
-
-            if root is not None:
-                walk(root, (), frozenset())
-        self._unquoted = frozenset(path for path, unquoted in found.items() if unquoted)
-        return self._unquoted
+        return frozenset(path for path, scalar in self.frontmatter_scalars().items() if not scalar.quote)
 
     def underline(self, section: int) -> int | None:
         """The line of section *section*'s setext underline (its heading's last line, ``---`` or ``===``);

@@ -47,6 +47,9 @@ HEADING_DIRECTIVE_RULE = IMPLEMENTATION_RULE_PREFIX + "heading-directive"
 # And a {{placeholder:}} in a frontmatter value field that is not written as a quoted YAML string, which §3.10
 # requires: it is no blank, and assembly leaves it as written (an Error, #12).
 FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-placeholder-unquoted"
+# And an alias in a template's frontmatter to an anchor that assembly removes (the questions, an attachment's
+# when, an attachment whose condition can be false, §15.7.2), which would leave it naming nothing (an Error, #12).
+ALIAS_REMOVED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-alias-removed"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 

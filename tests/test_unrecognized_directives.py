@@ -5,7 +5,7 @@ reaches either (§15.7.3). (The heading's own cases are in ``test_hidden_constru
 from __future__ import annotations
 
 from legaldown import Template, parse, validate
-from legaldown.grammar import FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE, IMPLEMENTATION_RULE_PREFIX
+from legaldown.grammar import ALIAS_REMOVED_RULE, FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE, IMPLEMENTATION_RULE_PREFIX
 
 _SIDES = (
     "document_type: contract\nsides:\n"
@@ -113,10 +113,11 @@ def test_party_fields_are_judged_by_their_own_quotes_in_block_and_flow_style():
     assert "legal_name: \"Main St\"" in Template(flow).form({"q": "Main St"}).assemble().output
 
 
-def test_an_unquoted_placeholders_type_is_still_checked_against_the_blank():
-    # Assembly reads it for the blank's type, though it does not fill it.
+def test_an_unquoted_placeholder_gives_the_blank_no_type():
+    # It is no blank, for the validator and for assembly alike: the body's sets the type.
     text = _source("title: Lease {{placeholder:q, type=date}}\n", body="# A\n\nPay {{placeholder: q}}.\n")
-    assert "placeholder-type-inconsistent" in _rules(text)
+    assert "placeholder-type-inconsistent" not in _rules(text)
+    assert [(q.id, q.type) for q in Template(text).questions] == [("q", "text")]
 
 
 def test_a_question_a_quoted_frontmatter_choose_names_says_so():
@@ -199,3 +200,94 @@ def test_a_quote_in_a_filled_value_is_escaped_for_its_own_style():
     for fields in ('title: &t "Lease {{placeholder: q}}"\n', "title: !!str 'Lease {{placeholder: q}}'\n"):
         output = Template(_source(fields, _Q)).form({"q": "O'Neil \"Jr\""}).assemble().output
         assert parse(output).metadata.title == "Lease O'Neil \"Jr\"", fields
+
+
+# ── Every frontmatter position: core's blanks are what assembly fills ────────────────────────────────────────
+
+#: Frontmatter written around a placeholder, at a position §3.10 recognizes (True) or not (False).
+_POSITIONS = [
+    ('title: "Lease {{placeholder: q}}"\n', True),
+    ('title: &t !!str "Lease {{placeholder: q}}"\n', True),
+    ('title: T\nkeywords: ["{{placeholder: q}}"]\n', False),
+    ('title: T\nkeywords:\n  - "{{placeholder: q}}"\n', False),
+    ('title: T\ndate: "{{placeholder: q}}"\n', False),
+    ('title: T\n"{{placeholder: q}}": x\n', False),
+    ('title: T\n? "{{placeholder: q}}"\n: x\n', False),
+    ('title: T\nextra: {a: "{{placeholder: q}}"}\n', False),
+    ('title: T\n# "{{placeholder: q}}"\n', False),
+    ("title: |\n  \"Lease {{placeholder: q}}\"\n", False),
+]
+
+
+def _frontmatter_lines(text: str) -> list[str]:
+    return text.split("---\n")[1].split("\n")
+
+
+def _core_blank_lines(text: str) -> set[int]:
+    final = validate(parse(text), final=True)
+    return {d.line for d in final.diagnostics if d.rule == "placeholder-unfilled"}
+
+
+def _assembly_filled_lines(text: str) -> set[int]:
+    template = Template(text)
+    assert template.problems == (), text
+    output = template.form({"q": "Main St"}).assemble().output
+    before, after = _frontmatter_lines(text), _frontmatter_lines(output)
+    assert len(before) == len(after), text
+    return {number + 2 for number, (old, new) in enumerate(zip(before, after, strict=True)) if old != new}
+
+
+def test_core_blanks_are_what_assembly_fills_at_every_frontmatter_position():
+    for fields, recognized in _POSITIONS:
+        text = _source(fields)
+        line = next(number for number, row in enumerate(text.split("\n"), 1) if "{{placeholder" in row)
+        expected = {line} if recognized else set()
+        assert (_core_blank_lines(text), _assembly_filled_lines(text)) == (expected, expected), fields
+
+
+def test_a_placeholder_in_a_structural_field_is_refused_by_both():
+    text = _source('title: T\namends:\n  title: Original\n  file: "{{placeholder: q}}.lgd"\n')
+    assert "placeholder-in-structural-field" in {d.rule for d in Template(text).problems}
+    assert _core_blank_lines(text) == set()
+
+
+# ── A placeholder written across two lines of a quoted value ─────────────────────────────────────────────────
+
+def test_a_placeholder_across_two_lines_is_malformed_for_both():
+    # §11.5: a directive does not span lines. YAML folds the quoted value onto one, but the source is two.
+    text = _source('title: "Lease {{placeholder:\n  q}}"\n', _Q)
+    result = validate(parse(text), final=True)
+    assert [(d.rule, d.line) for d in result.diagnostics if d.rule == "directive-malformed"] == [
+        ("directive-malformed", 2)
+    ]
+    assert "placeholder-unfilled" not in result.rules()
+    assert "directive-malformed" in {d.rule for d in Template(text).problems}
+
+
+# ── An alias to an anchor that assembly removes ──────────────────────────────────────────────────────────────
+
+_ATTACHED = (
+    'title: T\nquestions:\n  x:\n    type: boolean\nattachments:\n  - id: one\n    title: &t "Annex"\n'
+    "    file: one.pdf\n    when: x\nsubtitle: *t\n"
+)
+
+
+def test_an_alias_to_a_removable_anchor_is_reported_by_both_at_the_alias():
+    text = _source(_ATTACHED, body="# A\n\nSee {{attach: one}}.\n")
+    alias = text.split("\n").index("subtitle: *t") + 1
+    found = [(d.rule, d.level, d.line) for d in validate(parse(text)).diagnostics if d.rule == ALIAS_REMOVED_RULE]
+    assert found == [(ALIAS_REMOVED_RULE, "error", alias)]
+    # Template.problems refuses it up front, and assembly on its own does not raise.
+    assert ALIAS_REMOVED_RULE in {d.rule for d in Template(text).problems}
+    result = Template(text, _check=False).form({"x": False}).assemble()
+    assert [(d.rule, d.line) for d in result.diagnostics if d.rule == ALIAS_REMOVED_RULE] == [(ALIAS_REMOVED_RULE, alias)]
+    assert result.output == ""
+
+
+def test_an_alias_to_an_anchor_in_questions_is_reported_and_one_kept_is_not():
+    text = _source('title: T\nquestions:\n  x:\n    type: text\n    prompt: &p "Name"\nsubtitle: *p\n',
+                   body="# A\n\n{{placeholder: x}}\n")
+    assert ALIAS_REMOVED_RULE in validate(parse(text)).rules()
+    kept = _source('title: &t "T"\nsubtitle: *t\nquestions:\n  x:\n    type: text\n', body="# A\n\n{{placeholder: x}}\n")
+    assert ALIAS_REMOVED_RULE not in validate(parse(kept)).rules()
+    assert parse(Template(kept).form({"x": "a"}).assemble().output).metadata.subtitle == "T"

@@ -78,10 +78,10 @@ from .parser import (
     parse,
     quote_content,
 )
-from .positions import quoted_scalars
+from .positions import frontmatter_aliases, frontmatter_scalars
 from .validator import validate
 from .validator.conditions import Condition
-from .validator.core import is_template
+from .validator.core import frontmatter_value_paths, is_template
 from .validator.fragments import (
     EMPTY_CHAIN,
     Files,
@@ -101,6 +101,7 @@ from .validator.fragments import (
 )
 from .validator.helpers import is_positive_numeric, is_valid_money_amount
 from .validator.patterns import (
+    ALIAS_REMOVED_RULE,
     DURATION_UNITS,
     IDENTIFIER_RE,
     INCLUDE_LIMIT_RULE,
@@ -765,9 +766,16 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
     if front.attachments is not None:
         front.items = _attachment_items(lines, front.attachments, document, questions)
     skip = set(range(*front.questions)) if front.questions else set()
-    # The quoted scalars, as YAML reads them (§3.10, ``positions.quoted_scalars``): after an anchor or a tag
-    # too, and never a quote inside a block or plain scalar. Offsets are in the lines joined by LF.
-    scalars = quoted_scalars("\n".join(lines))  # in order, and apart
+    # The quoted strings of the value fields, as YAML reads them (§3.10, ``positions.frontmatter_scalars``): after
+    # an anchor or a tag too (an alias's is its anchor's, where it is written), never a quote inside a block or
+    # plain scalar, and nowhere but a value field, the blanks the validator counts (#12). Offsets are in the
+    # lines joined by LF.
+    values = frontmatter_value_paths(document)
+    scalars = sorted({
+        (scalar.start, scalar.end, scalar.quote)
+        for path, scalar in frontmatter_scalars("\n".join(lines)).items()
+        if scalar.quote and path in values
+    })  # in order, and apart
     first = 0  # the first scalar that does not end before the line
     offset = 0
     for index, line in enumerate(lines):
@@ -794,15 +802,16 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
                 if any(start < directive.start and end > len(line) for start, end, _q in within):
                     front.malformed.append(directive)
             elif directive.name == "placeholder":
-                # Only a quoted scalar can hold one (§3.10); any other is
-                # left for the validator, never filled with unescaped text.
+                # Only a value field's quoted string can hold one (§3.10); any
+                # other is no blank, and left as written for the validator.
                 quote = next((
                     q for start, end, q in within
                     if start < directive.start and directive.end < end
                 ), "")
-                front.occurrences.append(_Occurrence(
-                    directive, index, directive.start, directive.end, quote,
-                ))
+                if quote:
+                    front.occurrences.append(_Occurrence(
+                        directive, index, directive.start, directive.end, quote,
+                    ))
 
 
 def _attachment_items(lines: list[str], entry: tuple[int, int], document: Document,
@@ -2477,6 +2486,32 @@ def _emit_frontmatter(front: _Frontmatter, decision: _Decision, answers: _Answer
         value = _frontmatter_value(occ, answers)
         if value is not None:
             lines[occ.line] = lines[occ.line][:occ.start] + value + lines[occ.line][occ.end:]
+    return front.text(lines, frozenset(_dropped(front, decision)))
+
+
+def _dangling_aliases(front: _Frontmatter, decision: _Decision) -> list[Diagnostic]:
+    """An alias that would name nothing once the lines assembly removes are gone (an anchor in the questions, an
+    attachment's ``when``, an attachment that is absent): the validator's ``ldv-frontmatter-alias-removed``, at
+    the alias, for the template is not assembled (#12)."""
+    drop = _dropped(front, decision)
+    text = "\n".join(front.lines)
+    starts = [0, *(i + 1 for i, char in enumerate(text) if char == "\n")]
+    found = []
+    for alias, anchor in frontmatter_aliases(text):
+        alias_line, anchor_line = bisect.bisect_right(starts, alias) - 1, bisect.bisect_right(starts, anchor) - 1
+        if anchor_line in drop and alias_line not in drop:
+            found.append(Diagnostic(
+                ALIAS_REMOVED_RULE, "error",
+                "This alias names an anchor that assembly removes, so the assembled frontmatter could not be "
+                "read; the template is not assembled.",
+                line=2 + alias_line,  # (the frontmatter's first line is the file's second)
+            ))
+    return found
+
+
+def _dropped(front: _Frontmatter, decision: _Decision) -> set[int]:
+    """The frontmatter's lines assembly removes (§15.7.2): the questions, and the attachments' that are absent
+    or are their ``when``."""
     drop: set[int] = set()
     for item, kept in zip(front.items, decision.attachments, strict=True):
         if not kept:
@@ -2487,7 +2522,7 @@ def _emit_frontmatter(front: _Frontmatter, decision: _Decision, answers: _Answer
         drop.update(range(*front.attachments))
     if front.questions is not None:
         drop.update(range(*front.questions))
-    return front.text(lines, frozenset(drop))
+    return drop
 
 
 # ── Step 7: identifiers ──────────────────────────────────────────
@@ -2683,6 +2718,8 @@ def _emit_result(
     emitted while *diagnostics* hold an Error (§15.7.2 step 1)."""
     if any(d.level == "error" for d in diagnostics):
         return AssemblyResult(diagnostics=diagnostics)
+    if t.front is not None and (dangling := _dangling_aliases(t.front, decision)):
+        return AssemblyResult(diagnostics=[*diagnostics, *dangling])
     head = _emit_frontmatter(t.front, decision, resolved) if t.front is not None else ""
     main = _emit(t.main, decision.removed[""], resolved)
     subs = {

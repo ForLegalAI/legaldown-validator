@@ -35,6 +35,7 @@ from .validator.helpers import (
     slugify_identifier,
 )
 from .validator.patterns import (
+    ALIAS_REMOVED_RULE,
     DURATION_UNITS,
     FENCE_UNCLOSED_RULE,
     FINAL_CHECK_RULES,
@@ -102,6 +103,7 @@ __all__ = [
     "FENCE_UNCLOSED_RULE",
     "HEADING_DIRECTIVE_RULE",
     "FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE",
+    "ALIAS_REMOVED_RULE",
     # Rules over them
     "slugify_identifier",
     "format_section_number",
