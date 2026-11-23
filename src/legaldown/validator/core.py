@@ -73,6 +73,7 @@ from .helpers import (
     legaldown_attachments,
     slugify_identifier,
 )
+from .hidden import check_heading_directives, check_unclosed_fences
 from .paths import FileReferences, ReferenceImages, check_fragment_images, check_frontmatter_paths, check_heading_images
 from .patterns import (
     _CONSTRUCT_PRESENT,
@@ -2675,6 +2676,10 @@ def _check(
         cache=imports,
     )
     _check_raw_html(document, lex_fragment, result, where)
+    # What takes content out of validation without a word (#12): each file judged by itself.
+    own_kind = mode.kind if mode.fragment else None
+    check_unclosed_fences(document, where, result, lex_fragment, combined=combined, fragment=own_kind)
+    check_heading_directives(document, where, result, lex_fragment, combined=combined, fragment=own_kind)
     check_heading_images(document, lex_fragment, file_references, where, reference_images)
     reference_images.check(file_references)
     file_references.finish()

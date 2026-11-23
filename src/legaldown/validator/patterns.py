@@ -39,6 +39,10 @@ INCLUDE_LIMIT_RULE = IMPLEMENTATION_RULE_PREFIX + "include-limit"
 # Error for the same key written twice, a Warning for different keys (the specification only warns of a padded
 # language code).
 FRONTMATTER_KEY_DUPLICATE_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-key-duplicate"
+# And the two for constructs that take content out of validation without a word (#12, ``validator.hidden``): a
+# fenced code block that runs to the end of its file (a Warning), and a directive in heading text (an Error, §4.2).
+FENCE_UNCLOSED_RULE = IMPLEMENTATION_RULE_PREFIX + "fence-unclosed"
+HEADING_DIRECTIVE_RULE = IMPLEMENTATION_RULE_PREFIX + "heading-directive"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 

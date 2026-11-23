@@ -36,8 +36,10 @@ from .validator.helpers import (
 )
 from .validator.patterns import (
     DURATION_UNITS,
+    FENCE_UNCLOSED_RULE,
     FINAL_CHECK_RULES,
     FRONTMATTER_KEY_DUPLICATE_RULE,
+    HEADING_DIRECTIVE_RULE,
     IDENTIFIER_RE,
     IMPLEMENTATION_RULE_PREFIX,
     INCLUDE_LIMIT_RULE,
@@ -96,6 +98,8 @@ __all__ = [
     "SKIPPED_RULE",
     "INCLUDE_LIMIT_RULE",
     "FRONTMATTER_KEY_DUPLICATE_RULE",
+    "FENCE_UNCLOSED_RULE",
+    "HEADING_DIRECTIVE_RULE",
     # Rules over them
     "slugify_identifier",
     "format_section_number",

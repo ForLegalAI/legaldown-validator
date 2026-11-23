@@ -1125,6 +1125,30 @@ class Locator:
     def block(self, section: int | None, index: int) -> int | None:
         return self._map.block(section, index) if self._map else None
 
+    def underline(self, section: int) -> int | None:
+        """The line of section *section*'s setext underline (its heading's last line, ``---`` or ``===``);
+        None for an ATX heading, or without a source map."""
+        if self._map is None:
+            return None
+        span = self._map.layout.sections[section][0]
+        return self._map.body_start + span.end if span.end - span.start > 1 else None
+
+    def nested_lines(self, section: int | None, index: int) -> list[int] | None:
+        """The first line of top-level block *index* and of every block in its list items and quotes, in the
+        order ``definitions.nested_blocks`` gives them; None without a source map, or when the parsed layout
+        and the model disagree."""
+        if self._map is None:
+            return None
+        blocks = self._document.preamble if section is None else self._document.sections[section].blocks
+        body = self._map.body_start
+        try:
+            return [
+                body + base + span.start + 1
+                for span, _block, _depth, base in _walk_spans([self._map.span(section, index)], [blocks[index]], 0, 0)
+            ]
+        except ValueError:
+            return None  # items or quote content that no longer match the source
+
     def find(
         self,
         section: int | None,

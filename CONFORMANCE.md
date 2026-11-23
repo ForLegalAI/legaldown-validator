@@ -1278,6 +1278,46 @@ Decisions the specification leaves open:
   not implemented); the Warning of §17.5 says that the existence of attachment files is not checked
   ([below](#constructs-beyond-the-level-175)).
 
+## What takes content out of validation (#12)
+
+Two constructs follow CommonMark and the specification, yet take content out of validation without a word, and
+the specification has no rule id for either
+([#12](https://github.com/ForLegalAI/legaldown-validator/issues/12)). This implementation reports them with ids of
+its own (§16.1, `ldv-`; `legaldown.grammar.FENCE_UNCLOSED_RULE`, `HEADING_DIRECTIVE_RULE`). No fixture expects
+or forbids them, and no fixture case draws either.
+
+- **`ldv-fence-unclosed`**, a **Warning**: a fenced code block that is never closed runs to the end of the file
+  (CommonMark), so that every later heading, directive and paragraph is code, which no rule reads (§11.4). One stray
+  ```` ``` ```` turns every later section into code. It is reported at the fence's opening line, and the message
+  says how much the block holds (its lines, and how many of them are headings and directives). The construct is
+  valid, so it is a Warning. A fence that its list item or block quote ends is **not** reported: CommonMark closes
+  it with its container, and what follows the container is read as usual, so nothing past it is lost. A fence in a
+  container that itself runs to the end of the file (the last item of the last list, the last quote) is reported, as
+  nothing but the end of the file closes it. A document built in code (no source map) is judged the same, without a
+  line. The validator only reports it: the parser does not close the fence, as that would change what CommonMark
+  reads.
+- **`ldv-heading-directive`**, an **Error**: heading text must not contain a directive (§4.2), and a directive is
+  recognized in body text only (§11.4), so one in a section's heading is literal text: nothing checks it, and it
+  is shown as written. A `{{def:}}` there declares nothing (its uses are `term-undefined`), and assembly does not
+  fill a `{{placeholder:}}` there. It is reported once for each heading, at its first line, naming the directives
+  (well-formed or malformed; not one in a code span or comment, nor `\{{`). The usual cause is a setext heading: a
+  paragraph directly above a `---` (or `===`) line is a heading, and the message names that line and how to keep
+  the paragraph. It is an Error because §4.2 is a MUST NOT and the directive is lost whatever it was for; the
+  specification's `heading-hardcoded-number` is a Warning, but it is the numbering of §4.2 and a heuristic, while a
+  directive is known for sure. No rule of the specification's covers it, so the id is this implementation's own,
+  but for `{{choose:}}`, which §15.5 gives to `choose-invalid`: a `{{choose:}}` in a heading is left to that
+  rule, and not reported twice. A heading in a list item or a block quote is a heading too and is reported the same
+  way (this implementation reads its text as body text, so its directives are checked as well). The rule does not
+  stop assembly: like any rule outside `TEMPLATE_RULES`, it is in `Template.validation`, not in `problems`.
+
+Both judge each file by itself. An include fragment or an attachment file validated on its own
+(`validate(fragment=True)`) is judged as such, and an unclosed fence there says it runs to the end of the fragment
+(and that a tool that splices the fragment's text, §12.2, would read what follows the include into it). In the
+combined document (§16.11) each file is judged at its place, as every file keeps its own structure there (a fence a
+fragment leaves open does not run into the document): the combined pass, which reads the fragments too, reports
+each finding once, in the file it is in, however often the fragment is included (`merge_diagnostics`). Neither rule is
+in `HOST_ONLY` or `WHOLE_DOCUMENT_RULES`: the two passes agree on the document's own parts.
+
 ## Constructs beyond the level (§17.5)
 
 §17.5: an implementation that meets a construct whose processing lies beyond its claimed level "MUST NOT
@@ -1292,7 +1332,8 @@ expects or forbids it. It is a Warning for every output, so `is_valid` and the e
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
 Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
 validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
-(any frontmatter mapping, #126, #131) and not a skipped one.
+(any frontmatter mapping, #126, #131) and not a skipped one, and two more for what takes content out of validation,
+**`ldv-fence-unclosed`** and **`ldv-heading-directive`** ([above](#what-takes-content-out-of-validation-12)).
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct
