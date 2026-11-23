@@ -1299,7 +1299,9 @@ or forbids them, and no fixture case draws either.
 - **`ldv-heading-directive`**, an **Error**: heading text must not contain a directive (§4.2), and a directive is
   recognized in body text only (§11.4), so one in a section's heading is literal text: it
   is shown as written, and what it was to do is not done. A `{{def:}}` there declares nothing (its uses are `term-undefined`), and assembly does not
-  fill a `{{placeholder:}}` there. It is reported once for each heading, at its first line, naming the directives
+  fill a `{{placeholder:}}` there, so the validator agrees: neither it nor a `{{choose:}}` in a section's heading uses its
+  question (a question no other part uses is `question-unused`), and the final check counts no such placeholder
+  as an unfilled blank (§15.9), which `ldv-heading-directive` already reports. It is reported once for each heading, at its first line, naming the directives
   (each `{{name:` opener, well-formed or malformed, §11.4; not one in a code span or comment, nor `\{{`; a `{{`
   that opens no directive is no directive there either). The usual cause is a setext heading: a
   paragraph directly above a `---` (or `===`) line is a heading, and the message names that line and how to keep

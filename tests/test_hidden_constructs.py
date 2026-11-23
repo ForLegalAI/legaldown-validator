@@ -315,3 +315,39 @@ def test_an_attachment_file_is_judged_as_one():
     result = _run(text, {"annex.lgd": annex})
     assert _found(result) == [(FENCE_UNCLOSED_RULE, "warning", "annex.lgd", _at(annex, "```"))]
     assert "end of the attachment file" in _message(result, FENCE_UNCLOSED_RULE)
+
+
+# ── A directive in a section's heading asks nothing, as assembly leaves it as written ────────────────────────
+
+_ADDRESS = FM.replace("---\n\n", "questions:\n  address:\n    type: text\n---\n\n")
+
+
+def test_a_question_only_a_section_headings_placeholder_uses_is_unused():
+    text = _ADDRESS + "# Lease of {{placeholder: address}}\n\nText.\n"
+    template = Template(text)
+    assert "question-unused" in {d.rule for d in template.validation.diagnostics}
+    # ... as assembly agrees: it leaves the heading as written.
+    assert "{{placeholder: address}}" in template.form({"address": "Main St"}).assemble().output
+
+
+def test_a_section_headings_placeholder_is_no_unfilled_blank_of_the_final_check():
+    text = FM + "# Lease of {{placeholder: address}}\n\nText.\n"
+    result = validate(parse(text), final=True)
+    assert [d.rule for d in result.diagnostics if d.line == _at(text, "# Lease")] == [HEADING_DIRECTIVE_RULE]
+
+
+def test_a_choose_in_a_section_heading_asks_nothing_either():
+    text = FM.replace("---\n\n", "questions:\n  x:\n    type: boolean\n---\n\n") + (
+        '# Terms {{choose: x, true="A", false="B"}}\n\nText.\n'
+    )
+    rules = {d.rule for d in validate(parse(text)).diagnostics}
+    assert {"choose-invalid", "question-unused"} <= rules
+
+
+def test_a_placeholder_in_a_heading_in_a_list_item_is_a_blank_as_assembly_fills_it():
+    text = _ADDRESS + "# Lease\n\n- ## Of {{placeholder: address}}\n"
+    template = Template(text)
+    assert "question-unused" not in {d.rule for d in template.validation.diagnostics}
+    assert "Of Main St" in template.form({"address": "Main St"}).assemble().output
+    final = validate(parse(FM + "# Lease\n\n- ## Of {{placeholder: address}}\n"), final=True)
+    assert "placeholder-unfilled" in {d.rule for d in final.diagnostics}
