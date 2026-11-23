@@ -469,9 +469,9 @@ def test_a_cycle_leaves_the_fragments_before_it_combined():
     result = _run(text, files)
     assert _found(result, "include-cycle") == [("include-cycle", "b.lgd", 3)]
     # The fragments followed are in the combined document: a reference into them resolves (#141). One into nothing is
-    # broken, and says that the document was checked without what was not followed.
+    # broken, and says nothing of what was not followed: a cycle brings nothing in that is not in it.
     (broken,) = [d for d in result.diagnostics if d.rule == "ref-broken"]
-    assert "'nope'" in broken.message and broken.message.endswith(NOT_IN_IT)
+    assert "'nope'" in broken.message and not broken.message.endswith(NOT_IN_IT)
     assert "for what the includes not followed would bring in" in _warning(result).message
 
 
@@ -497,14 +497,20 @@ def test_one_fragment_missing_leaves_the_others_judged_across_the_document():
     part = "## Part {#part-sec}\n\nSee {{ref: scope}} {{ref: also-gone}} {{term: fee}}.\n"
     result = _run(text, {"part.lgd": part})
     assert _found(result, "include-file-missing") == [("include-file-missing", "main.lgd", _at(text, "gone.lgd"))]
-    # The fragment read is judged with the document, both ways; what may be in the one missing is marked (#141).
+    # The fragment read is judged with the document, both ways (#141). A file that is not there brings nothing in, so
+    # nothing says it may settle a finding; an include that leads out of the directory, not read, may (#141).
     assert _found(result, "ref-broken", "term-undefined") == [
         ("ref-broken", "main.lgd", _at(text, "See")),
         ("ref-broken", "part.lgd", 3),
         ("term-undefined", "part.lgd", 3),
     ]
-    assert all(d.message.endswith(NOT_IN_IT) for d in result.diagnostics if d.rule in ("ref-broken", "term-undefined"))
+    assert not any(d.message.endswith(NOT_IN_IT) for d in result.diagnostics)
     assert "'gone-sec'" in next(d.message for d in result.diagnostics if d.rule == "ref-broken")
+    out = _run(text.replace("gone.lgd", "../gone.lgd"), {"part.lgd": part})
+    assert all(d.message.endswith(NOT_IN_IT) for d in out.diagnostics if d.rule in ("ref-broken", "term-undefined"))
+    for kept in ({"part.lgd": part, "gone.lgd": "# H1\n"}, {"part.lgd": part, "gone.lgd": "{{include: main.lgd}}\n"}):
+        result = _run(text, kept)  # (a file that is no fragment, and a cycle)
+        assert not any(d.message.endswith(NOT_IN_IT) for d in result.diagnostics), kept
     assert "for what the includes not followed would bring in" in _warning(result).message
 
 
@@ -705,7 +711,7 @@ def test_an_include_of_an_attachment_file_not_followed_is_reported_there_and_lea
         ("include-cycle", "s.lgd", 7),
         ("include-cycle", "s.lgd", 9),
     ]
-    assert next(d for d in result.diagnostics if d.rule == "ref-broken").message.endswith(NOT_IN_IT)
+    assert not next(d for d in result.diagnostics if d.rule == "ref-broken").message.endswith(NOT_IN_IT)
     cycle = [d.message for d in result.diagnostics if d.rule == "include-cycle"]
     assert "(the attachment file s.lgd -> s.lgd)" in cycle[0] and "(the attachment file s.lgd -> the document)" in cycle[1]
     warning = _warning(result)
@@ -767,7 +773,7 @@ def test_a_partial_combined_document_does_not_say_what_nothing_could_settle_may_
     # §7.2): what was not followed cannot settle it, and the finding does not say it might.
     text = _attached(("Bad Id", "x.pdf"), ("good", "y.pdf")) + _SCOPE + (
         "See {{ref:}} {{ref: Not An Id}} {{ref: nope}}, {{term:}} {{term: Not Id}} {{term: none}}.\n\n"
-        "{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
+        "{{include: part.lgd}}\n\n{{include: ../more.lgd}}\n"
     )
     result = _run(text, {"part.lgd": "## Part\n\nText.\n"})
     marked = {
@@ -781,7 +787,7 @@ def test_a_partial_combined_document_does_not_say_what_nothing_could_settle_may_
     }
     # ... and so for an amendment's terms, defined by an id as any other (§7.2).
     amends = _FRONT.replace("---\n\n", "amends:\n  title: Original\n  file: orig.lgd\n---\n\n") + _SCOPE + (
-        "The {{term: Not Id}} and {{term: none}}.\n\n{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
+        "The {{term: Not Id}} and {{term: none}}.\n\n{{include: part.lgd}}\n\n{{include: ../more.lgd}}\n"
     )
     files = {"part.lgd": "## Part\n\nText.\n", "orig.lgd": _FRONT + '# O\n\n"Fee" {{def: fee}} due.\n'}
     found = {
@@ -875,7 +881,7 @@ def test_what_an_attachment_file_left_out_reads_is_found_at_its_entry(monkeypatc
 
 
 def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
-    text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: gone.lgd}}\n"
+    text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: ../more.lgd}}\n"
     result = _run(text, {"a.lgd": "## A {#a when=x}\n\nText.\n"})
     (unsafe,) = [d for d in result.diagnostics if d.rule == "condition-reference-unsafe"]
     assert unsafe.message.endswith(NOT_IN_IT)
@@ -1404,10 +1410,14 @@ def _host_only_cases() -> list[tuple[str, dict[str, str], dict[str, Any]]]:
     return [(text, files, {"final": final}) for text, files in cases for final in (False, True)]
 
 
-def test_the_documents_own_pass_that_makes_only_what_it_keeps_changes_nothing(monkeypatch):
+@pytest.mark.parametrize("cap", [50_000, 4])  # (4: most documents are past the size, and none is combined)
+def test_the_documents_own_pass_that_makes_only_what_it_keeps_changes_nothing(cap, monkeypatch):
     # The differential of #141: when a combined document is expected the document's own pass makes only the rules of
     # HOST_ONLY (the rest is the combined pass's); the result is what the pass in full gives, finding for finding, in
-    # order, with the same index, and the loader is asked what it was asked.
+    # order, with the same index, and the loader is asked what it was asked. Past the size of the combined document,
+    # the host-only pass becomes the full one by itself, which must say the same.
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", cap)
+
     def run(case, may_combine):
         text, files, options = case
         loader = _Loader(files)
@@ -1440,11 +1450,15 @@ def test_the_documents_own_pass_is_shortened_only_when_a_combined_document_is_ma
     text = _FRONT + _SCOPE + "{{include: a.lgd}}\n"
     _run(text, {"a.lgd": "## A\n\nText.\n"})
     assert [(host_only, combined is not None) for host_only, combined in calls] == [(True, False), (False, True)]
-    # Past the size of the combined document none is made: the document is validated again, in full.
+    # Past the size of the combined document none is made: the host-only pass becomes the full one, and the document
+    # is validated once, each file asked for once (#141).
     calls.clear()
     monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 0)
-    _run(text, {"a.lgd": "## A\n\nText.\n"})
-    assert [(host_only, combined is not None) for host_only, combined in calls] == [(True, False), (False, False)]
+    loader = _Loader({"a.lgd": "## A\n\nText.\n"})
+    result = validate(parse(text, filename="main.lgd"), resolve=loader)
+    assert [(host_only, combined is not None) for host_only, combined in calls] == [(True, False)]
+    assert loader.asked == ["a.lgd"]
+    assert "building the combined document of more than 0 blocks" in _warning(result).message
     # Nothing to splice: nothing is attempted.
     calls.clear()
     _run(text, {})
@@ -1487,8 +1501,8 @@ def test_a_partial_combined_document_equals_validating_the_text_with_what_was_re
 
     assert counted(combined.diagnostics) == counted(oracle.diagnostics)
     assert counted(merged.diagnostics, owned=False) == counted(oracle.diagnostics, owned=False)
-    # What a fragment not read may settle says so, and nothing else does.
-    assert all(d.message.endswith(NOT_IN_IT) == (d.rule in SETTLED_ELSEWHERE) for d in merged.diagnostics)
+    # A fragment that is not there brings nothing in: nothing says it may settle a finding.
+    assert not any(d.message.endswith(NOT_IN_IT) for d in merged.diagnostics)
     assert not core._check(parse(text, filename="main.lgd"), False, _Loader(files), core._DOCUMENT).combined
 
 

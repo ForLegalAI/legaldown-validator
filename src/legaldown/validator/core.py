@@ -1387,16 +1387,15 @@ def _check(
     """The validation of *document* (``_pass``). A document whose includes and attachment files are read is
     validated twice, as itself and combined (§16.11), and of the pass over itself only the rules of
     ``combined.HOST_ONLY`` are kept (``merge_diagnostics``): when a combined document is likely, that pass makes
-    only those (*host_only*, #141), and should none be made after all, the document is validated again in full.
-    The files are read once for both (``Files``). The findings are the same either way."""
+    only those (*host_only*, #141), and should none be made after all, it becomes the full pass by itself
+    (``_Recorder.release`` and the checks it put off). The files are read once (``Files``). The findings are the
+    same either way."""
     if combined is not None or mode.fragment or resolve is None:
         return _pass(document, final, resolve, mode, document_root, combined)
     files = Files(resolve, document, document_root)
-    if _may_combine(document, files):
-        result = _pass(document, final, resolve, mode, document_root, files=files, host_only=True)
-        if result.spliced:
-            return result
-    return _pass(document, final, resolve, mode, document_root, files=files)
+    # (A host-only pass that finds no combined document is made becomes the full pass by itself: ``deferred``.)
+    host_only = _may_combine(document, files)
+    return _pass(document, final, resolve, mode, document_root, files=files, host_only=host_only)
 
 
 def _may_combine(document: Document, files: Files) -> bool:
@@ -1440,8 +1439,8 @@ def _pass(
     host_only: bool = False,
 ) -> _Recorder:
     # *files*: what the validation reads, given by ``_check``. *host_only*: the pass makes only the rules of
-    # ``combined.HOST_ONLY`` (the recorder drops the others before their line is looked for, and the checks that
-    # make nothing else are not run), for a document whose combined document is expected (``_check``).
+    # ``combined.HOST_ONLY`` (the recorder holds the others, their line not looked for, and the checks that
+    # make nothing else wait: ``later``), for a document whose combined document is expected (``_check``).
     # *combined*: the document is the combined document of another (§16.11, #117), validated once more
     # as the document it is with its fragments in: ``document`` is its own, and the validation reads
     # the files, the lexing and the locations of the document that holds the includes.
@@ -1457,7 +1456,16 @@ def _pass(
         unsettleable=[] if combined is not None else None,
         keep=HOST_ONLY if host_only else None,
     )
-    full = not host_only  # (the checks that make no rule of HOST_ONLY run only in a full pass)
+    # The checks that make no rule of HOST_ONLY run at once in a full pass; in a host-only one they wait, each with
+    # its place among the findings, until the walk of the includes says whether a combined document is made: if
+    # not, they are run and their findings put in their places, and the pass is the full one (#141).
+    deferred: list[tuple[int, Callable[[], None]]] = []
+
+    def later(checks: Callable[[], None]) -> None:
+        if host_only:
+            deferred.append((len(result.diagnostics), checks))
+        else:
+            checks()
     # A fragment's own frontmatter, if it wrongly has any, is reported below
     # and then not read: the host's frontmatter is the one that declares.
     # Everything after this reads the document as a body-only one, whose
@@ -2748,121 +2756,126 @@ def _pass(
                 "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
                 line=line, depends=depends if host_declares else None,
             )
-    if full:
+    # The checks that make no rule of HOST_ONLY (``_pass``): run now in a full pass, else when the walk of the
+    # includes has shown that no combined document is made (``deferred``), at this place among the findings.
+    def whole_checks() -> None:
         _check_never_true(document, markers, units, questions, result, where)
 
-    # Circular definitions (§16.3, §7.2): one Warning for each set of
-    # definitions explained in terms of each other, where the last of them, in
-    # document order, is declared. Alternatives (§15.4) that cannot appear
-    # together do not refer to each other; only a template has them.
-    for circle in find_circular_definitions(
-        document,
-        registered,
-        term_uses,
-        exclusivity if template else None,
-    ) if full else ():
-        result.warning(
-            "definition-circular",
-            circular_message(registered[number][0].id for number in circle),
-            line=definition_line(registered[circle[-1]][0]),
-        )
-
-    # Definitions used before declaration (§16.3, Info): one for each definition, at its first
-    # earlier use. The original an amendment amends is in force before the document (§7.5).
-    # A definition an attachment file declares is document-wide (§7.2, §12.4): only a use in the attachment
-    # itself, before its declaration there, is a use before it. (A body use, or one in another attachment, is not.)
-    uses = term_uses
-    if combined is not None and combined.attached:
-        places: dict[str, set[Instance]] = {}  # of each definition, the places of its declarations
-        for ref, _presence in written:
-            places.setdefault(ref.id, set()).add(combined.unit_of(combined.place_of(ref.section_index, ref.block_index)))
-        within = {
-            def_id: where_declared for def_id, where_declared in places.items()
-            if all(place.attachment is not None for place in where_declared)
-        }
-        uses = [
-            use for use in term_uses
-            if use.target not in within or combined.unit_of(combined.place_of(use.section, use.block)) in within[use.target]
-        ]
-    for number, earlier in used_before_declaration(
-        written, uses, _imported_definitions, exclusivity if template else None
-    ) if full else ():
-        ref = written[number][0]
-        declared = definition_line(ref)
-        times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
-        at = f" at line {declared}" if declared else ""
-        use = earlier[0].line
-        if combined is not None and declared:
-            # The declaration is in another file than the use when the lines name another: say which.
-            use = use() if callable(use) else use
-            file = declared.file if isinstance(declared, Spot) else document.filename
-            if file != (use.file if isinstance(use, Spot) else document.filename):
-                at += f" of {file or 'the document'}"
-        result.info(
-            "definition-used-before-declaration",
-            f"Definition '{ref.id}' is used {times} before its declaration{at} (§7.2).",
-            line=use,
-        )
-
-    # Reference safety (§15.4): a reference resolves in every assembled
-    # document it is in. References in drafting notes are exempt: assembly
-    # removes every note. An amendment's terms are not checked when its
-    # original was not read: the original may define them (§16.8).
-    original_unread = bool(meta.amends) and not original_imported
-    term_presences = {
-        def_id: [presence for _term, _auto, presence in declarations]
-        for def_id, declarations in declared_terms.items()
-    }
-    targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
-    covered: dict[tuple[str, str, Presence], bool] = {}  # references of one target and presence are alike
-    for kind, uses in references.items() if full else ():
-        for target, presence, in_note, line in uses:
-            declared = targets_of[kind].get(target)
-            if in_note or not declared or (kind == "term" and original_unread):
-                continue
-            if (kind, target, presence) not in covered:
-                covered[kind, target, presence] = always_covered(presence, declared, questions)
-            if covered[kind, target, presence]:
-                continue
-            result.error(
-                "condition-reference-unsafe",
-                f"'{{{{{kind}: {target}}}}}' can be present when '{target}' is not: under some "
-                f"answers that keep the reference, no declaration of its target remains (§15.4).",
-                line=line,
+        # Circular definitions (§16.3, §7.2): one Warning for each set of
+        # definitions explained in terms of each other, where the last of them, in
+        # document order, is declared. Alternatives (§15.4) that cannot appear
+        # together do not refer to each other; only a template has them.
+        for circle in find_circular_definitions(
+            document,
+            registered,
+            term_uses,
+            exclusivity if template else None,
+        ):
+            result.warning(
+                "definition-circular",
+                circular_message(registered[number][0].id for number in circle),
+                line=definition_line(registered[circle[-1]][0]),
             )
 
-    used_questions = asked | {
-        condition.question
-        for _place, text, _line in conditions
-        if (condition := parse_condition(text)) is not None
-    }
-    # A question may be used in an include fragment or a LegalDown attachment
-    # file. The files are read for their shape and what a template may hold in
-    # them (#35), not for the questions they use, so none is unused for certain.
-    # Not so in the combined document, which holds the fragments and the attachment files
-    # it could read (#117, #135), unless one of them is not in it (#141).
-    reads_other_files = (
-        ("include" in body_directives or bool(legaldown_attachments(meta)))
-        if combined is None else combined.attachments_out > 0 or combined.partial
-    )
-    if isinstance(questions, dict) and not reads_other_files and full:
-        for qid in questions:
-            if qid not in used_questions:
-                result.warning(
-                    "question-unused",
-                    f"Question '{qid}' is declared but no placeholder, condition, or "
-                    f"{{{{choose:}}}} uses it (§15.2)"
-                    + (
-                        "; only drafting notes do, so it is no blank of the document and needs no answer "
-                        "(§15.7.2), though assembly still lists it among the template's questions."
-                        if qid in asked_in_notes else
-                        f"; it is named only where no directive is recognized (§11.4), in {unrecognized[qid]}, "
-                        "which assembly leaves as written, though it still lists the question among the template's "
-                        "questions."
-                        if qid in unrecognized else "."
-                    ),
-                    line=where.key("questions", qid),
+        # Definitions used before declaration (§16.3, Info): one for each definition, at its first
+        # earlier use. The original an amendment amends is in force before the document (§7.5).
+        # A definition an attachment file declares is document-wide (§7.2, §12.4): only a use in the attachment
+        # itself, before its declaration there, is a use before it. (A body use, or one in another attachment, is not.)
+        uses = term_uses
+        if combined is not None and combined.attached:
+            places: dict[str, set[Instance]] = {}  # of each definition, the places of its declarations
+            for ref, _presence in written:
+                places.setdefault(ref.id, set()).add(combined.unit_of(combined.place_of(ref.section_index, ref.block_index)))
+            within = {
+                def_id: where_declared for def_id, where_declared in places.items()
+                if all(place.attachment is not None for place in where_declared)
+            }
+            uses = [
+                use for use in term_uses
+                if use.target not in within or combined.unit_of(combined.place_of(use.section, use.block)) in within[use.target]
+            ]
+        for number, earlier in used_before_declaration(
+            written, uses, _imported_definitions, exclusivity if template else None
+        ):
+            ref = written[number][0]
+            declared = definition_line(ref)
+            times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
+            at = f" at line {declared}" if declared else ""
+            use = earlier[0].line
+            if combined is not None and declared:
+                # The declaration is in another file than the use when the lines name another: say which.
+                use = use() if callable(use) else use
+                file = declared.file if isinstance(declared, Spot) else document.filename
+                if file != (use.file if isinstance(use, Spot) else document.filename):
+                    at += f" of {file or 'the document'}"
+            result.info(
+                "definition-used-before-declaration",
+                f"Definition '{ref.id}' is used {times} before its declaration{at} (§7.2).",
+                line=use,
+            )
+
+        # Reference safety (§15.4): a reference resolves in every assembled
+        # document it is in. References in drafting notes are exempt: assembly
+        # removes every note. An amendment's terms are not checked when its
+        # original was not read: the original may define them (§16.8).
+        original_unread = bool(meta.amends) and not original_imported
+        term_presences = {
+            def_id: [presence for _term, _auto, presence in declarations]
+            for def_id, declarations in declared_terms.items()
+        }
+        targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
+        covered: dict[tuple[str, str, Presence], bool] = {}  # references of one target and presence are alike
+        for kind, uses in references.items():
+            for target, presence, in_note, line in uses:
+                declared = targets_of[kind].get(target)
+                if in_note or not declared or (kind == "term" and original_unread):
+                    continue
+                if (kind, target, presence) not in covered:
+                    covered[kind, target, presence] = always_covered(presence, declared, questions)
+                if covered[kind, target, presence]:
+                    continue
+                result.error(
+                    "condition-reference-unsafe",
+                    f"'{{{{{kind}: {target}}}}}' can be present when '{target}' is not: under some "
+                    f"answers that keep the reference, no declaration of its target remains (§15.4).",
+                    line=line,
                 )
+
+        used_questions = asked | {
+            condition.question
+            for _place, text, _line in conditions
+            if (condition := parse_condition(text)) is not None
+        }
+        # A question may be used in an include fragment or a LegalDown attachment
+        # file. The files are read for their shape and what a template may hold in
+        # them (#35), not for the questions they use, so none is unused for certain.
+        # Not so in the combined document, which holds the fragments and the attachment files
+        # it could read (#117, #135), unless one of them is not in it (#141).
+        reads_other_files = (
+            ("include" in body_directives or bool(legaldown_attachments(meta)))
+            if combined is None else combined.attachments_out > 0 or combined.partial
+        )
+        if isinstance(questions, dict) and not reads_other_files:
+            for qid in questions:
+                if qid not in used_questions:
+                    result.warning(
+                        "question-unused",
+                        f"Question '{qid}' is declared but no placeholder, condition, or "
+                        f"{{{{choose:}}}} uses it (§15.2)"
+                        + (
+                            "; only drafting notes do, so it is no blank of the document and needs no answer "
+                            "(§15.7.2), though assembly still lists it among the template's questions."
+                            if qid in asked_in_notes else
+                            f"; it is named only where no directive is recognized (§11.4), in {unrecognized[qid]}, "
+                            "which assembly leaves as written, though it still lists the question among the template's "
+                            "questions."
+                            if qid in unrecognized else "."
+                        ),
+                        line=where.key("questions", qid),
+                    )
+
+
+    later(whole_checks)
 
     check_questions(
         questions,
@@ -2876,12 +2889,14 @@ def _pass(
         document, lex_fragment, result, template=template, where=where, markers=markers, combined=combined,
         cache=imports,
     )
-    if full:
+    def text_checks() -> None:
         _check_raw_html(document, lex_fragment, result, where)
         # What takes content out of validation without a word (#12): each file judged by itself.
         own_kind = mode.kind if mode.fragment else None
         check_unclosed_fences(document, where, result, lex_fragment, combined=combined, fragment=own_kind)
         check_heading_directives(document, where, result, lex_fragment, combined=combined, fragment=own_kind)
+
+    later(text_checks)
     check_heading_images(document, lex_fragment, file_references, where, reference_images)
     reference_images.check(file_references)
     file_references.finish()
@@ -2903,6 +2918,15 @@ def _pass(
         exclusivity=exclusivity,
         lex_fragment=lex_fragment,
     )
+    if host_only and included.combined is None:
+        # No combined document after all: the pass becomes the full one, with what it held and what it waited for.
+        result.release()
+        for position, checks in reversed(deferred):  # (the last first, so that the places before it hold)
+            start = len(result.diagnostics)
+            checks()
+            found = result.diagnostics[start:]
+            del result.diagnostics[start:]
+            result.diagnostics[position:position] = found
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
     # rest are recorded where the loop met them, the last first so that the places hold. That
     # needs the diagnostics since then only to have been added to. If one was moved or removed

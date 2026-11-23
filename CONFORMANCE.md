@@ -1231,7 +1231,11 @@ Decisions the specification leaves open:
     part before, and its message ends "The combined document was checked without the fragments of the includes that
     were not followed, which may settle this; §17.5." (not one that nothing could settle: a `{{ref:}}` or `{{term:}}`
     with no target, a target or an amendment's term that is no identifier, an attachment id that is none, since a
-    section, a definition and an `{{attach:}}` are named by an identifier, §5.2, §7.2); `question-unused` is not made, as before; a duplicate, a
+    section, a definition and an `{{attach:}}` are named by an identifier, §5.2, §7.2; and only when an include not
+    followed may bring content in: a path that leads out of the directory with no root, a depth or count cap, an
+    include in a template's fragment. A file that is not there, a cycle, a file that is no fragment or a path refused
+    brings nothing, so a document whose only includes not followed are such says nothing of them in its findings,
+    `Combined.settles`); `question-unused` is not made, as before; a duplicate, a
     collision, a circle or a use before a declaration among the parts that were read is real whatever the others
     hold, and is reported as it is. `ValidationResult` is not marked combined, so `Template.problems` keeps
     `condition-reference-unsafe` as advice. The Warning of §17.5 names "the combined-document checks (§16.11) for what
@@ -1247,14 +1251,14 @@ Decisions the specification leaves open:
     original, attachment files) are read once, whichever check wants them. Of the document's own pass only the rules
     of `HOST_ONLY` are kept, so when a combined document is likely (an include paragraph or a LegalDown attachment
     file of the document names a file that is read and is a fragment; this reads only what the walk reads) that pass
-    records only them (a finding of another rule is dropped before its line is looked for) and skips the checks that
-    make nothing else (`condition-never-true`, `definition-circular`, `definition-used-before-declaration`,
-    `condition-reference-unsafe`, `question-unused`, `raw-html`); should no combined document be made after all (past
-    the size cap, say), the document is validated again in full, from the files already read (#141). The prediction
-    leaves out an attachment file with include paragraphs in a template, which is not spliced. It does not foresee the
-    size cap: the size is known only once every include, nested ones too, has been walked, which the pass does after
-    the checks it skips; reusing a host-only pass would mean running those checks afterwards with their findings put
-    back in the order of the document, so a document past the cap still costs two passes. The rest of the
+    records only them (a finding of another rule is held, its line not looked for) and puts off the checks that make
+    nothing else (`condition-never-true`, `definition-circular`, `definition-used-before-declaration`,
+    `condition-reference-unsafe`, `question-unused`, `raw-html`, the hidden constructs of #12), each with its place
+    among the findings. Should no combined document be made after all (past the size cap, say), the pass becomes the
+    full one by itself once the walk of the includes has said so: the findings held are made, in their places, and
+    the checks put off are run and their findings put where they would have been, so the document is validated once
+    and every file read once (#141). The prediction leaves out an attachment file with include paragraphs in a
+    template, which is not spliced. The rest of the
     pass is kept: it builds `ValidationResult.index` and what the `include-*` rules, `heading-skip` and the Warning
     need. The units and markers of the document are not reused, since the combined structure reads them differently.
     On a document of 1,500 sections with one small include the validation went from 1.6 to 1.2 times the cost of the

@@ -891,6 +891,10 @@ class _Walk:
         self.incomplete = False
         self.plan = Plan()
         self.complete = True
+        #: Whether an include not followed may bring content in: a file not read for a reason other than its absence
+        #: (a path that leads out, a cap, an include in a template's fragment). A missing file, a cycle, a file that is
+        #: no fragment or a path refused bring nothing in (#141): ``Combined.settles``.
+        self.may_bring = False
         #: Whether the fragments followed are past the size the combined document may have: then it is not built.
         self.oversized = False
         self._spliced = [0, 0]  # the blocks and lines the fragments followed bring in
@@ -979,6 +983,7 @@ class _Walk:
                     None,
                 )
             elif problem == "leads-out":  # valid, and not read without a root that holds it (#109)
+                self.may_bring = True
                 if first:
                     self._outcome.unread.append(UnreadInclude(include, "leads-out", self._attaching))
             else:
@@ -996,6 +1001,7 @@ class _Walk:
             )
             return None
         if (cap := too_deep(chain)) is not None:
+            self.may_bring = True
             if cap + NOT_CHECKED not in self._outcome.caps:
                 self._outcome.caps.append(cap + NOT_CHECKED)
             return None
@@ -1062,6 +1068,7 @@ class _Walk:
         if cap + NOT_CHECKED not in self._outcome.caps:
             self._outcome.caps.append(cap + NOT_CHECKED)
         self.incomplete = self.complete = False
+        self.may_bring = True
         return True
 
     def _grow(self, fragment: FragmentFile) -> None:
@@ -1111,21 +1118,33 @@ class _Walk:
         plan = Plan()
         if includes:
             # What the walk of its includes changes of the outcome, put back if the file is not taken.
-            complete, incomplete, spent = self.complete, self.incomplete, self._budget.spent
+            complete, incomplete, spent, may_bring = self.complete, self.incomplete, self._budget.spent, self.may_bring
             unread, caps, nested = len(self._outcome.unread), len(self._outcome.caps), self._outcome.nested
             counted = set(self._nested)
             self._measured = [0, 0]
             self._attaching = True
             # What the walk finds is held until it is known whether the file is taken: if not, the combined pass will
             # not judge its include paths, and the document's must keep those findings (``kept``).
+            # (Recorded as the document's recorder records, what it holds and the lines it is at too; the path findings
+            # are made, as the document may keep them.)
             real = self._result
-            self._result = _Recorder(suppress=real.suppress, fragment=real.fragment)
+            self._result = _Recorder(
+                suppress=real.suppress, fragment=real.fragment,
+                keep=None if real.keep is None else real.keep | {"path-not-relative", "path-outside-root"},
+                places=None if real.places is None else [], unsettleable=None if real.unsettleable is None else [],
+                _lines=list(real._lines),
+            )
             try:
                 self.expand(fragment, self.extend(EMPTY_CHAIN, fragment), plan)
                 blocks, lines = self._measured
             finally:
-                found, self._result = self._result.diagnostics, real
+                held, self._result = self._result, real
+                found = held.diagnostics
                 real.diagnostics.extend(found)
+                if real.places is not None and held.places is not None:
+                    real.places.extend(held.places)
+                if real.unsettleable is not None and held.unsettleable is not None:
+                    real.unsettleable.extend(held.unsettleable)
                 self._measured = None
                 self._attaching = False
             if not self._fits(blocks, lines):
@@ -1134,7 +1153,7 @@ class _Walk:
                 # the path findings are the document's to keep (``kept``). What the walk judged once (``_met``,
                 # ``_includes``, ``_findings``) is not put back: it is safe only because no attachment file is
                 # followed after one is left out (``full``), which would else find its includes judged already.
-                self.complete, self.incomplete, self._budget.spent = complete, incomplete, spent
+                self.complete, self.incomplete, self._budget.spent, self.may_bring = complete, incomplete, spent, may_bring
                 del self._outcome.unread[unread:]
                 del self._outcome.caps[caps:]
                 self._outcome.nested, self._nested = nested, counted
@@ -1174,6 +1193,7 @@ class _Walk:
             if first:
                 self._outcome.unread.append(UnreadInclude(include, "in-template"))
             self.complete = False
+            self.may_bring = True
             return []
         if self._spend():
             return []
@@ -1346,6 +1366,7 @@ def check_includes(
         )
         outcome.combined.met_at = walk.met_at
         outcome.combined.kept = {id(each) for each in walk.kept}
+        outcome.combined.settles = walk.may_bring
     built = outcome.combined is not None
     outcome.attachments_out = len(entries) - (len(walk.attached) if built and walk is not None else 0)
     outcome.attachments_capped = capped if walk is not None and not walk.oversized else 0  # (else the includes are to blame)

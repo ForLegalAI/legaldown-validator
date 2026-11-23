@@ -113,6 +113,9 @@ class Combined:
     #: refused, a cycle, not a fragment, past a cap, or in a template's fragment): it stays the paragraph it is, and
     #: what it would bring in is not in the combined document (#141).
     partial: bool = False
+    #: Whether, in a *partial* one, an include not followed may bring content in (``fragments._Walk.may_bring``): only
+    #: then does a finding that it may settle say so (``NOT_IN_IT``).
+    settles: bool = False
     #: Of each fragment that was read and is not one (§12.2: it is reported and not spliced), the file and line of the
     #: include that first named it, for its findings to be put there (``position``).
     met_at: dict[str, tuple[str, int | None]] = field(default_factory=dict)
@@ -497,7 +500,7 @@ def merge_diagnostics(
             if made_here[number] <= kept[key]:
                 continue  # a place has made it as often already
             kept[key] = made_here[number]
-        if combined.partial and d.rule in SETTLED_ELSEWHERE and position not in combined.unsettleable:
+        if combined.partial and combined.settles and d.rule in SETTLED_ELSEWHERE and position not in combined.unsettleable:
             d = replace(d, message=d.message + NOT_IN_IT)
         merged.append((d, number))
     merged += [(d, None) for d in host if d.rule in HOST_ONLY or id(d) in combined.kept]
