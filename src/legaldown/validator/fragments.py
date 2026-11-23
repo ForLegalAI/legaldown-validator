@@ -1102,7 +1102,9 @@ class _Walk:
         partial (``complete``), as an include of the body does. They may bring in no more than ``MAX_SPLICED_BLOCKS``
         blocks and ``MAX_SPLICED_LINES`` lines (counted for each entry, with what its includes bring in); past that it
         and the attachment files after it are not taken, and False is returned. An attachment file not taken leaves
-        the combined document as complete as it was: what its includes did not follow is not missing from it."""
+        the combined document as complete as it was (what its includes did not follow is not missing from it), and
+        the outcome as it was: no include of it is counted, none is not read and no cap it reached is named in the
+        Warning of §17.5, and the count of includes and headings it spent is given back."""
         if self._full or not self._fits(*fragment.size):
             self._full = True
             return False
@@ -1111,7 +1113,7 @@ class _Walk:
             # What the walk of its includes changes of the outcome, put back if the file is not taken.
             complete, incomplete, spent = self.complete, self.incomplete, self._budget.spent
             unread, caps, nested = len(self._outcome.unread), len(self._outcome.caps), self._outcome.nested
-            counted, met_at = set(self._nested), dict(self.met_at)
+            counted = set(self._nested)
             self._measured = [0, 0]
             self._attaching = True
             # What the walk finds is held until it is known whether the file is taken: if not, the combined pass will
@@ -1127,13 +1129,15 @@ class _Walk:
                 self._measured = None
                 self._attaching = False
             if not self._fits(blocks, lines):
-                # Left out: the combined document, the Warning of §17.5 and the budget of the walk are as they were
-                # (no attachment file is followed after it). What it found in the files stays reported, and the
-                # path findings are the document's to keep (``kept``).
+                # Left out: the combined document, the Warning of §17.5 and the budget of the walk are as they were.
+                # What it found in the files stays reported, at the include that named each file (``met_at``), and
+                # the path findings are the document's to keep (``kept``). What the walk judged once (``_met``,
+                # ``_includes``, ``_findings``) is not put back: it is safe only because no attachment file is
+                # followed after one is left out (``full``), which would else find its includes judged already.
                 self.complete, self.incomplete, self._budget.spent = complete, incomplete, spent
                 del self._outcome.unread[unread:]
                 del self._outcome.caps[caps:]
-                self._outcome.nested, self._nested, self.met_at = nested, counted, met_at
+                self._outcome.nested, self._nested = nested, counted
                 self._full = True
                 self.kept.extend(each for each in found if each.rule in ("path-not-relative", "path-outside-root"))
                 return False

@@ -862,6 +862,18 @@ def test_an_attachment_file_left_out_after_its_includes_are_followed_leaves_no_c
     assert any("past 3 includes and headings" in message for message in warnings), warnings
 
 
+def test_what_an_attachment_file_left_out_reads_is_found_at_its_entry(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 5)
+    text = _attached(("a", "a.lgd"), ("c", "c.lgd")) + _SCOPE + "See {{attach: a}} {{attach: c}}.\n\n{{include: p.lgd}}\n"
+    files = {
+        **_LEFT_OUT, "a.lgd": "## A\n\n{{include: x.lgd}}\n\n{{include: big.lgd}}\n",
+        "x.lgd": "---\ntitle: X\n---\n\nText.\n", "c.lgd": "# C\n",
+    }
+    assert [(r, f) for r, f, _ in _found(_run(text, files), "include-has-frontmatter", "attachment-has-h1")] == [
+        ("include-has-frontmatter", "x.lgd"), ("attachment-has-h1", "c.lgd")
+    ]
+
+
 def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
     text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: gone.lgd}}\n"
     result = _run(text, {"a.lgd": "## A {#a when=x}\n\nText.\n"})
