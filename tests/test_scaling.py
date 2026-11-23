@@ -933,4 +933,4 @@ def test_the_lines_that_an_empty_choice_leaves_bare_are_read_in_a_budget(shape):
         assert len(found) == 1600 and all("underline" in each.message for each in found)
     else:
         assert found == []
-    assert seconds < 30  # some four seconds for the nested items
+    assert seconds < 30  # some six seconds for the nested items

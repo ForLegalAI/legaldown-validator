@@ -2527,7 +2527,7 @@ def _keeps(
     line: str, begun: Counter[str], template: Counter[str], plain: str, prefix: int, frame: _Frame, perturbed: bool
 ) -> bool:
     """Whether *line*, which the parser reads as beginning *begun*, begins nothing that the check prevents and the
-    template line (*plain*, *template*) does not (``_kept``); the validator asks it too (``hazards._reads_otherwise``)."""
+    template line (*plain*, *template*) does not (``_kept``)."""
     if not perturbed and any(begun[kind] < template[kind] for kind in ("quote", "item")):
         return False
     # The content is read after the markers that the output has: where a template marker is
@@ -2593,8 +2593,7 @@ def _escaped(body: str) -> str | None:
 
 def _forms(body: str, column: int) -> list[str]:
     """The forms ``_fix`` tries for a line's content *body*, in order: without its leading spaces and tabs (keeping
-    the *column* of the item it is in), with a backslash (``_escaped``), or both. Also the validator's
-    (``hazards._reads_otherwise``), so that it reads the line the assembler writes."""
+    the *column* of the item it is in), with a backslash (``_escaped``), or both."""
     stripped = body.lstrip(" \t")
     if column and indent_width(body) >= column:
         stripped = " " * column + stripped
@@ -2633,7 +2632,7 @@ def _pick(forms: list[str], read: Callable[[str], tuple[bool, bool, Any]]) -> tu
     (``_keeps``) and whether it begins a definition or a table that the template line does not (``_hides``). The first
     form kept that begins neither, else the first kept (#120: where removing the indentation of a line that would
     join indented code makes a definition of it, the backslash form keeps it text, as the template has it), else the
-    last, with nothing read. The validator picks by the same rule (``hazards._reads_otherwise``)."""
+    last, with nothing read. (The validator writes lines by ``_line_starts`` itself: ``hazards._written_window``.)"""
     found = [(at, *read(form)) for at, form in enumerate(forms)]
     for at, kept, hides, payload in found:
         if kept and not hides:
