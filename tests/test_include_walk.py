@@ -161,7 +161,8 @@ def test_a_nested_path_that_leads_out_of_the_documents_directory_is_read_only_wi
     rooted = validate(document, document_root=root)
     # ../../shared/x.lgd from parts/ is ../shared/x.lgd from the document: within the root, so read; the other leaves it.
     assert _found(rooted) == [("path-outside-root", "parts/a.lgd", 5)]
-    assert "not read without a document root" not in _warning(rooted).message
+    # (A refused path brings nothing in, #141: nothing is left undone, and there is no Warning.)
+    assert not [d for d in rooted.diagnostics if d.rule == SKIPPED_RULE]
     # Without a root it is valid and not read: no finding, and the Warning says so.
     plain = validate(document)
     assert _found(plain) == []
@@ -335,11 +336,14 @@ def test_the_includes_warning_is_gone_when_every_fragment_was_followed(files):
     result, _ = _run(_FRONT + _SCOPE + "{{include: p.lgd}}\n", files)
     # Nothing is left that was not done: the combined document is put together (§16.11, #117).
     assert not [d for d in result.diagnostics if d.rule == SKIPPED_RULE]
-    # ... and while one fragment is not read, it says what the cycle and duplicate checks and the combined document miss.
+    # ... and while one fragment is not read, it says what the cycle and duplicate checks miss, and, when the fragment
+    # not read may bring something in (a path that leads out, not a missing file, #141), the combined document.
     result, _ = _run(_FRONT + _SCOPE + "{{include: p.lgd}}\n\n{{include: absent.lgd}}\n", files)
     message = _warning(result).message
     assert "include-cycle" in message and "include-anchor-duplicate" in message and "not implemented" not in message
-    assert "combined-document checks (§16.11)" in message
+    assert "combined-document checks (§16.11)" not in message
+    result, _ = _run(_FRONT + _SCOPE + "{{include: p.lgd}}\n\n{{include: ../absent.lgd}}\n", files)
+    assert "combined-document checks (§16.11)" in _warning(result).message
 
 
 # ── One file, however it is written ──────────────────────────────────────────

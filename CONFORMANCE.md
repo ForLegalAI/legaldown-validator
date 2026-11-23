@@ -1235,11 +1235,13 @@ Decisions the specification leaves open:
     followed may bring content in: a path that leads out of the directory with no root, a depth or count cap, an
     include in a template's fragment. A file that is not there, a cycle, a file that is no fragment or a path refused
     brings nothing, so a document whose only includes not followed are such says nothing of them in its findings,
-    `Combined.settles`); `question-unused` is not made, as before; a duplicate, a
+    `Combined.settles`); `question-unused` is not made, as before, unless no include not followed may bring
+    content in (such a file uses no question either); a duplicate, a
     collision, a circle or a use before a declaration among the parts that were read is real whatever the others
     hold, and is reported as it is. `ValidationResult` is not marked combined, so `Template.problems` keeps
     `condition-reference-unsafe` as advice. The Warning of §17.5 names "the combined-document checks (§16.11) for what
-    the includes not followed would bring in", with the includes not read counted as before. A fragment that was read
+    the includes not followed would bring in" when one may bring content in, with the includes not read counted as
+    before (a missing file is still counted, and the include rules for the fragments not read still named). A fragment that was read
     and is not one (and so not spliced) has its findings at the include that named it. The differential
     (`test_a_partial_combined_document_equals_validating_the_text_with_what_was_read_spliced`) removes a fragment of
     random documents and compares with the text of the others spliced, the include of the missing one left as it is.

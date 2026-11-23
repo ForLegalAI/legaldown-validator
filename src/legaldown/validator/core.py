@@ -2853,7 +2853,7 @@ def _pass(
         # it could read (#117, #135), unless one of them is not in it (#141).
         reads_other_files = (
             ("include" in body_directives or bool(legaldown_attachments(meta)))
-            if combined is None else combined.attachments_out > 0 or combined.partial
+            if combined is None else combined.attachments_out > 0 or (combined.partial and combined.settles)
         )
         if isinstance(questions, dict) and not reads_other_files:
             for qid in questions:
@@ -2920,7 +2920,11 @@ def _pass(
     )
     if host_only and included.combined is None:
         # No combined document after all: the pass becomes the full one, with what it held and what it waited for.
-        result.release()
+        made = result.release()
+        # (A heading skip is put back after the finding before it, which may have been one held.)
+        for index, (position, before, message, line) in list(heading_skips.items()):
+            if before is not None and id(before) in made:
+                heading_skips[index] = (position, made[id(before)], message, line)
         for position, checks in reversed(deferred):  # (the last first, so that the places before it hold)
             start = len(result.diagnostics)
             checks()

@@ -472,7 +472,7 @@ def test_a_cycle_leaves_the_fragments_before_it_combined():
     # broken, and says nothing of what was not followed: a cycle brings nothing in that is not in it.
     (broken,) = [d for d in result.diagnostics if d.rule == "ref-broken"]
     assert "'nope'" in broken.message and not broken.message.endswith(NOT_IN_IT)
-    assert "for what the includes not followed would bring in" in _warning(result).message
+    assert _is_whole(result) or "for what the includes not followed would bring in" not in _warning(result).message
 
 
 def test_the_depth_and_size_caps_leave_the_document_as_it_was(monkeypatch):
@@ -511,7 +511,16 @@ def test_one_fragment_missing_leaves_the_others_judged_across_the_document():
     for kept in ({"part.lgd": part, "gone.lgd": "# H1\n"}, {"part.lgd": part, "gone.lgd": "{{include: main.lgd}}\n"}):
         result = _run(text, kept)  # (a file that is no fragment, and a cycle)
         assert not any(d.message.endswith(NOT_IN_IT) for d in result.diagnostics), kept
-    assert "for what the includes not followed would bring in" in _warning(result).message
+    assert _is_whole(result) or "for what the includes not followed would bring in" not in _warning(result).message
+    assert "for what the includes not followed would bring in" in _warning(out).message
+
+
+def test_a_question_only_a_missing_fragment_could_use_is_unused():
+    # A file that is not there uses nothing (#141): with only such includes not followed, question-unused is made.
+    text = _TEMPLATE_FRONT + _SCOPE + "Maybe. {when=x}\n\n{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
+    files = {"part.lgd": "## Part\n\nText.\n"}
+    assert [d.message.split("'")[1] for d in _run(text, files).diagnostics if d.rule == "question-unused"] == ["z"]
+    assert not [d for d in _run(text.replace("gone.lgd", "../gone.lgd"), files).diagnostics if d.rule == "question-unused"]
 
 
 @pytest.mark.parametrize("kwargs", [{"resolve": None}, {"resolve": lambda path: None}])
@@ -717,7 +726,7 @@ def test_an_include_of_an_attachment_file_not_followed_is_reported_there_and_lea
     warning = _warning(result)
     assert warning.line == _at(text, "file: s.lgd")
     assert warning.message.startswith("3 includes in LegalDown attachment files; 1 include not read (1 could not be read")
-    assert "for what the includes not followed would bring in" in warning.message
+    assert "for what the includes not followed would bring in" not in warning.message
     # (Of the includes of attachment files, include-heading-skip and include-anchor-duplicate are judged by nothing.)
     assert "include-heading-skip" not in warning.message and "include-anchor-duplicate" not in warning.message
 
@@ -1406,6 +1415,8 @@ def _host_only_cases() -> list[tuple[str, dict[str, str], dict[str, Any]]]:
         (_FRONT + _SCOPE + "{{include: a.lgd}}\n", {"a.lgd": "# H1\n\nText {{ref: nope}}.\n"}),  # read, and no fragment
         (_TEMPLATE_FRONT + _SCOPE + "{{include: a.lgd}} {when=x}\n\n{{placeholder: p}}\n", {"a.lgd": "## A {#a}\n\nT {{ref: a}}.\n"}),
         ("---\ntitle: [unclosed\n---\n\n" + _SCOPE + "{{include: a.lgd}}\n", {"a.lgd": "## A\n\n{{ref: nope}}\n"}),
+        # A heading skip after a finding the host-only pass holds, and more findings after it.
+        (_FRONT + "# 1. Scope\n\n### Deep\n\n# 2. Other\n\n{{include: a.lgd}}\n", {"a.lgd": "## A\n\nText.\n"}),
     ]
     return [(text, files, {"final": final}) for text, files in cases for final in (False, True)]
 

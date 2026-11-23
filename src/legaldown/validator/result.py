@@ -405,15 +405,19 @@ class _Recorder(ValidationResult):
         elsewhere settles it (``_Recorder.unsettleable``)."""
         self._record(rule, "info", message, line, depends, file, unsettleable)
 
-    def release(self) -> None:
+    def release(self) -> dict[int, Diagnostic]:
         """Record every rule from now on, and make each finding held so far (``keep``) the diagnostic it is, in
-        its place."""
+        its place. Returned: of each, by the ``id`` of what was held, the diagnostic it now is, for a caller that
+        holds one to find its place by (``error_at``)."""
         self.keep = None
+        made: dict[int, Diagnostic] = {}
         for index, held in enumerate(self.diagnostics):
             if isinstance(held, _Held):
                 (self.diagnostics[index],), _place = self._diagnostic(
                     held.rule, held.level, held.message, held.line, held.depends, held.file, fallback=False
                 )
+                made[id(held)] = self.diagnostics[index]
+        return made
 
     def result(self) -> ValidationResult:
         """What was recorded, as the plain ``ValidationResult``."""
