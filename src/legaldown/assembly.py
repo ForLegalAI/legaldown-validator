@@ -100,7 +100,7 @@ from .validator.fragments import (
     respelled_message,
     too_deep,
 )
-from .validator.helpers import is_positive_numeric, is_valid_money_amount
+from .validator.helpers import is_positive_numeric, is_valid_money_amount, legaldown_attachments
 from .validator.patterns import (
     DURATION_UNITS,
     FILE_SPELLING_DUPLICATE_RULE,
@@ -1034,23 +1034,22 @@ class _Fragments:
     def __contains__(self, path: str) -> bool:
         return path in self._read
 
-    def respelled(self, relative: str, written: str, file: str, line: int | None, report: bool = True) -> bool:
-        """Whether *relative*, as *written* in *file* at *line*, is another path to a file already named
-        (``Files.respelled``, in the validator's order): the template is refused for it with the validator's
-        ``ldv-file-spelling-duplicate``, when *report*, rather than write one file by two paths (#123), and
-        the file is not read again by this path. Not without a loader, which reads nothing (and the validator
-        reads nothing to compare)."""
-        if self._load_file is None:
-            return False
+    def respelled(self, relative: str, written: str, file: str, line: int | None, report: bool = True) -> str:
+        """The path the file at *relative*, as *written* in *file* at *line*, goes by: *relative*, or the path that
+        named it first when that is another (``Files.respelled``, asked in the validator's order). Then the
+        template is refused, when *report*, with the validator's ``ldv-file-spelling-duplicate`` (#123): assembly
+        does not write one file by two paths. The walk goes on as the validator's does, with the one file by its
+        first path, so that both spend the caps alike. The template itself (which the validator does not ask
+        about: it is a cycle, or no file to read) is not asked about either, nor is anything without a loader,
+        which reads nothing (and the validator reads nothing to compare)."""
+        if self._load_file is None or self._files.is_own(relative):
+            return relative
         named = self._files.respelled(relative)
         if named is None:
-            return False
+            return relative
         if report:
-            self.problems.append(Diagnostic(
-                FILE_SPELLING_DUPLICATE_RULE, "error",
-                f"{respelled_message(written, named)} The template is not assembled.", line=line, file=file,
-            ))
-        return True
+            self.problems.append(_respelled_diagnostic(written, named, file, line))
+        return named
 
     def meet(self, relative: str, include: _Include) -> None:
         """*include* takes in the file at *relative*, and is followed."""
@@ -1179,8 +1178,7 @@ class _Fragments:
         if (cap := too_deep(chain)) is not None:
             self._limit(cap, file, line)
             return
-        if self.respelled(relative, include.written, file, line, report=first):
-            return
+        relative = self.respelled(relative, include.written, file, line, report=first)
         self.meet(relative, include)
         target = self.read(relative, "include", file, line, report=first, named=include.written)
         if target is not None and self.spliceable(relative):
@@ -1217,25 +1215,26 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
                 "include-cycle", "error", cycle_message(files, include.source, EMPTY_CHAIN, relative), line=line,
             ))
             continue
-        if reading.respelled(relative, include.written, "", line):
-            continue
+        relative = reading.respelled(relative, include.written, "", line)
         reading.meet(relative, include)
         source = reading.read(relative, "include", line=line, named=include.written)
         if source is not None and not template and reading.spliceable(relative):
             reading.expand(source, extend(files, EMPTY_CHAIN, relative))
-    attached: set[str] = set()
+    # Another path to a file already named is refused (#123), judged of each LegalDown attachment entry as the
+    # validator judges it, after the includes, in the order of the entries.
     where = Locator(document)
+    first_paths: dict[int, str] = {}
+    for index, _attachment, written in legaldown_attachments(document.metadata):
+        relative = files.relative(written)
+        if relative is not None:
+            first_paths[index] = reading.respelled(relative, written, "", where.key("attachments", index, "file"))
+    attached: set[str] = set()
     for index, item in enumerate(items):
-        if not item.file:
-            continue
-        relative, _problem = files.locate("", item.file)
-        # Each entry, as the validator judges each: another path to a file already named is refused (#123).
-        written = document.metadata.attachments[index].file.strip()
-        if relative is not None and reading.respelled(relative, written, "", where.key("attachments", index, "file")):
-            continue
-        if item.file in attached:
+        if not item.file or item.file in attached:
             continue
         attached.add(item.file)
+        relative, _problem = files.locate("", item.file)
+        relative = first_paths.get(index, relative) if relative is not None else None
         if relative is None:
             reading.refuse(item.file, "attachment")
         elif relative in reading:
@@ -1244,6 +1243,15 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
             reading.read(relative, "attachment")
     reading.finish()
     return reading.subs, reading.last, problems
+
+
+def _respelled_diagnostic(written: str, first: str, file: str, line: int | None) -> Diagnostic:
+    """The Error that refuses a template for *written*, in *file* at *line*, another path to the file *first* named
+    (the validator's ``ldv-file-spelling-duplicate``, #123)."""
+    return Diagnostic(
+        FILE_SPELLING_DUPLICATE_RULE, "error",
+        f"{respelled_message(written, first, nested=bool(file))} The template is not assembled.", line=line, file=file,
+    )
 
 
 def _file_problems(fragment: FragmentFile, kind: FragmentKind, template: bool, path: str) -> list[Diagnostic]:

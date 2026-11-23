@@ -218,7 +218,10 @@ def test_the_file_loader_says_which_file_it_reads(tmp_path):
     _write(root / "doc" / "a.lgd", "A.\n")
     load_file = file_loader(root / "doc", root=root)
     assert loader_identity(load_file, "a.lgd") == loader_identity(load_file, "../doc/a.lgd")
-    assert loader_identity(load_file, "a.lgd") == str((root / "doc" / "a.lgd").resolve())
+    status = (root / "doc" / "a.lgd").stat()
+    assert loader_identity(load_file, "a.lgd") == f"{status.st_dev}:{status.st_ino}"
+    # A file that is not there is its real path.
+    assert loader_identity(load_file, "none.lgd") == str((root / "doc" / "none.lgd").resolve())
     assert loader_identity(load_file, "../../x.lgd") is None  # out of the root: no file is read
     assert loader_identity({}.get, "a.lgd") is None  # a loader that cannot say
 
@@ -255,3 +258,66 @@ def test_a_link_to_a_file_already_named_is_that_file(tmp_path):
     validated = _validated(validate(load(path), document_root=root))
     assert [line for line, _ in validated] == [_line(text, "alias.lgd")]
     assert _refused(load_template(path, document_root=root)) == validated
+
+
+def test_a_hard_link_to_a_file_already_named_is_that_file(tmp_path):
+    root = tmp_path / "root"
+    _write(root / "doc" / "a.lgd", _PART)
+    try:
+        (root / "doc" / "hard.lgd").hardlink_to(root / "doc" / "a.lgd")
+    except OSError:
+        pytest.skip("cannot make a hard link")
+    text = _template("{{include: a.lgd}}\n\n{{include: hard.lgd}}\n")
+    path = _write(root / "doc" / "t.lgd", text)
+    validated = _validated(validate(load(path), document_root=root))
+    assert [line for line, _ in validated] == [_line(text, "hard.lgd")]
+    assert _refused(load_template(path, document_root=root)) == validated
+
+
+# ── Validation and assembly ask the same of the same paths ─────────────────────
+
+def test_the_document_itself_is_not_asked_about_by_either(tmp_path):
+    # Attached by two paths, the template is itself: the validator skips it (it adds nothing to itself), and so
+    # does assembly's check.
+    root = tmp_path / "root"
+    extra = "attachments:\n  - id: one\n    title: One\n    file: t.lgd\n  - id: two\n    title: Two\n    file: ../doc/t.lgd\n"
+    path = _write(root / "doc" / "t.lgd", _template("See {{attach: one}} and {{attach: two}}.\n", extra))
+    assert _validated(validate(load(path), document_root=root)) == []
+    assert _refused(load_template(path, document_root=root)) == []
+
+
+def test_a_nested_finding_says_the_first_path_is_from_the_documents_directory():
+    files = {"b.lgd": "B.\n", "sub/f.lgd": "F.\n\n{{include: ../b.lgd}}\n", "sub/g.lgd": "G.\n\n{{include: ../../doc/b.lgd}}\n"}
+    text = _DOCUMENT + "{{include: sub/f.lgd}}\n\n{{include: sub/g.lgd}}\n"
+    document = replace(parse(text, filename="t.lgd"), path=Path("/r/doc/t.lgd"))
+    diagnostics = validate(document, resolve=files.get, document_root="/r").diagnostics
+    (message,) = [d.message for d in diagnostics if d.rule == RULE]
+    assert "'../../doc/b.lgd' names the file already named 'b.lgd' (from the document's directory)" in message
+    template = Template(text, resolve=files.get, document_root="/r", path=Path("/r/doc/t.lgd"))
+    assert [d.message for d in template.problems] == [message + _SUFFIX]
+
+
+def test_an_attachment_path_is_judged_once_stripped_by_both(tmp_path):
+    # The validator reads an attachment's file once stripped (``legaldown_attachments``); so does the check.
+    root = tmp_path / "root"
+    _write(root / "doc" / "a.lgd", "Hello.\n")
+    extra = 'attachments:\n  - id: sch\n    title: Schedule\n    file: " ../doc/a.lgd"\n'
+    text = _template("{{include: a.lgd}}\n\nSee {{attach: sch}}.\n", extra)
+    path = _write(root / "doc" / "t.lgd", text)
+    validated = _validated(validate(load(path), document_root=root))
+    assert [line for line, _ in validated] == [_line(text, "file:")]
+    assert _refused(load_template(path, document_root=root)) == validated
+
+
+def test_after_the_finding_both_go_on_with_the_one_file_by_its_first_path():
+    # The fragment named twice includes another: both walk it again by its first path, and the nested fragment's
+    # own finding is made once, in the same file, by both.
+    files = {"a.lgd": "A.\n\n{{include: n.lgd}}\n", "n.lgd": "# N {#n}\n"}
+    text = _DOCUMENT + "{{include: a.lgd}}\n\n{{include: ../doc/a.lgd}}\n"
+    document = replace(parse(text, filename="t.lgd"), path=Path("/r/doc/t.lgd"))
+    result = validate(document, resolve=files.get, document_root="/r")
+    found = sorted((d.rule, d.file, d.line) for d in result.diagnostics if d.level == "error")
+    template = Template(text, resolve=files.get, document_root="/r", path=Path("/r/doc/t.lgd"))
+    problems = sorted((d.rule, d.file or "t.lgd", d.line) for d in template.problems)
+    assert problems == found
+    assert (RULE, "t.lgd", _line(text, "../doc/a.lgd")) in found and ("include-has-h1", "n.lgd", 1) in found

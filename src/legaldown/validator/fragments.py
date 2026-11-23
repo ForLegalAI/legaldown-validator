@@ -97,7 +97,7 @@ class Files:
     which a path may name itself.
 
     A file is the same file when the loader reads one file for both paths (``key``): with ``file_loader``,
-    the file's real path, symbolic links followed, as it reads them; with a loader that cannot say, the
+    the file it reads (``identify``: symbolic links followed, a hard link is the file); with a loader that cannot say, the
     path from the document's directory, however it is written (``a.lgd``, and ``../dir/a.lgd`` from a
     document in ``dir``). It is read once, judged once, and named in a finding by the path it was first
     met by. A second path to a file already named by an include or a LegalDown attachment file is
@@ -141,8 +141,8 @@ class Files:
         """What makes two spellings of *relative*, a path from the document's directory, one file: the file the
         loader reads for it, when it can say (``loader_identity``: ``file_loader`` follows symbolic links, so a
         link is the file it leads to, and ``a.lgd`` and ``../dir/a.lgd`` are two files when ``dir`` is a link
-        that leads elsewhere, #123); else that path joined to the directory and normalized (nor the case
-        of a name is followed)."""
+        that leads elsewhere, #123); else that path joined to the directory and normalized, as written (no
+        link is followed, nor the case of a name)."""
         if relative not in self._keys:
             lexical = os.path.normpath(os.path.join(self._directory, relative))
             identity = loader_identity(self._resolve, relative)
@@ -772,13 +772,15 @@ def not_legaldown(include: _NamedInclude) -> str | None:
     )
 
 
-def respelled_message(written: str, first: str) -> str:
+def respelled_message(written: str, first: str, *, nested: bool = False) -> str:
     """The message of ``ldv-file-spelling-duplicate`` (#123) for the path *written*, which names the file that
-    *first* (its path from the document's directory) named before it."""
+    *first* (its path from the document's directory) named before it; *nested*: *written* is in a fragment, whose
+    paths are from its own directory, and the message says where *first* is from."""
+    where = " (from the document's directory)" if nested else ""
     return (
-        f"'{written}' names the file already named '{first}': one file, by two paths. Assembly writes each "
-        f"file it keeps by the path that names it, and cannot write one file by two; name it '{first}' here too, "
-        f"or use the other path throughout."
+        f"'{written}' names the file already named '{first}'{where}: one file, by two paths. Assembly writes "
+        f"each file it keeps by the path that names it, and cannot write one file by two; name the file by "
+        f"one path throughout."
     )
 
 
@@ -958,7 +960,8 @@ class _Walk:
         if (named := self._files.respelled(relative)) is not None and first:
             # Another path to a file already named: reported, and still the one file it is (#123).
             self._result.error(
-                FILE_SPELLING_DUPLICATE_RULE, respelled_message(include.written, named), line=include.line, file=file
+                FILE_SPELLING_DUPLICATE_RULE, respelled_message(include.written, named, nested=owner is not None),
+                line=include.line, file=file,
             )
         target = self._files.read(relative)
         if target is None:

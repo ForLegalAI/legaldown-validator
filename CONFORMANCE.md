@@ -1028,14 +1028,15 @@ Decisions the specification leaves open:
   comes back to a file in it, or to the document itself, is `include-cycle` (§12.2, §16.11) at the include
   that closes it, and is followed no further; a file included from two places (a diamond) is no cycle. A
   document that includes itself is a cycle too, in a template as well. Files are the same file when the
-  loader reads one file for both paths: with `file_loader` (the default, and `load_template`'s), the file's
-  real path, **symbolic links followed** as it follows them (#123), so a link to a file is that file, and
+  loader reads one file for both paths: with `file_loader` (the default, and `load_template`'s), the file it
+  reads, **symbolic links followed** as it follows them (its device and inode, or its real path when it is not
+  there, as the command line tells its targets apart; #123), so a link to a file is that file, and
   `a.lgd` and `../doc/a.lgd` from a document in `doc` are two files when `doc` is a link that leads
   elsewhere (the link is followed before the `..`); with a `resolve=` that cannot say (a loader may have an
   `identify(path)` method returning the file it reads, as `file_loader`'s has, `legaldown.files.loader_identity`), the
   paths joined to the document's directory and normalized (`./a.lgd`, `sub/../a.lgd` and, from a document
-  in `dir`, `../dir/a.lgd`). Another case of a name on a file system that ignores case, and a hard link, are
-  other files. A file is read once, judged once, and named in a finding by the path it was first met by, in
+  in `dir`, `../dir/a.lgd`), with no link followed. With `file_loader` a hard link, and another case of a
+  name on a file system that ignores case, are the file too. A file is read once, judged once, and named in a finding by the path it was first met by, in
   the order the validator reads them (the includes, each followed as it is met, then the attachment files).
   **`ldv-file-spelling-duplicate`** ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123)), an
   Error, reports a second path to a file already named, by an include (the document's or, outside a template,
@@ -1048,8 +1049,10 @@ Decisions the specification leaves open:
   validation and assembly agree: assembly writes each file it keeps at the path that names it (§15.7.2), and
   one file under two names would be written twice, or under a name that leads out of the output directory,
   or the output would name a file that is not written; so assembly refuses the template with the same
-  finding, at the same line, and assembles nothing. A Warning would leave a template that validates and that
-  assembly refuses. The file itself is still read and judged by the validator, once, as the one file it is.
+  finding, at the same line, and assembles nothing (it goes on reading as the validator does, with the one
+  file by its first path, so that both stop at the same caps). A Warning would leave a template that validates
+  and that assembly refuses. The conditions on the two (`when`, a unit) are not looked at: a file has one
+  path, whichever of its includes and entries are kept. The file itself is still read and judged by the validator, once, as the one file it is.
   Without a loader (assembly of a template with none, or `validate` of a document with no path) nothing is
   compared. A chain through a link ends as a cycle at the link (it is the file it leads to). In a template an include in a fragment is not followed,
   and the Warning of §17.5 says so; it does not leave the rest of the fragment unknown (what the fragment
