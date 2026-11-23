@@ -1467,6 +1467,10 @@ def _check(
     # document that is none has no condition and no {{choose:}} of its own, so those of its fragments are not
     # collected, nor judged (the fragment is as it was before it was validated with the document).
     untemplated = combined is not None and not combined.template
+    # They are still template constructs that remain in the combined document, which the final check rejects
+    # (§15.9, §16.11: every check applies to the combined document): those are kept for it alone (#141).
+    final_conditions: list[tuple[str, str, Line]] = []
+    final_chooses: list[tuple[Directive, Line]] = []
     # {{choose:}} belongs in body text: never in frontmatter or a heading
     # (§15.5). Wherever it is, it makes the document a template (§15.1).
     misplaced_chooses = [
@@ -1479,6 +1483,7 @@ def _check(
         for directive in named(text, "choose")
     ]
     if untemplated:
+        final_chooses += [(directive, line) for directive, _misplaced, line in misplaced_chooses]
         misplaced_chooses = []
 
     # ── Templates and the presence of units (§15.1, §15.3) ──
@@ -2240,11 +2245,15 @@ def _check(
     conditions: list[tuple[str, str, int | None]] = []
     condition_orders: list[tuple[int, ...]] = []
     for index, section in enumerate(document.sections):
-        if section.condition and not untemplated:
+        if section.condition and untemplated:
+            final_conditions.append((f"the heading '{section.title}'", section.condition, where.heading(index)))
+        elif section.condition:
             conditions.append((f"the heading '{section.title}'", section.condition, where.heading(index)))
             condition_orders.append((index, -1))
     for found in markers:
-        if found.marker and found.marker.condition and found.placed(template) and not untemplated:
+        if found.marker and found.marker.condition and found.placed(template) and untemplated:
+            final_conditions.append((f"'{found.source}'", found.marker.condition, marker_line(found)))
+        elif found.marker and found.marker.condition and found.placed(template):
             conditions.append((f"'{found.source}'", found.marker.condition, marker_line(found)))
             condition_orders.append(
                 (-1 if found.section is None else found.section, found.block, found.fragment, found.offset)
@@ -2309,8 +2318,8 @@ def _check(
                 name = directive.name
                 # Found only if a diagnostic is made there.
                 line = partial(where.find, section_index, block_index, directive.source, fragment_index, directive.start)
-                if name == "choose" and not untemplated:
-                    chooses.append((directive, line))  # a template even when malformed
+                if name == "choose":
+                    (final_chooses if untemplated else chooses).append((directive, line))  # a template even when malformed
                 if name in ("choose", "placeholder") and directive.positional:
                     (asked_in_notes if in_note else asked).add(directive.positional)
                 if name == "placeholder":
@@ -2707,7 +2716,10 @@ def _check(
             position = len(result.diagnostics)
         result.error_at(position, "heading-skip", message, line=line)
     if final:
-        _check_final(placeholders, chooses, body.notes, conditions, questions, result, where.key("questions"))
+        _check_final(
+            placeholders, chooses + final_chooses, body.notes, conditions + final_conditions, questions, result,
+            where.key("questions"),
+        )
 
     # Warn about declared but unreferenced attachments (§16.10): once per id,
     # which alternatives share (§15.3).

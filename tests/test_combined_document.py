@@ -341,14 +341,50 @@ def test_a_fragment_with_a_choice_is_no_trouble_to_a_document_whose_frontmatter_
     "## Part {#part}\n\n- one. {when=x}\n- two\n",
 ])
 def test_a_documents_fragment_constructs_are_not_template_constructs_of_a_document_that_is_none(part):
-    # Under the final check too (§15.9): the combined pass does not take them up, as the document before did not.
     text = _FRONT + _SCOPE + "{{include: part.lgd}}\n"
-    for final in (False, True):
-        result = _run(text, {"part.lgd": part}, final=final)
-        assert _found(result) == [], (part, final)
+    assert _found(_run(text, {"part.lgd": part})) == [], part
+    # Under the final check (§15.9) they are what remains in the combined document (§16.11), and it is rejected for
+    # them, at their lines in the fragment, as for the document's own (#141); nothing else is judged of them.
+    result = _run(text, {"part.lgd": part}, final=True)
+    assert [(rule, file) for rule, file, _line in _found(result)] == [("template-construct-present", "part.lgd")], part
     # The document is a template when it declares a question: then they are its constructs, in the fragment.
     result = _run(_TEMPLATE_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part}, final=True)
     assert "template-construct-present" in result.rules()
+
+
+_FINAL_RULES = ("template-construct-present", "placeholder-unfilled")
+
+
+@pytest.mark.parametrize(("text", "files"), [
+    (
+        _FRONT + _SCOPE + "{{include: a.lgd}}\n\nEnd.\n",
+        {"a.lgd": "## A {#a when=x}\n\nA {{choose: q}} b. {when=!x}\n\n- i. {when=x}\n"},
+    ),
+    (
+        _FRONT + _SCOPE + "{{include: a.lgd}}\n",
+        {"a.lgd": "Lead. {when=x}\n\n## {{choose: q}} A\n\n{{include: b.lgd}}\n", "b.lgd": "B {{placeholder: p}}.\n"},
+    ),
+    (
+        _FRONT + _SCOPE + "{{include: a.lgd}}\n",
+        {"a.lgd": "## A\n\n> [!DRAFTING]\n> {{choose: q}}\n\nText. {#t when=x}\n"},
+    ),
+    (
+        "---\ntitle: Fixture\nattachments:\n  - id: a\n    title: T a\n    file: a.lgd\n---\n\n" + _SCOPE + "See {{attach: a}}.\n",
+        {"a.lgd": "## A {#in-a when=x}\n\n{{choose: q}}\n"},
+    ),
+])
+def test_the_final_check_of_a_document_that_is_no_template_equals_that_of_the_spliced_text(text, files):
+    # The differential (#141): what the final check finds in the fragments and attachment files of a document that is
+    # no template is what it finds in their text spliced in, where they make the document one.
+    result = _run(text, files, final=True)
+    oracle = validate(parse(_appended(text, files)), final=True)
+
+    def counted(diagnostics):
+        return Counter((d.rule, d.message) for d in diagnostics if d.rule in _FINAL_RULES)
+
+    assert counted(result.diagnostics) == counted(oracle.diagnostics) != Counter()
+    assert not result.index.is_template
+    assert all(d.file for d in result.diagnostics if d.rule == "template-construct-present")
 
 
 def test_each_fragment_is_asked_for_once_whatever_it_holds():
