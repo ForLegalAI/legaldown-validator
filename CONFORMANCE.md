@@ -1577,7 +1577,8 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   where the template read with that line so emptied (or deleted, when nothing is left: step 5) reads otherwise
   than the template read with each insertion a word, as the assembler reads it (`assembly._Reading`): the line's
   markers are a setext underline or a thematic break, or a line of the blocks around it begins other constructs
-  (the line after a deleted one is read as the line-start check escapes it, after its markers) or lies in other
+  (the line after a deleted one is read as the line-start check escapes it, after its markers and the
+  indentation it keeps in its item) or lies in other
   containers (`assembly._signatures`, `validator/hazards.py`: `check_bare_markers`). Each such
   line is read with its own choices empty and every other insertion a word, in all of its conditional units, in the
   blocks around it (the one before, its own, the one after: a list by its items, a quote by the blocks of its

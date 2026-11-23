@@ -763,6 +763,11 @@ class TestLineStartsInContext:
         # The line after a deleted line has the line-start check, which escapes what it begins (#120 review).
         '{{choose: x, true="", false="T"}}\n2. b\n',
         'text\n\n{{choose: x, true="", false="T"}}\n    code\n',
+        # ... and keeps the indentation that holds the line in its item (the escape is after it: "  2\\. b").
+        '- a\n\n  {{choose: x, true="", false="T"}}\n  2. b\n',
+        '- a\n\n  {{choose: x, true="", false="T"}}\n      code\n',
+        '1. a\n\n   {{choose: x, true="", false="T"}}\n   - b\n',
+        '- a\n  - b\n\n    {{choose: x, true="", false="T"}}\n    > q\n',
     ])
     def test_a_line_that_reads_as_the_template_does_is_not_warned_of(self, body):
         assert [d for d in validate(parse(_template(body, _BOOL))).diagnostics if d.rule == BARE_MARKERS_RULE] == []

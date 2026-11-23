@@ -1368,10 +1368,12 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
     begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
     if deleted and at < len(changed) and begun[at + 1] != begun_after[at]:
         # The line after a deleted one has the line-start check (``assembly._Line.after``): what it begins that the
-        # template line does not, the assembler escapes, after its container markers, without its indentation.
-        prefix = assembly._Reading(window, []).frame(at + 1).prefix
+        # template line does not, the assembler escapes, after its container markers and the indentation it keeps,
+        # up to the content column of the items the template line is in (``assembly._Frame.keep``, as ``_fix``).
+        frame = assembly._Reading(window, []).frame(at + 1)
         line = changed[at]
-        changed[at] = line[:prefix] + "\\" + line[prefix:].lstrip(" \t")
+        kept = " " * frame.keep if frame.full else ""
+        changed[at] = line[:frame.prefix] + kept + "\\" + line[frame.prefix:].lstrip(" \t")
         begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
 
     def moved(line: int) -> int:  # a line of *changed* as the line of *window* it is
