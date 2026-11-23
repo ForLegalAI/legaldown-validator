@@ -1300,14 +1300,16 @@ or forbids them, and no fixture case draws either.
   recognized in body text only (§11.4), so one in a section's heading is literal text: it
   is shown as written, and what it was to do is not done. A `{{def:}}` there declares nothing (its uses are `term-undefined`), and assembly does not
   fill a `{{placeholder:}}` there. It is reported once for each heading, at its first line, naming the directives
-  (well-formed or malformed; not one in a code span or comment, nor `\{{`). The usual cause is a setext heading: a
+  (each `{{name:` opener, well-formed or malformed, §11.4; not one in a code span or comment, nor `\{{`; a `{{`
+  that opens no directive is no directive there either). The usual cause is a setext heading: a
   paragraph directly above a `---` (or `===`) line is a heading, and the message names that line and how to keep
   the paragraph. It is an Error because §4.2 is a MUST NOT and the directive is lost whatever it was for; the
   specification's `heading-hardcoded-number` is a Warning, but it is the numbering of §4.2 and a heuristic, while a
   directive is known for sure. No rule of the specification's covers it, so the id is this implementation's own,
   but for `{{choose:}}`, which §15.5 gives to `choose-invalid`: a `{{choose:}}` in a heading is left to that
   rule, and not reported twice. A heading in a list item or a block quote is a heading too and is reported the same
-  way (this implementation reads its text as body text, so its directives are checked as well). The rule does not
+  way (this implementation reads its text as body text, so its directives are checked as well, and the message
+  says so; a `{{choose:}}` there is `choose-invalid`'s too). The rule does not
   stop assembly: like any rule outside `TEMPLATE_RULES`, it is in `Template.validation`, not in `problems`.
 
 Both judge each file by itself. An include fragment or an attachment file validated on its own
@@ -1316,7 +1318,9 @@ Both judge each file by itself. An include fragment or an attachment file valida
 combined document (§16.11) each file is judged at its place, as every file keeps its own structure there (a fence a
 fragment leaves open does not run into the document): the combined pass, which reads the fragments too, reports
 each finding once, in the file it is in, however often the fragment is included (`merge_diagnostics`). Neither rule is
-in `HOST_ONLY` or `WHOLE_DOCUMENT_RULES`: the two passes agree on the document's own parts.
+in `HOST_ONLY` or `WHOLE_DOCUMENT_RULES`: the two passes agree on the document's own parts. As every check of a
+fragment's content, they run over the fragments in the combined pass only: when it is not made (an include that
+was not read), `ldv-check-skipped` says the combined-document checks were not performed.
 
 ## Constructs beyond the level (§17.5)
 

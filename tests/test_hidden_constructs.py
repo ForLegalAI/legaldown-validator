@@ -207,6 +207,22 @@ def test_a_choose_in_a_heading_is_left_to_choose_invalid():
     assert _found(result) == []
 
 
+def test_a_heading_in_a_list_item_says_this_validator_reads_it_and_leaves_choose_alone():
+    text = FM.replace("---\n\n", "questions:\n  x:\n    type: boolean\n---\n\n") + (
+        '# Terms\n\n- ## Inner {{ref: nope}}\n- ## Other {{choose: x, true="A", false="B"}}\n'
+    )
+    result = validate(parse(text))
+    assert "ref-broken" in result.rules("error")  # read as body text
+    assert _found(result) == [(HEADING_DIRECTIVE_RULE, "error", "", _at(text, "## Inner"))]
+    message = _message(result, HEADING_DIRECTIVE_RULE)
+    assert "this validator reads it as body text" in message and "not done" not in message
+
+
+def test_a_line_that_is_no_lf_is_no_line_of_the_count():
+    text = FM + "# A\n\n```\na\x0cb\x1cc\n"
+    assert "1 line," in _message(validate(parse(text)), FENCE_UNCLOSED_RULE)
+
+
 def test_a_placeholder_in_a_templates_heading_is_reported_and_assembly_goes_on():
     # Assembly does not fill it (§4.2: no directive in a heading), so the finished document would keep it.
     text = FM.replace("---\n\n", "questions:\n  x:\n    type: boolean\n---\n\n") + (

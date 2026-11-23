@@ -17,7 +17,10 @@ specification's covers it (``heading-hardcoded-number`` is the numbering of §4.
 usual cause is a setext heading: a paragraph directly above a ``---`` or ``===`` line is a heading, and the
 message names that line. A heading in a list item or a quote is a heading too, and is reported the same way (this implementation
 reads its text as body text, so its directives are checked as well). A ``{{choose:}}`` in a section's heading is
-left to ``choose-invalid``, the specification's rule for it (§15.5).
+left to ``choose-invalid``, the specification's rule for it (§15.5), in a list item or quote as well.
+
+As every check of a fragment's content, both run over a fragment in the combined pass only: when it does not run
+(an include was not read), ``ldv-check-skipped`` says that the combined-document checks were not made.
 
 Both judge each file by itself: the document, or a fragment or attachment file on its own; in the combined
 document (§16.11, ``combined.Combined``), each file at its place, as every file keeps its own structure
@@ -131,7 +134,7 @@ def _headings_in(lines: list[str]) -> int:
 
 
 def _fence_message(block: Block, fence: str, name: str, lex_fragment: Callable[[str], Lexed]) -> str:
-    lines = code_content(block).text.splitlines()
+    lines = code_content(block).text.split("\n")[:-1]  # (not splitlines: LF alone ends a line here)
     if not lines:
         held = "Nothing follows it"
     else:
@@ -188,14 +191,20 @@ def _shown(directives: list[str]) -> str:
     return _join(quoted)
 
 
-def _heading_message(text: str, found: list[str], underline: tuple[int, str] | None) -> str:
+def _heading_message(text: str, found: list[str], underline: tuple[int, str] | None, *, nested: bool) -> str:
     """The message of ``ldv-heading-directive`` for the heading *text* holding the directives *found*, with
-    its setext *underline* (its line and what is written there), if it has one."""
-    lost = (
-        "it is not recognized there (§11.4), so it is shown as written and what it was to do is not done"
-        if len(found) == 1 else
-        "they are not recognized there (§11.4), so they are shown as written and what they were to do is not done"
-    )
+    its setext *underline* (its line and what is written there), if it has one. *nested*: the heading is in a
+    list item or a quote, whose text this implementation reads as body text."""
+    one = len(found) == 1
+    if nested:
+        lost = (
+            f"this validator reads {'it' if one else 'them'} as body text, but §11.4 recognizes directives in "
+            f"body text only, so another tool may show {'it' if one else 'them'} as written"
+        )
+    elif one:
+        lost = "it is not recognized there (§11.4), so it is shown as written and what it was to do is not done"
+    else:
+        lost = "they are not recognized there (§11.4), so they are shown as written and what they were to do is not done"
     setext = ""
     if underline is not None:
         line, written = underline
@@ -254,13 +263,13 @@ def check_heading_directives(
             if found:
                 underline = _underline(locator, locator.underline(index))
                 result.error(
-                    HEADING_DIRECTIVE_RULE, _heading_message(section.title, found, underline),
+                    HEADING_DIRECTIVE_RULE, _heading_message(section.title, found, underline, nested=False),
                     line=spot(locator.heading(index)),
                 )
         for section_index, block_index, top in own.iter_indexed_blocks():
             spans: list[tuple[int, int]] | None = None
             for number, block in _nested_headings(top):
-                found = [d.source for d in lex_fragment(block.text).directives]
+                found = [d.source for d in lex_fragment(block.text).directives if d.name != "choose"]
                 if not found:
                     continue
                 if spans is None:
@@ -268,5 +277,6 @@ def check_heading_directives(
                 start, end = spans[number] if number < len(spans) else (None, None)
                 underline = _underline(locator, end - 1) if start is not None and end - start > 1 else None
                 result.error(
-                    HEADING_DIRECTIVE_RULE, _heading_message(block.text, found, underline), line=spot(start)
+                    HEADING_DIRECTIVE_RULE, _heading_message(block.text, found, underline, nested=True),
+                    line=spot(start),
                 )
