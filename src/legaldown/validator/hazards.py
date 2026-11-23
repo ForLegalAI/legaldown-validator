@@ -40,7 +40,7 @@ import yaml
 
 from ..definitions import nested_blocks
 from ..directives import Directive, lex
-from ..markdown import indent_width, is_blank, is_drafting_marker, label_end, skip_blanks
+from ..markdown import is_blank, is_drafting_marker, label_end, skip_blanks
 from ..markers import MARKER_RE
 from ..models import PARAGRAPH_KINDS, Document
 from ..parser import _layout, parse
@@ -1156,9 +1156,9 @@ def _definitions(output: str) -> tuple[tuple[str, str, str], ...]:
 SKIP_BARE_MARKERS: ContextVar[bool] = ContextVar("skip_bare_markers", default=False)
 #: The most lines that the bare-marker check reads in one validation, the document and its fragments together (each
 #: line it may leave bare is read in a window of the blocks around it: the template's reading of the window once,
-#: and for the line up to three more, charged before it is read). Past it, the first line not read is reported for
+#: and for the line up to five more, charged before it is read). Past it, the first line not read is reported for
 #: the rest.
-BARE_BUDGET = 100000
+BARE_BUDGET = 200000
 _BARE_ADVICE = (
     "give the line text that every answer keeps, or make what holds it conditional ({when=...}), so that it goes whole"
 )
@@ -1316,8 +1316,9 @@ def _read_bare(
         begin = units[at - 1][0] if at > 0 else 0
         end = units[at + 1][1] if at + 1 < len(units) else len(plains)
         end = max(end, number + 1)
-        # The window emptied, and, after a deleted line, the template's frame of the next and the window escaped.
-        cost = (end - begin) * (3 + ((begin, end) not in readings))
+        # The window emptied, and, after a deleted line, the template's frame of the next and the window in each of
+        # the three forms the line-start check may write.
+        cost = (end - begin) * (5 + ((begin, end) not in readings))
         if budget[0] < cost:
             # The rest are not read: the first is reported, for all of them (a Warning for each says no more).
             budget[0] = 0
@@ -1361,19 +1362,6 @@ def _units(assembly: Any, plains: list[str]) -> list[tuple[int, int]]:
     return sorted(found) or [(0, len(plains))]
 
 
-def _escaped(assembly: Any, body: str) -> str | None:
-    """*body*, a line's content, with the backslash that ``assembly._fix`` puts before its first character, or before
-    the ``.`` or ``)`` of an ordered-list number; None where it puts none."""
-    lead = len(body) - len(body.lstrip(" \t"))
-    ordered = assembly._ORDERED_RE.match(body, lead)
-    at = ordered.start("delim") if ordered else lead
-    if not body[at:at + 1] or body[at] not in assembly._PUNCTUATION:
-        return None
-    if body[at] == "\\" and body[at + 1:at + 2] in assembly._PUNCTUATION:
-        return None
-    return body[:at] + "\\" + body[at:]
-
-
 def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emptied: str) -> str:
     """What the lines of *window*, which the template reads as *read* (``assembly._signatures``), read as otherwise
     once line *at* is *emptied* (or deleted, when it is blank: step 5): "" when nothing does. Each line is compared by
@@ -1391,13 +1379,7 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
         line = changed[at]
         head, body = line[:frame.prefix], line[frame.prefix:]
         column = frame.keep if frame.full and not begun[at + 1]["item"] else 0
-        stripped = body.lstrip(" \t")
-        if column and indent_width(body) >= column:
-            stripped = " " * column + stripped
-        forms = [stripped, _escaped(assembly, body), _escaped(assembly, stripped)] if stripped != body else [
-            _escaped(assembly, body)
-        ]
-        for form in [each for each in forms if each is not None]:
+        for form in assembly._forms(body, column):
             changed[at] = head + form
             begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
             if not assembly._escapable(begun_after[at] - begun[at + 1]):

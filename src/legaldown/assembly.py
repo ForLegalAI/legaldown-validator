@@ -2548,6 +2548,30 @@ def _free(content: str, template: str) -> bool:
     return bool(_BARE_ATX_RE.match(content)) and not _BARE_ATX_RE.match(template)
 
 
+def _escaped(body: str) -> str | None:
+    """*body*, a line's content, with a backslash before its first character, or before the ``.`` or ``)`` of an
+    ordered-list number; None where none goes (before a letter or digit, or a character escaped already)."""
+    lead = len(body) - len(body.lstrip(" \t"))
+    ordered = _ORDERED_RE.match(body, lead)
+    at = ordered.start("delim") if ordered else lead
+    if not body[at:at + 1] or body[at] not in _PUNCTUATION:
+        return None  # a backslash before a letter or digit is text
+    if body[at] == "\\" and body[at + 1:at + 2] in _PUNCTUATION:
+        return None  # that character is escaped already (by ``_escape``): another backslash would escape the backslash
+    return body[:at] + "\\" + body[at:]
+
+
+def _forms(body: str, column: int) -> list[str]:
+    """The forms ``_fix`` tries for a line's content *body*, in order: without its leading spaces and tabs (keeping
+    the *column* of the item it is in), with a backslash (``_escaped``), or both. Also the validator's
+    (``hazards._reads_otherwise``), so that it reads the line the assembler writes."""
+    stripped = body.lstrip(" \t")
+    if column and indent_width(body) >= column:
+        stripped = " " * column + stripped
+    forms = [stripped, _escaped(body), _escaped(stripped)] if stripped != body else [_escaped(body)]
+    return [form for form in forms if form is not None]
+
+
 def _fix(
     candidate: str, prefix: int, before: list[str], template: Counter[str], plain: str, column: int, frame: _Frame,
     perturbed: bool,
@@ -2558,22 +2582,7 @@ def _fix(
     the parser read it. If none does, the template's own markers begin the construct, and the last
     form stays."""
     head, body = candidate[:prefix], candidate[prefix:]
-
-    def escaped(body: str) -> str | None:
-        lead = len(body) - len(body.lstrip(" \t"))
-        ordered = _ORDERED_RE.match(body, lead)
-        at = ordered.start("delim") if ordered else lead
-        if not body[at:at + 1] or body[at] not in _PUNCTUATION:
-            return None  # a backslash before a letter or digit is text
-        if body[at] == "\\" and body[at + 1:at + 2] in _PUNCTUATION:
-            return None  # that character is escaped already (by ``_escape``): another backslash would escape the backslash
-        return body[:at] + "\\" + body[at:]
-
-    stripped = body.lstrip(" \t")
-    if column and indent_width(body) >= column:
-        stripped = " " * column + stripped
-    forms = [stripped, escaped(body), escaped(stripped)] if stripped != body else [escaped(body)]
-    forms = [form for form in forms if form is not None]
+    forms = _forms(body, column)
     tail = None
     for form in forms:
         tail = _kept(head + form, before, template, plain, prefix, frame, perturbed)
