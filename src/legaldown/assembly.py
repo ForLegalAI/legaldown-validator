@@ -1882,7 +1882,12 @@ def _chain(entry: _Entry | None) -> Iterator[_Entry]:
 
 #: The block constructs that §15.7.3 has the line-start check keep a line from beginning, as ``_signatures`` names
 #: them: a backslash (or, for indented code, the removal of the indentation) where the line would begin one.
-_ESCAPABLE = frozenset({"item", "quote", "heading", "setext", "code", "rule", "html"})
+_ESCAPABLE = frozenset({"item", "quote", "heading", "setext", "code", "rule", "html", "in-code"})
+#: What ``_signatures`` records on the lines of a multi-line block after its first, by the block's kind: a line in an
+#: indented code block (``in-code``), which removing the line's leading spaces keeps out of it as §15.7.3 prevents
+#: indented code, and a line in a fenced code block or an HTML block, which no escape of §15.7.3 keeps out (its
+#: backslash is for a line that would begin one), so the check leaves it and the validator says so (#120).
+_CONTINUED = {"code": "in-code", "fence": "in-fence", "html": "in-html"}
 #: And those ``_signatures`` records besides, by the parser's kind: a line that begins one in the output where the
 #: template's does not reads otherwise, but §15.7.3 gives no escape for it ("No other character is escaped"), so the
 #: check leaves it, and the validator says so (``ldv-bare-markers``, #120).
@@ -1929,10 +1934,19 @@ def _signatures(
 
     def mark(start: int, end: int, kind: str) -> None:
         """Record the construct of *kind* on lines ``[start, end)``: where it begins, or for
-        a heading of several lines (setext) its underline, the last."""
+        a heading of several lines (setext) its underline, the last. Code and HTML are recorded on
+        their first line as ``code`` and ``html``, and on every line after it as a line *in* one
+        (``_CONTINUED``): a line that joins one or leaves one reads otherwise (#120), where the first
+        line alone would not tell (``x``, blank, ``    code``, a deleted line, ``    more``)."""
         if kind == "heading" and end - start > 1:
             lines_kinds = [(end - 1, "setext")]
-        elif kind in ("heading", "quote", "code", "rule", "html"):
+        elif kind in _CONTINUED:
+            first = "html" if kind == "html" else "code"
+            if last is not None:
+                lines_kinds = [(last, first if last == start else _CONTINUED[kind])] if start <= last < end else []
+            else:
+                lines_kinds = [(start, first)] + [(line, _CONTINUED[kind]) for line in range(start + 1, end)]
+        elif kind in ("heading", "quote", "rule"):
             lines_kinds = [(start, kind)]
         elif kind in _UNESCAPED:
             lines_kinds = [(start, _UNESCAPED[kind])]
@@ -1952,7 +1966,8 @@ def _signatures(
             start, end = base + span.start, base + span.end
             if last is not None and not start <= last < end:
                 continue
-            mark(start, end, span.kind)
+            fenced = span.kind == "code" and FENCE_OPEN_RE.match(block.text.split("\n", 1)[0]) is not None
+            mark(start, end, "fence" if fenced else span.kind)
             if last is not None and span.kind == "paragraph" and opened is not None:
                 leaf[:] = [(around, start)]
             for item_span, item in zip(span.items, block.items, strict=True):
@@ -2503,13 +2518,26 @@ def _kept(
     longer begins a quote or an item that the template line begins has lost one of its markers, and
     is none of ours."""
     tail = _tail([*before, line])
-    if not perturbed and any(tail.begun[kind] < template[kind] for kind in ("quote", "item")):
-        return None
+    return tail if _keeps(line, tail.begun, template, plain, prefix, frame, perturbed) else None
+
+
+def _keeps(
+    line: str, begun: Counter[str], template: Counter[str], plain: str, prefix: int, frame: _Frame, perturbed: bool
+) -> bool:
+    """Whether *line*, which the parser reads as beginning *begun*, begins nothing that the check prevents and the
+    template line (*plain*, *template*) does not (``_kept``); the validator asks it too (``hazards._reads_otherwise``)."""
+    if not perturbed and any(begun[kind] < template[kind] for kind in ("quote", "item")):
+        return False
     # The content is read after the markers that the output has: where a template marker is
     # text in the output (a ``3.`` that no item holds), what follows it may begin a block.
-    content = line[_content_start(frame, line, tail.begun["item"], prefix):]
+    content = line[_content_start(frame, line, begun["item"], prefix):]
     was = plain[_content_start(frame, plain, template["item"], prefix):]
-    return None if _escapable(tail.begun - template) or _free(content, was) else tail
+    extra = begun - template
+    if template["code"] or template["in-code"]:
+        # A line the template has as code that the output has in a code block before it (two code blocks merged): it
+        # is code all the same, and removing its indentation would make text of it.
+        extra.pop("in-code", None)
+    return not (_escapable(extra) or _free(content, was))
 
 
 def _escapable(begun: Counter[str]) -> bool:

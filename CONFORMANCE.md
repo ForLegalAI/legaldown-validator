@@ -1771,6 +1771,16 @@ Assembly edits the template's source and so inherits a few limits of the parser'
      assembler writes them as they are; its readings record both (`assembly._signatures`: `definition`, `table`)
      and leave them (`assembly._ESCAPABLE`), and the validator warns of them (below). A definition that an answer
      can make is an `insertion-boundary` Error too, where the hazards check (#129) reads it.
+  4b. *A line that joins a block before it*: the line after a deleted one can join a multi-line block that the
+     deleted line ended (`x` / blank / `    code` / `{{choose:}}` / `    more`: `more`, text in the template, is in
+     the code block). The readings record every line of a code block and of an HTML block (`in-code`, `in-fence`,
+     `in-html` after the first: `assembly._CONTINUED`), so that a line joining one or leaving one reads otherwise.
+     A line that would join an *indented* code block loses its leading spaces and tabs (`more`), as §15.7.3 prevents
+     indented code, and a backslash where that begins something else (`    - d` gives `\- d`); a line the template
+     has as code itself is left (two code blocks merge, as after a removed drafting note). A line that would join a
+     *fenced* code block or an HTML block has no escape in §15.7.3, whose backslash is for a line that would
+     begin one, so it is left, and the validator warns of it (below). A paragraph that a lazy line continues is
+     compared by the containers each line is in (`_Entry`), which the readings already have.
   5. *What counts as "content"* (an interpretation, not a gap): for an insertion that begins a continuation line
      in a list item (`- a` / blank / `  {{placeholder: x}} more`), the content is taken to begin after the
      template line's own indentation, which is kept (`  y more`), so the line stays in the item. This follows the
@@ -1778,15 +1788,16 @@ Assembly edits the template's source and so inherits a few limits of the parser'
      markers"); read literally, "every space and tab at the start of the content is removed" would take the line out
      of the item. `test_an_insertion_that_begins_the_content_keeps_the_items_indentation` pins it.
 
-  The validator tells the template's author of cases 1 to 4a (the validator's side of #120): **`ldv-bare-markers`**,
+  The validator tells the template's author of cases 1 to 4b (the validator's side of #120): **`ldv-bare-markers`**,
   a Warning of this implementation's own (`legaldown.grammar.BARE_MARKERS_RULE`), at a line of a template whose
   choices one answer to each of their questions (declared booleans and choices) makes all empty (or spaces), with
   nothing else on the line but quote and list markers (the assembler's `_BARE_MARKERS_RE`), without its drafting notes,
   where the template read with that line so emptied (or deleted, when nothing is left: step 5) reads otherwise
   than the template read with each insertion a word, as the assembler reads it (`assembly._Reading`): the line's
   markers are a setext underline or a thematic break, or a line of the blocks around it begins other constructs,
-  a link reference definition and a table among them (the line after a deleted one is read in the first of the
-  forms the line-start check would write, as `assembly._fix` tries them) or lies in other
+  a link reference definition, a table and the lines of a code or HTML block among them (the line after a deleted
+  one is read in the first of the forms the line-start check would write, as `assembly._fix` tries them and by
+  its own test, `assembly._keeps`) or lies in other
   containers (`assembly._signatures`, `validator/hazards.py`: `check_bare_markers`). Each such
   line is read with its own choices empty and every other insertion a word, in all of its conditional units, in the
   blocks around it (the one before, its own, the one after: a list by its items, a quote by the blocks of its

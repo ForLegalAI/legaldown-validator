@@ -1370,19 +1370,24 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
     changed = window[:at] + ([] if deleted else [emptied]) + window[at + 1:]
     begun, containers = read
     begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
-    if deleted and at < len(changed) and assembly._escapable(begun_after[at] - begun[at + 1]):
+    frame = assembly._Reading(window, []).frame(at + 1) if deleted and at < len(changed) else None
+
+    def keeps() -> bool:  # (the assembler's own test, ``assembly._keeps``: after a deleted line, the output differs)
+        assert frame is not None
+        return assembly._keeps(changed[at], begun_after[at], begun[at + 1], window[at + 1], frame.prefix, frame, True)
+
+    if frame is not None and not keeps():
         # The line after a deleted one has the line-start check (``assembly._Line.after``): when it begins a construct
         # that the template line does not and §15.7.3 names (``assembly._kept``), the assembler writes the first of
         # its forms that begins none (``assembly._fix``): without its indentation past the content column of its item
         # (``_Frame.keep``), with a backslash, or both. A definition or a table it leaves (#120): they are compared.
-        frame = assembly._Reading(window, []).frame(at + 1)
         line = changed[at]
         head, body = line[:frame.prefix], line[frame.prefix:]
         column = frame.keep if frame.full and not begun[at + 1]["item"] else 0
         for form in assembly._forms(body, column):
             changed[at] = head + form
             begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
-            if not assembly._escapable(begun_after[at] - begun[at + 1]):
+            if keeps():
                 break
 
     def moved(line: int) -> int:  # a line of *changed* as the line of *window* it is
@@ -1413,6 +1418,10 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
                 return f"{where} becomes a link reference definition, which is not displayed"
             if extra["table"]:
                 return f"{where} becomes part of a table"
+            if extra["in-code"] or extra["in-fence"]:
+                return f"{where} joins a code block before it"
+            if extra["in-html"]:
+                return f"{where} joins an HTML block before it"
             return f"{where} begins other blocks than the template's (as after a blank line)"
         if chain(containers, line, False) != chain(containers_after, after, True):
             return f"{where} is in other containers than the template's (it leaves the item or quote that held it)"

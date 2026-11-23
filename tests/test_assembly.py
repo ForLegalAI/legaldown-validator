@@ -728,6 +728,22 @@ class TestLineStartsInContext:
         }[body]
 
     @pytest.mark.parametrize(("body", "written"), [
+        # A line after a deleted one that the template has as text would join the indented code before it: its
+        # indentation goes, as §15.7.3 prevents indented code (#120). Before, "    more" was code.
+        ('x\n\n    code\n{{choose: x, true="", false="T"}}\n    more\n', "x\n\n    code\nmore\n"),
+        ('- a\n\n      code\n  {{choose: x, true="", false="T"}}\n      more\n', "- a\n\n      code\n  more\n"),
+        ('    more\n{{choose: x, true="", false="T"}}\n    - d\n', "    more\n\\- d\n"),
+        ('> x\n>\n>     code\n> y\n{{choose: x, true="", false="T"}}\n>     more\n', "> x\n>\n>     code\n> y\n>     more\n"),
+        # A line the template has as code stays code, where it joins the code before it (they merge, and the
+        # validator warns), and a line in a fenced block or an HTML block is left as it is: no escape keeps it out.
+        ('> x\n>\n>     code\n{{choose: x, true="", false="T"}}\n>     more\n', "> x\n>\n>     code\n>     more\n"),
+        ('- ```\n  a\n{{choose: x, true="", false="T"}}\n    more\n', "- ```\n  a\n    more\n"),
+        ('> <div>\n{{choose: x, true="", false="T"}}\n>     more\n', "> <div>\n>     more\n"),
+    ])
+    def test_a_line_that_would_join_indented_code_loses_its_indentation(self, body, written):
+        assert self._assembled(body, {"x": True}, _BOOL) == written
+
+    @pytest.mark.parametrize(("body", "written"), [
         ('{{choose: x, true="", false="T"}}\n    [a]: /url\n', "[a]: /url\n"),
         ('- x\n\n  {{choose: x, true="", false="T"}}\n      [a]: /url\n', "- x\n\n  [a]: /url\n"),
         ('> a\n> {{choose: x, true="", false="T"}}\n> [a]: /url\n', "> a\n> \n> [a]: /url\n"),
@@ -772,6 +788,11 @@ class TestLineStartsInContext:
         ('a | b\n{{choose: x, true="", false="T"}}\n|---|---|\n', "the line above it becomes part of a table"),
         ('- a | b\n  {{choose: x, true="", false="T"}}\n  |---|---|\n', "becomes part of a table"),
         ('> a | b\n{{choose: x, true="", false="T"}}\n> |---|---|\n', "becomes part of a table"),
+        # The line after it joins a code block or an HTML block before it, which no escape of §15.7.3 keeps it
+        # out of: a fenced block, an HTML block, and a line the template has as code (two code blocks merge).
+        ('- ```\n  a\n{{choose: x, true="", false="T"}}\n    more\n', "joins a code block before it"),
+        ('> <div>\n{{choose: x, true="", false="T"}}\n>     more\n', "joins an HTML block before it"),
+        ('> x\n>\n>     code\n{{choose: x, true="", false="T"}}\n>     more\n', "joins a code block before it"),
         # A drafting note before it is removed first: the bare "-" underlines "text" (#120 review).
         ('text\n> [!DRAFTING]\n> n\n- {{choose: x, true="", false="T"}}\n', "the underline of a heading"),
     ])
