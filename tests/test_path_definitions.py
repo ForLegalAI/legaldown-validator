@@ -286,6 +286,47 @@ def test_the_lines_of_a_headings_joined_text_are_not_guessed():
     assert "/etc/c\x7f" in _paths('* [FOO]: /etc/p\x7f "![i](/etc/t.png)"\n  word ![a](/etc/c\\\x7f) text\n  ---')
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        '> [a]: x\x01 "![i][b]"\n> ![k](ok.png) text\n> ===',
+        '- [a]: x\x01 "![i][b]"\n  ![k](ok.png) text\n  ===',
+        '> - [a]: x\x01 "![i][b]"\n>   more\n>   ![k](ok.png) text\n>   ---',
+        '> [a]: x\x01 "![i][b]"\n![k](ok.png) lazy\n> ===',
+        '1. > [a]: x\x01 "![i][b]"\n   >   ![k](ok.png) text\n   > ===',
+        '> [a]: x\x01 "![i][b]"\n> foo ->\n> ![k](ok.png) text\n> ===',  # a line of the heading ends in ">"
+    ],
+)
+def test_the_lines_of_a_setext_heading_in_an_item_or_a_quote_are_told_apart(body):
+    """The model joins the lines of such a heading (#139): a reference-style image on the line pandoc reads as a
+    definition, in its title, is no image of pandoc's, and the others do not read the definition it names (a
+    control character in its destination), so no renderer displays it. An image on another line is displayed."""
+    assert _found(f"{body}\n\n[b]: /etc/q\x01") == []
+    assert _paths(f"{body.replace('![k](ok.png)', '![k][b]')}\n\n[b]: /etc/q\x01") == ["/etc/q\x01"]
+
+
+@pytest.mark.parametrize(
+    "note",
+    [
+        '> [!DRAFTING]\n>\n> [a]: x\\ "![i](ok.png)"',  # markdown-it reads a paragraph with an image
+        '> [!DRAFTING]\n>\n> [a]: x\\ "![i][b]"\n\n[b]: ok.png',  # ... and a reference-style one
+        '- > [!DRAFTING]\n  >\n  > [a]: x\\ "![i](ok.png)"',
+        '> [!DRAFTING]\n>\n> > [a]: x\\ "![i](ok.png)"',
+    ],
+)
+def test_text_that_only_a_reading_has_in_a_drafting_note_is_in_the_note(note):
+    """An image of such text is judged, as the model's own images in a note are (§15.6), and is not the image whose
+    existence the check-skipped Warning says was not checked (#139): the model's image there is not either."""
+    template = "---\ntitle: T\nquestions:\n  x:\n    type: boolean\n---\n\nText {{choose: x, true=\"a\", false=\"b\"}}.\n\n"
+    found = validate(parse(template + note + "\n")).diagnostics
+    assert [d.rule for d in found if d.rule.startswith(("path-", "ldv-"))] == []
+    outside = note.replace("[!DRAFTING]", "[!NOTE]")
+    found = validate(parse(template + outside + "\n")).diagnostics
+    assert [d.rule for d in found if d.rule.startswith(("path-", "ldv-"))] == ["ldv-check-skipped"]
+    found = validate(parse(template + note.replace("ok.png", "/etc/ok.png") + "\n")).diagnostics
+    assert [d.rule for d in found if d.rule.startswith(("path-", "ldv-"))] == ["path-not-relative"]
+
+
 # ── What a reading has as a title is no image ─────────────────────
 
 

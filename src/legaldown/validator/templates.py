@@ -305,26 +305,26 @@ def is_drafting_note(quote: Block) -> bool:
     return quote.kind == "quote" and Quote(quote.text.split("\n", 1)[0].strip(), range(0)).is_drafting_note
 
 
-def drafting_note_blocks(quote: Block, *, depth: int = 0) -> list[Block]:
+def drafting_note_blocks(quote: Block, *, depth: int = 0, quotes: int | None = None) -> list[Block]:
     """The blocks of drafting note *quote* without its ``[!DRAFTING]`` marker
     line (§15.6), as ``quote_blocks`` reads the note's content: fresh blocks.
     The marker starts the first paragraph or heading, and is cut from it,
     the block going when nothing else is in it; where it does not (a marker
     line indented as code), the note is what is written after its first
-    line. *depth*: as in ``quote_blocks``; past it the note is one paragraph
+    line. *depth* and *quotes*: as in ``quote_blocks``; past it the note is one paragraph
     of its text after the first line, as written. Raises ``ValueError`` for a
     block that is not a drafting note (``is_drafting_note``)."""
     from ..parser import MAX_QUOTE_DEPTH, quote_blocks  # see the import note in check_template_body
 
     if not is_drafting_note(quote):
         raise ValueError("not a drafting note")
-    if depth >= MAX_QUOTE_DEPTH:
+    if (depth if quotes is None else quotes) >= MAX_QUOTE_DEPTH:
         text = quote.text.partition("\n")[2]
         return [Block(kind="paragraph", text=text)] if text.strip() else []
-    blocks = quote_blocks(quote, depth=depth)
+    blocks = quote_blocks(quote, depth=depth, quotes=quotes)
     first = blocks[0] if blocks else None
     if first is None or first.kind not in ("paragraph", "heading") or not first.text.upper().startswith(DRAFTING_MARKER):
-        return quote_blocks(Block(kind="quote", text=quote.text.partition("\n")[2]), depth=depth)
+        return quote_blocks(Block(kind="quote", text=quote.text.partition("\n")[2]), depth=depth, quotes=quotes)
     rest = first.text[len(DRAFTING_MARKER):].lstrip()
     if not rest:
         return blocks[1:]
@@ -600,7 +600,7 @@ def check_template_body(
     # Imported here, as in core.py: definitions -> validator.helpers ->
     # validator/__init__ -> core -> templates would otherwise be a cycle.
     from ..definitions import find_definition_anchors, quote_ranges, text_fragments
-    from .hazards import check_definition_hazards  # hazards -> templates
+    from .hazards import check_bare_markers, check_definition_hazards  # hazards -> templates
     from .units import include_key, paragraph_include  # conditions -> templates -> units -> conditions
 
     def find(section: int | None, block: int, needle: str, fragment: int | None = None, offset: int = 0,
@@ -700,6 +700,11 @@ def check_template_body(
             document, result, where=where, template=template, markers=markers,
             combined=combined, cache=cache,
         )
+        if template:
+            check_bare_markers(
+                document, result, where=where, template=template, markers=markers,
+                combined=combined, cache=cache,
+            )
     if template:
         _check_fragments(document, [(i.path, i.line) for i in includes if i.path and not i.in_note], result, where)
     return BodyScan(all_notes, includes)

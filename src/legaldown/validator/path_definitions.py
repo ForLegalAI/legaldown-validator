@@ -23,7 +23,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from ..markdown import Reading, definitions_read_as
+from ..markdown import Reading, definitions_read_as, is_drafting_marker
 from ..models import Block, Document
 from ..positions import Locator, _walk_spans
 from .result import Line
@@ -68,11 +68,13 @@ class ReadText(NamedTuple):
     """Text that a reading reads as a paragraph (or a heading) where the model reads definitions and their titles: all
     of the paragraph's or heading's *text* (an image may begin in a title and end below it), the file *line* it
     begins on, and *counted*, the ranges of offsets in it that lie on lines the model has as definitions. An image
-    that begins elsewhere is in text the model scans itself."""
+    that begins elsewhere is in text the model scans itself. *noted*: it is in a drafting note (§15.6), as the
+    reading reads the quotes around it (#139)."""
 
     text: str
     line: int
     counted: tuple[tuple[int, int], ...]
+    noted: bool = False
 
     def counts(self, offset: int) -> bool:
         """Whether *offset* is on a counted line: the ranges are sorted and do not overlap, so a bisect finds it."""
@@ -146,7 +148,7 @@ def read_definitions(document: Document, where: Locator, reading: Reading) -> Re
     model_parts += [(spans, each.blocks) for (_h, spans), each in zip(source_map.layout.sections, document.sections, strict=True)]
     defined: set[int] = set()
     for lying, blocks in model_parts:
-        for span, block, _depth, base in _walk_spans(lying, blocks, 0, 0):
+        for span, block, _held, base in _walk_spans(lying, blocks, 0, 0):
             if block.kind == "link_definition":
                 defined.update(range(first + base + span.start, first + base + span.end))
 
@@ -159,14 +161,14 @@ def read_definitions(document: Document, where: Locator, reading: Reading) -> Re
         parts_read = [(spans.preamble, preamble)]
         parts_read += [(span, blocks) for (_heading, span), (_title, blocks) in zip(spans.sections, sections, strict=True)]
         for lying, blocks in parts_read:
-            for span, block, base, frame in _walk_framed(lying, blocks, 0, 0, lines):
+            for span, block, base, frame, noted in _walk_framed(lying, blocks, 0, 0, lines):
                 begin, end = first + base + span.start, first + base + span.end
                 if block.kind == "link_definition":
                     read.append(ReadDefinition(block.label, block.target, begin, end))
                 elif block.kind in ("paragraph", "heading") and defined and not defined.isdisjoint(range(begin, end)):
                     made = _text_of(block.text, block.kind, begin, end, defined, frame[span.start:span.end])
                     if made is not None:
-                        texts.append(made)
+                        texts.append(made._replace(noted=noted))
         for (title_span, _spans), (_heading, _blocks) in zip(spans.sections, sections, strict=True):
             begin, end = first + title_span.start, first + title_span.end
             if end - begin > 1 and not defined.isdisjoint(range(begin, end - 1)):  # (a setext heading: ATX has no definition)
@@ -181,21 +183,24 @@ def read_definitions(document: Document, where: Locator, reading: Reading) -> Re
 
 
 def _walk_framed(
-    spans: Any, blocks: Any, depth: int, base: int, frame: list[str]
-) -> Iterator[tuple[Any, Block, int, list[str]]]:
+    spans: Any, blocks: Any, depth: int, base: int, frame: list[str], held: int = 0, noted: bool = False
+) -> Iterator[tuple[Any, Block, int, list[str], bool]]:
     """``positions._walk_spans`` with the lines the spans are counted in (*frame*: those of the body, or of a quote's
-    content), each as ``(span, block, base, frame)``."""
+    content), each as ``(span, block, base, frame, noted)``: *noted*, whether it is in a drafting note (§15.6)."""
     from ..models import LIST_KINDS
     from ..parser import MAX_QUOTE_DEPTH, quote_content
 
     for span, block in zip(spans, blocks, strict=True):
-        yield span, block, base, frame
+        yield span, block, base, frame, noted
         if block.kind in LIST_KINDS:
             for item_span, item in zip(span.items, block.items, strict=True):
-                yield from _walk_framed(item_span.blocks, item.blocks, depth + 1, base, frame)
-        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+                yield from _walk_framed(item_span.blocks, item.blocks, depth + 1, base, frame, held, noted)
+        elif block.kind == "quote" and held < MAX_QUOTE_DEPTH:
             children, inner = quote_content(block.text, depth + 1)
-            yield from _walk_framed(inner, children, depth + 1, base + span.start, block.text.split("\n"))
+            inside = noted or is_drafting_marker(block.text.split("\n", 1)[0].strip())
+            yield from _walk_framed(
+                inner, children, depth + 1, base + span.start, block.text.split("\n"), held + 1, inside
+            )
 
 
 def _joined(text: str, begin: int, sizes: list[int], defined: set[int]) -> ReadText:

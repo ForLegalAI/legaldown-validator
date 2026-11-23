@@ -1670,6 +1670,22 @@ def test_a_definition_only_pandoc_or_markdown_it_reads_is_judged_where_it_is_wri
     assert "relative to the document" in next(d.message for d in result.diagnostics if d.rule == "path-not-relative")
 
 
+@pytest.mark.parametrize("where", ["text", "quote", "item"])
+@pytest.mark.parametrize("host", ["parsed", "changed"])
+def test_a_definition_of_a_fragment_that_every_reading_reads_is_one_finding(where, host):
+    """The specification, pandoc and markdown-it all read ``[r]: /etc/x``, and the fragment is read again (a control
+    character elsewhere in it): one finding, at its line, whether the document's own lines are known or not (#139).
+    The model's line of a definition is unknown only in a file without a source map, which no reading reads again,
+    so its place and a reading's line never name one definition twice."""
+    definition = {"text": "[r]: /etc/x", "quote": "> [r]: /etc/x", "item": "- [r]: /etc/x"}[where]
+    text = _FRONT + _SCOPE + "See ![a][r].\n\n{{include: part.lgd}}\n"
+    document = parse(text, filename="main.lgd")
+    if host == "changed":
+        document.sections[0].blocks[0].text += " More."  # it no longer fits its source map
+    result = validate(document, resolve=_Loader({"part.lgd": f"See ![b][r].\n\n{definition}\n\n[s]: y\x01\n"}))
+    assert _found(result, "path-not-relative") == [("path-not-relative", "part.lgd", 3)]
+
+
 def test_a_definition_in_a_fragment_that_leaves_the_root_is_judged_as_a_strict_one_is():
     # (Judged from the fragment's own directory, the root here, as the document of a parsed string is: #135.)
     text = _FRONT + _SCOPE + "See ![a][r].\n\n{{include: part.lgd}}\n"

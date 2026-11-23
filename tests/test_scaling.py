@@ -12,6 +12,7 @@ never on a slow machine.
 from __future__ import annotations
 
 import random
+import re
 import time
 
 import pytest
@@ -908,3 +909,28 @@ def test_a_reference_to_alternatives_that_each_refuse_many_of_two_thousand_choic
         frozenset(conditions_module.Condition("c", f"v{k}", True) for k in rng.sample(range(n), 100)) for _ in range(n)
     ]
     assert _seconds(conditions_module.always_covered, ALWAYS, targets, questions) < 2.0  # 0.2 s now
+
+
+@pytest.mark.parametrize("shape", ["one quote", "nested items", "items"])
+def test_the_lines_that_an_empty_choice_leaves_bare_are_read_in_a_budget(shape):
+    """Two thousand lines that an empty choice leaves as bare markers (#120): each is read in the blocks around it,
+    within ``hazards.BARE_BUDGET`` lines in all. One paragraph of a quote is one such block: past the budget, the
+    first line not read is reported for the rest, once."""
+    choice = '{{choose: b, true="", false="T"}}'
+    if shape == "one quote":
+        body = "".join(f"> {choice}\n" for _ in range(2000))
+    elif shape == "nested items":
+        body = "".join("  " * (k % 5) + f"- {choice}\n" for k in range(2000))
+    else:
+        body = "".join(f"- {choice}\n" for _ in range(2000))
+    source = f"---\ntitle: T\ndocument_type: contract\nquestions:\n  b:\n    type: boolean\n{_SIDES}---\n\n{body}"
+    start = time.perf_counter()
+    found = [d for d in validate(parse(source)).diagnostics if d.rule == "ldv-bare-markers"]
+    seconds = time.perf_counter() - start
+    if shape == "one quote":
+        assert len(found) == 1 and re.search(r"this one and 19[0-9]{2} after it", found[0].message)
+    elif shape == "nested items":  # a bare "- " under an item's paragraph underlines it
+        assert len(found) == 1600 and all("underline" in each.message for each in found)
+    else:
+        assert found == []
+    assert seconds < 30  # some four seconds for the nested items

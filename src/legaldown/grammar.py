@@ -36,6 +36,7 @@ from .validator.helpers import (
 )
 from .validator.patterns import (
     ALIAS_REMOVED_RULE,
+    BARE_MARKERS_RULE,
     DURATION_UNITS,
     FENCE_UNCLOSED_RULE,
     FILE_SPELLING_DUPLICATE_RULE,
@@ -108,6 +109,7 @@ __all__ = [
     "FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE",
     "ALIAS_REMOVED_RULE",
     "FRONTMATTER_PLACEHOLDER_UNREAD_RULE",
+    "BARE_MARKERS_RULE",
     # Rules over them
     "slugify_identifier",
     "format_section_number",

@@ -264,8 +264,8 @@ def _fragments(
     count = 0
     scope = 0  # the next scope number
 
-    def walk(block: Block, depth: int, path: tuple[int, ...], anchor: bool, units: bool) -> None:
-        # *depth*: the items and quotes *block* is in; *anchor*: whether its
+    def walk(block: Block, depth: int, path: tuple[int, ...], anchor: bool, units: bool, held: int = 0) -> None:
+        # *depth*: the items and quotes *block* is in, *held*: the quotes (#139); *anchor*: whether its
         # end may be an anchor position; *units*: whether its items are
         # units, numbered — not in a quote.
         nonlocal count, scope
@@ -281,16 +281,16 @@ def _fragments(
                     # positions as its own are; of the item's other blocks,
                     # the first paragraph it opens with.
                     first = child.kind in LIST_KINDS or (k == 0 and child.kind == "paragraph")
-                    walk(child, depth + 1, inner, anchor and first, units)
+                    walk(child, depth + 1, inner, anchor and first, units, held)
                     k += child.kind != "link_definition"
         elif block.kind == "quote":
             at, slot = len(fragments), len(quotes) if quotes is not None else 0
             if quotes is not None:
                 quotes.append((block.text.split("\n", 1)[0].strip(), range(0)))
-            if depth < MAX_QUOTE_DEPTH:
+            if held < MAX_QUOTE_DEPTH:
                 children, _spans = quote_content(block.text, depth + 1)
                 for child in children:
-                    walk(child, depth + 1, path, False, False)
+                    walk(child, depth + 1, path, False, False, held + 1)
             elif block.text:
                 # Too deep to read: its text as one, its fenced code blanked.
                 fragments.append((blank_fenced_code(block.text), False, path, scope))
@@ -312,22 +312,22 @@ def _fragments(
 def nested_blocks(block: Block) -> Iterator[Block]:
     """*block* and every block in it, in document order: its list items'
     blocks and the blocks its quotes hold (``parser.quote_content``), as
-    ``block_fragments`` reads them — a quote in ``MAX_QUOTE_DEPTH`` items and
-    quotes holding none but its text."""
+    ``block_fragments`` reads them — a quote in ``MAX_QUOTE_DEPTH`` quotes
+    holding none but its text."""
     from .parser import MAX_QUOTE_DEPTH, quote_content  # the parser builds on this module
 
-    def walk(block: Block, depth: int) -> Iterator[Block]:
+    def walk(block: Block, depth: int, held: int) -> Iterator[Block]:
         yield block
         if block.kind in LIST_KINDS:
             for item in list_items(block):
                 for child in item.blocks:
-                    yield from walk(child, depth + 1)
-        elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH:
+                    yield from walk(child, depth + 1, held)
+        elif block.kind == "quote" and held < MAX_QUOTE_DEPTH:
             children, _spans = quote_content(block.text, depth + 1)
             for child in children:
-                yield from walk(child, depth + 1)
+                yield from walk(child, depth + 1, held + 1)
 
-    yield from walk(block, 0)
+    yield from walk(block, 0, 0)
 
 
 def _own_fragments(block: Block) -> list[tuple[str, bool]]:

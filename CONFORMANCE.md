@@ -653,7 +653,10 @@ Where this differs from CommonMark, or is read more simply:
       - A table is the model's (GFM's): `[r]: /etc/x\x7f` as the first line of a table of one cell, with a delimiter
         row under it, is a table cell to the model and a definition to a renderer without tables, and a line without
         a pipe after a table is a row to the model, GFM, markdown-it and `pandoc -f commonmark` and a *definition* to
-        `pandoc -f gfm`, which is not a supported reading: an image of it is not judged.
+        `pandoc -f gfm`, which is not a supported reading: an image of it is not judged. Out of scope (#139): the
+        specification's tables are GFM's, which read the row, and the readings judged are the specification's,
+        `pandoc -f commonmark`'s and markdown-it's; `test_pandoc_gfm_reads_a_definition_after_a_table_that_the_path_rules_do_not_judge`
+        runs `pandoc -f gfm` where pandoc is installed, so that a pandoc that comes to agree is noticed.
       - The title of a definition. Where a reading reads text and the model a definition and its title (markdown-it
         ends `[a]: x\ "![i](/etc/p.png)"` at the backslash, so the line is a paragraph with an image), the text is
         read for images under that reading, at its own lines, as the lines of the reading's paragraphs that the model
@@ -662,9 +665,18 @@ Where this differs from CommonMark, or is read more simply:
         markdown-it's, not pandoc's), but an *inline* image in it is judged: it is displayed by the
         specification's reading, which is text there. The whole text of the reading's paragraph or heading is read, and
         the images that begin on a line the model has as a definition are judged (one that begins in a title and ends
-        below it too); the others are the model's own. A residual (too many findings): the lines of a setext heading's
-        text in a quote or an item are joined, so a reference-style image in the title of a definition that a reading
-        reads there is still that reading's.
+        below it too); the others are the model's own. The model joins the lines of a setext heading in a quote or an
+        item, a space between; they are told apart again from the heading's lines as written, each line's text being
+        the end of it after its markers and one space joining it to the line before (`paths._heading_lines`; a line
+        whose text begins with a `>` too far in to be a marker is not told apart, and is read as before), so that a reference-style image in the title of a
+        definition that a reading reads there is not that reading's (#139).
+      - Text that only a reading has, in a drafting note as that reading reads the quotes around it, is in the note
+        (`ReadText.noted`): its images are judged all the same, and none of them is the image whose existence the
+        check-skipped Warning names (#139).
+      - A definition is judged once however many readings read it, by its line (and file). The model's line of one
+        is unknown only in a file without a source map, or no longer fitting it, which no reading reads again
+        (`read_definitions` needs its lines); so a reading's definition and the model's are never one definition
+        under two names (#139, `test_a_definition_of_a_fragment_that_every_reading_reads_is_one_finding`).
       - A label of white space the specification does not take as blank (`[<NBSP>]: x`, U+3000, and for markdown-it
         U+001C–U+001F, U+0085, U+2028) makes the line text to pandoc and markdown-it, and the next line a line of
         its paragraph, not a definition (`_read_definition` checks it by each reading's own white space).
@@ -850,8 +862,9 @@ paragraph. What the reading does not follow:
   (about one document in 200,000, and older than it): a nested quote whose paragraph has a line with a `|`,
   a lazy line, then a line that looks like a table's delimiter row (`>>a||`, `>     x`, `>>-|-`) ends there,
   where CommonMark (and pandoc, markdown-it) go on with the paragraph and take an unmarked line after it.
-- A quote in 16 or more list items and quotes is read as one text: its directives are checked
-  as a paragraph's.
+- A quote in 16 or more quotes is read as one text: its directives are checked as a paragraph's. List items do
+  not count toward it (they have `MAX_LIST_DEPTH`, which counts the quotes they are in too), so a quote in sixteen
+  nested items is read into blocks as one in none is (#139).
 
 One id appears on both sides of that line. `attachment-file-missing` is defined as *the attachment
 `file` path exists*, which needs the filesystem and is therefore unimplemented — but the validator
@@ -1482,7 +1495,8 @@ Error of validation and of assembly for a second path to a file already named ([
 fragments](#include-fragments-122-1611-1612), #123), and five more for what takes content out of validation,
 **`ldv-fence-unclosed`**, **`ldv-heading-directive`**, **`ldv-frontmatter-placeholder-unquoted`**,
 **`ldv-frontmatter-placeholder-unread`** and **`ldv-frontmatter-alias-removed`**
-([above](#what-takes-content-out-of-validation-12)).
+([above](#what-takes-content-out-of-validation-12)), and **`ldv-bare-markers`**, a Warning for a
+template line that an empty choice leaves as bare markers which read otherwise ([Assembly](#spec-questions-120), #120).
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct
@@ -1704,10 +1718,12 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   it. A quote nested more deeply than the parser reads into blocks (`MAX_QUOTE_DEPTH`) has its
   markers taken by the same three-column rule. (Beyond eight nested quotes the parser's own
   reading of a lazy line, which stops following nested quotes there, differs from its reading of
-  the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts list items and quotes together,
-  and a quote past it is read as one text: the items inside it are not in the layout, so a line in
-  one is read as in the quote alone (an item in sixteen nested items, then `> - a` and `>   {{x}}`:
-  the line is taken out of its item; known, and as before). A line short of an item's content column
+  the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts quotes alone (#139), so a quote in
+  sixteen nested items is in the layout with its items. A quote in that many quotes, which the validator reads as
+  one text, is read into blocks for the layout too, so that a line in an item in it keeps its item (`> ` seventeen
+  times, `- a`, and `  {{x}}`), to twice that depth (32 quotes, and past 16 quotes 32 items and quotes together); past that, a quote's markers
+  are taken by the three-column rule and the items in it are not in the layout (a line in one is read as in the
+  quote alone). A line short of an item's content column
   that a quote holds (a lazy line) keeps no indentation after its marker, and neither does a line
   that an empty phrase leaves with only a quote's marker. The check cannot give a backslash a position where the
   template's own markers, left bare by an empty phrase, begin the construct (`text` over
@@ -1717,9 +1733,52 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   leaves as bare markers (`> `) is not checked: it is not blank, so step 5 does not delete it
   (§15.7.2), and `> text` / `> ` / `> <x>` keeps `<x>`, which begins an HTML block there. The
   specification gives no position for these; the output keeps the template's markers as written
-  (open question #120). Inserted text in the one top-level block of a long list item or
-  quote, each answer beginning a block (`- `, `# `), is read against that block's earlier lines:
-  quadratic in the size of the block.
+  (spec questions #120, [below](#spec-questions-120)). Inserted text in the one top-level block of a long list item, each answer
+  beginning a block (`- `, `# `), is read against that block's earlier lines: quadratic in the size of
+  the block. A block quote is read from the last block of its content on (of a list in it, its last item;
+  in quotes nested in it, to `MAX_QUOTE_DEPTH`), as the body is read from its last top-level block, so a
+  long quote of items and deleted choices is linear (#139, `tests/test_scaling_assembly.py`).
+- <a id="spec-questions-120"></a>**Spec questions (#120), open.** The assembler follows §15.7.3 and §15.7.2 step 5
+  as written; in these cases the output reads otherwise than the template, and only a change to the specification
+  can change the output. `tests/test_assembly.py` pins each one as it is written now
+  (`_OPEN_QUESTIONS_120`, `test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question`), to be updated when
+  the specification settles it:
+  1. *An empty item becomes a setext underline*: `text` / `- {{choose: x, true="", false="T"}}`, x true, gives
+     `- `, which underlines `text` (an empty item cannot interrupt a paragraph). §15.7.3 gives no position for a
+     backslash.
+  2. *Bare markers become a thematic break*: `- - - {{choose:}}`, `* * * {{choose:}}` with an empty phrase.
+  3. *Lazy lines detach*: after an empty phrase leaves a bare marker, the lazy lines after it, and the template's
+     own `>` or `2.` markers, begin new blocks (`> 2. ` / tab-indented `code`; `  > ` / `  lazy`; a bare `   2. `
+     whose next line, short of its content column, is then indented code). The position rule cannot prevent it.
+  4. *A bare container-marker line is not blank*: step 5 deletes only a line that becomes empty or spaces and
+     tabs, so a line reduced to `> ` stays, and the line after it gets no line-start check: `> text` / `> ` /
+     `> <x>` begins an HTML block (kind 7) at `<x>`; `> 2. b` a list, `>     code` indented code. Likewise a line of
+     choices alone that step 5 deletes can leave what held it empty (`1.` / `   {{choose:}}` / blank / `   more`:
+     the empty item ends at the blank line, and `more` is outside it).
+  5. *What counts as "content"* (an interpretation, not a gap): for an insertion that begins a continuation line
+     in a list item (`- a` / blank / `  {{placeholder: x}} more`), the content is taken to begin after the
+     template line's own indentation, which is kept (`  y more`), so the line stays in the item. This follows the
+     parenthetical on the backslash's position ("after the template line's own indentation and container
+     markers"); read literally, "every space and tab at the start of the content is removed" would take the line out
+     of the item. `test_an_insertion_that_begins_the_content_keeps_the_items_indentation` pins it.
+
+  The validator tells the template's author of cases 1 to 4 (the validator's side of #120): **`ldv-bare-markers`**,
+  a Warning of this implementation's own (`legaldown.grammar.BARE_MARKERS_RULE`), at a line of a template whose
+  choices one answer to each of their questions (declared booleans and choices) makes all empty (or spaces), with
+  nothing else on the line but quote and list markers (the assembler's `_BARE_MARKERS_RE`), without its drafting notes,
+  where the template read with that line so emptied (or deleted, when nothing is left: step 5) reads otherwise
+  than the template read with each insertion a word, as the assembler reads it (`assembly._Reading`): the line's
+  markers are a setext underline or a thematic break, or a line of the blocks around it begins other constructs
+  (the line after a deleted one is read as the line-start check escapes it, after its markers and the
+  indentation it keeps in its item) or lies in other
+  containers (`assembly._signatures`, `validator/hazards.py`: `check_bare_markers`). Each such
+  line is read with its own choices empty and every other insertion a word, in all of its conditional units, in the
+  blocks around it (the one before, its own, the one after: a list by its items, a quote by the blocks of its
+  content), so that the cost is linear in the lines; a line in a drafting note or a table is none. At most
+  `hazards.BARE_BUDGET` lines are read in one validation (each line charged for every reading it may need before it
+  is read); past it, the first line not read is reported once, for
+  itself and the rest. Two such lines empty at once, and a unit removed beside one, are not read together. The
+  insertion-boundary Error is not used: the specification has no rule these break, the assembler does what it says.
 - Removing a drafting note or unit can join what it separated: indented code after a removed note
   that followed a list becomes a paragraph of the list's last item, and two code blocks separated
   only by a removed note merge. §15.7.2 step 2 removes the lines; the template author keeps such

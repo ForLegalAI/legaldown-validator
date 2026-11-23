@@ -312,6 +312,11 @@ class CombinedLocator:
         place, local, block = self._combined.of_block(section, index)
         return place.spot(place.where.find(local, block, needle, fragment, offset, nth=nth))
 
+    def fragment_lines(self, section: int | None, index: int, fragment: int) -> tuple[int, list[str], str] | None:
+        place, local, block = self._combined.of_block(section, index)
+        found = place.where.fragment_lines(local, block, fragment)
+        return None if found is None else (place.spot(found[0]), found[1], found[2])
+
     def definition(self, section: int | None, index: int, ordinal: int) -> int | None:
         place, local, block = self._combined.of_block(section, index)
         return place.spot(place.where.definition(local, block, ordinal))

@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 from bisect import bisect_left
 from collections import ChainMap
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date
 from itertools import product
@@ -1146,3 +1147,262 @@ def _definitions(output: str) -> tuple[tuple[str, str, str], ...]:
         for block in nested_blocks(top)
         if block.kind == "link_definition"
     )
+
+
+# ── Bare markers (§15.7.3, #120) ─────────────────────────────────
+
+#: Set while the assembler validates a template for its headings' identifiers alone (``assembly._identifiers``): the
+#: bare-marker check, which only advises the author, is not made there.
+SKIP_BARE_MARKERS: ContextVar[bool] = ContextVar("skip_bare_markers", default=False)
+#: The most lines that the bare-marker check reads in one validation, the document and its fragments together (each
+#: line it may leave bare is read in a window of the blocks around it: the template's reading of the window once,
+#: and for the line up to three more, charged before it is read). Past it, the first line not read is reported for
+#: the rest.
+BARE_BUDGET = 100000
+_BARE_ADVICE = (
+    "give the line text that every answer keeps, or make what holds it conditional ({when=...}), so that it goes whole"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BareMarkers:
+    """A line that an empty choice leaves as container markers alone, or deletes (§15.7.2 step 5), and the output
+    then reads differently from the template (#120): its *line* (from 0 in the body), the *source* of its first
+    choice, and *what* the output reads differently, or "" when it could not be read (*budget*)."""
+
+    line: int
+    source: str
+    what: str
+    more: int = 0  #: of a line not read, how many more lines like it after it were not read
+
+
+def check_bare_markers(
+    document: Document, result: _Recorder, *, where: Locator | None, template: bool,
+    markers: list | None = None, combined: Combined | None = None, cache: dict | None = None,
+) -> None:
+    """Report, as a Warning of this implementation's own (``BARE_MARKERS_RULE``), each line of the body that an
+    empty phrase of its choices leaves as nothing but container markers (``> ``, ``- ``, ``2. ``), or empties so
+    that step 5 deletes it, where the output then reads otherwise than the template (#120): §15.7.3 checks a line
+    for what its insertion begins, but a bare marker begins what the template's own markers begin (a setext
+    underline, a thematic break), and the lines after it are not checked (a bare marker line is not blank, step 5),
+    so a lazy line leaves the item or quote, and ``<x>``, ``2. b`` or indented code begin blocks there. The
+    assembler writes these as the specification says; the template's author is told. Files are judged as in
+    ``check_definition_hazards``, with its *cache*."""
+    from .patterns import BARE_MARKERS_RULE
+
+    if SKIP_BARE_MARKERS.get():
+        return
+    files = [(document, where, None)] if combined is None else [
+        (place.document, place.where, place) for place in combined.instances
+    ]
+    host = (document if combined is None else combined.document).metadata.questions
+    declared = host if isinstance(host, dict) else {}
+    budget = [BARE_BUDGET] if cache is None else cache.setdefault("bare-budget", [BARE_BUDGET])
+    for judged, locator, place in files:
+        path = place.path if place else ""
+        judgement = cache.get(("bare", path)) if cache is not None else None
+        if judgement is None:
+            judgement = _judge_bare(judged, locator, template, markers if combined is None else None, declared, budget)
+            if cache is not None:
+                cache["bare", path] = judgement
+        first, found = judgement
+        for each in found:
+            line = None if first is None else first + each.line
+            what = f"then {each.what}" if each.what else (
+                "it may read otherwise than the template: it was not read, as there are too many such lines "
+                f"(this one and {each.more} after it)"
+            )
+            result.warning(
+                BARE_MARKERS_RULE,
+                f"'{each.source}' with an empty phrase leaves this line without text, and {what}; §15.7.3 "
+                f"gives the assembler no escape for it (#120): {_BARE_ADVICE}.",
+                line=place.spot(line) if place else line,
+            )
+
+
+def _judge_bare(
+    document: Document, where: Locator | None, template: bool, markers: list | None, declared: dict,
+    budget: list[int],
+) -> tuple[int | None, list[BareMarkers]]:
+    """The file line of the first line of the body, and the lines of *document*'s body that ``check_bare_markers``
+    reports. Nothing here raises: of a body that cannot be read so, nothing is reported (the check only advises)."""
+    try:
+        lines, first, judged = _body(document, where)
+    except Exception:  # noqa: BLE001 - a check that no template can stop
+        return None, []
+    text = "\n".join(lines) + "\n" if lines else ""
+    if "{{choose" not in text:
+        return first, []
+    try:
+        return first, _bare_markers(judged, text, template, markers if judged is document else None, declared, budget)
+    except Exception:  # noqa: BLE001
+        return first, []
+
+
+def _bare_markers(
+    document: Document, text: str, template: bool, markers: list | None, declared: dict, budget: list[int]
+) -> list[BareMarkers]:
+    from .. import assembly  # the assembler imports the validator, and so this module
+
+    layout = document.source_map.layout if document.source_map is not None else None
+    source = assembly._read_body("", text, document, declared, template=template, layout=layout, markers=markers)
+    texts = list(source.lines)
+    for unit in source.units:  # step 3: what the markers of the units leave on their lines
+        if unit.marker:
+            texts[unit.marker_line] = assembly._without_condition(texts[unit.marker_line], unit.marker)
+    by_line: dict[int, list] = {}
+    for occ in source.occurrences:
+        by_line.setdefault(occ.line, []).append(occ)
+    # The template as the assembler reads it (``assembly._Reading``): each insertion a word.
+    plains = list(texts)
+    candidates: list[tuple[int, str, str]] = []  # (line, the line with its choices empty, the first choice's source)
+    for number, found in by_line.items():
+        ordered = sorted(found, key=lambda occ: occ.start, reverse=True)
+        plain = emptied = texts[number]
+        for occ in ordered:
+            plain = plain[:occ.start] + assembly._WORD + plain[occ.end:]
+            emptied = emptied[:occ.start] + emptied[occ.end:]
+        plains[number] = plain
+        if number in source.notes or any(
+            occ.in_table or occ.directive.name != "choose" or occ.directive.malformed for occ in found
+        ) or not _all_empty(found, declared):
+            continue
+        # (What the assembler takes for bare markers: ``_Line.bare``.)
+        if is_blank(emptied) or assembly._BARE_MARKERS_RE.fullmatch(emptied):
+            candidates.append((number, emptied, ordered[-1].directive.source))
+    if not candidates:
+        return []
+    # Drafting notes are removed before anything else (step 2): the lines are read without them, as written.
+    kept = [number for number in range(len(plains)) if number not in source.notes]
+    slot = {number: index for index, number in enumerate(kept)}
+    plains = [plains[number] for number in kept]
+    found_lines = _read_bare(assembly, plains, [(slot[n], e, d) for n, e, d in candidates], budget)
+    return [each.__class__(kept[each.line], each.source, each.what, each.more) for each in found_lines]
+
+
+def _all_empty(choices: list, declared: dict) -> bool:
+    """Whether one answer to each question empties every one of *choices* (the occurrences of a line): each choice's
+    question is a declared boolean or choice question, and some answer to it picks a phrase of nothing but spaces in
+    each of its choices on the line. A choice of an undeclared question, or with no such phrase, is never empty
+    (``choose-invalid`` reports what is wrong with it)."""
+    answers: dict[str, set[str]] = {}
+    for occ in choices:
+        qid = occ.qid
+        kind = question_type(declared, qid)
+        if kind == "boolean":
+            possible = {"true", "false"}
+        elif kind == "choice" and isinstance(listed := declared[qid].get("choices"), dict):
+            possible = {str(key) for key in listed}
+        else:
+            return False
+        empty = {key for key, phrase in occ.directive.params.items() if key in possible and not phrase.strip(" \t")}
+        answers[qid] = answers.get(qid, possible) & empty
+        if not answers[qid]:
+            return False
+    return True
+
+
+def _read_bare(
+    assembly: Any, plains: list[str], candidates: list[tuple[int, str, str]], budget: list[int]
+) -> list[BareMarkers]:
+    """``_bare_markers`` of the template's lines *plains* (without its drafting notes), for the *candidates*: each
+    line, the line with its choices empty, and its first choice's source."""
+    units = _units(assembly, plains)
+    starts = [start for start, _end in units]
+    found_lines: list[BareMarkers] = []
+    readings: dict[tuple[int, int], tuple] = {}  # the template's reading of a window, once
+    for number, emptied, directive in sorted(candidates):
+        at = max(bisect_left(starts, number + 1) - 1, 0)
+        begin = units[at - 1][0] if at > 0 else 0
+        end = units[at + 1][1] if at + 1 < len(units) else len(plains)
+        end = max(end, number + 1)
+        # The window emptied, and, after a deleted line, the template's frame of the next and the window escaped.
+        cost = (end - begin) * (3 + ((begin, end) not in readings))
+        if budget[0] < cost:
+            # The rest are not read: the first is reported, for all of them (a Warning for each says no more).
+            budget[0] = 0
+            rest = len(candidates) - sum(1 for each in candidates if each[0] < number) - 1
+            found_lines.append(BareMarkers(number, directive, "", rest))
+            break
+        budget[0] -= cost
+        if (begin, end) not in readings:
+            readings[begin, end] = assembly._signatures(plains[begin:end])[:2]
+        what = _reads_otherwise(assembly, plains[begin:end], readings[begin, end], number - begin, emptied)
+        if what:
+            found_lines.append(BareMarkers(number, directive, what))
+    return found_lines
+
+
+def _units(assembly: Any, plains: list[str]) -> list[tuple[int, int]]:
+    """Where the lines of the template *plains* can be read from as all of them read them, in order, ``(start,
+    end)``: each heading and top-level block, a list as its items, and a block quote as the blocks of its content,
+    to ``MAX_QUOTE_DEPTH`` (``assembly._quote_window``): the blocks before such a line are closed."""
+    from ..parser import MAX_QUOTE_DEPTH, _Layout, quote_content
+
+    layout = _Layout()
+    blocks, sections = assembly._parse_body(plains, layout)
+    found: list[tuple[int, int]] = [(heading.start, heading.end) for heading in layout.headings]
+
+    def add(spans: Any, model: Any, base: int, depth: int) -> None:
+        for span, block in zip(spans, model, strict=True):
+            if span.items:
+                found.extend((base + item.start, base + item.end) for item in span.items)
+            elif block.kind == "quote" and depth < MAX_QUOTE_DEPTH and span.end - span.start > 1:
+                children, inner = quote_content(block.text, depth + 1)
+                if inner:
+                    add(inner, children, base + span.start, depth + 1)
+                    continue
+                found.append((base + span.start, base + span.end))
+            else:
+                found.append((base + span.start, base + span.end))
+
+    for spans, model in zip(layout.containers(), [blocks, *(each for _heading, each in sections)], strict=True):
+        add(spans, model, 0, 0)
+    return sorted(found) or [(0, len(plains))]
+
+
+def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emptied: str) -> str:
+    """What the lines of *window*, which the template reads as *read* (``assembly._signatures``), read as otherwise
+    once line *at* is *emptied* (or deleted, when it is blank: step 5): "" when nothing does. Each line is compared by
+    what the parser reads it as beginning and by the containers it is in."""
+    deleted = is_blank(emptied)
+    changed = window[:at] + ([] if deleted else [emptied]) + window[at + 1:]
+    begun, containers = read
+    begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
+    if deleted and at < len(changed) and begun_after[at] - begun[at + 1]:
+        # The line after a deleted one has the line-start check (``assembly._Line.after``): when it begins what the
+        # template line does not (``assembly._kept``), the assembler escapes it, after its container markers and the indentation it keeps,
+        # up to the content column of the items the template line is in (``assembly._Frame.keep``, as ``_fix``).
+        frame = assembly._Reading(window, []).frame(at + 1)
+        line = changed[at]
+        kept = " " * frame.keep if frame.full else ""
+        changed[at] = line[:frame.prefix] + kept + "\\" + line[frame.prefix:].lstrip(" \t")
+        begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
+
+    def moved(line: int) -> int:  # a line of *changed* as the line of *window* it is
+        return line + 1 if deleted and line >= at else line
+
+    def chain(found: dict, line: int, mapped: bool) -> tuple:
+        return tuple(
+            (entry.kind, moved(entry.first) if mapped else entry.first, entry.ordinal)
+            for entry in assembly._chain(found.get(line))
+        )
+
+    if not deleted:
+        own = begun_after[at]
+        if own["setext"] > begun[at]["setext"]:
+            return "its markers are the underline of a heading"
+        if own["rule"] > begun[at]["rule"]:
+            return "its markers are a thematic break"
+    for line in range(len(window)):
+        if deleted and line == at:
+            continue
+        after = line - 1 if deleted and line > at else line
+        if line == at and begun[line] != begun_after[after]:
+            return "its markers begin other blocks than the template's"
+        where = "the line above it" if line < at else "the line after it" if line == at + 1 else "a line after it"
+        if begun[line] != begun_after[after]:
+            return f"{where} begins other blocks than the template's (as after a blank line)"
+        if chain(containers, line, False) != chain(containers_after, after, True):
+            return f"{where} is in other containers than the template's (it leaves the item or quote that held it)"
+    return ""
