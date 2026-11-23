@@ -1326,6 +1326,28 @@ in `HOST_ONLY` or `WHOLE_DOCUMENT_RULES`: the two passes agree on the document's
 fragment's content, they run over the fragments in the combined pass only: when it is not made (an include that
 was not read), `ldv-check-skipped` says the combined-document checks were not performed.
 
+**A directive where §11.4 recognizes none is no blank and asks nothing.** §11.4 recognizes directives in body text,
+and in frontmatter only as §3.10 specifies: a `{{placeholder:}}` written as a quoted YAML string in a value field.
+Assembly fills exactly those (and the body's, a heading in a list item or quote included), and leaves every other
+as written, so the validator reads them the same way:
+
+- A `{{placeholder:}}` or `{{choose:}}` in a section's heading (`ldv-heading-directive`), a `{{choose:}}` in
+  frontmatter (`choose-invalid`), a `{{placeholder:}}` in an identifier, structural or format-checked field
+  (`placeholder-in-structural-field`), and one in a value field that is not a quoted string (below) does not use its
+  question: a question no other part uses is `question-unused`, whose message says where it is named. Nor is such a
+  placeholder a blank: it is not checked as one (its type, its parameters, `result.blanks`), and the final check
+  does not report it as `placeholder-unfilled`, as the rule above already does. A `{{choose:}}` there is still a
+  template construct for the final check, since it makes the document a template wherever it is (§15.1).
+- `insertion-boundary` (§15.7.3) is not judged in a section's heading, where nothing is inserted; it is in a
+  heading in a list item or quote.
+- **`ldv-frontmatter-placeholder-unquoted`**, an **Error** (`legaldown.grammar.FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE`):
+  a `{{placeholder:}}` in a frontmatter value field that is not written as a quoted YAML string — a plain scalar
+  (`title: Lease {{placeholder:q}}`, valid YAML when no `: ` follows), a literal (`|`) or a folded (`>`) block
+  scalar — at the field's line. §3.10 says a placeholder in frontmatter MUST be a quoted string (an unquoted `{{`
+  at the start of a value is a flow mapping, and `frontmatter-invalid-yaml`); without this rule it would be lost
+  without a word. How a value is written is read from the source, so a document built in code (no source map) has
+  none to judge. Assembly agrees with the specification here: it fills a placeholder in a quoted scalar only.
+
 ## Constructs beyond the level (§17.5)
 
 §17.5: an implementation that meets a construct whose processing lies beyond its claimed level "MUST NOT
@@ -1341,7 +1363,8 @@ unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-che
 Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
 validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
 (any frontmatter mapping, #126, #131) and not a skipped one, and two more for what takes content out of validation,
-**`ldv-fence-unclosed`** and **`ldv-heading-directive`** ([above](#what-takes-content-out-of-validation-12)).
+**`ldv-fence-unclosed`**, **`ldv-heading-directive`** and **`ldv-frontmatter-placeholder-unquoted`**
+([above](#what-takes-content-out-of-validation-12)).
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct

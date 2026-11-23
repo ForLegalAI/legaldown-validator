@@ -1038,6 +1038,7 @@ class Locator:
         self._cache: dict[Any, Any] = {}  # what SourceMap.find reads, once
         # Per leaf, by its id, the marker candidates in its texts and in its lines (``_candidates_in``).
         self._marker_places: dict[int, _MarkerPlaces] = {}
+        self._unquoted: frozenset[tuple[Any, ...]] | None = None  # ``unquoted_values``, once asked
 
     def start(self) -> int | None:
         """The document's first line."""
@@ -1124,6 +1125,52 @@ class Locator:
 
     def block(self, section: int | None, index: int) -> int | None:
         return self._map.block(section, index) if self._map else None
+
+    def unquoted_values(self) -> frozenset[tuple[Any, ...]]:
+        """The paths (as ``key`` takes them) of the frontmatter's string values that hold ``{{`` and are not
+        written as a quoted YAML string: plain, literal (``|``) or folded (``>``), which §3.10 does not let hold
+        a placeholder. Empty without a source map, or when the frontmatter cannot be read again."""
+        if self._unquoted is not None:
+            return self._unquoted
+        found: dict[tuple[Any, ...], bool] = {}
+        if self._map is not None and () in self._map.keys:
+            from .parser import FRONTMATTER_RE  # the parser builds on this module
+
+            written = FRONTMATTER_RE.match("\n".join(self._map.lines))
+            try:
+                root = yaml.compose(written.group(1) or "", Loader=yaml.SafeLoader) if written else None
+            except yaml.YAMLError:
+                root = None
+
+            def walk(node: yaml.Node, path: tuple[Any, ...], seen: frozenset[int]) -> None:
+                # As ``frontmatter_keys`` walks it: a sequence's mappings only, merged keys at the path.
+                if id(node) in seen:
+                    return
+                seen = seen | {id(node)}
+                if isinstance(node, yaml.ScalarNode):
+                    if "{{" in node.value:
+                        found[path] = node.style not in ('"', "'")  # the last written is the model's
+                elif isinstance(node, yaml.MappingNode):
+                    def merge(key: yaml.Node) -> bool:
+                        return isinstance(key, yaml.ScalarNode) and key.tag == "tag:yaml.org,2002:merge"
+
+                    # The keys merged in first: the mapping's own replace them (``yaml.SafeLoader.flatten_mapping``).
+                    for key, value in node.value:
+                        if merge(key):
+                            for source in value.value if isinstance(value, yaml.SequenceNode) else [value]:
+                                walk(source, path, seen)
+                    for key, value in node.value:
+                        if isinstance(key, yaml.ScalarNode) and not merge(key):
+                            walk(value, (*path, key.value), seen)
+                elif isinstance(node, yaml.SequenceNode):
+                    entries = [entry for entry in node.value if isinstance(entry, yaml.MappingNode)]
+                    for index, entry in enumerate(entries):
+                        walk(entry, (*path, index), seen)
+
+            if root is not None:
+                walk(root, (), frozenset())
+        self._unquoted = frozenset(path for path, unquoted in found.items() if unquoted)
+        return self._unquoted
 
     def underline(self, section: int) -> int | None:
         """The line of section *section*'s setext underline (its heading's last line, ``---`` or ``===``);

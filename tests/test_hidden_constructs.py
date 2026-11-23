@@ -326,7 +326,7 @@ def test_a_question_only_a_section_headings_placeholder_uses_is_unused():
     text = _ADDRESS + "# Lease of {{placeholder: address}}\n\nText.\n"
     template = Template(text)
     (unused,) = [d.message for d in template.validation.diagnostics if d.rule == "question-unused"]
-    assert "a section's heading names it" in unused
+    assert "named only where a directive is not recognized (a section's heading" in unused
     # ... as assembly agrees: it leaves the heading as written.
     assert "{{placeholder: address}}" in template.form({"address": "Main St"}).assemble().output
 

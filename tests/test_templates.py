@@ -956,9 +956,14 @@ def test_only_a_link_reference_definition_itself_is_off_limits(text, flagged):
     assert ("insertion-boundary" in _validate(body=text).rules()) == flagged
 
 
-def test_insertions_in_headings_are_checked():
+def test_insertions_in_headings_are_checked_where_assembly_inserts():
+    # Not in a section's heading, where no directive is recognized and nothing is inserted (§11.4, #12): that is
+    # ldv-heading-directive. In a heading in a list item, which is body text, it is.
     source = f"---\ntitle: T\n{_SIDES}---\n\n# Agreement {{{{placeholder: party}}}}(x)\n\nText.\n"
-    assert "insertion-boundary" in validate(parse(source)).rules("error")
+    rules = validate(parse(source)).rules("error")
+    assert "insertion-boundary" not in rules and "ldv-heading-directive" in rules
+    nested = f"---\ntitle: T\n{_SIDES}---\n\n# Agreement\n\n- ## Of {{{{placeholder: party}}}}(x)\n"
+    assert "insertion-boundary" in validate(parse(nested)).rules("error")
 
 
 @pytest.mark.parametrize(

@@ -44,6 +44,9 @@ FRONTMATTER_KEY_DUPLICATE_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-key-d
 # a Warning in a list item or quote, which this implementation reads as body text).
 FENCE_UNCLOSED_RULE = IMPLEMENTATION_RULE_PREFIX + "fence-unclosed"
 HEADING_DIRECTIVE_RULE = IMPLEMENTATION_RULE_PREFIX + "heading-directive"
+# And a {{placeholder:}} in a frontmatter value field that is not written as a quoted YAML string, which §3.10
+# requires: it is no blank, and assembly leaves it as written (an Error, #12).
+FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-placeholder-unquoted"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 

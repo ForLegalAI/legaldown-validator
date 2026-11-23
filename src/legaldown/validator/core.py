@@ -80,6 +80,7 @@ from .patterns import (
     _UNFILLED,
     DURATION_UNITS,
     FRONTMATTER_KEY_DUPLICATE_RULE,
+    FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
     IDENTIFIER_RE,
     ISO_639_1_CODES,
     KNOWN_CURRENCIES,
@@ -1470,14 +1471,13 @@ def _check(
     untemplated = combined is not None and not combined.template
     # {{choose:}} belongs in body text: never in frontmatter or a heading
     # (§15.5). Wherever it is, it makes the document a template (§15.1).
-    # Each with whether it asks its question: one in a section's heading does not, as assembly leaves it as
-    # written (§11.4, #12).
+    # Neither asks its question: §11.4 recognizes no {{choose:}} there, and assembly leaves it as written (#12).
     misplaced_chooses = [
-        (directive, "in frontmatter; it belongs in body text", where.key(*path), True)
+        (directive, "in frontmatter; it belongs in body text", where.key(*path))
         for text, path in frontmatter_texts
         for directive in named(text, "choose")
     ] + [
-        (directive, "in a heading, where §4.2 allows plain text only", where.heading(index), False)
+        (directive, "in a heading, where §4.2 allows plain text only", where.heading(index))
         for index, text in enumerate(headings)
         for directive in named(text, "choose")
     ]
@@ -2212,39 +2212,46 @@ def _check(
                 line=where.key(*field_path),
             )
 
+    # Every blank, wherever it is, with its line, for the final check (§15.9). §11.4 recognizes a directive in
+    # body text, and in frontmatter only as §3.10 says: a {{placeholder:}} written as a quoted YAML string in a
+    # value field. Anywhere else it is no blank, and assembly leaves it as written (#12): in an identifier,
+    # structural or format-checked field (placeholder-in-structural-field), in a value written otherwise
+    # (ldv-frontmatter-placeholder-unquoted, below), and in a section's heading (ldv-heading-directive). One in a
+    # heading in a list item or a quote is body text, which assembly fills, and is collected with the body's
+    # below. (A {{choose:}} where it is not recognized is still a template construct for the final check: it
+    # makes the document a template wherever it is, §15.1.)
+    placeholders: list[tuple[Directive, Line]] = []
+    unquoted = where.unquoted_values()
     for field_value, field_path in value_fields:
         for directive in named(field_value, "placeholder"):
             field_line = where.key(*field_path)
+            if field_path in unquoted:
+                result.error(
+                    FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
+                    f"'{directive.source}' is not in a quoted YAML string, which a placeholder in frontmatter "
+                    f"must be (§3.10): it is no blank, and assembly leaves it as written. Quote the value "
+                    f"(\"...\").",
+                    line=field_line,
+                )
+                continue
+            placeholders.append((directive, field_line))
             with result.at(field_line):
                 _check_placeholder(directive, result, blanks, questions, in_frontmatter=True, line=field_line)
-    # Every blank, wherever it is, with its line, for the final check (§15.9). Not one in a section's heading:
-    # a directive is recognized in body text only (§11.4), so assembly leaves it as written, and it is no blank
-    # (ldv-heading-directive reports it, #12). One in a heading in a list item or a quote is body text, which
-    # assembly fills, and is collected with the body's below. (A {{choose:}} in a section's heading is still a
-    # template construct for the final check: it makes the document a template wherever it is, §15.1.)
-    placeholders: list[tuple[Directive, Line]] = [
-        (directive, where.key(*path))
-        for text, path in frontmatter_texts
-        for directive in named(text, "placeholder")
-    ]
 
     chooses: list[tuple[Directive, Line]] = []
-    for directive, misplaced, line, _asks in misplaced_chooses:
+    for directive, misplaced, line in misplaced_chooses:
         chooses.append((directive, line))
         result.error("choose-invalid", f"'{directive.source}' is {misplaced} (§15.5).", line=line)
     # The questions a blank or a {{choose:}} asks, outside drafting notes and in them: a note is
     # removed before anything is asked (§15.7.2 step 1), so a question only a note uses needs no
-    # answer, and is unused (question-unused). The frontmatter's are kept; a section heading's asks
-    # nothing, as assembly leaves it as written (§11.4).
-    asked = {directive.positional for directive, _line in placeholders if directive.positional} | {
-        directive.positional for directive, _misplaced, _line, asks in misplaced_chooses if asks and directive.positional
-    }
+    # answer, and is unused (question-unused). A directive where §11.4 recognizes none (above) asks nothing.
+    asked = {directive.positional for directive, _line in placeholders if directive.positional}
     asked_in_notes: set[str] = set()
-    # ... and the questions a section heading's directives name, for the message of question-unused.
-    named_in_headings = {
+    # ... and the questions such a directive names, for the message of question-unused.
+    named_unrecognized = {
         directive.positional
-        for text in headings
-        for directive in lex_fragment(text).directives
+        for text in [*headings, *(text for text, _path in frontmatter_texts)]
+        for directive in lex_fragment(text or "").directives
         if directive.name in ("placeholder", "choose") and directive.positional
     }
 
@@ -2671,10 +2678,11 @@ def _check(
                         "; only drafting notes do, so it is no blank of the document and needs no answer "
                         "(§15.7.2), though assembly still lists it among the template's questions."
                         if qid in asked_in_notes else
-                        "; a section's heading names it, but a directive there is not recognized (§4.2, §11.4) "
-                        "and assembly leaves it as written, though it still lists the question among the "
-                        "template's questions."
-                        if qid in named_in_headings else "."
+                        "; it is named only where a directive is not recognized (a section's heading, a frontmatter "
+                        "field that takes no placeholder, or one not written as a quoted string, §3.10, §4.2, §11.4), "
+                        "which assembly leaves as written, though it still lists the question among the template's "
+                        "questions."
+                        if qid in named_unrecognized else "."
                     ),
                     line=where.key("questions", qid),
                 )
