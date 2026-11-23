@@ -271,6 +271,17 @@ class ValidationResult:
         return not any(d.level == "error" for d in self.diagnostics)
 
 
+@dataclass(frozen=True, slots=True)
+class _Held:
+    """A finding a ``_Recorder`` does not keep yet (``_Recorder.keep``): what makes it, its line not looked for."""
+    rule: str
+    level: str
+    message: str
+    line: Line
+    depends: Depends | None
+    file: str
+
+
 @dataclass(slots=True)
 class _Recorder(ValidationResult):
     """A ``ValidationResult`` as the validator builds it: it records the
@@ -295,8 +306,9 @@ class _Recorder(ValidationResult):
     #: Of each diagnostic (the same order, kept with *places*), whether it is final whatever else the document holds:
     #: a reference with no target, or one that is no identifier, which no declaration anywhere can settle (#141).
     unsettleable: list[bool] | None = field(default=None, repr=False, compare=False)
-    #: The rules recorded, when not all are: the others are dropped before their line is looked for (the pass over
-    #: a document that is validated combined too keeps only ``combined.HOST_ONLY``, #141). None: every rule.
+    #: The rules recorded, when not all are: the others are held, their line not looked for (``_Held``), until
+    #: ``release`` makes them diagnostics (the pass over a document that is validated combined too keeps only
+    #: ``combined.HOST_ONLY``, and releases the rest when no combined document is made after all, #141). None: every rule.
     keep: frozenset[str] | None = field(default=None, repr=False, compare=False)
     #: Whether a combined document was made and validated (``combined`` says whether it was complete).
     spliced: bool = False
@@ -329,10 +341,12 @@ class _Recorder(ValidationResult):
         """The diagnostic ``_record`` makes, as a list of one, or of none when its
         reason is suppressed, with the place of the fragment it is at (``Spot``). *fallback*: a *line*
         of None is the line ``at`` gives."""
-        if (depends is not None and depends in self.suppress) or (self.keep is not None and rule not in self.keep):
+        if depends is not None and depends in self.suppress:
             return [], None  # before the line is looked for: a finding dropped costs nothing
         if line is None and fallback and self._lines:
             line = self._lines[-1]
+        if self.keep is not None and rule not in self.keep:
+            return [_Held(rule, level, message, line, depends, file)], None  # type: ignore[list-item]
         if callable(line):
             line = line()
         place = None
@@ -390,6 +404,20 @@ class _Recorder(ValidationResult):
         fragment the document includes, #35); *unsettleable*: nothing the document could hold
         elsewhere settles it (``_Recorder.unsettleable``)."""
         self._record(rule, "info", message, line, depends, file, unsettleable)
+
+    def release(self) -> dict[int, Diagnostic]:
+        """Record every rule from now on, and make each finding held so far (``keep``) the diagnostic it is, in
+        its place. Returned: of each, by the ``id`` of what was held, the diagnostic it now is, for a caller that
+        holds one to find its place by (``error_at``)."""
+        self.keep = None
+        made: dict[int, Diagnostic] = {}
+        for index, held in enumerate(self.diagnostics):
+            if isinstance(held, _Held):
+                (self.diagnostics[index],), _place = self._diagnostic(
+                    held.rule, held.level, held.message, held.line, held.depends, held.file, fallback=False
+                )
+                made[id(held)] = self.diagnostics[index]
+        return made
 
     def result(self) -> ValidationResult:
         """What was recorded, as the plain ``ValidationResult``."""

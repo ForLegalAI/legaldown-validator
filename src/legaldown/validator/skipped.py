@@ -152,7 +152,7 @@ def _includes(
             "the combined-document checks (§16.11), such as a reference or a term into a fragment, "
             "or an auto-generated identifier the fragments and the document share"
         )
-    elif outcome.combined is not None and outcome.combined.partial:
+    elif outcome.combined is not None and outcome.combined.partial and outcome.combined.settles:
         parts.append(
             "the combined-document checks (§16.11) for what the includes not followed would bring in, such as a "
             "reference or a term into such a fragment, which are made without it (the fragments that were "
