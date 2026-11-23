@@ -1156,9 +1156,9 @@ def _definitions(output: str) -> tuple[tuple[str, str, str], ...]:
 SKIP_BARE_MARKERS: ContextVar[bool] = ContextVar("skip_bare_markers", default=False)
 #: The most lines that the bare-marker check reads in one validation, the document and its fragments together (each
 #: line it may leave bare is read in a window of the blocks around it: the template's reading of the window once,
-#: and for the line up to three more, charged before it is read). Past it, the first line not read is reported for
+#: and for the line up to five more, charged before it is read). Past it, the first line not read is reported for
 #: the rest.
-BARE_BUDGET = 100000
+BARE_BUDGET = 200000
 _BARE_ADVICE = (
     "give the line text that every answer keeps, or make what holds it conditional ({when=...}), so that it goes whole"
 )
@@ -1316,8 +1316,9 @@ def _read_bare(
         begin = units[at - 1][0] if at > 0 else 0
         end = units[at + 1][1] if at + 1 < len(units) else len(plains)
         end = max(end, number + 1)
-        # The window emptied, and, after a deleted line, the template's frame of the next and the window escaped.
-        cost = (end - begin) * (3 + ((begin, end) not in readings))
+        # The window emptied, and, after a deleted line, the template's frame of the next and the window in each of
+        # the three forms the line-start check may write.
+        cost = (end - begin) * (5 + ((begin, end) not in readings))
         if budget[0] < cost:
             # The rest are not read: the first is reported, for all of them (a Warning for each says no more).
             budget[0] = 0
@@ -1369,15 +1370,20 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
     changed = window[:at] + ([] if deleted else [emptied]) + window[at + 1:]
     begun, containers = read
     begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
-    if deleted and at < len(changed) and begun_after[at] - begun[at + 1]:
-        # The line after a deleted one has the line-start check (``assembly._Line.after``): when it begins what the
-        # template line does not (``assembly._kept``), the assembler escapes it, after its container markers and the indentation it keeps,
-        # up to the content column of the items the template line is in (``assembly._Frame.keep``, as ``_fix``).
+    if deleted and at < len(changed) and assembly._escapable(begun_after[at] - begun[at + 1]):
+        # The line after a deleted one has the line-start check (``assembly._Line.after``): when it begins a construct
+        # that the template line does not and §15.7.3 names (``assembly._kept``), the assembler writes the first of
+        # its forms that begins none (``assembly._fix``): without its indentation past the content column of its item
+        # (``_Frame.keep``), with a backslash, or both. A definition or a table it leaves (#120): they are compared.
         frame = assembly._Reading(window, []).frame(at + 1)
         line = changed[at]
-        kept = " " * frame.keep if frame.full else ""
-        changed[at] = line[:frame.prefix] + kept + "\\" + line[frame.prefix:].lstrip(" \t")
-        begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
+        head, body = line[:frame.prefix], line[frame.prefix:]
+        column = frame.keep if frame.full and not begun[at + 1]["item"] else 0
+        for form in assembly._forms(body, column):
+            changed[at] = head + form
+            begun_after, containers_after, _layout, _leaf = assembly._signatures(changed)
+            if not assembly._escapable(begun_after[at] - begun[at + 1]):
+                break
 
     def moved(line: int) -> int:  # a line of *changed* as the line of *window* it is
         return line + 1 if deleted and line >= at else line
@@ -1402,6 +1408,11 @@ def _reads_otherwise(assembly: Any, window: list[str], read: tuple, at: int, emp
             return "its markers begin other blocks than the template's"
         where = "the line above it" if line < at else "the line after it" if line == at + 1 else "a line after it"
         if begun[line] != begun_after[after]:
+            extra = begun_after[after] - begun[line]
+            if extra["definition"]:
+                return f"{where} becomes a link reference definition, which is not displayed"
+            if extra["table"]:
+                return f"{where} becomes part of a table"
             return f"{where} begins other blocks than the template's (as after a blank line)"
         if chain(containers, line, False) != chain(containers_after, after, True):
             return f"{where} is in other containers than the template's (it leaves the item or quote that held it)"
