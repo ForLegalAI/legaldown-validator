@@ -22,7 +22,7 @@ Quick start::
 """
 from __future__ import annotations
 
-# The category legaldown's deprecation warnings are raised with (none are, in 0.5.0)
+# The category legaldown's deprecation warnings are raised with (none are, in 0.6.0)
 from ._deprecation import LegaldownDeprecationWarning
 
 # Assembly (§15.7): a named capability (§17.6)
@@ -104,7 +104,7 @@ from .validator import (
     validate,
 )
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 #: Conformance level per specification §17. "core" — parse and validate a
 #: single document. Rendering and Full (multi-file: includes, attachments,
@@ -164,7 +164,7 @@ __all__ = [
     "CustomField",
     "Amends",
     "Attachment",
-    # The category of the deprecation warnings legaldown raises (none in 0.5.0), kept so that a
+    # The category of the deprecation warnings legaldown raises (none in 0.6.0), kept so that a
     # ``warnings`` filter naming it keeps working
     "LegaldownDeprecationWarning",
 ]
