@@ -61,6 +61,11 @@ TEMPLATE_RULES: frozenset[str] = frozenset({
     "def-term-variable",
     "drafting-note-def",
     "template-fragment-invalid",
+    # An alias to an anchor that assembly removes would leave the frontmatter unreadable, and a placeholder
+    # assembly cannot fill would stay in it as written (#12; their Errors: the unread rule's Warnings do not refuse).
+    "ldv-frontmatter-alias-removed",
+    "ldv-frontmatter-placeholder-unquoted",
+    "ldv-frontmatter-placeholder-unread",
 })
 
 #: A rule of the validator that a template must satisfy (the safety of a reference, §15.4) when the validator
@@ -193,19 +198,38 @@ def _placeholder_problems(t: _Template) -> list[Diagnostic]:
     return problems
 
 
+class _Snapshot:
+    """*resolve* asking each file once, so that reading the template and validating it see the same text; it
+    says which file it reads for a path when *resolve* can (``loader_identity``, #123)."""
+
+    __slots__ = ("_resolve", "_seen", "_identities")
+
+    def __init__(self, resolve: LoadFile) -> None:
+        self._resolve = resolve
+        self._seen: dict[str, str | None] = {}
+        self._identities: dict[str, str | None] = {}
+
+    def __call__(self, path: str) -> str | None:
+        if path not in self._seen:
+            self._seen[path] = self._resolve(path)
+        return self._seen[path]
+
+    def __getattr__(self, name: str) -> Any:
+        # Only ``identify``, and only when *resolve* has it, so that a loader that cannot say is not taken for one.
+        if name == "identify" and callable(identify := getattr(self._resolve, "identify", None)):
+            def identified(path: str) -> str | None:
+                # Asked once too, so that assembly and the validation, which asks later, find the same files.
+                if path not in self._identities:
+                    self._identities[path] = identify(path)
+                return self._identities[path]
+
+            return identified
+        raise AttributeError(name)
+
+
 def _snapshot(resolve: LoadFile | None) -> LoadFile | None:
-    """*resolve* asking each file once, so that reading the template and
-    validating it see the same text."""
-    if resolve is None:
-        return None
-    seen: dict[str, str | None] = {}
-
-    def read(path: str) -> str | None:
-        if path not in seen:
-            seen[path] = resolve(path)
-        return seen[path]
-
-    return read
+    """*resolve* asking each file once (``_Snapshot``)."""
+    return None if resolve is None else _Snapshot(resolve)
 
 
 class Template:

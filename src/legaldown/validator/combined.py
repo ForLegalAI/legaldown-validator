@@ -19,14 +19,19 @@ own too. The markers are read over the combined structure, as a splice of the te
 fragment's first paragraph, spliced into a section, is a paragraph of that section: it may carry an anchor),
 while a unit's presence is what its own file says (a section extends to the end of its file, §15.3).
 
-What is spliced is what the walk of the includes followed (``fragments._Walk``, ``Plan``), and only when it
-followed every one and the fragments are not past ``fragments.MAX_SPLICED_BLOCKS`` and ``MAX_SPLICED_LINES``.
+What is spliced is what the walk of the includes followed (``fragments._Walk``, ``Plan``), when the fragments are
+not past ``fragments.MAX_SPLICED_BLOCKS`` and ``MAX_SPLICED_LINES``. An include it did not follow (a file not read,
+refused, a cycle, a file that is no fragment, past a cap) stays the paragraph it is, and the combined document is
+*partial* (#141): what the fragments that were read say across the document is judged, and a finding that what is
+not in it may settle says so (``SETTLED_ELSEWHERE``).
 
 The LegalDown attachment files (§12.4) follow the body, in the order the attachments are declared, each a place
 of its own that is there when its attachment is (its ``when``, §15.3): the renderer puts them after the
 document, and they inherit its definitions, types and metadata, which only this pass has (#135). Each is
 appended when it was read and is a fragment in the sense of §12.2 (``FragmentFile.spliceable``), whatever the
 others are: an attachment is an appendix of its own, so one not read leaves the body and the others as they are.
+The include paragraphs of an attachment file are followed as a fragment's are, outside a template (#141): what
+they take in is part of the attachment (``Combined.unit_of``).
 
 A path is judged against the document root from the directory of the file it is written in (``Combined.base_of``),
 so that a fragment's ``../x.png`` is read from the fragment's place, not the document's (#135).
@@ -45,7 +50,7 @@ from ..models import Block, Document, Section
 from ..positions import Locator
 from .conditions import ALWAYS, Presence
 from .helpers import legaldown_attachments
-from .patterns import SKIPPED_RULE
+from .patterns import FILE_SPELLING_DUPLICATE_RULE, SKIPPED_RULE
 from .result import Diagnostic, Spot
 from .units import FoundMarker, Units, find_markers, own_presence
 
@@ -104,6 +109,22 @@ class Combined:
     template: bool = False
     imports: dict[Any, Any] = field(default_factory=dict)
     attachments_out: int = 0
+    #: Whether an include paragraph of the document or of a fragment was not followed into a fragment (not read,
+    #: refused, a cycle, not a fragment, past a cap, or in a template's fragment): it stays the paragraph it is, and
+    #: what it would bring in is not in the combined document (#141).
+    partial: bool = False
+    #: Whether, in a *partial* one, an include not followed may bring content in (``fragments._Walk.may_bring``): only
+    #: then does a finding that it may settle say so (``NOT_IN_IT``).
+    settles: bool = False
+    #: Of each fragment that was read and is not one (§12.2: it is reported and not spliced), the file and line of the
+    #: include that first named it, for its findings to be put there (``position``).
+    met_at: dict[str, tuple[str, int | None]] = field(default_factory=dict)
+    #: The findings of the document's own pass (by ``id``) that it keeps although their rules are not ``HOST_ONLY``:
+    #: the path rules on the includes of an attachment file left out of the combined document for its size.
+    kept: set[int] = field(default_factory=set)
+    #: The findings of the combined pass (by their index among its diagnostics) that nothing it lacks could settle
+    #: (``_Recorder.unsettleable``): a partial document does not say that what is not in it may (``NOT_IN_IT``).
+    unsettleable: set[int] = field(default_factory=set)
     #: What the document's own pass read the link reference definitions of its files as (``paths.ReferenceImages``),
     #: for the combined pass not to read them again (#121).
     definition_reads: dict[Any, Any] = field(default_factory=dict)
@@ -116,6 +137,14 @@ class Combined:
         """The place, section index and block index in its file of block *block* of the preamble
         (*section* None) or of section *section*."""
         return self.block_origin[0 if section is None else section + 1][block]
+
+    @staticmethod
+    def unit_of(place: Instance) -> Instance:
+        """The attachment file *place* is in, itself or through the includes that brought it in (#141), else *place*."""
+        root = place
+        while root.parent is not None:
+            root = root.parent
+        return root if root.attachment is not None else place
 
     @property
     def attached(self) -> frozenset[int]:
@@ -161,29 +190,37 @@ class Combined:
                     self._entries[relative] = index
         return self._entries.get(file, self._entries[""])
 
-    def position(self, diagnostic: Diagnostic, number: int | None) -> tuple[int, int, int, int]:
+    def position(self, diagnostic: Diagnostic, number: int | None) -> tuple[int, ...]:
         """Where a finding is in the combined document, to put the findings in its order: a line of the document
         at itself, a line of a fragment at the include paragraph that took it in (the outermost one, if it is nested),
         after the findings at that line, those of one line of the fragment together. A fragment included more than
         once is at its first place, as its findings are kept once. *number* is the place of the fragment the finding
         was made at, if it was; a finding of the document's own pass in a fragment (its shape, say) has none."""
+        return self._position(diagnostic.file, diagnostic.line, number)
+
+    def _position(self, file: str, line: int | None, number: int | None) -> tuple[int, ...]:
         if not self._first:
             for place in reversed(self.instances):
                 self._first[place.path] = place.number
         if number is not None:
             number = self._first[self.instances[number].path]
-        elif diagnostic.file:
-            number = self._first.get(diagnostic.file)
+        elif file:
+            number = self._first.get(file)
+            if number is None and file in self.met_at:  # a fragment not spliced: at the include that named it
+                return self._position(*self.met_at[file], None)
             if number is None:  # a file that is not in it: an attachment file not spliced, after the body (§15.7.2)
-                return (sys.maxsize, 0, self._entry(diagnostic.file), diagnostic.line or 0)
+                return (sys.maxsize, self._entry(file), line or 0, 0, 0, 0)
         if number is None:
-            return (diagnostic.line or 0, 0, 0, 0)
+            return (line or 0, 0, 0, 0, 0, 0)
         top = self.instances[number]
         if top.attachment is not None:  # after the body, in the order the attachments are declared
-            return (sys.maxsize, 0, top.attachment, diagnostic.line or 0)
+            return (sys.maxsize, top.attachment, line or 0, 0, 0, 0)
         while top.parent is not None and top.parent.parent is not None:
             top = top.parent
-        return (self.where.block(*top.at) or 0, 1, number, diagnostic.line or 0)
+        assert top.parent is not None
+        if top.parent.attachment is not None:  # in an attachment file, at the include that took it in (#141)
+            return (sys.maxsize, top.parent.attachment, top.parent.where.block(*top.at) or 0, 1, number, line or 0)
+        return (self.where.block(*top.at) or 0, 1, number, line or 0, 0, 0)
 
 
 def weave(
@@ -192,7 +229,9 @@ def weave(
     plan: Plan,
     files: Files | None,
     lex_fragment: Callable[[str], Lexed],
-    attachments: Sequence[tuple[int, FragmentFile]] = (),
+    attachments: Sequence[tuple[int, FragmentFile, Plan]] = (),
+    *,
+    partial: bool = False,
 ) -> Combined:
     """The combined document of *document*, with the fragments of *plan*, what the walk of its includes
     followed, spliced in at their include paragraphs. *where* is the document's own. *attachments* are the
@@ -226,10 +265,10 @@ def weave(
     host = Instance(0, "", document, where)
     instances.append(host)
     splice(host, plan)
-    for index, fragment in attachments:  # the last section of the body takes the first one's preamble
+    for index, fragment, followed in attachments:  # the last section of the body takes the first one's preamble
         taken = Instance(len(instances), fragment.path, fragment.document, fragment.where, attachment=index)
         instances.append(taken)
-        splice(taken, Plan())
+        splice(taken, followed)
     return Combined(
         document=replace(document, sections=sections, preamble=preamble, source_map=None),
         where=where,
@@ -238,6 +277,7 @@ def weave(
         instances=instances,
         section_origin=section_origin,
         block_origin=block_origin,
+        partial=partial,
     )
 
 
@@ -274,6 +314,11 @@ class CombinedLocator:
     ) -> int | None:
         place, local, block = self._combined.of_block(section, index)
         return place.spot(place.where.find(local, block, needle, fragment, offset, nth=nth))
+
+    def fragment_lines(self, section: int | None, index: int, fragment: int) -> tuple[int, list[str], str] | None:
+        place, local, block = self._combined.of_block(section, index)
+        found = place.where.fragment_lines(local, block, fragment)
+        return None if found is None else (place.spot(found[0]), found[1], found[2])
 
     def definition(self, section: int | None, index: int, ordinal: int) -> int | None:
         place, local, block = self._combined.of_block(section, index)
@@ -349,7 +394,8 @@ class CombinedUnits:
 #: judge (§12.2: a level a fragment fills is not skipped), which ``include-heading-skip`` does under every
 #: combination of answers; the shape of an attachment file (``attachment-has-frontmatter``,
 #: ``attachment-has-h1``) is judged of the file as it is, and the file is not spliced when it has either; and
-#: the Warning of §17.5 is for the whole validation. (A path is judged against the document root from the
+#: the Warning of §17.5 is for the whole validation, and ``ldv-file-spelling-duplicate`` for the paths the
+#: walk of the files followed (#123). (A path is judged against the document root from the
 #: directory of the file it is written in, which the combined pass does, ``Combined.base_of``.)
 HOST_ONLY: frozenset[str] = frozenset({
     "heading-skip",
@@ -363,6 +409,7 @@ HOST_ONLY: frozenset[str] = frozenset({
     "template-fragment-invalid",
     "attachment-has-frontmatter",
     "attachment-has-h1",
+    FILE_SPELLING_DUPLICATE_RULE,
     SKIPPED_RULE,
 })
 
@@ -398,6 +445,27 @@ WHOLE_DOCUMENT_RULES: frozenset[str] = frozenset({
     "path-not-relative",
 })
 
+#: The rules whose finding a part the combined document does not hold may settle: a declaration it makes (a section, a
+#: definition) or a use of one (a ``{{term:}}``, an ``{{attach:}}``). When the combined document is ``partial`` such a
+#: finding is still made, as the document's own pass made it of every part, and says that it is judged without the
+#: parts not read (``NOT_IN_IT``, #141). ``question-unused`` is not made at all (``core._check``), as before.
+SETTLED_ELSEWHERE: frozenset[str] = frozenset({
+    "ref-broken",
+    "term-undefined",
+    "amend-term-undefined",
+    "amend-term-unresolvable",
+    "def-unreferenced",
+    "attachment-unreferenced",
+    # (A reference that no declaration covers under some answers: an unconditional one may be among what is not in it.)
+    "condition-reference-unsafe",
+})
+
+#: What a finding of ``SETTLED_ELSEWHERE`` adds to its message in a ``partial`` combined document.
+NOT_IN_IT = (
+    " (The combined document was checked without the fragments of the includes that were not followed, "
+    "which may settle this; §17.5.)"
+)
+
 #: A rule of the combined pass that another rule of the document's pass reports for the same thing, at the
 #: same place: the combined pass says nothing of it where the owner has.
 #: Two section identifiers that clash across a fragment and the document are ``include-anchor-duplicate``'s.
@@ -422,7 +490,7 @@ def merge_diagnostics(
     merged: list[tuple[Diagnostic, int | None]] = []
     made: dict[tuple[str, str, int | None, str], dict[int, int]] = {}  # of each finding, how often each place made it
     kept: Counter[tuple[str, str, int | None, str]] = Counter()
-    for d, number in zip(whole, places, strict=True):
+    for position, (d, number) in enumerate(zip(whole, places, strict=True)):
         if d.rule in HOST_ONLY or (OWNED_BY.get(d.rule), d.file, d.line) in owned:
             continue
         if number is not None:
@@ -432,7 +500,9 @@ def merge_diagnostics(
             if made_here[number] <= kept[key]:
                 continue  # a place has made it as often already
             kept[key] = made_here[number]
+        if combined.partial and combined.settles and d.rule in SETTLED_ELSEWHERE and position not in combined.unsettleable:
+            d = replace(d, message=d.message + NOT_IN_IT)
         merged.append((d, number))
-    merged += [(d, None) for d in host if d.rule in HOST_ONLY]
+    merged += [(d, None) for d in host if d.rule in HOST_ONLY or id(d) in combined.kept]
     merged.sort(key=lambda each: combined.position(*each))
     return [d for d, _number in merged]

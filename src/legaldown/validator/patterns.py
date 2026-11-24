@@ -39,6 +39,29 @@ INCLUDE_LIMIT_RULE = IMPLEMENTATION_RULE_PREFIX + "include-limit"
 # Error for the same key written twice, a Warning for different keys (the specification only warns of a padded
 # language code).
 FRONTMATTER_KEY_DUPLICATE_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-key-duplicate"
+# And the one for a file named a second time by another path than the first (``a.lgd`` and ``../doc/a.lgd``
+# from a document in ``doc``), by an include or a LegalDown attachment file: an Error, since assembly writes
+# each file it keeps by the path that names it, and refuses one file by two (#123). Written out, as SKIPPED_RULE
+# is, since it is one of the rules the combined pass leaves to the document (combined.HOST_ONLY), named as written.
+FILE_SPELLING_DUPLICATE_RULE = "ldv-file-spelling-duplicate"
+# And the two for constructs that take content out of validation without a word (#12, ``validator.hidden``): a
+# fenced code block that runs to the end of its file (a Warning), and a directive in heading text (an Error, §4.2;
+# a Warning in a list item or quote, which this implementation reads as body text).
+FENCE_UNCLOSED_RULE = IMPLEMENTATION_RULE_PREFIX + "fence-unclosed"
+HEADING_DIRECTIVE_RULE = IMPLEMENTATION_RULE_PREFIX + "heading-directive"
+# And a {{placeholder:}} in a frontmatter value field that is not written as a quoted YAML string, which §3.10
+# requires: it is no blank, and assembly leaves it as written (an Error, #12).
+FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-placeholder-unquoted"
+# And an alias in a template's frontmatter to an anchor that assembly removes (the questions, an attachment's
+# when, an attachment whose condition can be false, §15.7.2), which would leave it naming nothing (an Error, #12).
+ALIAS_REMOVED_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-alias-removed"
+# And a {{placeholder:}} in frontmatter outside every field the model reads (a key, or under a key it does not know),
+# which is no blank and assembly leaves as written (a Warning: §3.10 does not forbid it there, #12); and an Error, in
+# TEMPLATE_RULES, for a value field the model reads from no written scalar at its key (keys stripped alike).
+FRONTMATTER_PLACEHOLDER_UNREAD_RULE = IMPLEMENTATION_RULE_PREFIX + "frontmatter-placeholder-unread"
+# And the Warning for a line of a template that an empty choice leaves as bare container markers, or deletes, where
+# the output then reads otherwise than the template: §15.7.3 gives the assembler no escape for it (#120).
+BARE_MARKERS_RULE = IMPLEMENTATION_RULE_PREFIX + "bare-markers"
 # §10.7 placeholder types — also the value question types of §15.2.
 VALID_PLACEHOLDER_TYPES: frozenset[str] = frozenset({"text", "date", "money", "duration"})
 

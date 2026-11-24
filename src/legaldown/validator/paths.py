@@ -516,7 +516,7 @@ class ReferenceImages:
         #: their starts and ends, sorted. The reading's images are not in them (``note``).
         self._consumed: dict[Reading, dict[int, tuple[list[int], list[int]]]] = {}
         #: The inline images of the text a reading has where the model has a definition, with where each lies.
-        self._text_images: list[tuple[Image, tuple[int, ...], Line]] = []
+        self._text_images: list[tuple[Image, tuple[int, ...], Line, bool]] = []
         #: The labels of the definitions noted, by reading, each with whether an image outside a drafting note names it.
         self._used: dict[Reading, dict[str, bool]] = {reading: {} for reading in READINGS}
 
@@ -606,7 +606,7 @@ class ReferenceImages:
             used = self._used[reading]
             skip = lambda offset: not read.counts(offset)  # noqa: E731 (the model scans the rest)
             for key in reference_images(text, lexed, table, inline, scanned, partial(label_key, reading=reading), skip):
-                used[key] = True
+                used[key] = used.get(key, False) or not read.noted
         line, previous = read.line, 0  # (the line of an image, on from the last one's: linear, #94)
         for image in found:
             line += text.count("\n", previous, image.start)
@@ -614,7 +614,7 @@ class ReferenceImages:
             if image.readers & reading and read.counts(image.start):
                 column = image.start - (text.rfind("\n", 0, image.start) + 1)
                 at = (-1 if slot[0] is None else slot[0], slot[1], 0, -1, line, column)
-                self._text_images.append((image, at, origin.spot(line)))
+                self._text_images.append((image, at, origin.spot(line), read.noted))
 
     def note(
         self, text: str, lexed: Lexed, images: Container[Image] = (), scanned: Scan | None = None, *,
@@ -694,14 +694,18 @@ class ReferenceImages:
             ):
                 return
             self._definitions()
-        judged_text: set[tuple[object, ...]] = set()
-        for image, at, line in self._text_images:
-            # (Both readings that have the text have the image: once.)
-            if (key := (getattr(line, "instance", 0), at[4:], image.path)) not in judged_text:
-                judged_text.add(key)
-                references.check(
-                    image.path, "image", line, at=at, url=True, literal=image.literal, rest=image.rest
-                )
+        # (Both readings that have the text have the image: once, in a drafting note if every reading puts it there.)
+        judged_text: dict[tuple[object, ...], list[Any]] = {}
+        for image, at, line, noted in self._text_images:
+            key = (getattr(line, "instance", 0), at[4:], image.path)
+            if key in judged_text:
+                judged_text[key][3] = judged_text[key][3] and noted
+            else:
+                judged_text[key] = [image, at, line, noted]
+        for image, at, line, noted in judged_text.values():
+            references.check(
+                image.path, "image", line, at=at, url=True, literal=image.literal, rest=image.rest, noted=noted
+            )
         if not any(self._used.values()):
             return
         # What is judged, by the definition (where it is written) and the path it is read as: where it lies, its
@@ -784,6 +788,7 @@ def check_fragment_images(
         anchor_line = cache(partial(where.find, section, block, "![", fragment, anchor))
         last = [anchor, 0]
         exact: list[bool] = []  # whether the lines of the text are those of the source: not a heading's, joined
+        joined: list[Callable[[int], int] | None] = []  # else the line of an offset in a heading's text, if known
 
         def line_of(offset: int) -> int | None:
             line = anchor_line()
@@ -793,8 +798,11 @@ def check_fragment_images(
                 end = text.rfind("![")
                 there = where.find(section, block, "![", fragment, end)
                 exact.append(there is not None and int(there) == int(line) + text.count("\n", anchor, end))
+                if not exact[0]:
+                    # A setext heading in an item or a quote: its lines are joined, a space between (#139).
+                    joined.append(_heading_lines(text, where.fragment_lines(section, block, fragment)))
             if not exact[0]:
-                return None
+                return None if joined[0] is None else joined[0](offset)
             if offset < last[0] or not last[1]:
                 last[:] = [anchor, line]
             last[1] += text.count("\n", last[0], offset)
@@ -822,6 +830,35 @@ def check_fragment_images(
             at=(-1 if section is None else section, block, fragment, image.start), url=True, literal=image.literal,
             rest=image.rest, noted=noted,
         )
+
+
+#: What may come before a line's text in a block's lines: indentation and quote markers (an item's marker is on
+#: the first line, which is read from the start of the text).
+_LEAD_RE = re.compile(r"[ \t>]*")
+
+
+def _heading_lines(text: str, written: tuple[int, list[str], str] | None) -> Callable[[int], int] | None:
+    """The line of an offset in *text*, the text of a setext heading in an item or a quote, whose lines the model
+    joins, stripped, with a space between; *written* is where the heading is (``Locator.fragment_lines``): its first
+    line, and its lines, its underline last. Each line's text is the end of the line as written, after its markers and
+    indentation, so the lines are told apart from the last. None when the text is not the lines joined so."""
+    if written is None or written[2] != "heading" or len(written[1]) < 2:
+        return None
+    first, lines, _kind = written
+    starts: list[int] = []
+    end = len(text)
+    for raw in reversed(lines[1:-1]):
+        piece = raw[_LEAD_RE.match(raw).end():].rstrip(" \t")  # type: ignore[union-attr]
+        begin = end - len(piece)
+        if not piece or begin < 1 or text[begin:end] != piece or text[begin - 1] != " ":
+            return None  # (a line whose text begins with a ``>`` far in, say: not told apart)
+        starts.append(begin)
+        end = begin - 1  # the space that joins the lines
+    if not end:
+        return None
+    starts.append(0)
+    starts.reverse()
+    return lambda offset: first + bisect_right(starts, offset) - 1
 
 
 def _below(first: Callable[[], int | None], lines: int) -> int | None:

@@ -653,7 +653,10 @@ Where this differs from CommonMark, or is read more simply:
       - A table is the model's (GFM's): `[r]: /etc/x\x7f` as the first line of a table of one cell, with a delimiter
         row under it, is a table cell to the model and a definition to a renderer without tables, and a line without
         a pipe after a table is a row to the model, GFM, markdown-it and `pandoc -f commonmark` and a *definition* to
-        `pandoc -f gfm`, which is not a supported reading: an image of it is not judged.
+        `pandoc -f gfm`, which is not a supported reading: an image of it is not judged. Out of scope (#139): the
+        specification's tables are GFM's, which read the row, and the readings judged are the specification's,
+        `pandoc -f commonmark`'s and markdown-it's; `test_pandoc_gfm_reads_a_definition_after_a_table_that_the_path_rules_do_not_judge`
+        runs `pandoc -f gfm` where pandoc is installed, so that a pandoc that comes to agree is noticed.
       - The title of a definition. Where a reading reads text and the model a definition and its title (markdown-it
         ends `[a]: x\ "![i](/etc/p.png)"` at the backslash, so the line is a paragraph with an image), the text is
         read for images under that reading, at its own lines, as the lines of the reading's paragraphs that the model
@@ -662,9 +665,18 @@ Where this differs from CommonMark, or is read more simply:
         markdown-it's, not pandoc's), but an *inline* image in it is judged: it is displayed by the
         specification's reading, which is text there. The whole text of the reading's paragraph or heading is read, and
         the images that begin on a line the model has as a definition are judged (one that begins in a title and ends
-        below it too); the others are the model's own. A residual (too many findings): the lines of a setext heading's
-        text in a quote or an item are joined, so a reference-style image in the title of a definition that a reading
-        reads there is still that reading's.
+        below it too); the others are the model's own. The model joins the lines of a setext heading in a quote or an
+        item, a space between; they are told apart again from the heading's lines as written, each line's text being
+        the end of it after its markers and one space joining it to the line before (`paths._heading_lines`; a line
+        whose text begins with a `>` too far in to be a marker is not told apart, and is read as before), so that a reference-style image in the title of a
+        definition that a reading reads there is not that reading's (#139).
+      - Text that only a reading has, in a drafting note as that reading reads the quotes around it, is in the note
+        (`ReadText.noted`): its images are judged all the same, and none of them is the image whose existence the
+        check-skipped Warning names (#139).
+      - A definition is judged once however many readings read it, by its line (and file). The model's line of one
+        is unknown only in a file without a source map, or no longer fitting it, which no reading reads again
+        (`read_definitions` needs its lines); so a reading's definition and the model's are never one definition
+        under two names (#139, `test_a_definition_of_a_fragment_that_every_reading_reads_is_one_finding`).
       - A label of white space the specification does not take as blank (`[<NBSP>]: x`, U+3000, and for markdown-it
         U+001C–U+001F, U+0085, U+2028) makes the line text to pandoc and markdown-it, and the next line a line of
         its paragraph, not a definition (`_read_definition` checks it by each reading's own white space).
@@ -850,8 +862,9 @@ paragraph. What the reading does not follow:
   (about one document in 200,000, and older than it): a nested quote whose paragraph has a line with a `|`,
   a lazy line, then a line that looks like a table's delimiter row (`>>a||`, `>     x`, `>>-|-`) ends there,
   where CommonMark (and pandoc, markdown-it) go on with the paragraph and take an unmarked line after it.
-- A quote in 16 or more list items and quotes is read as one text: its directives are checked
-  as a paragraph's.
+- A quote in 16 or more quotes is read as one text: its directives are checked as a paragraph's. List items do
+  not count toward it (they have `MAX_LIST_DEPTH`, which counts the quotes they are in too), so a quote in sixteen
+  nested items is read into blocks as one in none is (#139).
 
 One id appears on both sides of that line. `attachment-file-missing` is defined as *the attachment
 `file` path exists*, which needs the filesystem and is therefore unimplemented — but the validator
@@ -1027,14 +1040,40 @@ Decisions the specification leaves open:
   heading) is reported as for any fragment, and it is not followed or spliced when it fails. A chain that
   comes back to a file in it, or to the document itself, is `include-cycle` (§12.2, §16.11) at the include
   that closes it, and is followed no further; a file included from two places (a diamond) is no cycle. A
-  document that includes itself is a cycle too, in a template as well. Files are the same file when their
-  paths joined to the document's directory and normalized are (`./a.lgd`, `sub/../a.lgd` and, from a document
-  in `dir`, `../dir/a.lgd`): read once, judged once, and named in a finding by the path it was first met by (whichever spelling
-  comes first in the order the validator reads them, so an attachment's `../dir/a.lgd` may name a file that an
-  include spells `a.lgd`).
-  Symbolic links are **not** followed for this (a link is another file, and so is another case of a name on
-  a file system that ignores case), and a chain through one ends at the depth cap; the one place a link
-  is followed is whether a file is the document itself. In a template an include in a fragment is not followed,
+  document that includes itself is a cycle too, in a template as well. Files are the same file when the
+  loader reads one file for both paths: with `file_loader` (the default, and `load_template`'s), the file it
+  reads, its real path, **symbolic links followed** as it follows them (#123), so a link to a file is that file,
+  and `a.lgd` and `../doc/a.lgd` from a document in `doc` are two files when `doc` is a link that leads
+  elsewhere (the loader is asked for `../doc/a.lgd` as it is, and follows the link before the `..`; a path is
+  otherwise normalized as text before the loader is asked for it, so an include `../x.lgd` in a fragment
+  reached through a linked directory is read beside the link, not where it leads); with a `resolve=` that cannot say (a loader may have an
+  `identify(path)` method returning the file it reads, as `file_loader`'s has, `legaldown.files.loader_identity`), the
+  paths joined to the document's directory and normalized (`./a.lgd`, `sub/../a.lgd` and, from a document
+  in `dir`, `../dir/a.lgd`), with no link followed. A hard link, and another case of a name on a file system
+  that ignores case, are other files (not the device and inode: a hard link is a name someone gave a file, as a
+  checkout that links files alike does, and some mounts give two files one inode), except on Windows, where the
+  path is compared in the case the system compares it by (`os.path.normcase`). A fragment reached through a
+  linked directory and one reached directly name the files beside them by two paths too, and are judged so. A
+  file is read once, judged once, and named in a finding by the path it was first met by, in
+  the order the validator reads them (the includes, each followed as it is met, then the attachment files).
+  **`ldv-file-spelling-duplicate`** ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123)), an
+  Error, reports a second path to a file already named, by an include (the document's or, outside a template,
+  a fragment's) or a LegalDown attachment file: at that path's own line (the include paragraph, or the
+  `file:` of the attachment entry), in the file that holds it, naming the first path. A path written another
+  way that normalizes alike (`./a.lgd` and `a.lgd`) is the same path, and no finding; in a template, the same
+  path twice is `template-fragment-invalid` already (§15.3, by its text), and not this. The id is this
+  implementation's own (§16.1, `ldv-`; `legaldown.grammar.FILE_SPELLING_DUPLICATE_RULE`): the specification
+  allows both paths (§2.3 judges each by itself, and #109 reads both under a root). It is an **Error** so that
+  validation and assembly agree: assembly writes each file it keeps at the path that names it (§15.7.2), and
+  one file under two names would be written twice, or under a name that leads out of the output directory,
+  or the output would name a file that is not written; so assembly refuses the template with the same
+  finding, at the same line, and assembles nothing (it goes on reading as the validator does, with the one
+  file by its first path, from whose directory its own includes are read, so that both stop at the same caps). A Warning would leave a template that validates
+  and that assembly refuses. The conditions on the two (`when`, a unit) are not looked at: a file has one
+  path, whichever of its includes and entries are kept. The file itself is still read and judged by the validator, once, as the one file it is.
+  Without a loader (assembly of a template with none, or `validate` of a document with no path) nothing is
+  compared, and an include not read for that reason, or for leading out of the directory without a root, has
+  the rule listed in the Warning of §17.5 among the checks not made. A chain through a link ends as a cycle at the link (it is the file it leads to). In a template an include in a fragment is not followed,
   and the Warning of §17.5 says so; it does not leave the rest of the fragment unknown (what the fragment
   fills it still fills).
   **Caps.** A document that is not the author's can chain includes into a tree of any size, so the walk stops at a
@@ -1095,7 +1134,8 @@ Decisions the specification leaves open:
   made for them again.
 - **The combined document** ([#117](https://github.com/ForLegalAI/legaldown-validator/issues/117); §12.2,
   §15.7.2 step 7, §16.11). §16.11 requires the combined document, "including all inclusions", to be validated. When
-  every include paragraph was followed into a fragment, `validate` runs its checks a second time over the
+  something is to be spliced (an include paragraph was followed into a fragment, or an attachment file is spliced;
+  partial when not every include was, below), `validate` runs its checks a second time over the
   document with each fragment spliced in at its include (`validator/combined.py`), and the document's findings
   are that pass's, but for the rules only the document's own pass can make (`combined.HOST_ONLY`: the `include-*`
   rules, `template-fragment-invalid`, `heading-skip`, `attachment-has-frontmatter`, `attachment-has-h1`,
@@ -1152,9 +1192,14 @@ Decisions the specification leaves open:
     decided by **the document alone** (§15.1: "any LegalDown document that declares questions, carries a `when=`
     condition, or contains a `{{choose:}}"), as the assembler decides it from the template it is given, and the
     combined pass runs under it: a fragment's conditions are judged as the document's template status dictates.
-    In a document that is no template the combined pass does not collect a fragment's conditions and `{{choose:}}`
-    at all (a document that is none has none of its own), so no rule that they cause is made, under `final` too
-    (`template-construct-present`).
+    In a document that is no template the combined pass does not judge a fragment's conditions and `{{choose:}}`
+    (a document that is none has none of its own), so no rule that they cause is made, but for the final check:
+    under `final` they are what remains in the combined document, and §15.9 rejects "a `when=` condition, a
+    `{{choose:}}` directive, or a drafting note" whatever made the document what it is, so each is
+    `template-construct-present` at its line in the fragment or attachment file, as the document's own would be
+    ([#141](https://github.com/ForLegalAI/legaldown-validator/issues/141); a condition counts where §15.1 counts the
+    document's, in a marker position; the differential compares the final findings with the spliced text's, where they
+    make the document a template). The document itself cannot hold one and be no template, so it draws nothing new.
     A document that is no template gives what it gave before the fragments were validated for a fragment's
     condition or `{{choose:}}` (no `condition-invalid`, `choose-invalid` or `template-fragment-invalid` for them,
     `index.is_template` false, assembly as before); in a template they are judged, in the fragment, and a fragment
@@ -1162,31 +1207,67 @@ Decisions the specification leaves open:
     (`placeholder-type-inconsistent`, `insertion-boundary`, `def-term-variable`, ...) stops the assembly of a
     template, **in whichever file it is**, as it does when the files are one document (§15.7.2);
     `Template.problems` leaves out only what assembly said of a file itself (`template-fragment-invalid`).
-    `condition-reference-unsafe` counts when the template was validated with its fragments in
+    `condition-reference-unsafe` counts when the template was validated with all its fragments in
     (`Template` knows from the validation) or includes none; when the walk was cut short or a fragment could not
-    be read, the validator cannot see what the fragments declare, and it is advice, as it was.
+    be read, the validator cannot see what that fragment declares, and it is advice, as it was, in a partial
+    combined document too (below).
   - *Size.* The fragments spliced in may come to at most **50,000 blocks and 200,000 lines**, counted for each
     time a fragment is included (the walk is bounded by the headings and includes it counts, not by what a
     fragment holds, so N includes of a fragment of M blocks would make a document of N x M). Past either, no
-    combined document is made, as for an include not followed, and the Warning of §17.5 says
+    combined document is made at all (not a partial one: the cap is on its cost), and the Warning of §17.5 says
     "building the combined document of more than ... blocks or ... lines of fragments". The caps are this
     implementation's own.
-  - *All or nothing.* For the includes: the combined document is made only when every include paragraph (the document's and the
-    fragments') was followed into a fragment: nothing unread (no loader, a path that leads out of the directory
-    with no `document_root`, a file that cannot be read), refused (`include-cycle`, a path finding, a file that is
-    not a fragment: frontmatter or a level-1 heading), cut short by a cap (32 deep, 10,000 entries), or left alone in
-    a template's fragment. Otherwise the document is validated as before, a reference into a fragment is as
-    `ref-broken` as it was, and the Warning of §17.5 names the combined-document checks. A partial combined
-    document would make `question-unused`, `def-unreferenced` and `condition-reference-unsafe` wrong for what the
-    missing fragment holds. When it is made, the Warning no longer names them, and a document with includes that
-    is otherwise skipped nothing has none. The attachment files are each on their own (below): one not read leaves
-    the body and the others as they are.
+  - *Partial combined documents* ([#141](https://github.com/ForLegalAI/legaldown-validator/issues/141)). What the
+    walk followed is spliced even when an include paragraph (the document's or a fragment's) was not followed into a
+    fragment: unread (no loader, a path that leads out of the directory with no `document_root`, a file that cannot
+    be read), refused (`include-cycle`, a path finding, a file that is not a fragment: frontmatter or a level-1
+    heading), cut short by a cap (32 deep, 10,000 entries), or left alone in a template's fragment. That include stays
+    the paragraph it is (as in the text, where nothing is spliced for it), and the fragments that were followed are
+    judged with the document: a reference into one resolves, its own findings are reported. What the parts not in it
+    could change is handled so: a finding that a declaration or a use they make may settle (`ref-broken`,
+    `term-undefined`, `amend-term-undefined`, `amend-term-unresolvable`, `def-unreferenced`,
+    `attachment-unreferenced`, and `condition-reference-unsafe`, which an unconditional declaration there would
+    cover: `combined.SETTLED_ELSEWHERE`) is made, as the document's own pass made it of every
+    part before, and its message ends "The combined document was checked without the fragments of the includes that
+    were not followed, which may settle this; §17.5." (not one that nothing could settle: a `{{ref:}}` or `{{term:}}`
+    with no target, a target or an amendment's term that is no identifier, an attachment id that is none, since a
+    section, a definition and an `{{attach:}}` are named by an identifier, §5.2, §7.2; and only when an include not
+    followed may bring content in: a path that leads out of the directory with no root, a depth or count cap, an
+    include in a template's fragment. A file that is not there, a cycle, a file that is no fragment or a path refused
+    brings nothing, so a document whose only includes not followed are such says nothing of them in its findings,
+    `Combined.settles`); `question-unused` is not made, as before, unless no include not followed may bring
+    content in (such a file uses no question either); a duplicate, a
+    collision, a circle or a use before a declaration among the parts that were read is real whatever the others
+    hold, and is reported as it is. `ValidationResult` is not marked combined, so `Template.problems` keeps
+    `condition-reference-unsafe` as advice. The Warning of §17.5 names "the combined-document checks (§16.11) for what
+    the includes not followed would bring in" when one may bring content in, with the includes not read counted as
+    before (a missing file is still counted, and the include rules for the fragments not read still named). A fragment that was read
+    and is not one (and so not spliced) has its findings at the include that named it. The differential
+    (`test_a_partial_combined_document_equals_validating_the_text_with_what_was_read_spliced`) removes a fragment of
+    random documents and compares with the text of the others spliced, the include of the missing one left as it is.
+    The findings in the fragments that were read are new, and may change an exit status. When nothing was spliced
+    (no include followed, no attachment file spliced), there is no combined document, and the Warning says so as
+    before. The attachment files are each on their own (below): one not read leaves the body and the others as they
+    are.
   - *Cost.* The document is validated twice, itself and combined, and the files it imports from (an amended
-    original, attachment files) are read once, whichever check wants them. The
-    document's own pass is not shortened when a combined document will be made (it is not known until the
-    includes are followed, near its end), and the units and markers of the document are not reused, since the
-    combined structure reads them differently; so the work is about twice the document's and linear in the
-    size of the combined document (bounded, above).
+    original, attachment files) are read once, whichever check wants them. Of the document's own pass only the rules
+    of `HOST_ONLY` are kept, so when a combined document is likely (an include paragraph or a LegalDown attachment
+    file of the document names a file that is read and is a fragment; this reads only what the walk reads) that pass
+    records only them (a finding of another rule is held, its line not looked for) and puts off the checks that make
+    nothing else (`condition-never-true`, `definition-circular`, `definition-used-before-declaration`,
+    `condition-reference-unsafe`, `question-unused`, `raw-html`, the hidden constructs of #12), each with its place
+    among the findings. Should no combined document be made after all (past the size cap, say), the pass becomes the
+    full one by itself once the walk of the includes has said so: the findings held are made, in their places, and
+    the checks put off are run and their findings put where they would have been, so the document is validated once
+    and every file read once (#141). The prediction leaves out an attachment file with include paragraphs in a
+    template, which is not spliced. The rest of the
+    pass is kept: it builds `ValidationResult.index` and what the `include-*` rules, `heading-skip` and the Warning
+    need. The units and markers of the document are not reused, since the combined structure reads them differently.
+    On a document of 1,500 sections with one small include the validation went from 1.6 to 1.2 times the cost of the
+    document alone; the work stays linear in the size of the combined document (bounded, above). The differential
+    (`test_the_documents_own_pass_that_makes_only_what_it_keeps_changes_nothing`) compares every diagnostic, in order,
+    the index, and what the loader is asked, with the pass in full, over every case of the combined-document tests,
+    random documents, partial ones and documents that combine nothing, with and without `final`.
   - *Attachment files* ([#135](https://github.com/ForLegalAI/legaldown-validator/issues/135); §12.4, §15.7.2 step 7,
     §16.10). The LegalDown attachment files follow the body, each after the other in the order the attachments are
     declared, one copy for each entry, spliced as a fragment is (its preamble blocks go on in the last section of
@@ -1201,17 +1282,37 @@ Decisions the specification leaves open:
     fragment in the sense of §12.2; its shape is checked of the file as it is (`attachment-has-frontmatter` at the
     first key, `attachment-has-h1` at each level-1 heading, once for each file however often it is attached, and not
     for a file that is also an include, which is `include-has-*`'s), and a file that has either is not spliced. The
-    combined document is made when the includes were all followed and something is to be spliced, so a document with
-    no include but a readable attachment file has one. An attachment file that holds an include paragraph is not
-    spliced either (its includes are not followed, so what it refers to in them would be taken for missing); it is
-    judged as before and counted among the files not spliced. Unlike the includes, the attachments are no
-    all-or-nothing: each is an appendix of its own, so one not read leaves the body and the others as they are, and
+    combined document is made when something is to be spliced, so a document with
+    no include but a readable attachment file has one. The include paragraphs of an attachment file are followed
+    as a fragment's are (#141; §12.4 allows "all standard LegalDown body syntax" in it, and §16.11 asks for the
+    combined document "including all inclusions"), with the same walk: each is judged from the attachment file's
+    directory, at its line there (`include-file-missing`, `include-cycle` with the attachment first in the chain,
+    `include-has-*`, the path rules; a cycle is said from the attachment file: "the attachment file s.lgd ->
+    s.lgd"), within the depth and count caps, and what it takes in is counted in the attachment files' budget: an
+    attachment file left out for it leaves the combined document, the Warning of §17.5 (no include of it counted,
+    none not read, no cap it reached) and the count of includes followed as they were, though what its includes
+    could not follow is reported in it (`include-file-missing`, `include-cycle`, the shape of what they read); the
+    rest of its content is not judged, as for any attachment file not spliced, but for `path-not-relative` and
+    `path-outside-root` on its include paths, which the walk judged and the document keeps (`Combined.kept`). A file that the attachments name and
+    an attachment file includes is judged as an attachment file (`attachment-has-*`), once, whatever the order of the
+    entries: every entry's shape is judged before any attachment's includes are followed. What they take in is part of the attachment (`Combined.unit_of`): a heading of it that
+    the body declares too is `attachment-anchor-duplicate`, its definitions are the attachment's (a use earlier in the
+    same attachment is a use before the declaration), it has the presence of the entry, and its findings are in the
+    order of the attachment, at the include. An include not followed leaves the combined document partial (above).
+    `include-heading-skip` and `include-anchor-duplicate` are not judged for them: §12.4 says attachment files "are
+    not standalone LegalDown documents for purposes of §4.1", and the identifiers are the combined pass's
+    `attachment-anchor-duplicate`. The Warning counts them ("2 includes in LegalDown attachment files"), at the first
+    such attachment's `file` when the document has no include paragraph. In a template an include in an attachment
+    file is `template-fragment-invalid` (§15.3, §16.12): it is not followed, the file is not spliced, and it is
+    counted among the files not spliced, as before. Unlike an include not followed, an attachment not spliced leaves
+    the combined document whole: each is an appendix of its own, so one not read leaves the body and the others as they are, and
     the Warning of §17.5 says how many were not spliced ("attachment-anchor-duplicate and the combined-document
     checks ... for 1 LegalDown attachment file not spliced into the combined document"), and nothing of them
     when all are in. The attachment files have a budget of their own (the 50,000 blocks and 200,000 lines of
     *Size*, counted for each entry), which the walk of the includes does not share and they cannot change: past it
     the attachment file and those after it are not spliced, the combined document of the includes is made all the
-    same, and the Warning says how many were left out for the size, also for a document with no include (not when an include was not followed: that is what the Warning then blames). The
+    same, and the Warning says how many were left out for the size, also for a document with no include or with an
+    include not followed (not when the includes were past the size themselves: that is what the Warning then blames). The
     Warning names `attachment-has-frontmatter` and `attachment-has-h1` only for the attachment files not read for
     their shape (not read, or a path refused), not for one whose definitions were not imported but was read. A
     definition of an attachment file is document-wide (§7.2, §12.4): a use in the body before it is no
@@ -1231,7 +1332,11 @@ Decisions the specification leaves open:
     fragment's and an attachment file's image and link reference definition, at its line in that file: `../x.png`
     in `sub/part.lgd` stays within a root at the document's directory, and `../../x.png` leaves it. The depth of
     each directory below the root is worked out once, not for each path. The existence of an image is not
-    judged (for the document itself neither). `ValidationResult.index` is the document's own (its sections are the
+    judged (for the document itself neither), and is ruled out here (#141): §8.7 and §17.4 make it a Full-level check
+    but §16 gives it no rule id and no level, and a `LoadFile` returns a file's text (`str`, or None for a file that
+    is not there *or is not UTF-8 text*), so an image, which is binary, cannot be told from a missing file through it;
+    judging existence would need another loader contract (an existence probe), which this issue does not add. The
+    Warning of §17.5 keeps naming "the existence of image paths (§8.7), which has no rule id" as not performed. `ValidationResult.index` is the document's own (its sections are the
     document's, paired with `document.sections`). The cap does not bound the blocks a fragment holds, as
     assembly's splice does not: the work is linear in the size of the combined document.
 - **What of a fragment is reported by the document that includes it.** The fragment is not
@@ -1278,6 +1383,117 @@ Decisions the specification leaves open:
   not implemented); the Warning of §17.5 says that the existence of attachment files is not checked
   ([below](#constructs-beyond-the-level-175)).
 
+## What takes content out of validation (#12)
+
+Two constructs follow CommonMark and the specification, yet take content out of validation without a word, and
+the specification has no rule id for either
+([#12](https://github.com/ForLegalAI/legaldown-validator/issues/12)). This implementation reports them with ids of
+its own (§16.1, `ldv-`; `legaldown.grammar.FENCE_UNCLOSED_RULE`, `HEADING_DIRECTIVE_RULE`). No fixture expects
+or forbids them, and no fixture case draws either.
+
+- **`ldv-fence-unclosed`**, a **Warning**: a fenced code block that is never closed runs to the end of the file
+  (CommonMark), so that every later heading, directive and paragraph is code, which no rule reads (§11.4). One stray
+  ```` ``` ```` turns every later section into code. It is reported at the fence's opening line, and the message
+  says how much the block holds (its lines, and how many of them are headings and directives). The construct is
+  valid, so it is a Warning. A fence that its list item or block quote ends is **not** reported: CommonMark closes
+  it with its container, and what follows the container is read as usual, so nothing past it is lost. A fence in a
+  container that itself runs to the end of the file (the last item of the last list, the last quote) is reported, as
+  nothing but the end of the file closes it. A document built in code (no source map) is judged the same, without a
+  line. The validator only reports it: the parser does not close the fence, as that would change what CommonMark
+  reads.
+- **`ldv-heading-directive`**, an **Error**: heading text must not contain a directive (§4.2), and a directive is
+  recognized in body text only (§11.4), so one in a section's heading is literal text: it
+  is shown as written, and what it was to do is not done. A `{{def:}}` there declares nothing (its uses are `term-undefined`), and assembly does not
+  fill a `{{placeholder:}}` there, so the validator agrees: neither it nor a `{{choose:}}` in a section's heading uses its
+  question (a question no other part uses is `question-unused`), and the final check counts no such placeholder
+  as an unfilled blank (§15.9), which `ldv-heading-directive` already reports (a `{{choose:}}` there is still a
+  template construct for the final check, since it makes the document a template wherever it is, §15.1). It is reported once for each heading, at its first line, naming the directives
+  (each `{{name:` opener, well-formed or malformed, §11.4; not one in a code span or comment, nor `\{{`; a `{{`
+  that opens no directive is no directive there either). The usual cause is a setext heading: a
+  paragraph directly above a `---` (or `===`) line is a heading, and the message names that line and how to keep
+  the paragraph. It is an Error because §4.2 is a MUST NOT and the directive is lost whatever it was for; the
+  specification's `heading-hardcoded-number` is a Warning, but it is the numbering of §4.2 and a heuristic, while a
+  directive is known for sure. No rule of the specification's covers it, so the id is this implementation's own,
+  but for `{{choose:}}`, which §15.5 gives to `choose-invalid`: a `{{choose:}}` in a heading is left to that
+  rule, and not reported twice. A heading in a list item or a block quote is a heading too, and is reported as a
+  **Warning** (this implementation reads its text as body text, so its directives are checked and assembly fills
+  them: nothing is lost here, but §4.2 forbids them and another tool may not read them; the message says so; a `{{choose:}}` there, which `choose-invalid` does not look at, is reported too). A heading in a
+  drafting note is not reported, as assembly removes the note (§15.6). The rule does not
+  stop assembly: like any rule outside `TEMPLATE_RULES`, it is in `Template.validation`, not in `problems`.
+
+Both judge each file by itself. An include fragment or an attachment file validated on its own
+(`validate(fragment=True)`) is judged as such, and an unclosed fence there says it runs to the end of the fragment
+(and that a tool that splices the fragment's text, §12.2, would read what follows the include into it). In the
+combined document (§16.11) each file is judged at its place, as every file keeps its own structure there (a fence a
+fragment leaves open does not run into the document): the combined pass, which reads the fragments too, reports
+each finding once, in the file it is in, however often the fragment is included (`merge_diagnostics`). Neither rule is
+in `HOST_ONLY` or `WHOLE_DOCUMENT_RULES`: the two passes agree on the document's own parts. As every check of a
+fragment's content, they run over the fragments in the combined pass only: when it is not made (an include that
+was not read), `ldv-check-skipped` says the combined-document checks were not performed.
+
+**A directive where §11.4 recognizes none is no blank and asks nothing.** §11.4 recognizes directives in body text,
+and in frontmatter only as §3.10 specifies: a `{{placeholder:}}` written as a quoted YAML string in a value field.
+Assembly fills exactly those (and the body's, a heading in a list item or quote included), and leaves every other
+as written, so the validator reads them the same way:
+
+- A `{{placeholder:}}` or `{{choose:}}` in a section's heading (`ldv-heading-directive`), a `{{choose:}}` in
+  frontmatter (`choose-invalid`), a `{{placeholder:}}` in an identifier, structural or format-checked field
+  (`placeholder-in-structural-field`), and one in a value field that is not a quoted string (below) does not use its
+  question: a question no other part uses is `question-unused`, whose message says where it is named. Nor is such a
+  placeholder checked as a blank (its type and parameters, `result.blanks`): assembly gives it no type either. The
+  final check reports every placeholder left in the frontmatter's model as `placeholder-unfilled` all the same,
+  a blank or not (§15.9: none may remain in the frontmatter), but not one in a section's heading, which is no
+  placeholder (§11.4) and is `ldv-heading-directive`'s. A `{{choose:}}` there is still a
+  template construct for the final check, since it makes the document a template wherever it is (§15.1).
+- `insertion-boundary` (§15.7.3) is not judged in a section's heading, where nothing is inserted; it is in a
+  heading in a list item or quote.
+- **`ldv-frontmatter-placeholder-unquoted`**, an **Error** (`legaldown.grammar.FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE`):
+  a `{{placeholder:}}` in a frontmatter value field that is not written as a quoted YAML string — a plain scalar
+  (`title: Lease {{placeholder:q}}`, valid YAML when no `: ` follows), a literal (`|`) or a folded (`>`) block
+  scalar — at the field's line. §3.10 says a placeholder in frontmatter MUST be a quoted string (an unquoted `{{`
+  at the start of a value is a flow mapping, and `frontmatter-invalid-yaml`); without this rule it would be lost
+  without a word. How a value is written is read from the source, so a document built in code (no source map) has
+  none to judge.
+
+**The validator's frontmatter blanks are what assembly fills.** Both read the frontmatter through
+`positions.frontmatter_scalars` (each scalar by its path, its YAML style, and where its quoted string is written) and
+the value fields `validator.core.frontmatter_value_paths` names, so assembly fills a placeholder exactly where the
+validator counts a blank, at every position of the frontmatter; the tests compare the two over each:
+
+- A value field's quoted string is one, after an anchor or a tag too (`&t "..."`, `!!str "..."`); a block or plain
+  scalar is none, even when a line of it begins with a quote (`title: |` over `"Lease {{placeholder: q}}"`).
+- A placeholder anywhere else — a key (`"{{placeholder: q}}": x`, `? "..."`), a list or mapping under a key the model
+  does not read (`keywords: ["..."]`, `date: "..."`), a comment — is no blank, and assembly leaves it as written.
+  One in an identifier, structural or format-checked field is `placeholder-in-structural-field`, which refuses the
+  template (`Template.problems`); one in a key or under a key the model does not read is
+  **`ldv-frontmatter-placeholder-unread`**, a **Warning** (`legaldown.grammar.FRONTMATTER_PLACEHOLDER_UNREAD_RULE`), at
+  its line, so that it does not stay as written without a word (§3.10 does not forbid it there, so no more than
+  a Warning; the rule is an Error for the value field of the next sentence but one). A comment is no part of the YAML, and draws nothing. The verdict is the written scalar's: one that
+  a value field reaches, through an alias or a merge (`<<: *base`) too, is that field's blank, wherever it is
+  written, but not one that the field's own key, or a later one, overrides at the same path (a merged-in
+  `legal_name` under the party's own, the first of two `title:`); one no field reads is reported once, however many
+  paths reach it. A value is a blank only where its written scalar is at the path the model reads it from: one the
+  model reads from a key that others of its mapping read as the same once stripped (`" Reg"` merged in, `"Reg "`
+  its own) is, when the key it names is not written so, no blank: the field is
+  `ldv-frontmatter-placeholder-unread` as an **Error**, at its line, as assembly would leave the placeholder the
+  model holds as written (and so is `ldv-frontmatter-placeholder-unquoted`; both are in `TEMPLATE_RULES`, which
+  refuse the template), and its written scalar, which no field reads, draws the Warning. A value
+  set in code since the document was parsed is not the source's, and is judged as one built in code (a blank).
+- An alias to an anchored value (`subtitle: *t`) is the anchor's value: a blank wherever it is used (the final check
+  reports it at the anchor and at the alias), which assembly fills through the anchor, where it is written, so every
+  alias reads the answer.
+- A placeholder written across a line break of a quoted value (`"Lease {{placeholder:` over `q}}"`) is
+  `directive-malformed` for both, at the field's line, that directive alone (the others of the value are checked): §11.5 does not let a directive span lines, though YAML folds
+  the value onto one. It is no blank, and assembly refuses the template.
+- **`ldv-frontmatter-alias-removed`**, an **Error** of a template (`legaldown.grammar.ALIAS_REMOVED_RULE`, in
+  `TEMPLATE_RULES`): an alias to an anchor in what assembly removes (§15.7.2) — the `questions`, an attachment's
+  `when`, an attachment whose condition can be false — at the alias, as the assembled frontmatter would name nothing
+  there and could not be read (the whole `attachments` entry is removable when every attachment has a `when`). An
+  alias removed with its anchor, or itself removed, is not reported; one in another attachment under the same
+  condition is, conservatively. Assembly, if it
+  is asked to assemble such a template all the same, reports the same rule at the alias for the answers that remove
+  the anchor, and writes nothing.
+
 ## Constructs beyond the level (§17.5)
 
 §17.5: an implementation that meets a construct whose processing lies beyond its claimed level "MUST NOT
@@ -1292,7 +1508,13 @@ expects or forbids it. It is a Warning for every output, so `is_valid` and the e
 unchanged; `--strict` and `--warnings-as-errors` count it, and `--ignore ldv-check-skipped` removes it.
 Assembly has an id of its own too, **`ldv-include-limit`**, an Error ([Assembly](#assembly-157-176)), and
 validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warning, which is a metadata check
-(any frontmatter mapping, #126, #131) and not a skipped one.
+(any frontmatter mapping, #126, #131) and not a skipped one, a third, **`ldv-file-spelling-duplicate`**, an
+Error of validation and of assembly for a second path to a file already named ([Include
+fragments](#include-fragments-122-1611-1612), #123), and five more for what takes content out of validation,
+**`ldv-fence-unclosed`**, **`ldv-heading-directive`**, **`ldv-frontmatter-placeholder-unquoted`**,
+**`ldv-frontmatter-placeholder-unread`** and **`ldv-frontmatter-alias-removed`**
+([above](#what-takes-content-out-of-validation-12)), and **`ldv-bare-markers`**, a Warning for a
+template line that an empty choice leaves as bare markers which read otherwise ([Assembly](#spec-questions-120), #120).
 
 - **The trigger is a construct in the document**, never the conformance level: the specification's
   example is "translations declared; bilingual validation not performed", and §17.1 says no construct
@@ -1312,8 +1534,8 @@ validation a second one, **`ldv-frontmatter-key-duplicate`**, an Error or a Warn
 
 | Category (§17.4) | Construct | Not performed |
 |---|---|---|
-| Includes (§12, §16.11) | an include paragraph | the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document) when the combined document was not put together, which is when an include was not followed (below, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117)); with every include followed and nothing else skipped, no Warning. For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the size of the combined document (50,000 blocks or 200,000 lines of fragments spliced in), the combined-document checks. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
-| Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file not read, also `attachment-has-frontmatter` and `attachment-has-h1`; for one not spliced into the combined document (not read, or not a fragment: it has frontmatter, a level-1 heading or an include paragraph, or is past the size of the combined document) `attachment-anchor-duplicate` and the combined-document checks (a reference into an attachment's section), with the count; and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below). With every one read and spliced, only `attachment-file-missing` |
+| Includes (§12, §16.11) | an include paragraph, or one in a LegalDown attachment file | the **combined-document checks** (§16.11: a reference or a term into a fragment, `insertion-boundary` and the identifiers a fragment and the document share are judged without the fragments joined to the document) when the combined document was not put together (nothing was followed, or past its size), and for what the includes not followed would bring in when it is partial (an include was not followed, [#117](https://github.com/ForLegalAI/legaldown-validator/issues/117), [#141](https://github.com/ForLegalAI/legaldown-validator/issues/141)); with every include followed and nothing else skipped, no Warning. For the includes not read: `include-file-missing` (no loader, or a path that leads out of the document's directory with no `document_root` to read it under, §2.3), `include-has-frontmatter`, `include-has-h1`, `include-heading-skip`, `include-cycle`, `include-anchor-duplicate`, and in a template the part of `template-fragment-invalid` that reads a fragment. Past a cap of the walk (32 fragments deep, 10,000 includes and headings), the rest of the include tree. Past the size of the combined document (50,000 blocks or 200,000 lines of fragments spliced in), the combined-document checks. Past the cap of the combinations (12 questions, 4,096 combinations), `include-heading-skip` under every combination of answers (it is then judged once, with every include present) |
+| Attachments (§12.4, §16.10) | `attachments[].file` | `attachment-file-missing`; for a LegalDown attachment file not read, also `attachment-has-frontmatter` and `attachment-has-h1`; for one not spliced into the combined document (not read, or not a fragment: it has frontmatter or a level-1 heading, or an include paragraph in a template, or is past the size of the combined document) `attachment-anchor-duplicate` and the combined-document checks (a reference into an attachment's section), with the count; and importing its definitions for each LegalDown attachment file whose definitions were not imported, with the reason (see below). With every one read and spliced, only `attachment-file-missing` |
 | Amendment (§16.8) | `amends.file` | `amends-file-missing`; when the original was not imported (for any reason, see below), `amend-term-undefined` (a term the amendment does not define is then `amend-term-unresolvable`, Info, as §7.5 says) |
 | Bilingual (§14, §16.7) | a non-empty `translations` | `translation-file-missing`, `translation-hierarchy-mismatch`, `translation-anchor-mismatch`, `translation-def-mismatch`, `translation-language-set-mismatch`, `translation-template-mismatch`; and `translation-implicit-id` and `translation-authoritative-absent` for the linked files, whose identifiers are not read (the document's own are checked, Core, §17.2) |
 | Declared paths (§17.4) | `supersedes.file` (the object form), an image path | `supersedes-file-missing`; the existence of image paths (§8.7), which has no rule id |
@@ -1450,8 +1672,10 @@ template with Errors in the validator's template rules (`Template.problems`).
   the way `validate` does (above), so that the output validates as the input did (§15.7.4). The
   specification and its fixtures do not decide this. A nested path that leads out of the document's
   directory is read only under a `document_root` that holds it (#109), and its key in `files` keeps the
-  `../`, as a flat one does ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123) is not
-  fixed: a file reached by two spellings is read and written under both).
+  `../`, as a flat one does. A second path to a file already named, flat or nested, an include's or an
+  attachment file's, is refused with the validator's `ldv-file-spelling-duplicate` (Error, at its line, above;
+  [#123](https://github.com/ForLegalAI/legaldown-validator/issues/123)), in whichever order the two paths
+  come: assembly does not merge the two names, nor write the file under both.
   - **A cycle** is `include-cycle`, an Error, at the include that closes it, in the file that holds it,
     with the validator's message (a `Template`'s `problems` hold it once, not once for the assembly and
     once for the validation). It is the validator's own test, so that a chain through
@@ -1512,10 +1736,12 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   it. A quote nested more deeply than the parser reads into blocks (`MAX_QUOTE_DEPTH`) has its
   markers taken by the same three-column rule. (Beyond eight nested quotes the parser's own
   reading of a lazy line, which stops following nested quotes there, differs from its reading of
-  the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts list items and quotes together,
-  and a quote past it is read as one text: the items inside it are not in the layout, so a line in
-  one is read as in the quote alone (an item in sixteen nested items, then `> - a` and `>   {{x}}`:
-  the line is taken out of its item; known, and as before). A line short of an item's content column
+  the quote's blocks; the layout is followed.) `MAX_QUOTE_DEPTH` counts quotes alone (#139), so a quote in
+  sixteen nested items is in the layout with its items. A quote in that many quotes, which the validator reads as
+  one text, is read into blocks for the layout too, so that a line in an item in it keeps its item (`> ` seventeen
+  times, `- a`, and `  {{x}}`), to twice that depth (32 quotes, and past 16 quotes 32 items and quotes together); past that, a quote's markers
+  are taken by the three-column rule and the items in it are not in the layout (a line in one is read as in the
+  quote alone). A line short of an item's content column
   that a quote holds (a lazy line) keeps no indentation after its marker, and neither does a line
   that an empty phrase leaves with only a quote's marker. The check cannot give a backslash a position where the
   template's own markers, left bare by an empty phrase, begin the construct (`text` over
@@ -1525,9 +1751,78 @@ Assembly edits the template's source and so inherits a few limits of the parser'
   leaves as bare markers (`> `) is not checked: it is not blank, so step 5 does not delete it
   (§15.7.2), and `> text` / `> ` / `> <x>` keeps `<x>`, which begins an HTML block there. The
   specification gives no position for these; the output keeps the template's markers as written
-  (open question #120). Inserted text in the one top-level block of a long list item or
-  quote, each answer beginning a block (`- `, `# `), is read against that block's earlier lines:
-  quadratic in the size of the block.
+  (spec questions #120, [below](#spec-questions-120)). Inserted text in the one top-level block of a long list item, each answer
+  beginning a block (`- `, `# `), is read against that block's earlier lines: quadratic in the size of
+  the block. A block quote is read from the last block of its content on (of a list in it, its last item;
+  in quotes nested in it, to `MAX_QUOTE_DEPTH`), as the body is read from its last top-level block, so a
+  long quote of items and deleted choices is linear (#139, `tests/test_scaling_assembly.py`).
+- <a id="spec-questions-120"></a>**Spec questions (#120), open.** The assembler follows §15.7.3 and §15.7.2 step 5
+  as written; in these cases the output reads otherwise than the template, and only a change to the specification
+  can change the output. `tests/test_assembly.py` pins each one as it is written now
+  (`_OPEN_QUESTIONS_120`, `test_an_empty_insertion_that_leaves_bare_markers_is_an_open_question`), to be updated when
+  the specification settles it:
+  1. *An empty item becomes a setext underline*: `text` / `- {{choose: x, true="", false="T"}}`, x true, gives
+     `- `, which underlines `text` (an empty item cannot interrupt a paragraph). §15.7.3 gives no position for a
+     backslash.
+  2. *Bare markers become a thematic break*: `- - - {{choose:}}`, `* * * {{choose:}}` with an empty phrase.
+  3. *Lazy lines detach*: after an empty phrase leaves a bare marker, the lazy lines after it, and the template's
+     own `>` or `2.` markers, begin new blocks (`> 2. ` / tab-indented `code`; `  > ` / `  lazy`; a bare `   2. `
+     whose next line, short of its content column, is then indented code). The position rule cannot prevent it.
+  4. *A bare container-marker line is not blank*: step 5 deletes only a line that becomes empty or spaces and
+     tabs, so a line reduced to `> ` stays, and the line after it gets no line-start check: `> text` / `> ` /
+     `> <x>` begins an HTML block (kind 7) at `<x>`; `> 2. b` a list, `>     code` indented code. Likewise a line of
+     choices alone that step 5 deletes can leave what held it empty (`1.` / `   {{choose:}}` / blank / `   more`:
+     the empty item ends at the blank line, and `more` is outside it).
+  4a. *A definition or a table after a deleted line*: the line after one that step 5 deletes can become a link
+     reference definition, which is not displayed (`{{choose:}}` / `[a]: /url`; so too in an item, and after a bare
+     `> ` in a quote; where the line would be one only once the indentation that makes it code goes, see 4b), or
+     a part of a table (`a | b` / `{{choose:}}` / `|---|---|`: the delimiter row now follows the header). §15.7.3
+     names neither among the constructs the line-start check prevents ("No other character is escaped"), so the
+     assembler writes them as they are; its readings record both (`assembly._signatures`: `definition`, `table`)
+     and leave them (`assembly._ESCAPABLE`), and the validator warns of them (below). A definition that an answer
+     can make is an `insertion-boundary` Error too, where the hazards check (#129) reads it.
+  4b. *A line that joins a block before it*: the line after a deleted one can join a multi-line block that the
+     deleted line ended (`x` / blank / `    code` / `{{choose:}}` / `    more`: `more`, text in the template, is in
+     the code block). The readings record every line of a code block and of an HTML block (`in-code`, `in-fence`,
+     `in-html` after the first: `assembly._CONTINUED`), so that a line joining one or leaving one reads otherwise.
+     A line that would join an *indented* code block loses its leading spaces and tabs (`more`), as §15.7.3 prevents
+     indented code, and a backslash where that begins something else (`    - d` gives `\- d`); a line the template
+     has as code itself is left (two code blocks merge, as after a removed drafting note). A line that would join a
+     *fenced* code block or an HTML block has no escape in §15.7.3, whose removal of the indentation is for indented
+     code and whose backslash is for a line that would begin a block, so it is left, and the validator warns of it
+     (below); so too a fence in a list item that the line reaches only by its indentation, which removing it
+     would take out of the item: that removal is not one §15.7.3 names for it. *An interpretation*: where removing
+     the indentation that would make indented code of a line leaves a link reference definition or a part of a
+     table, which §15.7.3 does not escape, the check writes the backslash form instead (`    [a]: /url` after a
+     deleted line gives `\[a]: /url`), so that the text the template has is displayed, as "renders them exactly as
+     written" asks; a definition that the line is as written stays one (`assembly._pick`, `_hides`). A paragraph that a lazy line continues is
+     compared by the containers each line is in (`_Entry`), which the readings already have.
+  5. *What counts as "content"* (an interpretation, not a gap): for an insertion that begins a continuation line
+     in a list item (`- a` / blank / `  {{placeholder: x}} more`), the content is taken to begin after the
+     template line's own indentation, which is kept (`  y more`), so the line stays in the item. This follows the
+     parenthetical on the backslash's position ("after the template line's own indentation and container
+     markers"); read literally, "every space and tab at the start of the content is removed" would take the line out
+     of the item. `test_an_insertion_that_begins_the_content_keeps_the_items_indentation` pins it.
+
+  The validator tells the template's author of cases 1 to 4b (the validator's side of #120): **`ldv-bare-markers`**,
+  a Warning of this implementation's own (`legaldown.grammar.BARE_MARKERS_RULE`), at a line of a template whose
+  choices one answer to each of their questions (declared booleans and choices) makes all empty (or spaces), with
+  nothing else on the line but quote and list markers (the assembler's `_BARE_MARKERS_RE`), without its drafting notes,
+  where the template read with that line so emptied (or deleted, when nothing is left: step 5) reads otherwise
+  than the template read with each insertion a word, as the assembler reads it (`assembly._Reading`): the line's
+  markers are a setext underline or a thematic break, or a line of the blocks around it begins other constructs,
+  a link reference definition, a table and the lines of a code or HTML block among them (the template is read
+  as the assembler reads it, a line whose insertion begins its content without the blanks before it, and the line
+  after the emptied one is written by the assembler's own line-start check, `assembly._line_starts`, so that the
+  line read is the line written: `hazards._written_window`) or lies in other
+  containers (`assembly._signatures`, `validator/hazards.py`: `check_bare_markers`). Each such
+  line is read with its own choices empty and every other insertion a word, in all of its conditional units, in the
+  blocks around it (the one before, its own, the one after: a list by its items, a quote by the blocks of its
+  content), so that the cost is linear in the lines; a line in a drafting note or a table is none. At most
+  `hazards.BARE_BUDGET` lines are read in one validation (each line charged for every reading it may need before it
+  is read); past it, the first line not read is reported once, for
+  itself and the rest. Two such lines empty at once, and a unit removed beside one, are not read together. The
+  insertion-boundary Error is not used: the specification has no rule these break, the assembler does what it says.
 - Removing a drafting note or unit can join what it separated: indented code after a removed note
   that followed a list becomes a paragraph of the list's last item, and two code blocks separated
   only by a removed note merge. §15.7.2 step 2 removes the lines; the template author keeps such

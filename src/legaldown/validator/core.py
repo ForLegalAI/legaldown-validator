@@ -38,9 +38,16 @@ from ..markdown import (
     strip_comments,
 )
 from ..models import LIST_KINDS, Amends, Document, Metadata, frontmatter_message
-from ..positions import STRIPPED_MAPS, Locator
+from ..positions import (
+    STRIPPED_MAPS,
+    FrontmatterScalar,
+    Locator,
+    frontmatter_aliases,
+    frontmatter_placeholders,
+    frontmatter_removed,
+)
 from ..specification import SPEC_VERSION, parse_version
-from .combined import Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
+from .combined import HOST_ONLY, Combined, CombinedLocator, CombinedUnits, Instance, merge_diagnostics
 from .conditions import (
     ALWAYS,
     DecisionUse,
@@ -60,6 +67,7 @@ from .fragments import (
     UnreadReason,
     check_includes,
     content_findings,
+    fragment_includes,
     shape_findings,
 )
 from .helpers import (
@@ -73,12 +81,16 @@ from .helpers import (
     legaldown_attachments,
     slugify_identifier,
 )
+from .hidden import check_heading_directives, check_unclosed_fences
 from .paths import FileReferences, ReferenceImages, check_fragment_images, check_frontmatter_paths, check_heading_images
 from .patterns import (
     _CONSTRUCT_PRESENT,
     _UNFILLED,
+    ALIAS_REMOVED_RULE,
     DURATION_UNITS,
     FRONTMATTER_KEY_DUPLICATE_RULE,
+    FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
+    FRONTMATTER_PLACEHOLDER_UNREAD_RULE,
     IDENTIFIER_RE,
     ISO_639_1_CODES,
     KNOWN_CURRENCIES,
@@ -114,7 +126,7 @@ from .templates import (
     check_template_body,
     question_type,
 )
-from .units import FoundMarker, Units, find_markers, marker_matches, own_presence
+from .units import FoundMarker, Units, find_markers, iter_include_paragraphs, marker_matches, own_presence
 
 if TYPE_CHECKING:
     from ..definitions import DefinitionRef
@@ -980,6 +992,12 @@ def _check_never_true(
             )
 
 
+def frontmatter_value_paths(document: Document) -> frozenset[tuple[Any, ...]]:
+    """The paths (as ``positions.SourceMap.key`` takes them) of the frontmatter's value fields, where §3.10 lets a
+    placeholder stand: assembly fills one there, written as a quoted string, and nowhere else (#12)."""
+    return frozenset(path for _value, path in _frontmatter_fields(document.metadata, Locator(document))[1])
+
+
 def is_template(document: Document) -> bool:
     """True if *document* is a template (§15.1): it declares ``questions``,
     carries a condition — on a section, an attachment, or a placed marker —
@@ -1240,16 +1258,19 @@ def validate(
         are, from the fragment's directory, at its line in the fragment, a chain that comes back
         is ``include-cycle`` and an identifier the combined document declares twice
         ``include-anchor-duplicate`` (§16.11); to a depth of 32 fragments and 10,000 includes and
-        headings, past which nothing is followed and the Warning of §17.5 says so. When every
-        include of the document was followed into a fragment, the document is validated once more
-        with the fragments spliced in at their includes, as the one document it is (§16.11; the
-        combined document): a reference or a term into a fragment resolves, an auto-generated
-        identifier that the fragments and the document share is ``anchor-autogen-collision``, and
-        what a fragment holds that a complete document may not is reported in it, at its line, with
-        ``Diagnostic.file`` the fragment's path. The LegalDown attachment files that were read and
-        are fragments follow the body in it, each on its own (§12.4; one not read leaves the others
-        as they are). With any include not followed, the document is validated as it is, and the
-        Warning says the combined-document checks were not made.
+        headings, past which nothing is followed and the Warning of §17.5 says so. The document is
+        validated with the fragments its includes were followed into spliced in at their includes, as
+        the one document it is (§16.11; the combined document): a reference or a term into a fragment
+        resolves, an auto-generated identifier that the fragments and the document share is
+        ``anchor-autogen-collision``, what a fragment holds that a complete document may not is
+        reported in it, at its line, with ``Diagnostic.file`` the fragment's path, and under *final*
+        a template construct a fragment holds is ``template-construct-present`` (§15.9). The LegalDown
+        attachment files that were read and are fragments follow the body in it, each on its own,
+        with the fragments their own includes take in (§12.4; one not read leaves the others as they
+        are). An include not followed stays the paragraph it is: a ``ref-broken``, ``term-undefined``,
+        ``def-unreferenced``, ``attachment-unreferenced`` or ``condition-reference-unsafe`` (and the
+        amendment's term rules) says that what it would bring in may settle it, and the Warning names
+        the combined-document checks for it as not made (#141).
     document_root:
         The directory every file the document refers to must lie within
         (§2.3): a path that escapes it, by ``../`` or after ``%2E%2E/`` in an
@@ -1363,6 +1384,63 @@ def _check(
     document_root: str | os.PathLike[str] | None = None,
     combined: Combined | None = None,
 ) -> _Recorder:
+    """The validation of *document* (``_pass``). A document whose includes and attachment files are read is
+    validated twice, as itself and combined (§16.11), and of the pass over itself only the rules of
+    ``combined.HOST_ONLY`` are kept (``merge_diagnostics``): when a combined document is likely, that pass makes
+    only those (*host_only*, #141), and should none be made after all, it becomes the full pass by itself
+    (``_Recorder.release`` and the checks it put off). The files are read once (``Files``). The findings are the
+    same either way."""
+    if combined is not None or mode.fragment or resolve is None:
+        return _pass(document, final, resolve, mode, document_root, combined)
+    files = Files(resolve, document, document_root)
+    # (A host-only pass that finds no combined document is made becomes the full pass by itself: ``deferred``.)
+    host_only = _may_combine(document, files)
+    return _pass(document, final, resolve, mode, document_root, files=files, host_only=host_only)
+
+
+def _may_combine(document: Document, files: Files) -> bool:
+    """Whether the validation of *document* is likely to splice something into a combined document: an include
+    paragraph of it, or a LegalDown attachment file, names a file that is read and is a fragment. It reads only
+    what the walk of the includes reads (``check_includes``), so a loader is asked for nothing more."""
+    lexed = cache(lex)
+    for _section, _block, directive in iter_include_paragraphs(document, lexed):
+        written = directive.positional or ""
+        if not written.endswith(LEGALDOWN_EXTENSIONS):
+            continue
+        relative, _problem = files.locate("", written)
+        if relative is not None and not files.is_own(relative) and (target := files.read(relative)) is not None and target.spliceable:
+            return True
+    if document.frontmatter_error is not None:
+        return False  # (its frontmatter is not read: it declares no attachment)
+    template: bool | None = None  # (asked only of an attachment file with include paragraphs)
+    for _index, _attachment, written in legaldown_attachments(document.metadata):
+        relative = files.relative(written)
+        if relative is None or files.is_own(relative) or (target := files.read(relative)) is None or not target.spliceable:
+            continue
+        # In a template an attachment file with include paragraphs is left out (``check_includes``).
+        if fragment_includes(target, lexed):
+            if template is None:
+                template = _is_template(document, None, lexed)
+            if template:
+                continue
+        return True
+    return False
+
+
+def _pass(
+    document: Document,
+    final: bool,
+    resolve: LoadFile | None,
+    mode: _Mode,
+    document_root: str | os.PathLike[str] | None = None,
+    combined: Combined | None = None,
+    *,
+    files: Files | None = None,
+    host_only: bool = False,
+) -> _Recorder:
+    # *files*: what the validation reads, given by ``_check``. *host_only*: the pass makes only the rules of
+    # ``combined.HOST_ONLY`` (the recorder holds the others, their line not looked for, and the checks that
+    # make nothing else wait: ``later``), for a document whose combined document is expected (``_check``).
     # *combined*: the document is the combined document of another (§16.11, #117), validated once more
     # as the document it is with its fragments in: ``document`` is its own, and the validation reads
     # the files, the lexing and the locations of the document that holds the includes.
@@ -1374,8 +1452,20 @@ def _check(
     if unreadable is not None:
         mode = _UNREADABLE_FRONTMATTER
     result = _Recorder(
-        suppress=mode.suppress, fragment=mode.fragment, places=[] if combined is not None else None
+        suppress=mode.suppress, fragment=mode.fragment, places=[] if combined is not None else None,
+        unsettleable=[] if combined is not None else None,
+        keep=HOST_ONLY if host_only else None,
     )
+    # The checks that make no rule of HOST_ONLY run at once in a full pass; in a host-only one they wait, each with
+    # its place among the findings, until the walk of the includes says whether a combined document is made: if
+    # not, they are run and their findings put in their places, and the pass is the full one (#141).
+    deferred: list[tuple[int, Callable[[], None]]] = []
+
+    def later(checks: Callable[[], None]) -> None:
+        if host_only:
+            deferred.append((len(result.diagnostics), checks))
+        else:
+            checks()
     # A fragment's own frontmatter, if it wrongly has any, is reported below
     # and then not read: the host's frontmatter is the one that declares.
     # Everything after this reads the document as a body-only one, whose
@@ -1388,7 +1478,7 @@ def _check(
     # The files the document refers to, each read and parsed once: the original it
     # amends, its attachment files, and its include fragments (#35). A fragment
     # validated on its own reads none: its own includes are the host's concern.
-    files = combined.files if combined is not None else (
+    files = combined.files if combined is not None else files if files is not None else (
         Files(resolve, document, document_root) if resolve is not None else None
     )
     # The paths the document names (§2.3, #104), from the directory it is in.
@@ -1467,8 +1557,13 @@ def _check(
     # document that is none has no condition and no {{choose:}} of its own, so those of its fragments are not
     # collected, nor judged (the fragment is as it was before it was validated with the document).
     untemplated = combined is not None and not combined.template
+    # They are still template constructs that remain in the combined document, which the final check rejects
+    # (§15.9, §16.11: every check applies to the combined document): those are kept for it alone (#141).
+    final_conditions: list[tuple[str, str, Line]] = []
+    final_chooses: list[tuple[Directive, Line]] = []
     # {{choose:}} belongs in body text: never in frontmatter or a heading
     # (§15.5). Wherever it is, it makes the document a template (§15.1).
+    # Neither asks its question: §11.4 recognizes no {{choose:}} there, and assembly leaves it as written (#12).
     misplaced_chooses = [
         (directive, "in frontmatter; it belongs in body text", where.key(*path))
         for text, path in frontmatter_texts
@@ -1479,6 +1574,7 @@ def _check(
         for directive in named(text, "choose")
     ]
     if untemplated:
+        final_chooses += [(directive, line) for directive, _misplaced, line in misplaced_chooses]
         misplaced_chooses = []
 
     # ── Templates and the presence of units (§15.1, §15.3) ──
@@ -1904,7 +2000,7 @@ def _check(
             result.error(
                 # (An attachment file comes after the body, so the later heading is its own: §16.10.)
                 "attachment-anchor-duplicate"
-                if combined is not None and combined.section_origin[section_index][0].attachment is not None
+                if combined is not None and combined.unit_of(combined.section_origin[section_index][0]).attachment is not None
                 else "anchor-duplicate",
                 f"Duplicate section identifier on '{section.title}'. It was adjusted to "
                 f"'{identifier}'.", line=where.heading(section_index),
@@ -2209,21 +2305,157 @@ def _check(
                 line=where.key(*field_path),
             )
 
-    for field_value, field_path in value_fields:
-        for directive in named(field_value, "placeholder"):
-            field_line = where.key(*field_path)
-            with result.at(field_line):
-                _check_placeholder(directive, result, blanks, questions, in_frontmatter=True, line=field_line)
-    # Every blank, wherever it is, with its line, for the final check (§15.9).
-    placeholders: list[tuple[Directive, Line]] = [
+    # Every blank, wherever it is, with its line, for the final check (§15.9). §11.4 recognizes a directive in
+    # body text, and in frontmatter only as §3.10 says: a {{placeholder:}} written as a quoted YAML string in a
+    # value field. Anywhere else it is no blank, and assembly leaves it as written (#12): in an identifier,
+    # structural or format-checked field (placeholder-in-structural-field), in a value written otherwise
+    # (ldv-frontmatter-placeholder-unquoted, below), and in a section's heading (ldv-heading-directive). One in a
+    # heading in a list item or a quote is body text, which assembly fills, and is collected with the body's
+    # below. (A {{choose:}} where it is not recognized is still a template construct for the final check: it
+    # makes the document a template wherever it is, §15.1.)
+    placeholders: list[tuple[Directive, Line]] = []
+    # ... and every other placeholder the metadata holds, as text, for the final check all the same: §15.9 asks
+    # that none remain in the frontmatter, a blank or not (#12).
+    # (Not in what assembly removes, the questions and an attachment's when, nor in the translations and field_types,
+    # which are not the document's text.)
+    literal_placeholders: list[tuple[Directive, Line]] = [
         (directive, where.key(*path))
-        for text, path in frontmatter_texts
-        for directive in named(text, "placeholder")
-    ] + [
-        (directive, where.heading(index))
-        for index, text in enumerate(headings)
+        for _label, text, path in structural_fields
+        if path[:1] not in (("questions",), ("translations",), ("field_types",))
+        and not (path[:1] == ("attachments",) and path[-1:] == ("when",))
         for directive in named(text, "placeholder")
     ]
+    #: Of each question named only where §11.4 recognizes no directive, why, for question-unused.
+    unrecognized: dict[str, str] = {}
+    for field_value, field_path in value_fields:
+        fm_scalar = None  # how the value is written (positions.FrontmatterScalar), once it holds a placeholder
+        for place, directive in enumerate(named(field_value, "placeholder")):
+            field_line = where.key(*field_path)
+            if fm_scalar is None:
+                # How the value is written. Without the source (a document built in code), or for a value that
+                # is not the source's (metadata changed in code since), nothing tells: as §3.10 asks. A value read
+                # from the source whose written scalar is not at its path (keys the model reads stripped alike, one
+                # merged in) is none that assembly fills: no blank. Its written scalar, which no field reaches, is
+                # ldv-frontmatter-placeholder-unread's, below, once (#12).
+                fm_scalars = where.frontmatter_scalars()
+                fm_scalar = fm_scalars.get(field_path)
+                if fm_scalar is not None and fm_scalar.value.strip() != field_value.strip():
+                    fm_scalar = None  # changed since it was parsed
+                if fm_scalar is None:
+                    # Read from the source when its key is written under another spelling the model strips to
+                    # it (`" Reg"`, `"Reg "`) and the value is a written one; else set in code since.
+                    fm_read = (
+                        where.frontmatter_text() is not None
+                        and isinstance(field_path[-1], str)
+                        and any(
+                            raw != field_path[-1] and raw.strip() == field_path[-1].strip()
+                            for raw in where.children(*field_path[:-1])
+                        )
+                        and any(each.value.strip() == field_value.strip() for each in fm_scalars.values())
+                    )
+                    fm_scalar = FrontmatterScalar("", 0, 0, unread=True) if fm_read else FrontmatterScalar('"', 0, 0)
+            # (By its place among the value's placeholders; where the rows and the value YAML reads count them
+            # apart, an escape or a code span over a line, each is taken for split, as assembly may refuse any.)
+            split = bool(fm_scalar.split) and (
+                place in fm_scalar.split
+                or fm_scalar.placeholders != len(named(field_value, "placeholder"))
+            )
+            if split:
+                # §11.5: a directive does not span lines. YAML folds the quoted value onto one, but it is
+                # written on two, where assembly reads it (and refuses it, as malformed).
+                result.error(
+                    "directive-malformed",
+                    f"'{directive.source}' is written across a line break, which a directive may not be (§11.5), "
+                    f"though YAML folds the value onto one line: write it on one line.",
+                    line=field_line,
+                )
+            if fm_scalar.unread:
+                # The model reads it, but from no written scalar that assembly fills: it would stay as written.
+                result.error(
+                    FRONTMATTER_PLACEHOLDER_UNREAD_RULE,
+                    f"'{directive.source}' is in a value the model reads under a key that others of its mapping read "
+                    f"as the same once stripped, so it is not the one written at that key: it is no blank, and "
+                    f"assembly leaves it as written. Give the keys different names.",
+                    line=field_line,
+                )
+                literal_placeholders.append((directive, field_line))
+                if directive.positional:
+                    unrecognized.setdefault(
+                        directive.positional, "a frontmatter value the model does not read as it is written (§3.10)"
+                    )
+                continue
+            if not fm_scalar.quote:
+                result.error(
+                    FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE,
+                    f"'{directive.source}' is not in a quoted YAML string, which a placeholder in frontmatter "
+                    f"must be (§3.10): it is no blank, and assembly leaves it as written. Quote the value "
+                    f"(\"...\").",
+                    line=field_line,
+                )
+            if not fm_scalar.quote or split:
+                literal_placeholders.append((directive, field_line))
+                if directive.positional:
+                    unrecognized.setdefault(
+                        directive.positional,
+                        "a frontmatter value not written as a quoted string (§3.10)" if not fm_scalar.quote
+                        else "a frontmatter placeholder written across a line break (§11.5)",
+                    )
+                continue
+            placeholders.append((directive, field_line))
+            with result.at(field_line):
+                _check_placeholder(directive, result, blanks, questions, in_frontmatter=True, line=field_line)
+    # A placeholder in frontmatter outside any field the model reads (a key, a list or mapping under a key it does
+    # not know): no blank, which assembly leaves as written (#12). (The questions, the translations and the
+    # field_types are structural, placeholder-in-structural-field's.)
+    if (fm_text := where.frontmatter_text()) is not None and "{{placeholder" in fm_text:
+        fields = {path for _value, path in value_fields} | {path for _label, _value, path in structural_fields}
+        fm_scalars = where.frontmatter_scalars()
+        for fm_paths, fm_at, fm_end, fm_key in frontmatter_placeholders(fm_text):
+            # A written scalar that a field reads (through an alias or a merge too) is that field's: one the field's
+            # own key, or a later one, overrides at the same path is not (#12).
+            if any(
+                fm_path[:1] in (("questions",), ("translations",), ("field_types",))
+                or (fm_path in fields and (fm_key or (
+                    (fm_read := fm_scalars.get(fm_path)) is not None and fm_read.end == fm_end
+                )))
+                for fm_path in fm_paths
+            ):
+                continue
+            result.warning(
+                FRONTMATTER_PLACEHOLDER_UNREAD_RULE,
+                "A {{placeholder:}} here is in no field of the frontmatter the model reads as it is written "
+                "(§3.10 lets one stand in a value field only; a key that others of its mapping read as the same "
+                "is not told apart): it is no blank, and assembly leaves it as written.",
+                line=where.frontmatter_line(fm_at),
+            )
+    # An alias to an anchor that assembly removes (§15.7.2: the questions, an attachment's when, an attachment
+    # whose condition is false) would name nothing in the assembled frontmatter: refused, at the alias (#12).
+    if template and (fm_text := where.frontmatter_text()) is not None and "*" in fm_text:
+        fm_removed = frontmatter_removed(fm_text)
+        for fm_alias, fm_anchor in frontmatter_aliases(fm_text):
+            if any(start <= fm_alias < end for start, end, always in fm_removed if always):
+                continue  # removed itself
+            # (Conservative: an alias in another attachment under the same condition is reported all the same.)
+            if any(start <= fm_anchor < end and not start <= fm_alias < end for start, end, _always in fm_removed):
+                result.error(
+                    ALIAS_REMOVED_RULE,
+                    "This alias names an anchor that assembly removes (in 'questions', an attachment's 'when', "
+                    "or an attachment whose condition can be false, §15.7.2), so the assembled frontmatter "
+                    "could not be read: write the value here, or the anchor where it stays.",
+                    line=where.frontmatter_line(fm_alias),
+                )
+    for _label, field_value, _path in structural_fields:
+        for directive in named(field_value, "placeholder"):
+            if directive.positional:
+                unrecognized.setdefault(directive.positional, "a frontmatter field that takes no placeholder (§3.10)")
+    for text in headings:
+        for directive in lex_fragment(text).directives:
+            if directive.name in ("placeholder", "choose") and directive.positional:
+                unrecognized.setdefault(directive.positional, "a section's heading (§4.2)")
+    for text, _path in frontmatter_texts:
+        for directive in named(text, "choose"):
+            if directive.positional:
+                unrecognized.setdefault(directive.positional, "a {{choose:}} in frontmatter (§15.5)")
 
     chooses: list[tuple[Directive, Line]] = []
     for directive, misplaced, line in misplaced_chooses:
@@ -2231,8 +2463,8 @@ def _check(
         result.error("choose-invalid", f"'{directive.source}' is {misplaced} (§15.5).", line=line)
     # The questions a blank or a {{choose:}} asks, outside drafting notes and in them: a note is
     # removed before anything is asked (§15.7.2 step 1), so a question only a note uses needs no
-    # answer, and is unused (question-unused). The frontmatter's and the headings' are kept.
-    asked = {directive.positional for directive, _line in placeholders + chooses if directive.positional}
+    # answer, and is unused (question-unused). A directive where §11.4 recognizes none (above) asks nothing.
+    asked = {directive.positional for directive, _line in placeholders if directive.positional}
     asked_in_notes: set[str] = set()
 
     # Every condition in a condition position (§15.3): on what, as written,
@@ -2240,11 +2472,15 @@ def _check(
     conditions: list[tuple[str, str, int | None]] = []
     condition_orders: list[tuple[int, ...]] = []
     for index, section in enumerate(document.sections):
-        if section.condition and not untemplated:
+        if section.condition and untemplated:
+            final_conditions.append((f"the heading '{section.title}'", section.condition, where.heading(index)))
+        elif section.condition:
             conditions.append((f"the heading '{section.title}'", section.condition, where.heading(index)))
             condition_orders.append((index, -1))
     for found in markers:
-        if found.marker and found.marker.condition and found.placed(template) and not untemplated:
+        if found.marker and found.marker.condition and found.placed(template) and untemplated:
+            final_conditions.append((f"'{found.source}'", found.marker.condition, marker_line(found)))
+        elif found.marker and found.marker.condition and found.placed(template):
             conditions.append((f"'{found.source}'", found.marker.condition, marker_line(found)))
             condition_orders.append(
                 (-1 if found.section is None else found.section, found.block, found.fragment, found.offset)
@@ -2309,8 +2545,8 @@ def _check(
                 name = directive.name
                 # Found only if a diagnostic is made there.
                 line = partial(where.find, section_index, block_index, directive.source, fragment_index, directive.start)
-                if name == "choose" and not untemplated:
-                    chooses.append((directive, line))  # a template even when malformed
+                if name == "choose":
+                    (final_chooses if untemplated else chooses).append((directive, line))  # a template even when malformed
                 if name in ("choose", "placeholder") and directive.positional:
                     (asked_in_notes if in_note else asked).add(directive.positional)
                 if name == "placeholder":
@@ -2350,7 +2586,7 @@ def _check(
                     # Whatever the host holds, a reference with no target is wrong.
                     result.error(
                         "ref-broken" if name == "ref" else "term-undefined",
-                        f"'{directive.source}' has no target.", line=line,
+                        f"'{directive.source}' has no target.", line=line, unsettleable=True,
                     )
                 elif name == "ref":
                     ref_targets.append((value, line))
@@ -2494,6 +2730,7 @@ def _check(
                 result.error(
                     "ref-broken", f"Broken section reference: '{target}'.", line=line,
                     depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
+                    unsettleable=not IDENTIFIER_RE.fullmatch(target),
                 )
         for target, line in term_targets:
             result.used_terms.add(target)
@@ -2505,6 +2742,7 @@ def _check(
                             f"Undefined term reference: '{target}' (not found in "
                             f"amendment or imported original).", line=line,
                             depends=Depends.FRONTMATTER,  # `amends` is the frontmatter's
+                            unsettleable=not IDENTIFIER_RE.fullmatch(target),  # (a term is defined by an id, §7.2)
                         )
                     else:
                         # Original unavailable or not LegalDown source:
@@ -2515,12 +2753,14 @@ def _check(
                             f"amendment; the original document is not available "
                             f"to verify it.", line=line,
                             depends=Depends.FRONTMATTER,
+                            unsettleable=not IDENTIFIER_RE.fullmatch(target),
                         )
                 else:
                     # As for ref-broken: a term is defined by an id (§7.2).
                     result.error(
                         "term-undefined", f"Undefined term reference: '{target}'.", line=line,
                         depends=Depends.BODY if IDENTIFIER_RE.fullmatch(target) else None,
+                        unsettleable=not IDENTIFIER_RE.fullmatch(target),
                     )
 
     _check_blank_codes(blanks, result)
@@ -2551,116 +2791,126 @@ def _check(
                 "condition-invalid", f"The condition '{text}' on {place}: {problem} (§15.3).",
                 line=line, depends=depends if host_declares else None,
             )
-    _check_never_true(document, markers, units, questions, result, where)
+    # The checks that make no rule of HOST_ONLY (``_pass``): run now in a full pass, else when the walk of the
+    # includes has shown that no combined document is made (``deferred``), at this place among the findings.
+    def whole_checks() -> None:
+        _check_never_true(document, markers, units, questions, result, where)
 
-    # Circular definitions (§16.3, §7.2): one Warning for each set of
-    # definitions explained in terms of each other, where the last of them, in
-    # document order, is declared. Alternatives (§15.4) that cannot appear
-    # together do not refer to each other; only a template has them.
-    for circle in find_circular_definitions(
-        document,
-        registered,
-        term_uses,
-        exclusivity if template else None,
-    ):
-        result.warning(
-            "definition-circular",
-            circular_message(registered[number][0].id for number in circle),
-            line=definition_line(registered[circle[-1]][0]),
-        )
-
-    # Definitions used before declaration (§16.3, Info): one for each definition, at its first
-    # earlier use. The original an amendment amends is in force before the document (§7.5).
-    # A definition an attachment file declares is document-wide (§7.2, §12.4): only a use in the attachment
-    # itself, before its declaration there, is a use before it. (A body use, or one in another attachment, is not.)
-    uses = term_uses
-    if combined is not None and combined.attached:
-        places: dict[str, set[Instance]] = {}  # of each definition, the places of its declarations
-        for ref, _presence in written:
-            places.setdefault(ref.id, set()).add(combined.place_of(ref.section_index, ref.block_index))
-        within = {
-            def_id: where_declared for def_id, where_declared in places.items()
-            if all(place.attachment is not None for place in where_declared)
-        }
-        uses = [
-            use for use in term_uses
-            if use.target not in within or combined.place_of(use.section, use.block) in within[use.target]
-        ]
-    for number, earlier in used_before_declaration(
-        written, uses, _imported_definitions, exclusivity if template else None
-    ):
-        ref = written[number][0]
-        declared = definition_line(ref)
-        times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
-        at = f" at line {declared}" if declared else ""
-        use = earlier[0].line
-        if combined is not None and declared:
-            # The declaration is in another file than the use when the lines name another: say which.
-            use = use() if callable(use) else use
-            file = declared.file if isinstance(declared, Spot) else document.filename
-            if file != (use.file if isinstance(use, Spot) else document.filename):
-                at += f" of {file or 'the document'}"
-        result.info(
-            "definition-used-before-declaration",
-            f"Definition '{ref.id}' is used {times} before its declaration{at} (§7.2).",
-            line=use,
-        )
-
-    # Reference safety (§15.4): a reference resolves in every assembled
-    # document it is in. References in drafting notes are exempt: assembly
-    # removes every note. An amendment's terms are not checked when its
-    # original was not read: the original may define them (§16.8).
-    original_unread = bool(meta.amends) and not original_imported
-    term_presences = {
-        def_id: [presence for _term, _auto, presence in declarations]
-        for def_id, declarations in declared_terms.items()
-    }
-    targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
-    covered: dict[tuple[str, str, Presence], bool] = {}  # references of one target and presence are alike
-    for kind, uses in references.items():
-        for target, presence, in_note, line in uses:
-            declared = targets_of[kind].get(target)
-            if in_note or not declared or (kind == "term" and original_unread):
-                continue
-            if (kind, target, presence) not in covered:
-                covered[kind, target, presence] = always_covered(presence, declared, questions)
-            if covered[kind, target, presence]:
-                continue
-            result.error(
-                "condition-reference-unsafe",
-                f"'{{{{{kind}: {target}}}}}' can be present when '{target}' is not: under some "
-                f"answers that keep the reference, no declaration of its target remains (§15.4).",
-                line=line,
+        # Circular definitions (§16.3, §7.2): one Warning for each set of
+        # definitions explained in terms of each other, where the last of them, in
+        # document order, is declared. Alternatives (§15.4) that cannot appear
+        # together do not refer to each other; only a template has them.
+        for circle in find_circular_definitions(
+            document,
+            registered,
+            term_uses,
+            exclusivity if template else None,
+        ):
+            result.warning(
+                "definition-circular",
+                circular_message(registered[number][0].id for number in circle),
+                line=definition_line(registered[circle[-1]][0]),
             )
 
-    used_questions = asked | {
-        condition.question
-        for _place, text, _line in conditions
-        if (condition := parse_condition(text)) is not None
-    }
-    # A question may be used in an include fragment or a LegalDown attachment
-    # file. The files are read for their shape and what a template may hold in
-    # them (#35), not for the questions they use, so none is unused for certain.
-    # Not so in the combined document, which holds the fragments and the attachment files
-    # it could read (#117, #135).
-    reads_other_files = (
-        ("include" in body_directives or bool(legaldown_attachments(meta)))
-        if combined is None else combined.attachments_out > 0
-    )
-    if isinstance(questions, dict) and not reads_other_files:
-        for qid in questions:
-            if qid not in used_questions:
-                result.warning(
-                    "question-unused",
-                    f"Question '{qid}' is declared but no placeholder, condition, or "
-                    f"{{{{choose:}}}} uses it (§15.2)"
-                    + (
-                        "; only drafting notes do, so it is no blank of the document and needs no answer "
-                        "(§15.7.2), though assembly still lists it among the template's questions."
-                        if qid in asked_in_notes else "."
-                    ),
-                    line=where.key("questions", qid),
+        # Definitions used before declaration (§16.3, Info): one for each definition, at its first
+        # earlier use. The original an amendment amends is in force before the document (§7.5).
+        # A definition an attachment file declares is document-wide (§7.2, §12.4): only a use in the attachment
+        # itself, before its declaration there, is a use before it. (A body use, or one in another attachment, is not.)
+        uses = term_uses
+        if combined is not None and combined.attached:
+            places: dict[str, set[Instance]] = {}  # of each definition, the places of its declarations
+            for ref, _presence in written:
+                places.setdefault(ref.id, set()).add(combined.unit_of(combined.place_of(ref.section_index, ref.block_index)))
+            within = {
+                def_id: where_declared for def_id, where_declared in places.items()
+                if all(place.attachment is not None for place in where_declared)
+            }
+            uses = [
+                use for use in term_uses
+                if use.target not in within or combined.unit_of(combined.place_of(use.section, use.block)) in within[use.target]
+            ]
+        for number, earlier in used_before_declaration(
+            written, uses, _imported_definitions, exclusivity if template else None
+        ):
+            ref = written[number][0]
+            declared = definition_line(ref)
+            times = "once" if len(earlier) == 1 else f"{len(earlier)} times"
+            at = f" at line {declared}" if declared else ""
+            use = earlier[0].line
+            if combined is not None and declared:
+                # The declaration is in another file than the use when the lines name another: say which.
+                use = use() if callable(use) else use
+                file = declared.file if isinstance(declared, Spot) else document.filename
+                if file != (use.file if isinstance(use, Spot) else document.filename):
+                    at += f" of {file or 'the document'}"
+            result.info(
+                "definition-used-before-declaration",
+                f"Definition '{ref.id}' is used {times} before its declaration{at} (§7.2).",
+                line=use,
+            )
+
+        # Reference safety (§15.4): a reference resolves in every assembled
+        # document it is in. References in drafting notes are exempt: assembly
+        # removes every note. An amendment's terms are not checked when its
+        # original was not read: the original may define them (§16.8).
+        original_unread = bool(meta.amends) and not original_imported
+        term_presences = {
+            def_id: [presence for _term, _auto, presence in declarations]
+            for def_id, declarations in declared_terms.items()
+        }
+        targets_of = {"ref": anchors, "term": term_presences, "attach": attachment_presence}
+        covered: dict[tuple[str, str, Presence], bool] = {}  # references of one target and presence are alike
+        for kind, uses in references.items():
+            for target, presence, in_note, line in uses:
+                declared = targets_of[kind].get(target)
+                if in_note or not declared or (kind == "term" and original_unread):
+                    continue
+                if (kind, target, presence) not in covered:
+                    covered[kind, target, presence] = always_covered(presence, declared, questions)
+                if covered[kind, target, presence]:
+                    continue
+                result.error(
+                    "condition-reference-unsafe",
+                    f"'{{{{{kind}: {target}}}}}' can be present when '{target}' is not: under some "
+                    f"answers that keep the reference, no declaration of its target remains (§15.4).",
+                    line=line,
                 )
+
+        used_questions = asked | {
+            condition.question
+            for _place, text, _line in conditions
+            if (condition := parse_condition(text)) is not None
+        }
+        # A question may be used in an include fragment or a LegalDown attachment
+        # file. The files are read for their shape and what a template may hold in
+        # them (#35), not for the questions they use, so none is unused for certain.
+        # Not so in the combined document, which holds the fragments and the attachment files
+        # it could read (#117, #135), unless one of them is not in it (#141).
+        reads_other_files = (
+            ("include" in body_directives or bool(legaldown_attachments(meta)))
+            if combined is None else combined.attachments_out > 0 or (combined.partial and combined.settles)
+        )
+        if isinstance(questions, dict) and not reads_other_files:
+            for qid in questions:
+                if qid not in used_questions:
+                    result.warning(
+                        "question-unused",
+                        f"Question '{qid}' is declared but no placeholder, condition, or "
+                        f"{{{{choose:}}}} uses it (§15.2)"
+                        + (
+                            "; only drafting notes do, so it is no blank of the document and needs no answer "
+                            "(§15.7.2), though assembly still lists it among the template's questions."
+                            if qid in asked_in_notes else
+                            f"; it is named only where no directive is recognized (§11.4), in {unrecognized[qid]}, "
+                            "which assembly leaves as written, though it still lists the question among the template's "
+                            "questions."
+                            if qid in unrecognized else "."
+                        ),
+                        line=where.key("questions", qid),
+                    )
+
+
+    later(whole_checks)
 
     check_questions(
         questions,
@@ -2674,7 +2924,14 @@ def _check(
         document, lex_fragment, result, template=template, where=where, markers=markers, combined=combined,
         cache=imports,
     )
-    _check_raw_html(document, lex_fragment, result, where)
+    def text_checks() -> None:
+        _check_raw_html(document, lex_fragment, result, where)
+        # What takes content out of validation without a word (#12): each file judged by itself.
+        own_kind = mode.kind if mode.fragment else None
+        check_unclosed_fences(document, where, result, lex_fragment, combined=combined, fragment=own_kind)
+        check_heading_directives(document, where, result, lex_fragment, combined=combined, fragment=own_kind)
+
+    later(text_checks)
     check_heading_images(document, lex_fragment, file_references, where, reference_images)
     reference_images.check(file_references)
     file_references.finish()
@@ -2696,6 +2953,19 @@ def _check(
         exclusivity=exclusivity,
         lex_fragment=lex_fragment,
     )
+    if host_only and included.combined is None:
+        # No combined document after all: the pass becomes the full one, with what it held and what it waited for.
+        made = result.release()
+        # (A heading skip is put back after the finding before it, which may have been one held.)
+        for index, (position, before, message, line) in list(heading_skips.items()):
+            if before is not None and id(before) in made:
+                heading_skips[index] = (position, made[id(before)], message, line)
+        for position, checks in reversed(deferred):  # (the last first, so that the places before it hold)
+            start = len(result.diagnostics)
+            checks()
+            found = result.diagnostics[start:]
+            del result.diagnostics[start:]
+            result.diagnostics[position:position] = found
     # §4.1 judges the combined document (§12.2): a level a fragment fills is not skipped. The
     # rest are recorded where the loop met them, the last first so that the places hold. That
     # needs the diagnostics since then only to have been added to. If one was moved or removed
@@ -2707,7 +2977,10 @@ def _check(
             position = len(result.diagnostics)
         result.error_at(position, "heading-skip", message, line=line)
     if final:
-        _check_final(placeholders, chooses, body.notes, conditions, questions, result, where.key("questions"))
+        _check_final(
+            placeholders + literal_placeholders, chooses + final_chooses, body.notes, conditions + final_conditions, questions, result,
+            where.key("questions"),
+        )
 
     # Warn about declared but unreferenced attachments (§16.10): once per id,
     # which alternatives share (§15.3).
@@ -2720,6 +2993,8 @@ def _check(
                 "attachment-unreferenced",
                 f"Attachment '{att_id}' is declared but never referenced via {{{{attach:}}}}.",
                 line=where.key("attachments", index),
+                # (An id that is no identifier is one no {{attach:}} names: attach-undeclared.)
+                unsettleable=not IDENTIFIER_RE.fullmatch(att_id),
             )
 
     # Warn about declared but never-referenced definitions (§7). May
@@ -2759,8 +3034,13 @@ def _check(
             document_root, combined=included.combined,
         )
         assert whole.places is not None and len(whole.places) == len(whole.diagnostics)
+        assert whole.unsettleable is not None and len(whole.unsettleable) == len(whole.diagnostics)
+        included.combined.unsettleable = {
+            number for number, unsettleable in enumerate(whole.unsettleable) if unsettleable
+        }
         result.diagnostics = merge_diagnostics(result.diagnostics, whole.diagnostics, whole.places, included.combined)
-        result.combined = True
+        result.combined = not included.combined.partial
+        result.spliced = True
 
     # §17.5: a Warning for each check category the constructs of the document call for and this
     # validation did not perform, last, once all that was read and checked is known.

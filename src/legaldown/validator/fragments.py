@@ -14,8 +14,8 @@ is read as it is written: its frontmatter is not read as declarations, and
 frontmatter that cannot be read is a finding of its own, not an exception (#43).
 
 The walk also records what it followed, for the combined document (``combined.weave``, #117): a ``Plan``,
-and whether every include was followed and the fragments are of a size to splice. The document and its
-fragments are validated as one only when they were.
+whether every include was followed, and whether the fragments are of a size to splice. The document and the
+fragments that were followed are validated as one when they are (#141).
 """
 from __future__ import annotations
 
@@ -28,13 +28,13 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, Protocol
 
 from ..directives import Lexed, lex
-from ..files import LoadFile, Reach, is_absolute_reference, within
+from ..files import LoadFile, Reach, is_absolute_reference, loader_identity, within
 from ..models import Document, Metadata
 from ..positions import Locator
 from .combined import Combined, Plan, weave
 from .conditions import Exclusivity, Presence, answer_combinations, holds_under
 from .helpers import legaldown_attachments
-from .patterns import IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
+from .patterns import FILE_SPELLING_DUPLICATE_RULE, IDENTIFIER_RE, LEGALDOWN_EXTENSIONS, MAX_SECTION_LEVEL
 from .result import Line, _Recorder
 from .templates import BodyScan, IncludeDirective, check_template_body
 from .units import FoundMarker, Units, find_markers, include_key, iter_include_paragraphs
@@ -96,9 +96,12 @@ class Files:
     ``LoadFile`` of the validation; *document* is the document being validated,
     which a path may name itself.
 
-    A file is the same file by the path it has from the document's directory, however it is
-    written (``a.lgd``, and ``../dir/a.lgd`` from a document in ``dir``): ``key``, which does not follow
-    symbolic links. It is read once, judged once, and named in a finding by the path it was first met by."""
+    A file is the same file when the loader reads one file for both paths (``key``): with ``file_loader``,
+    the file it reads (``identify``: its real path, symbolic links followed); with a loader that cannot say, the
+    path from the document's directory, however it is written (``a.lgd``, and ``../dir/a.lgd`` from a
+    document in ``dir``). It is read once, judged once, and named in a finding by the path it was first
+    met by. A second path to a file already named by an include or a LegalDown attachment file is
+    ``ldv-file-spelling-duplicate`` (``respelled``, #123)."""
 
     def __init__(
         self, resolve: LoadFile, document: Document, root: str | os.PathLike[str] | None = None
@@ -114,6 +117,9 @@ class Files:
         self._reach = Reach.of(root, document.path.parent if document.path is not None else None)
         self._read: dict[str, FragmentFile | None] = {}
         self._own: dict[str, bool] = {}
+        self._keys: dict[str, str] = {}
+        #: The path each file was first named by, as an include or a LegalDown attachment file (``respelled``).
+        self._named: dict[str, str] = {}
 
     def relative(self, path: str) -> str | None:
         """*path*, as a document names a file, normalized, when a loader may be asked for it
@@ -132,10 +138,33 @@ class Files:
         return self._reach.root
 
     def key(self, relative: str) -> str:
-        """What makes two spellings of *relative*, a path from the document's directory, one file: that
-        path joined to the directory and normalized. Symbolic links are not followed (a link is another
-        file), nor the case of a name."""
-        return os.path.normpath(os.path.join(self._directory, relative))
+        """What makes two spellings of *relative*, a path from the document's directory, one file: the file the
+        loader reads for it, when it can say (``loader_identity``: ``file_loader`` follows symbolic links, so a
+        link is the file it leads to, and ``a.lgd`` and ``../dir/a.lgd`` are two files when ``dir`` is a link
+        that leads elsewhere, #123); else that path joined to the directory and normalized, as written (no
+        link is followed, nor the case of a name)."""
+        if relative not in self._keys:
+            identity = loader_identity(self._resolve, relative)
+            self._keys[relative] = os.path.normpath(os.path.join(self._directory, relative)) if identity is None else identity
+        return self._keys[relative]
+
+    def respelled(self, relative: str) -> str | None:
+        """The path from the document's directory that first named the file at *relative* (``key``), when that
+        is another path: the file is named twice, two ways (``ldv-file-spelling-duplicate``, #123). Else None,
+        and *relative* names it from now on, when nothing did. Asked by the validator and by assembly in the
+        same order (the includes, followed as they are met, then the LegalDown attachment files), so that both
+        find the same second path."""
+        key = self.key(relative)
+        if key not in self._named:
+            self._named[key] = relative
+            read = self._read.get(key)
+            if read is not None and read.path != relative:
+                # Read before it was named (for the definitions of an attachment file, which are imported
+                # before the includes are walked): it goes by the path that named it first, as in assembly.
+                read.path = relative
+            return None
+        first = self._named[key]
+        return None if first == relative else first
 
     def locate(
         self, base: str, written: str
@@ -167,8 +196,8 @@ class Files:
             return bool(self._filename) and relative == self._filename
         key = self.key(relative)
         if key not in self._own:
-            # The file system is asked only for a file the loader has: it is the loader's. (The one place
-            # a link is followed: the document's own file is the file it is, however it is reached.)
+            # The file system is asked only for a file the loader has: it is the loader's. (A link is followed
+            # here whatever the loader: the document's own file is the file it is, however it is reached.)
             self._own[key] = (
                 self.read(relative) is not None
                 and within(self._path.parent, relative, self._reach.root) == self._path.resolve()
@@ -699,9 +728,11 @@ NOT_CHECKED = " (not checked past that point)"
 
 @dataclass(frozen=True, slots=True)
 class UnreadInclude:
-    """An include paragraph whose fragment was not read, and why."""
+    """An include paragraph whose fragment was not read, and why; *attached*: it was met following the includes of
+    a LegalDown attachment file (#141), whose headings and identifiers the include rules do not judge."""
     include: IncludeDirective
     reason: UnreadReason
+    attached: bool = False
 
 
 @dataclass(slots=True)
@@ -713,10 +744,13 @@ class IncludeOutcome:
     paragraphs it met are in fragments (*nested*), and the limits it
     reached (*caps*, each as a phrase): the depth and the count of the includes followed (#114), and
     the combinations of answers that ``include-heading-skip`` tries (#108). *combined* is the combined
-    document (``combined.weave``), when every include of the document was followed into a fragment; and
+    document (``combined.weave``), when an include of the document was followed into a fragment or an attachment
+    file is spliced (``Combined.partial`` when not every include was followed, #141); and
     of its LegalDown attachment files, *attachments_out* how many are not in it, *attachments_capped* how
-    many of those were left out for the size of the combined document, and *attachments_unshaped* how many
-    were not read for their shape (``attachment-has-frontmatter``, ``attachment-has-h1``)."""
+    many of those were left out for the size of the combined document, *attachments_unshaped* how many
+    were not read for their shape (``attachment-has-frontmatter``, ``attachment-has-h1``), and
+    *attachments_uncompared* how many were not compared with the paths named before them (no loader, or a path
+    that leads out of the document's directory and is not read: ``ldv-file-spelling-duplicate``, #123)."""
     filled: set[int] = field(default_factory=set)
     unread: list[UnreadInclude] = field(default_factory=list)
     nested: int = 0
@@ -725,6 +759,12 @@ class IncludeOutcome:
     attachments_out: int = 0
     attachments_capped: int = 0
     attachments_unshaped: int = 0
+    attachments_uncompared: int = 0
+    #: How many include paragraphs the LegalDown attachment files hold (those of the fragments they take in are
+    #: *nested*): they are followed as a fragment's are (#141).
+    attached_includes: int = 0
+    #: The entry of the first of those files, for the line of the Warning when the document has no include paragraph.
+    attached_includes_entry: int | None = None
 
 
 class _NamedInclude(Protocol):
@@ -746,6 +786,18 @@ def not_legaldown(include: _NamedInclude) -> str | None:
     return (
         f"'{include.written}' is not a LegalDown file: an include target is a "
         f"{', '.join(LEGALDOWN_EXTENSIONS)} file (§12.2). It is not read."
+    )
+
+
+def respelled_message(written: str, first: str, *, nested: bool = False) -> str:
+    """The message of ``ldv-file-spelling-duplicate`` (#123) for the path *written*, which names the file that
+    *first* (its path from the document's directory) named before it; *nested*: *written* is in a fragment, whose
+    paths are from its own directory, and the message says where *first* is from."""
+    where = " (from the document's directory)" if nested else ""
+    return (
+        f"'{written}' names the file already named '{first}'{where}: one file, by two paths. Assembly writes "
+        f"each file it keeps by the path that names it, and cannot write one file by two; name the file by "
+        f"one path throughout."
     )
 
 
@@ -772,9 +824,13 @@ def closes(files: Files, chain: IncludeChain, relative: str) -> bool:
     return files.key(relative) in chain.keys or files.is_own(relative)
 
 
-def cycle_message(files: Files, source: str, chain: IncludeChain, relative: str) -> str:
-    """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*."""
-    said = " -> ".join(["the document", *chain.paths, "the document" if files.is_own(relative) else relative])
+def cycle_message(
+    files: Files, source: str, chain: IncludeChain, relative: str, *, attachment: bool = False
+) -> str:
+    """The message of ``include-cycle`` for the include *source* of *relative*, which ``closes`` the *chain*:
+    the document's, or, with *attachment*, one that begins at the attachment file it names first."""
+    start = [f"the attachment file {chain.paths[0]}", *chain.paths[1:]] if attachment else ["the document", *chain.paths]
+    said = " -> ".join([*start, "the document" if files.is_own(relative) else relative])
     return (
         f"'{source}' closes a circular include chain ({said}); a file cannot include "
         f"itself, directly or through others (§12.2)."
@@ -814,8 +870,9 @@ class _Walk:
     judged as ``FileReferences`` judges the document's, from the directory of the file that holds
     it. *incomplete* tells that something a fragment includes was not followed, so that what lies after
     it is not known. What it followed is recorded for the combined document (``combined.weave``): the *plan*
-    of the fragments the include paragraphs took in, and whether it is *complete*: every include was followed,
-    and the fragments spliced are no more than the combined document may hold."""
+    of the fragments the include paragraphs took in, whether it is *complete*: every include was followed,
+    and the fragments spliced are no more than the combined document may hold; and whether they are more
+    (*oversized*), when no combined document is built."""
 
     def __init__(
         self, files: Files, result: _Recorder, outcome: IncludeOutcome, *, template: bool,
@@ -834,16 +891,34 @@ class _Walk:
         self.incomplete = False
         self.plan = Plan()
         self.complete = True
+        #: Whether an include not followed may bring content in: a file not read for a reason other than its absence
+        #: (a path that leads out, a cap, an include in a template's fragment). A missing file, a cycle, a file that is
+        #: no fragment or a path refused bring nothing in (#141): ``Combined.settles``.
+        self.may_bring = False
+        #: Whether the fragments followed are past the size the combined document may have: then it is not built.
+        self.oversized = False
         self._spliced = [0, 0]  # the blocks and lines the fragments followed bring in
         #: The attachment files to follow the body, with their entries, and the blocks and lines they bring in: a
         #: budget of their own, which leaves the includes' alone (#135).
-        self.attached: list[tuple[int, FragmentFile]] = []
+        self.attached: list[tuple[int, FragmentFile, Plan]] = []
         self._attached = [0, 0]
+        self._measured: list[int] | None = None  # what an attachment file's includes bring in, while they are followed
+        self._counted: set[str] = set()  # the attachment files whose include paragraphs are counted (``attach``)
+        self._nested: set[str] = set()  # the fragments whose include paragraphs are counted as *nested*
+        self._attaching = False  # the includes followed are an attachment file's (``attach``): its chain has no document
         self._full = False  # the budget of the attachment files is spent
+        #: Of each file read that is not a fragment, where the include that first named it is (``Combined.met_at``).
+        self.met_at: dict[str, tuple[str, int | None]] = {}
+        #: The files checked as LegalDown attachment files (``Files.key``), for ``shape`` not to check them again.
+        self.attachment_keys: set[str] = set()
+        #: Findings of this walk that the document keeps although their rules are the combined pass's: those on the
+        #: include paths of an attachment file left out of it (``attach``, ``Combined.kept``).
+        self.kept: list[Any] = []
 
     def shape(self, fragment: FragmentFile) -> None:
-        """The findings on *fragment* as a file, once however often it is included."""
-        if fragment.path not in self._findings:
+        """The findings on *fragment* as a file, once however often it is included, and not for a file already
+        checked as an attachment file (``attachment_keys``): its shape is one finding, whatever uses it."""
+        if fragment.path not in self._findings and self._files.key(fragment.path) not in self.attachment_keys:
             self._findings[fragment.path] = fragment_findings(
                 fragment, kind="include", template=self._template, lex_fragment=self._lex_fragment
             )
@@ -875,7 +950,7 @@ class _Walk:
             if first:
                 self._result.error(rule, message, line=include.line, file=file)
                 if reason is not None:
-                    self._outcome.unread.append(UnreadInclude(include, reason))
+                    self._outcome.unread.append(UnreadInclude(include, reason, self._attaching))
 
         if not include.path:
             refuse(
@@ -889,7 +964,9 @@ class _Walk:
             return None
         relative, problem = self._files.locate("" if owner is None else posixpath.dirname(owner.path), include.written)
         if relative is None:
-            what = "an include" if owner is None else "an include in a fragment"
+            # (Worded as ``FileReferences`` words the path of an include, which the combined pass judges again: one
+            # finding reads the same whether or not a combined document is made, #141.)
+            what = "{{include:}}"
             if problem == "not-relative":
                 refuse(
                     "path-not-relative",
@@ -906,8 +983,9 @@ class _Walk:
                     None,
                 )
             elif problem == "leads-out":  # valid, and not read without a root that holds it (#109)
+                self.may_bring = True
                 if first:
-                    self._outcome.unread.append(UnreadInclude(include, "leads-out"))
+                    self._outcome.unread.append(UnreadInclude(include, "leads-out", self._attaching))
             else:
                 refuse(
                     "include-file-missing",
@@ -916,12 +994,23 @@ class _Walk:
                 )
             return None
         if closes(self._files, chain, relative):
-            refuse("include-cycle", cycle_message(self._files, include.source, chain, relative), None)
+            refuse(
+                "include-cycle",
+                cycle_message(self._files, include.source, chain, relative, attachment=self._attaching),
+                None,
+            )
             return None
         if (cap := too_deep(chain)) is not None:
+            self.may_bring = True
             if cap + NOT_CHECKED not in self._outcome.caps:
                 self._outcome.caps.append(cap + NOT_CHECKED)
             return None
+        if (named := self._files.respelled(relative)) is not None and first:
+            # Another path to a file already named: reported, and still the one file it is (#123).
+            self._result.error(
+                FILE_SPELLING_DUPLICATE_RULE, respelled_message(include.written, named, nested=owner is not None),
+                line=include.line, file=file,
+            )
         target = self._files.read(relative)
         if target is None:
             refuse(
@@ -932,7 +1021,11 @@ class _Walk:
             )
             return None
         self.shape(target)
-        return target if target.spliceable else None  # a file that is not a fragment is reported, not spliced
+        if not target.spliceable:  # a file that is not a fragment is reported, not spliced
+            if self._files.key(target.path) not in self.attachment_keys:  # (an attachment file's are at its entry)
+                self.met_at.setdefault(target.path, (file, _line(include.line)))
+            return None
+        return target
 
     def extend(self, chain: IncludeChain, fragment: FragmentFile) -> IncludeChain:
         """*chain* with *fragment* last."""
@@ -949,7 +1042,9 @@ class _Walk:
             for number, include in enumerate(fragment_includes(fragment, self._lex_fragment)):
                 by_section.setdefault(include.section, []).append((number, include))
             self._includes[fragment.path] = by_section
-            self._outcome.nested += sum(len(each) for each in by_section.values())
+            if fragment.path not in self._counted:  # (an attachment file's are counted as its own, ``attach``)
+                self._outcome.nested += sum(len(each) for each in by_section.values())
+                self._nested.add(fragment.path)
         by_section = self._includes[fragment.path]
         headings: list[Heading] = []
 
@@ -973,16 +1068,23 @@ class _Walk:
         if cap + NOT_CHECKED not in self._outcome.caps:
             self._outcome.caps.append(cap + NOT_CHECKED)
         self.incomplete = self.complete = False
+        self.may_bring = True
         return True
 
     def _grow(self, fragment: FragmentFile) -> None:
         """Count what *fragment* brings into the combined document once more; past what it may hold
         (``MAX_SPLICED_BLOCKS``) the combined document is not made, and the Warning of §17.5 says so.
-        What lies after is still followed, for the checks that do not need it."""
+        What lies after is still followed, for the checks that do not need it. What the includes of an attachment
+        file bring in is counted for it instead (``attach``)."""
+        if self._measured is not None:
+            self._measured[0] += fragment.size[0]
+            self._measured[1] += fragment.size[1]
+            return
         self._spliced[0] += fragment.size[0]
         self._spliced[1] += fragment.size[1]
         if self._spliced[0] > MAX_SPLICED_BLOCKS or self._spliced[1] > MAX_SPLICED_LINES:
             self.complete = False
+            self.oversized = True
             cap = (
                 f"building the combined document of more than {MAX_SPLICED_BLOCKS:,} blocks or "
                 f"{MAX_SPLICED_LINES:,} lines of fragments"
@@ -990,24 +1092,90 @@ class _Walk:
             if cap not in self._outcome.caps:
                 self._outcome.caps.append(cap)
 
+    def _fits(self, blocks: int, lines: int) -> bool:
+        """Whether *blocks* and *lines* more of attachment files are within their budget."""
+        return self._attached[0] + blocks <= MAX_SPLICED_BLOCKS and self._attached[1] + lines <= MAX_SPLICED_LINES
+
     @property
     def full(self) -> bool:
         """Whether the budget of the attachment files is spent (``attach``)."""
         return self._full
 
-    def attach(self, index: int, fragment: FragmentFile) -> bool:
+    def attach(self, index: int, fragment: FragmentFile, includes: bool) -> bool:
         """Take the attachment file *fragment*, the entry *index* of the attachments, for the combined document,
-        after the body: each is an appendix of its own, so this changes nothing of the walk of the includes (it is
-        not ``complete`` or not for it). They may bring in no more than ``MAX_SPLICED_BLOCKS`` blocks and
-        ``MAX_SPLICED_LINES`` lines (counted for each entry); past that it and the attachment files after it
-        are not taken, and False is returned."""
-        blocks, lines = fragment.size
-        if self._full or self._attached[0] + blocks > MAX_SPLICED_BLOCKS or self._attached[1] + lines > MAX_SPLICED_LINES:
+        after the body: each is an appendix of its own, so this changes nothing of the walk of the includes of the
+        body. When it has include paragraphs (*includes*) they are followed as a fragment's are (#141), from the
+        attachment file, which is the first of the chain: what they cannot follow leaves the combined document
+        partial (``complete``), as an include of the body does. They may bring in no more than ``MAX_SPLICED_BLOCKS``
+        blocks and ``MAX_SPLICED_LINES`` lines (counted for each entry, with what its includes bring in); past that it
+        and the attachment files after it are not taken, and False is returned. An attachment file not taken leaves
+        the combined document as complete as it was (what its includes did not follow is not missing from it), and
+        the outcome as it was: no include of it is counted, none is not read and no cap it reached is named in the
+        Warning of §17.5, and the count of includes and headings it spent is given back."""
+        if self._full or not self._fits(*fragment.size):
             self._full = True
             return False
+        plan = Plan()
+        if includes:
+            # What the walk of its includes changes of the outcome, put back if the file is not taken.
+            complete, incomplete, spent, may_bring = self.complete, self.incomplete, self._budget.spent, self.may_bring
+            unread, caps, nested = len(self._outcome.unread), len(self._outcome.caps), self._outcome.nested
+            counted = set(self._nested)
+            self._measured = [0, 0]
+            self._attaching = True
+            # What the walk finds is held until it is known whether the file is taken: if not, the combined pass will
+            # not judge its include paths, and the document's must keep those findings (``kept``).
+            # (Recorded as the document's recorder records, what it holds and the lines it is at too; the path findings
+            # are made, as the document may keep them.)
+            real = self._result
+            self._result = _Recorder(
+                suppress=real.suppress, fragment=real.fragment,
+                keep=None if real.keep is None else real.keep | {"path-not-relative", "path-outside-root"},
+                places=None if real.places is None else [], unsettleable=None if real.unsettleable is None else [],
+                _lines=list(real._lines),
+            )
+            try:
+                self.expand(fragment, self.extend(EMPTY_CHAIN, fragment), plan)
+                blocks, lines = self._measured
+            finally:
+                held, self._result = self._result, real
+                found = held.diagnostics
+                real.diagnostics.extend(found)
+                if real.places is not None and held.places is not None:
+                    real.places.extend(held.places)
+                if real.unsettleable is not None and held.unsettleable is not None:
+                    real.unsettleable.extend(held.unsettleable)
+                self._measured = None
+                self._attaching = False
+            if not self._fits(blocks, lines):
+                # Left out: the combined document, the Warning of §17.5 and the budget of the walk are as they were.
+                # What it found in the files stays reported, at the include that named each file (``met_at``), and
+                # the path findings are the document's to keep (``kept``). What the walk judged once (``_met``,
+                # ``_includes``, ``_findings``) is not put back: it is safe only because no attachment file is
+                # followed after one is left out (``full``), which would else find its includes judged already.
+                self.complete, self.incomplete, self._budget.spent, self.may_bring = complete, incomplete, spent, may_bring
+                del self._outcome.unread[unread:]
+                del self._outcome.caps[caps:]
+                self._outcome.nested, self._nested = nested, counted
+                self._full = True
+                self.kept.extend(each for each in found if each.rule in ("path-not-relative", "path-outside-root"))
+                return False
+            # The include paragraphs of a LegalDown attachment file are counted as its own, once, whatever else
+            # includes it and in whichever order (for the Warning of §17.5, #141): not among the fragments'.
+            if fragment.path not in self._counted:
+                self._counted.add(fragment.path)
+                own = sum(len(each) for each in self._includes[fragment.path].values())
+                if fragment.path in self._nested:
+                    self._nested.discard(fragment.path)
+                    self._outcome.nested -= own
+                self._outcome.attached_includes += own
+                if self._outcome.attached_includes_entry is None:
+                    self._outcome.attached_includes_entry = index
+        else:
+            blocks, lines = fragment.size
         self._attached[0] += blocks
         self._attached[1] += lines
-        self.attached.append((index, fragment))
+        self.attached.append((index, fragment, plan))
         return True
 
     def _follow(
@@ -1025,6 +1193,7 @@ class _Walk:
             if first:
                 self._outcome.unread.append(UnreadInclude(include, "in-template"))
             self.complete = False
+            self.may_bring = True
             return []
         if self._spend():
             return []
@@ -1082,11 +1251,12 @@ def check_includes(
     (the document itself included) is ``include-cycle`` at the include that closes it
     (``_Walk``).
 
-    Returned (``IncludeOutcome``): the combined document (``combined.weave``) when every include paragraph
-    was followed into a fragment (the walk is *complete*: nothing unread, refused, cut short by a cap or
-    left alone in a template, and no more than ``MAX_SPLICED_BLOCKS`` blocks spliced in), for the validation of what the fragments and the document say across each
-    other (§16.11), and something is to be spliced: a fragment, or an attachment file that was read and is
-    a fragment, each on its own (§12.4, #135). And the headings of the document
+    Returned (``IncludeOutcome``): the combined document (``combined.weave``) of what the walk followed, for the
+    validation of what the fragments and the document say across each other (§16.11), when something is to be
+    spliced (a fragment, or an attachment file that was read and is a fragment, each on its own, §12.4, #135) and
+    no more than ``MAX_SPLICED_BLOCKS`` blocks are; it is *partial* when an include paragraph was not followed
+    into a fragment (unread, refused, cut short by a cap or left alone in a template, #141). The include
+    paragraphs of an attachment file are followed as a fragment's are, outside a template. And the headings of the document
     whose ``heading-skip`` the combined document makes valid (``include_heading_skips``), which the caller
     does not report, as the combined document is the one §4.1 judges when every fragment between is read
     (§12.2). A
@@ -1134,25 +1304,36 @@ def check_includes(
         if walk.incomplete:
             unread.add(include.section)  # something it includes is not known: it fills nothing
     entries = legaldown_attachments(document.metadata)
-    capped = unshaped = 0
+    capped = unshaped = uncompared = 0
     if files is None or walk is None:
-        unshaped = len(entries)
+        unshaped = uncompared = len(entries)
     else:
         # Each LegalDown attachment file is read too (§12.4): for its shape, and in a template for the
         # ``{{include:}}`` it must not hold (§16.12), once for each file however often it is attached.
-        checked: set[str] = set()
-        holds_includes: dict[str, bool] = {}  # whether each file has include paragraphs
+        checked = walk.attachment_keys
         include_keys = {files.key(path) for path in findings}  # the files already checked as includes
+        holds_includes: dict[str, bool] = {}  # whether each file has include paragraphs
+        read: list[tuple[int, FragmentFile, str]] = []
         for index, _attachment, written in entries:
-            relative = files.relative(written)
-            if relative is not None and files.is_own(relative):
+            relative, problem = files.relative_check(written)
+            if relative is None:
+                # Not compared: valid, and not read without a root (any other path is refused, leaving a root too).
+                uncompared += problem == "leads-out" and files.root is None
+            elif files.is_own(relative):
                 continue
+            if relative is not None and (named := files.respelled(relative)) is not None:
+                # Another path to a file already named, by an include or an attachment (#123).
+                result.error(
+                    FILE_SPELLING_DUPLICATE_RULE, respelled_message(written, named),
+                    line=where.key("attachments", index, "file"),
+                )
             fragment = None if relative is None else files.read(relative)
             if relative is None or fragment is None:
                 unshaped += 1  # not read: refused, leading out of the directory, or not there
                 continue
             # (A file that was also an include was checked above, and is a finding of its own; however either
-            # is spelled, it is one file, named by the path it was first met by.)
+            # is spelled, it is one file, named by the path it was first met by, and another path to it is
+            # ldv-file-spelling-duplicate, above.)
             key = files.key(relative)
             if key not in checked and key not in include_keys:
                 checked.add(key)
@@ -1160,8 +1341,12 @@ def check_includes(
                     fragment, kind="attachment", template=template, lex_fragment=lex_fragment
                 ):
                     result.error(finding.rule, finding.message, line=finding.line, file=fragment.path)
-            # One copy for each entry. A file with include paragraphs is left out: they are not followed in it
-            # (they are in an include fragment), so what it includes would be as missing as it was.
+            read.append((index, fragment, key))
+        # One copy for each entry, with what its include paragraphs take in (#141), once every entry's shape is judged
+        # (a file an attachment file includes and the attachments name is an attachment file, whatever their order).
+        # In a template it holds none (template-fragment-invalid, §15.3, §16.12): one that does is left out, its
+        # includes not followed.
+        for index, fragment, key in read:
             if not fragment.spliceable:
                 continue
             if walk.full:
@@ -1169,14 +1354,24 @@ def check_includes(
                 continue
             if key not in holds_includes:
                 holds_includes[key] = bool(fragment_includes(fragment, lex_fragment))
-            if not holds_includes[key] and not walk.attach(index, fragment):
+            if template and holds_includes[key]:
+                continue
+            if not walk.attach(index, fragment, holds_includes[key]):
                 capped += 1
-    if walk is not None and walk.complete and (walk.plan.children or walk.attached):
-        outcome.combined = weave(document, where, walk.plan, files, lex_fragment, walk.attached)
+    # What was followed is spliced even when not every include was (#141): the combined document is then *partial*,
+    # each include not followed left as the paragraph it is, and what it would bring in is not judged.
+    if walk is not None and not walk.oversized and (walk.plan.children or walk.attached):
+        outcome.combined = weave(
+            document, where, walk.plan, files, lex_fragment, walk.attached, partial=not walk.complete
+        )
+        outcome.combined.met_at = walk.met_at
+        outcome.combined.kept = {id(each) for each in walk.kept}
+        outcome.combined.settles = walk.may_bring
     built = outcome.combined is not None
     outcome.attachments_out = len(entries) - (len(walk.attached) if built and walk is not None else 0)
-    outcome.attachments_capped = capped if walk is not None and walk.complete else 0  # (else the includes are to blame)
+    outcome.attachments_capped = capped if walk is not None and not walk.oversized else 0  # (else the includes are to blame)
     outcome.attachments_unshaped = unshaped
+    outcome.attachments_uncompared = uncompared
     if not splices:
         return outcome
     judgement = include_heading_skips(document, where, splices, first_level, unread, units, questions)

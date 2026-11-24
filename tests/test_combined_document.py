@@ -21,7 +21,7 @@ from legaldown import Document, Template, load, parse, validate
 from legaldown.cli import EXIT_DIAGNOSTICS, main
 from legaldown.grammar import SKIPPED_RULE
 from legaldown.validator import core
-from legaldown.validator.combined import HOST_ONLY, WHOLE_DOCUMENT_RULES
+from legaldown.validator.combined import HOST_ONLY, NOT_IN_IT, SETTLED_ELSEWHERE, WHOLE_DOCUMENT_RULES
 from legaldown.validator.fragments import MAX_INCLUDE_DEPTH
 
 _FRONT = (
@@ -341,14 +341,50 @@ def test_a_fragment_with_a_choice_is_no_trouble_to_a_document_whose_frontmatter_
     "## Part {#part}\n\n- one. {when=x}\n- two\n",
 ])
 def test_a_documents_fragment_constructs_are_not_template_constructs_of_a_document_that_is_none(part):
-    # Under the final check too (§15.9): the combined pass does not take them up, as the document before did not.
     text = _FRONT + _SCOPE + "{{include: part.lgd}}\n"
-    for final in (False, True):
-        result = _run(text, {"part.lgd": part}, final=final)
-        assert _found(result) == [], (part, final)
+    assert _found(_run(text, {"part.lgd": part})) == [], part
+    # Under the final check (§15.9) they are what remains in the combined document (§16.11), and it is rejected for
+    # them, at their lines in the fragment, as for the document's own (#141); nothing else is judged of them.
+    result = _run(text, {"part.lgd": part}, final=True)
+    assert [(rule, file) for rule, file, _line in _found(result)] == [("template-construct-present", "part.lgd")], part
     # The document is a template when it declares a question: then they are its constructs, in the fragment.
     result = _run(_TEMPLATE_FRONT + _SCOPE + "{{include: part.lgd}}\n", {"part.lgd": part}, final=True)
     assert "template-construct-present" in result.rules()
+
+
+_FINAL_RULES = ("template-construct-present", "placeholder-unfilled")
+
+
+@pytest.mark.parametrize(("text", "files"), [
+    (
+        _FRONT + _SCOPE + "{{include: a.lgd}}\n\nEnd.\n",
+        {"a.lgd": "## A {#a when=x}\n\nA {{choose: q}} b. {when=!x}\n\n- i. {when=x}\n"},
+    ),
+    (
+        _FRONT + _SCOPE + "{{include: a.lgd}}\n",
+        {"a.lgd": "Lead. {when=x}\n\n## {{choose: q}} A\n\n{{include: b.lgd}}\n", "b.lgd": "B {{placeholder: p}}.\n"},
+    ),
+    (
+        _FRONT + _SCOPE + "{{include: a.lgd}}\n",
+        {"a.lgd": "## A\n\n> [!DRAFTING]\n> {{choose: q}}\n\nText. {#t when=x}\n"},
+    ),
+    (
+        "---\ntitle: Fixture\nattachments:\n  - id: a\n    title: T a\n    file: a.lgd\n---\n\n" + _SCOPE + "See {{attach: a}}.\n",
+        {"a.lgd": "## A {#in-a when=x}\n\n{{choose: q}}\n"},
+    ),
+])
+def test_the_final_check_of_a_document_that_is_no_template_equals_that_of_the_spliced_text(text, files):
+    # The differential (#141): what the final check finds in the fragments and attachment files of a document that is
+    # no template is what it finds in their text spliced in, where they make the document one.
+    result = _run(text, files, final=True)
+    oracle = validate(parse(_appended(text, files)), final=True)
+
+    def counted(diagnostics):
+        return Counter((d.rule, d.message) for d in diagnostics if d.rule in _FINAL_RULES)
+
+    assert counted(result.diagnostics) == counted(oracle.diagnostics) != Counter()
+    assert not result.index.is_template
+    assert all(d.file for d in result.diagnostics if d.rule == "template-construct-present")
 
 
 def test_each_fragment_is_asked_for_once_whatever_it_holds():
@@ -396,17 +432,22 @@ def test_a_reference_that_is_unsafe_when_the_walk_was_cut_short_does_not_stop_a_
     )
     files = {"frag.lgd": "## Other {#local}\n\nText.\n"}
     assert Template(text, resolve=files.get).problems == ()
-    monkeypatch.setattr("legaldown.validator.fragments.MAX_INCLUDE_EXPANDED", 0)
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_INCLUDE_DEPTH", 0)
     template = Template(text, resolve=files.get)
     assert any(d.rule == "condition-reference-unsafe" for d in template.validation.diagnostics)
     assert template.problems == ()
     monkeypatch.undo()
+    # So it is when the combined document is partial (#141): an include not followed may declare it.
+    partial = text.replace("# Local", "{{include: ../more.lgd}}\n\n# Local")
+    template = Template(partial, resolve={"frag.lgd": "## Other {#other}\n\nText.\n"}.get)
+    assert any(d.rule == "condition-reference-unsafe" for d in template.validation.diagnostics)
+    assert "condition-reference-unsafe" not in {d.rule for d in template.problems}
     # ... and with no fragment that declares it, the combined document says it is unsafe, and it stops.
     template = Template(text, resolve={"frag.lgd": "## Other {#other}\n\nText.\n"}.get)
     assert [d.rule for d in template.problems] == ["condition-reference-unsafe"]
 
 
-# ── All or nothing: the combined document is built when every include was followed ───────────────────────────────
+# ── What was followed is combined: the combined document is partial when an include was not (#141) ──────────────
 
 def _is_whole(result) -> bool:
     """Whether the Warning no longer names the combined-document checks."""
@@ -422,14 +463,16 @@ def test_the_warning_goes_with_the_checks_it_named_when_every_fragment_was_read(
         assert "combined-document checks (§16.11)" in _warning(_run(text, files)).message
 
 
-def test_a_cycle_leaves_the_document_as_it_was():
-    text = _FRONT + _SCOPE + "See {{ref: part-sec}}.\n\n{{include: a.lgd}}\n"
+def test_a_cycle_leaves_the_fragments_before_it_combined():
+    text = _FRONT + _SCOPE + "See {{ref: part-sec}} {{ref: b}} {{ref: nope}}.\n\n{{include: a.lgd}}\n"
     files = {"a.lgd": "## A {#part-sec}\n\n{{include: b.lgd}}\n", "b.lgd": "### B {#b}\n\n{{include: a.lgd}}\n"}
     result = _run(text, files)
     assert _found(result, "include-cycle") == [("include-cycle", "b.lgd", 3)]
-    # No combined pass: the reference into a fragment is as broken as it was.
-    assert [r for r, _, _ in _found(result, "ref-broken")] == ["ref-broken"]
-    assert "combined-document checks" in _warning(result).message
+    # The fragments followed are in the combined document: a reference into them resolves (#141). One into nothing is
+    # broken, and says nothing of what was not followed: a cycle brings nothing in that is not in it.
+    (broken,) = [d for d in result.diagnostics if d.rule == "ref-broken"]
+    assert "'nope'" in broken.message and not broken.message.endswith(NOT_IN_IT)
+    assert _is_whole(result) or "for what the includes not followed would bring in" not in _warning(result).message
 
 
 def test_the_depth_and_size_caps_leave_the_document_as_it_was(monkeypatch):
@@ -449,12 +492,35 @@ def test_the_depth_and_size_caps_leave_the_document_as_it_was(monkeypatch):
     assert "combined-document checks" in _warning(capped).message
 
 
-def test_one_fragment_missing_leaves_the_others_unjudged_across_the_document():
-    text = _FRONT + _SCOPE + "See {{ref: part-sec}}.\n\n{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
-    result = _run(text, {"part.lgd": "## Part {#part-sec}\n\nText.\n"})
+def test_one_fragment_missing_leaves_the_others_judged_across_the_document():
+    text = _FRONT + _SCOPE + "See {{ref: part-sec}} {{ref: gone-sec}}.\n\n{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
+    part = "## Part {#part-sec}\n\nSee {{ref: scope}} {{ref: also-gone}} {{term: fee}}.\n"
+    result = _run(text, {"part.lgd": part})
     assert _found(result, "include-file-missing") == [("include-file-missing", "main.lgd", _at(text, "gone.lgd"))]
-    assert [r for r, _, _ in _found(result, "ref-broken")] == ["ref-broken"]
-    assert "combined-document checks" in _warning(result).message
+    # The fragment read is judged with the document, both ways (#141). A file that is not there brings nothing in, so
+    # nothing says it may settle a finding; an include that leads out of the directory, not read, may (#141).
+    assert _found(result, "ref-broken", "term-undefined") == [
+        ("ref-broken", "main.lgd", _at(text, "See")),
+        ("ref-broken", "part.lgd", 3),
+        ("term-undefined", "part.lgd", 3),
+    ]
+    assert not any(d.message.endswith(NOT_IN_IT) for d in result.diagnostics)
+    assert "'gone-sec'" in next(d.message for d in result.diagnostics if d.rule == "ref-broken")
+    out = _run(text.replace("gone.lgd", "../gone.lgd"), {"part.lgd": part})
+    assert all(d.message.endswith(NOT_IN_IT) for d in out.diagnostics if d.rule in ("ref-broken", "term-undefined"))
+    for kept in ({"part.lgd": part, "gone.lgd": "# H1\n"}, {"part.lgd": part, "gone.lgd": "{{include: main.lgd}}\n"}):
+        result = _run(text, kept)  # (a file that is no fragment, and a cycle)
+        assert not any(d.message.endswith(NOT_IN_IT) for d in result.diagnostics), kept
+    assert _is_whole(result) or "for what the includes not followed would bring in" not in _warning(result).message
+    assert "for what the includes not followed would bring in" in _warning(out).message
+
+
+def test_a_question_only_a_missing_fragment_could_use_is_unused():
+    # A file that is not there uses nothing (#141): with only such includes not followed, question-unused is made.
+    text = _TEMPLATE_FRONT + _SCOPE + "Maybe. {when=x}\n\n{{include: part.lgd}}\n\n{{include: gone.lgd}}\n"
+    files = {"part.lgd": "## Part\n\nText.\n"}
+    assert [d.message.split("'")[1] for d in _run(text, files).diagnostics if d.rule == "question-unused"] == ["z"]
+    assert not [d for d in _run(text.replace("gone.lgd", "../gone.lgd"), files).diagnostics if d.rule == "question-unused"]
 
 
 @pytest.mark.parametrize("kwargs", [{"resolve": None}, {"resolve": lambda path: None}])
@@ -624,19 +690,238 @@ def test_an_attachment_not_read_leaves_the_others_and_the_body_as_they_are():
     assert _found(whole, "ref-broken") == [] and "not spliced" not in _warning(whole).message
 
 
-def test_an_attachment_file_with_an_include_is_left_out_and_not_judged_as_if_the_include_were_missing():
-    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}}.\n"
+def test_the_includes_of_an_attachment_file_are_followed_and_spliced_into_it():
+    # #141: an include paragraph of an attachment file takes its fragment in, as one of a fragment does (§12.2, §12.4).
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}} and {{ref: deep}}.\n"
     files = {
-        "s.lgd": "## S {#s}\n\nSee {{ref: deep}} and {{term: fee}}.\n\n{{include: deep.lgd}}\n",
-        "deep.lgd": '## Deep {#deep}\n\n"Fee" {{def: fee}}.\n',
+        "s.lgd": "## S {#s-sec}\n\nSee {{ref: deep}} and {{term: fee}}.\n\n{{include: deep.lgd}}\n",
+        "deep.lgd": '## Deep {#deep}\n\n"Fee" {{def: fee}}.\n\n{{include: deeper.lgd}}\n',
+        "deeper.lgd": "### Deeper {#deeper}\n\nSee {{ref: s-sec}} {{ref: nope}}.\n",
     }
     result = _run(text, files)
-    # (An include in an attachment file is not followed: the file is not spliced, and its references are not judged.)
-    assert _found(result, "ref-broken", "term-undefined") == []
-    assert "for 1 LegalDown attachment file not spliced into the combined document" in _warning(result).message
-    # An attachment file whose include is text, in a sentence, is a fragment as any other.
+    # (What the attachment's fragment defines is declared in the attachment: a use before it there is before it.)
+    assert _found(result, "ref-broken", "term-undefined", "definition-used-before-declaration") == [
+        ("definition-used-before-declaration", "s.lgd", 3), ("ref-broken", "deeper.lgd", 3)
+    ]
+    assert not any(d.message.endswith(NOT_IN_IT) for d in result.diagnostics)
+    assert "include" not in _warning(result).message
+    # An attachment file whose include is text, in a sentence, has nothing to follow.
     plain = _run(text, {**files, "s.lgd": "## S {#s}\n\nSee {{ref: deep}} and `{{include: deep.lgd}}`.\n"})
-    assert [r for r, _, _ in _found(plain, "ref-broken")] == ["ref-broken"]
+    assert [(r, f) for r, f, _ in _found(plain, "ref-broken")] == [("ref-broken", "main.lgd"), ("ref-broken", "s.lgd")]
+
+
+def test_an_include_of_an_attachment_file_not_followed_is_reported_there_and_leaves_the_rest_combined():
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}} {{ref: s}}.\n"
+    files = {"s.lgd": "## S {#s}\n\nSee {{ref: gone-sec}}.\n\n{{include: gone.lgd}}\n\n{{include: s.lgd}}\n\n{{include: main.lgd}}\n"}
+    result = _run(text, files)
+    assert _found(result, "include-file-missing", "include-cycle", "ref-broken") == [
+        ("ref-broken", "s.lgd", 3),
+        ("include-file-missing", "s.lgd", 5),
+        ("include-cycle", "s.lgd", 7),
+        ("include-cycle", "s.lgd", 9),
+    ]
+    assert not next(d for d in result.diagnostics if d.rule == "ref-broken").message.endswith(NOT_IN_IT)
+    cycle = [d.message for d in result.diagnostics if d.rule == "include-cycle"]
+    assert "(the attachment file s.lgd -> s.lgd)" in cycle[0] and "(the attachment file s.lgd -> the document)" in cycle[1]
+    warning = _warning(result)
+    assert warning.line == _at(text, "file: s.lgd")
+    assert warning.message.startswith("3 includes in LegalDown attachment files; 1 include not read (1 could not be read")
+    assert "for what the includes not followed would bring in" not in warning.message
+    # (Of the includes of attachment files, include-heading-skip and include-anchor-duplicate are judged by nothing.)
+    assert "include-heading-skip" not in warning.message and "include-anchor-duplicate" not in warning.message
+
+
+def test_an_attachment_file_left_out_for_the_budget_leaves_the_combined_document_whole(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 4)
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}} {{ref: nope}}.\n\n{{include: p.lgd}}\n"
+    files = {
+        "p.lgd": "## P\n\nText.\n",
+        "s.lgd": "## S\n\nA.\n\n{{include: big.lgd}}\n\n{{include: gone.lgd}}\n",  # within the budget, and not with big
+        "big.lgd": "## Big\n\n" + "Text.\n\n" * 5,
+    }
+    result = _run(text, files)
+    broken = next(d for d in result.diagnostics if d.rule == "ref-broken")
+    assert not broken.message.endswith(NOT_IN_IT)
+    message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "attachment file declared" in d.message)
+    assert "for 1 LegalDown attachment file not spliced into the combined document (1 past the size" in message
+    assert core._check(parse(text, filename="main.lgd"), False, _Loader(files), core._DOCUMENT).combined
+
+
+def test_the_warning_names_the_heading_and_identifier_rules_only_for_includes_of_the_body_not_read():
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}}.\n\n{{include: p.lgd}}\n"
+    files = {"p.lgd": "## P\n\nText.\n", "s.lgd": "## S\n\n{{include: gone.lgd}}\n"}
+    message = _warning(_run(text, files)).message
+    assert "include-has-h1 and include-cycle for the fragments not read" in message and "include-heading-skip" not in message
+    message = _warning(_run(text, {"s.lgd": files["s.lgd"]})).message
+    assert "include-heading-skip" in message and "include-anchor-duplicate" in message
+
+
+@pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
+def test_a_file_that_is_attached_and_included_by_an_attachment_file_has_its_shape_judged_once(order):
+    entries = {"a": ("a", "a.lgd"), "b": ("b", "b.lgd")}
+    text = _attached(*(entries[name] for name in order)) + _SCOPE + "See {{attach: a}} {{attach: b}}.\n"
+    result = _run(text, {"a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "# B\n\nText.\n"})
+    assert _found(result, "include-has-h1", "attachment-has-h1") == [("attachment-has-h1", "b.lgd", 1)]
+
+
+@pytest.mark.parametrize("body", ["", "{{include: p.lgd}}\n"])
+def test_an_attachment_file_left_out_for_what_its_includes_bring_in_keeps_its_include_path_findings(body, monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_LINES", 20)
+    text = _attached(("a", "a.lgd")) + _SCOPE + "See {{attach: a}}.\n\n" + body
+    files = {"p.lgd": "## P\n\nText.\n", "a.lgd": "## A\n\n{{include: /abs.lgd}}\n\n{{include: b.lgd}}\n", "b.lgd": "Text.\n\n" * 30}
+    result = _run(text, files)
+    assert _found(result, "path-not-relative") == [("path-not-relative", "a.lgd", 3)]
+    message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "attachment file declared" in d.message)
+    assert "(1 past the size the combined document may have" in message
+    # (Nothing of the includes was left undone: the attachment file left out is the attachments Warning's to say.)
+    assert not [d for d in result.diagnostics if d.rule == SKIPPED_RULE and "include in LegalDown" in d.message]
+
+
+def test_a_partial_combined_document_does_not_say_what_nothing_could_settle_may_be_settled():
+    # #141: a reference with no target, or a target that is no identifier, names nothing anywhere (§5.2, §6.2,
+    # §7.2): what was not followed cannot settle it, and the finding does not say it might.
+    text = _attached(("Bad Id", "x.pdf"), ("good", "y.pdf")) + _SCOPE + (
+        "See {{ref:}} {{ref: Not An Id}} {{ref: nope}}, {{term:}} {{term: Not Id}} {{term: none}}.\n\n"
+        "{{include: part.lgd}}\n\n{{include: ../more.lgd}}\n"
+    )
+    result = _run(text, {"part.lgd": "## Part\n\nText.\n"})
+    marked = {
+        (d.rule, d.message.removesuffix(NOT_IN_IT).split("'")[1] if "'" in d.message else ""): d.message.endswith(NOT_IN_IT)
+        for d in result.diagnostics if d.rule in SETTLED_ELSEWHERE
+    }
+    assert marked == {
+        ("ref-broken", "{{ref:}}"): False, ("ref-broken", "Not An Id"): False, ("ref-broken", "nope"): True,
+        ("term-undefined", "{{term:}}"): False, ("term-undefined", "Not Id"): False, ("term-undefined", "none"): True,
+        ("attachment-unreferenced", "Bad Id"): False, ("attachment-unreferenced", "good"): True,
+    }
+    # ... and so for an amendment's terms, defined by an id as any other (§7.2).
+    amends = _FRONT.replace("---\n\n", "amends:\n  title: Original\n  file: orig.lgd\n---\n\n") + _SCOPE + (
+        "The {{term: Not Id}} and {{term: none}}.\n\n{{include: part.lgd}}\n\n{{include: ../more.lgd}}\n"
+    )
+    files = {"part.lgd": "## Part\n\nText.\n", "orig.lgd": _FRONT + '# O\n\n"Fee" {{def: fee}} due.\n'}
+    found = {
+        d.message.split("'")[1]: d.message.endswith(NOT_IN_IT)
+        for d in _run(amends, files).diagnostics if d.rule == "amend-term-undefined"
+    }
+    assert found == {"Not Id": False, "none": True}
+
+
+def test_a_path_rule_on_an_include_of_a_fragment_reads_the_same_whether_or_not_a_document_is_combined(monkeypatch):
+    text = _FRONT + _SCOPE + "{{include: sub/a.lgd}}\n\n{{include: big.lgd}}\n"
+    files = {"sub/a.lgd": "## A\n\n{{include: /abs/b.lgd}}\n", "big.lgd": "## Big\n\n" + "Text.\n\n" * 10}
+
+    def said():
+        return [(d.file, d.line, d.message) for d in _run(text, files).diagnostics if d.rule == "path-not-relative"]
+
+    combined = said()
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 5)  # past it, no combined document
+    assert said() == combined and len(combined) == 1
+    assert "('/abs/b.lgd' ({{include:}}) is not relative" in "(" + combined[0][2].split("reference ", 1)[1]
+
+
+def test_the_includes_of_an_attachment_file_the_body_includes_too_are_counted_as_an_attachment_files():
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}}.\n\n{{include: s.lgd}}\n"
+    result = _run(text, {"s.lgd": "## S\n\n{{include: gone.lgd}}\n"})
+    message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "paragraph" in d.message)
+    assert "1 include in LegalDown attachment files" in message
+    assert "in the fragments they take in" not in message  # (counted once, as the attachment file's)
+    # Whatever the order of the entries, when one attachment file includes another.
+    files = {"a.lgd": "## A\n\n{{include: b.lgd}}\n", "b.lgd": "## B\n\n{{include: gone.lgd}}\n"}
+    for order in (("a", "b"), ("b", "a")):
+        text = _attached(*((name, f"{name}.lgd") for name in order)) + _SCOPE + "See {{attach: a}} {{attach: b}}.\n"
+        message = next(d.message for d in _run(text, files).diagnostics if d.rule == SKIPPED_RULE and "include" in d.message)
+        assert message.startswith("2 includes in LegalDown attachment files; 1 include not read"), order
+
+
+def test_a_template_whose_only_attachment_file_holds_includes_is_validated_once(monkeypatch):
+    calls = []
+    real = core._pass
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs.get("host_only", False))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(core, "_pass", spy)
+    text = _attached(("s", "s.lgd"), front=_TEMPLATE_FRONT) + _SCOPE + "Maybe. {when=x}\n\nSee {{attach: s}}.\n"
+    _run(text, {"s.lgd": "## S\n\n{{include: deep.lgd}}\n", "deep.lgd": "## Deep\n"})
+    assert calls == [False]
+
+
+_LEFT_OUT = {
+    "p.lgd": "## P\n\nText.\n",
+    "a.lgd": "## A\n\n{{include: big.lgd}}\n\n{{include: gone.lgd}}\n",  # within the budget alone, and not with big
+    "big.lgd": "## Big\n\n" + "Text.\n\n" * 6,
+}
+
+
+def test_an_attachment_file_left_out_after_its_includes_are_followed_leaves_no_unread_include_behind(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 5)
+    text = _attached(("a", "a.lgd")) + _SCOPE + "See {{attach: a}}.\n\n{{include: p.lgd}}\n"
+    result = _run(text, _LEFT_OUT)
+    warnings = [d.message for d in result.diagnostics if d.rule == SKIPPED_RULE]
+    # The attachments Warning says it was left out; nothing of its includes is said as if it were in.
+    assert any("(1 past the size the combined document may have" in message for message in warnings)
+    assert not any("not read" in message or "include in LegalDown" in message for message in warnings)
+    assert core._check(parse(text, filename="main.lgd"), False, _Loader(_LEFT_OUT), core._DOCUMENT).combined
+
+
+def test_an_attachment_file_left_out_after_its_includes_are_followed_leaves_no_cap_behind(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 5)
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_INCLUDE_EXPANDED", 3)  # the body spends 1, a.lgd the rest
+    text = _attached(("a", "a.lgd")) + _SCOPE + "See {{attach: a}}.\n\n{{include: p.lgd}}\n"
+    warnings = [d.message for d in _run(text, _LEFT_OUT).diagnostics if d.rule == SKIPPED_RULE]
+    assert not any("includes and headings" in message for message in warnings), warnings
+    # ... which a.lgd taken in does reach.
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 50_000)
+    warnings = [d.message for d in _run(text, _LEFT_OUT).diagnostics if d.rule == SKIPPED_RULE]
+    assert any("past 3 includes and headings" in message for message in warnings), warnings
+
+
+def test_what_an_attachment_file_left_out_reads_is_found_at_its_entry(monkeypatch):
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 5)
+    text = _attached(("a", "a.lgd"), ("c", "c.lgd")) + _SCOPE + "See {{attach: a}} {{attach: c}}.\n\n{{include: p.lgd}}\n"
+    files = {
+        **_LEFT_OUT, "a.lgd": "## A\n\n{{include: x.lgd}}\n\n{{include: big.lgd}}\n",
+        "x.lgd": "---\ntitle: X\n---\n\nText.\n", "c.lgd": "# C\n",
+    }
+    assert [(r, f) for r, f, _ in _found(_run(text, files), "include-has-frontmatter", "attachment-has-h1")] == [
+        ("include-has-frontmatter", "x.lgd"), ("attachment-has-h1", "c.lgd")
+    ]
+
+
+def test_a_reference_unsafe_in_a_partial_combined_document_says_what_may_settle_it():
+    text = _TEMPLATE_FRONT + _SCOPE + "See {{ref: a}}.\n\n{{include: a.lgd}}\n\n{{include: ../more.lgd}}\n"
+    result = _run(text, {"a.lgd": "## A {#a when=x}\n\nText.\n"})
+    (unsafe,) = [d for d in result.diagnostics if d.rule == "condition-reference-unsafe"]
+    assert unsafe.message.endswith(NOT_IN_IT)
+
+
+def test_an_attachment_files_includes_in_a_template_are_not_followed_and_it_is_left_out():
+    text = _attached(("s", "s.lgd"), front=_TEMPLATE_FRONT) + _SCOPE + "Maybe. {when=x}\n\nSee {{attach: s}}.\n"
+    files = {"s.lgd": "## S {#s}\n\nSee {{ref: deep}}.\n\n{{include: deep.lgd}}\n", "deep.lgd": "## Deep {#deep}\n"}
+    loader = _Loader(files)
+    result = validate(parse(text, filename="main.lgd"), resolve=loader)
+    assert [(r, f) for r, f, _ in _found(result, "template-fragment-invalid", "ref-broken")] == [("template-fragment-invalid", "s.lgd")]
+    assert loader.asked == ["s.lgd"]
+    assert "for 1 LegalDown attachment file not spliced into the combined document" in _warning(result).message
+
+
+def test_a_fragment_an_attachment_file_includes_is_part_of_the_attachment():
+    # Its identifiers clash with the body's as the attachment's own do (§16.10), its definitions are document-wide
+    # (§12.4), and its findings are in the order of the attachment, at the include.
+    text = _attached(("s", "s.lgd")) + _SCOPE + "See {{attach: s}}, {{ref: in-s}} and the {{term: fee}}.\n\n# Last {#last}\n"
+    files = {
+        "s.lgd": "## S {#s-sec}\n\nFirst {{ref: nope-1}}.\n\n{{include: deep.lgd}}\n\nLast {{ref: nope-3}}.\n",
+        "deep.lgd": '## In S {#in-s}\n\n"Fee" {{def: fee}} {{ref: nope-2}}.\n\n## Again {#last}\n',
+    }
+    result = _run(text, files)
+    assert _found(result, "ref-broken", "term-undefined", "attachment-anchor-duplicate", "anchor-duplicate",
+                  "definition-used-before-declaration") == [
+        ("ref-broken", "s.lgd", 3),
+        ("ref-broken", "deep.lgd", 3),
+        ("attachment-anchor-duplicate", "deep.lgd", 5),
+        ("ref-broken", "s.lgd", 7),
+    ]
 
 
 def test_attachment_files_have_a_budget_of_their_own_and_leave_the_walk_of_the_includes_alone(monkeypatch):
@@ -684,13 +969,18 @@ def test_a_use_in_one_attachment_of_a_term_another_attachment_defines_is_no_use_
     assert _found(same, "definition-used-before-declaration") == [("definition-used-before-declaration", "b.lgd", 3)]
 
 
-def test_the_warning_does_not_blame_the_size_when_the_includes_were_not_followed(monkeypatch):
+def test_the_warning_does_not_blame_the_size_when_the_includes_were_past_it(monkeypatch):
     monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 3)
-    text = _attached(("big", "big.lgd")) + _SCOPE + "See {{attach: big}}.\n\n{{include: gone.lgd}}\n"
+    text = _attached(("big", "big.lgd")) + _SCOPE + "See {{attach: big}}.\n\n{{include: big.lgd}}\n"
     result = _run(text, {"big.lgd": "## Big {#big}\n\n" + "Text.\n\n" * 6})
     message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "attachment file declared" in d.message)
     assert "for 1 LegalDown attachment file not spliced into the combined document (attachment processing" in message
     assert "past the size" not in message
+    # An include that is only not read leaves the combined document partial (#141): the size is then the attachment's.
+    gone = text.replace("{{include: big.lgd}}", "{{include: gone.lgd}}")
+    result = _run(gone, {"big.lgd": "## Big {#big}\n\n" + "Text.\n\n" * 6})
+    message = next(d.message for d in result.diagnostics if d.rule == SKIPPED_RULE and "attachment file declared" in d.message)
+    assert "(1 past the size the combined document may have" in message
 
 
 def test_the_warning_names_the_shape_checks_when_a_file_was_not_read_for_its_shape_not_when_its_definitions_were_not_imported():
@@ -777,6 +1067,8 @@ def passes(monkeypatch):
         return real(host, whole, places, combined)
 
     monkeypatch.setattr(core, "merge_diagnostics", spy)
+    # (The document's own pass in full, as it is when no combined document is expected: else it keeps HOST_ONLY alone.)
+    monkeypatch.setattr(core, "_may_combine", lambda document, files: False)
     return given
 
 
@@ -805,12 +1097,13 @@ def test_the_classification_names_only_rules_the_validator_makes():
 
 def _splice(text: str, files: dict[str, str]) -> str:
     """*text* with each include paragraph (a line of its own) replaced by its fragment, as assembly splices the
-    text (a blank line around it), the fragments' own includes too."""
+    text (a blank line around it), the fragments' own includes too. An include of a file not in *files* stays."""
     lines = []
     for line in text.split("\n"):
         stripped = line.strip()
-        if stripped.startswith("{{include:") and stripped.endswith("}}") and stripped.count("{{") == 1:
-            lines += ["", _splice(files[stripped[len("{{include:"):-2].strip()], files).rstrip("\n"), ""]
+        name = stripped[len("{{include:"):-2].strip()
+        if stripped.startswith("{{include:") and stripped.endswith("}}") and stripped.count("{{") == 1 and name in files:
+            lines += ["", _splice(files[name], files).rstrip("\n"), ""]
         else:
             lines.append(line)
     return "\n".join(lines)
@@ -824,7 +1117,7 @@ def _appended(text: str, files: dict[str, str]) -> str:
     head, closing, rest = spliced.partition("\n---\n")
     for attachment in parse(text).metadata.attachments:
         if attachment.file.endswith(".lgd"):
-            rest += "\n" + files[attachment.file].rstrip("\n") + "\n"
+            rest += "\n" + _splice(files[attachment.file], files).rstrip("\n") + "\n"
     return re.sub(r"(\n    file: \S+)\.lgd", r"\1.pdf", head) + closing + rest
 
 
@@ -1058,6 +1351,172 @@ def test_the_combined_pass_equals_validating_the_spliced_text_for_random_documen
     assert counted(merged.diagnostics, owned=False) == counted(oracle.diagnostics, owned=False)
 
 
+def _attachment_includes(seed: int) -> tuple[str, dict[str, str]]:
+    """``_random_case``, with an attachment file that includes a fragment that includes another (#141)."""
+    text, files = _random_case(seed)
+    rng = random.Random(seed + 1000)
+    if "att0.lgd" not in files:
+        text = _attached(("att0", "att0.lgd")) + text[len(_FRONT):]
+        files["att0.lgd"] = "## Att\n\nText.\n"
+    paragraphs = files["att0.lgd"].rstrip("\n").split("\n\n")
+    paragraphs.insert(rng.randint(0, len(paragraphs)), "{{include: d.lgd}}")
+    files["att0.lgd"] = "\n\n".join(paragraphs) + "\n"
+    files["d.lgd"] = "## In att {#d-sec}\n\n{{include: e.lgd}}\n\n" + files["b.lgd"]
+    files["e.lgd"] = files["c.lgd"]
+    return text, files
+
+
+@pytest.mark.parametrize("seed", range(30))
+def test_the_combined_pass_equals_validating_the_spliced_text_with_the_includes_of_attachment_files(seed, monkeypatch):
+    text, files = _attachment_includes(seed)
+    seen = []
+    real = core._check
+
+    def spy(*args, **kwargs):
+        result = real(*args, **kwargs)
+        if kwargs.get("combined") is not None:
+            seen.append((result, kwargs["combined"]))
+        return result
+
+    monkeypatch.setattr(core, "_check", spy)
+    merged = _run(text, files)
+    ((combined, built),) = seen
+    assert not built.partial and any(place.parent is not None and place.parent.attachment is not None for place in built.instances)
+    oracle = validate(parse(_appended(text, files)))
+    not_compared = _in_attachment_definition(text, {**files, "att0.lgd": _splice(files["att0.lgd"], files)})
+
+    def counted(diagnostics, *, owned: bool = True):
+        return Counter(
+            (
+                "anchor-duplicate" if d.rule == "attachment-anchor-duplicate" else d.rule, d.level,
+                re.sub(r" at line \d+( of \S+)?", "", d.message),
+            )
+            for d in diagnostics
+            if d.rule not in HOST_ONLY and not not_compared(d)
+            and (owned or d.rule not in ("anchor-duplicate", "attachment-anchor-duplicate"))
+        )
+
+    assert counted(combined.diagnostics) == counted(oracle.diagnostics)
+    assert [e.identifier for e in combined.index.sections] == [e.identifier for e in oracle.index.sections]
+    assert counted(merged.diagnostics, owned=False) == counted(oracle.diagnostics, owned=False)
+
+
+def _host_only_cases() -> list[tuple[str, dict[str, str], dict[str, Any]]]:
+    """Every case of this file's differentials, with and without the final check, and some that combine nothing."""
+    cases: list[tuple[str, dict[str, str]]] = [*_CASES, *_ORACLE_CASES]
+    for seed in range(25):
+        cases.append(_random_case(seed))
+        cases.append(_attachment_includes(seed))
+        text, files = _random_case(seed)
+        cases.append((text, {name: body for name, body in files.items() if name != "b.lgd"}))
+    cases += [
+        (_FRONT + _SCOPE + "{{include: gone.lgd}}\n\nSee {{ref: nope}}.\n", {}),  # nothing read: no combined document
+        (_FRONT + _SCOPE + "{{include: main.lgd}}\n", {"main.lgd": "Text.\n"}),
+        (_FRONT + _SCOPE + "{{include: a.lgd}}\n", {"a.lgd": "# H1\n\nText {{ref: nope}}.\n"}),  # read, and no fragment
+        (_TEMPLATE_FRONT + _SCOPE + "{{include: a.lgd}} {when=x}\n\n{{placeholder: p}}\n", {"a.lgd": "## A {#a}\n\nT {{ref: a}}.\n"}),
+        ("---\ntitle: [unclosed\n---\n\n" + _SCOPE + "{{include: a.lgd}}\n", {"a.lgd": "## A\n\n{{ref: nope}}\n"}),
+        # A heading skip after a finding the host-only pass holds, and more findings after it.
+        (_FRONT + "# 1. Scope\n\n### Deep\n\n# 2. Other\n\n{{include: a.lgd}}\n", {"a.lgd": "## A\n\nText.\n"}),
+    ]
+    return [(text, files, {"final": final}) for text, files in cases for final in (False, True)]
+
+
+@pytest.mark.parametrize("cap", [50_000, 4])  # (4: most documents are past the size, and none is combined)
+def test_the_documents_own_pass_that_makes_only_what_it_keeps_changes_nothing(cap, monkeypatch):
+    # The differential of #141: when a combined document is expected the document's own pass makes only the rules of
+    # HOST_ONLY (the rest is the combined pass's); the result is what the pass in full gives, finding for finding, in
+    # order, with the same index, and the loader is asked what it was asked. Past the size of the combined document,
+    # the host-only pass becomes the full one by itself, which must say the same.
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", cap)
+
+    def run(case, may_combine):
+        text, files, options = case
+        loader = _Loader(files)
+        with monkeypatch.context() as patched:
+            if not may_combine:
+                patched.setattr(core, "_may_combine", lambda document, files: False)
+            result = validate(parse(text, filename="main.lgd", on_frontmatter_error="keep"), resolve=loader, **options)
+        return result, sorted(loader.asked)
+
+    shortened = 0
+    for case in _host_only_cases():
+        (fast, fast_asked), (slow, slow_asked) = run(case, True), run(case, False)
+        assert fast.diagnostics == slow.diagnostics, case
+        assert fast.index == slow.index, case
+        assert fast_asked == slow_asked, case
+        document = parse(case[0], filename="main.lgd", on_frontmatter_error="keep")
+        shortened += core._may_combine(document, core.Files(_Loader(case[1]), document, None))
+    assert shortened > len(_host_only_cases()) // 2
+
+
+def test_the_documents_own_pass_is_shortened_only_when_a_combined_document_is_made(monkeypatch):
+    calls = []
+    real = core._pass
+
+    def spy(*args, **kwargs):
+        calls.append((kwargs.get("host_only", False), args[5] if len(args) > 5 else kwargs.get("combined")))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(core, "_pass", spy)
+    text = _FRONT + _SCOPE + "{{include: a.lgd}}\n"
+    _run(text, {"a.lgd": "## A\n\nText.\n"})
+    assert [(host_only, combined is not None) for host_only, combined in calls] == [(True, False), (False, True)]
+    # Past the size of the combined document none is made: the host-only pass becomes the full one, and the document
+    # is validated once, each file asked for once (#141).
+    calls.clear()
+    monkeypatch.setattr("legaldown.validator.fragments.MAX_SPLICED_BLOCKS", 0)
+    loader = _Loader({"a.lgd": "## A\n\nText.\n"})
+    result = validate(parse(text, filename="main.lgd"), resolve=loader)
+    assert [(host_only, combined is not None) for host_only, combined in calls] == [(True, False)]
+    assert loader.asked == ["a.lgd"]
+    assert "building the combined document of more than 0 blocks" in _warning(result).message
+    # Nothing to splice: nothing is attempted.
+    calls.clear()
+    _run(text, {})
+    assert [(host_only, combined is not None) for host_only, combined in calls] == [(False, False)]
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_a_partial_combined_document_equals_validating_the_text_with_what_was_read_spliced(seed, monkeypatch):
+    # The differential of #141: a fragment not read stays the include paragraph it is, in the combined document and in
+    # the text; what the fragments that were read say across the document is judged as in the text.
+    text, files = _random_case(seed)
+    gone = random.Random(seed).choice(["b.lgd", "c.lgd"])
+    files = {name: body for name, body in files.items() if name != gone}
+    seen = []
+    real = core._check
+
+    def spy(*args, **kwargs):
+        result = real(*args, **kwargs)
+        if kwargs.get("combined") is not None:
+            seen.append((result, kwargs["combined"]))
+        return result
+
+    monkeypatch.setattr(core, "_check", spy)
+    merged = _run(text, files)
+    ((combined, built),) = seen
+    assert built.partial
+    oracle = validate(parse(_appended(text, files)))
+    not_compared = _in_attachment_definition(text, files)
+
+    def counted(diagnostics, *, owned: bool = True):
+        return Counter(
+            (
+                "anchor-duplicate" if d.rule == "attachment-anchor-duplicate" else d.rule, d.level,
+                re.sub(r" at line \d+( of \S+)?", "", d.message.removesuffix(NOT_IN_IT)),
+            )
+            for d in diagnostics
+            if d.rule not in HOST_ONLY and not not_compared(d)
+            and (owned or d.rule not in ("anchor-duplicate", "attachment-anchor-duplicate"))
+        )
+
+    assert counted(combined.diagnostics) == counted(oracle.diagnostics)
+    assert counted(merged.diagnostics, owned=False) == counted(oracle.diagnostics, owned=False)
+    # A fragment that is not there brings nothing in: nothing says it may settle a finding.
+    assert not any(d.message.endswith(NOT_IN_IT) for d in merged.diagnostics)
+    assert not core._check(parse(text, filename="main.lgd"), False, _Loader(files), core._DOCUMENT).combined
+
+
 # ── Fragments that are malformed keep their own structure ─────────────────────────────────────────────────────
 
 def test_a_fence_a_fragment_leaves_open_does_not_swallow_the_document_that_follows():
@@ -1276,6 +1735,22 @@ def test_a_definition_only_pandoc_or_markdown_it_reads_is_judged_where_it_is_wri
     result = _run(text, {"part.lgd": "See ![a][r].\n"})
     assert _found(result, "path-not-relative") == [("path-not-relative", "main.lgd", _at(text, "[r]:"))]
     assert "relative to the document" in next(d.message for d in result.diagnostics if d.rule == "path-not-relative")
+
+
+@pytest.mark.parametrize("where", ["text", "quote", "item"])
+@pytest.mark.parametrize("host", ["parsed", "changed"])
+def test_a_definition_of_a_fragment_that_every_reading_reads_is_one_finding(where, host):
+    """The specification, pandoc and markdown-it all read ``[r]: /etc/x``, and the fragment is read again (a control
+    character elsewhere in it): one finding, at its line, whether the document's own lines are known or not (#139).
+    The model's line of a definition is unknown only in a file without a source map, which no reading reads again,
+    so its place and a reading's line never name one definition twice."""
+    definition = {"text": "[r]: /etc/x", "quote": "> [r]: /etc/x", "item": "- [r]: /etc/x"}[where]
+    text = _FRONT + _SCOPE + "See ![a][r].\n\n{{include: part.lgd}}\n"
+    document = parse(text, filename="main.lgd")
+    if host == "changed":
+        document.sections[0].blocks[0].text += " More."  # it no longer fits its source map
+    result = validate(document, resolve=_Loader({"part.lgd": f"See ![b][r].\n\n{definition}\n\n[s]: y\x01\n"}))
+    assert _found(result, "path-not-relative") == [("path-not-relative", "part.lgd", 3)]
 
 
 def test_a_definition_in_a_fragment_that_leaves_the_root_is_judged_as_a_strict_one_is():

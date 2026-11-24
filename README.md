@@ -555,7 +555,7 @@ line in it (`Diagnostic.file` is the path from the document's directory, `parts/
   drafting note, an `{{include:}}`, a heading without an explicit identifier), one finding for each
   offender, and for an `{{include:}}` in a LegalDown attachment file.
 
-**The combined document** (§12.2, §16.11): when every include paragraph was followed into a fragment,
+**The combined document** (§12.2, §16.11): when an include paragraph was followed into a fragment,
 `validate` also validates the document with the fragments spliced in at their includes, as the one document it is,
 and reports what that says: a `{{ref:}}` or a `{{term:}}` into a fragment (or from one into the document) is
 resolved by what both declare, so it is no `ref-broken` or `term-undefined`, and a definition the other file
@@ -572,21 +572,30 @@ reported for each place), in the order of the combined document; the findings of
 `template-fragment-invalid`, `heading-skip`, `attachment-has-frontmatter`, `attachment-has-h1`) are not made again, and the paths of a
 fragment are judged as `path-not-relative` (an absolute path or a URI scheme, "relative to the fragment") and, against a
 `document_root`, as `path-outside-root` from the fragment's own directory (`sub/part.lgd`'s `../x.png` stays within the
-root, its `../../x.png` leaves it). It is **all or nothing** for the includes: one include that
-was not followed (missing, unreadable, a path that leads out, not a fragment, a cycle, a cap, an include in a
-template's fragment) leaves the document judged as before, and the Warning of §17.5 says so. The LegalDown
+root, its `../../x.png` leaves it). An include that was not followed (missing, unreadable, a path that leads out,
+not a fragment, a cycle, a cap, an include in a template's fragment) stays the paragraph it is and the combined document
+is **partial** ([#141](https://github.com/ForLegalAI/legaldown-validator/issues/141)): the fragments that were followed are
+judged with the document all the same, a `ref-broken`, `term-undefined`, `def-unreferenced`, `attachment-unreferenced`,
+`condition-reference-unsafe` (or `amend-term-*`) finding adds that the fragments not followed may settle it, `question-unused` is not made, and the
+Warning of §17.5 names the combined-document checks for what was not followed. Under `final`, a `{{choose:}}`, a
+`when=` or a drafting note that a fragment brings into a document that is no template is `template-construct-present` at
+its line in the fragment (§15.9). The LegalDown
 attachment files (§12.4) follow the body in the combined document, in the order they are declared, each as a
 fragment is spliced, with its entry's `when` for its presence: a `{{ref:}}` into an attachment's section resolves, a
 term only an attachment uses keeps its definition referenced, and a section identifier an attachment declares
 again is `attachment-anchor-duplicate` (§16.10). Each is an appendix of its own, so one that was not read, or that has
 frontmatter or a level-1 heading (`attachment-has-frontmatter`, `attachment-has-h1`, reported in the file), is not
-spliced and leaves the body and the others as they are; the Warning says how many were not. A document with no include
+spliced and leaves the body and the others as they are; the Warning says how many were not. The include paragraphs of
+an attachment file are followed as a fragment's are, outside a template (in one they are `template-fragment-invalid`,
+and the file is not spliced), and what they take in is part of the attachment. A document with no include
 but a readable attachment file is validated combined too. As for a fragment, what an attachment file holds is
 now reported at its line there, which may change an exit status. The combined document is not made either when the fragments spliced in come to more than 50,000
 blocks or 200,000 lines (counted for each time a fragment is included); the Warning says so. Whether the
 document is a template is decided by the document alone (§15.1), as assembly decides it: a fragment's condition or
 `{{choose:}}` does not make it one, and is judged as the document's status dictates (in a document that is no template,
-not at all, as before). Markers are read over the combined document, as a splice of the text
+not at all, but by the final check). When a combined document is made, the pass over the document alone makes only
+the rules the combined pass does not (the `include-*` rules, `heading-skip`, ...), so the second pass costs less than a
+whole validation; the findings are the same. Markers are read over the combined document, as a splice of the text
 would read them: a fragment's first paragraph, spliced into a section, may carry an anchor. A fragment is spliced as
 it was parsed, so a fence it leaves open does not swallow what follows it
 ([CONFORMANCE.md](CONFORMANCE.md#include-fragments-122-1611-1612)). `ValidationResult.index` is the document's own.
@@ -627,6 +636,14 @@ validate(document, document_root="/srv/contracts")
   names. Without a root `../shared/x.lgd` is valid and **not read**: no loader is asked for it, an
   `{{include:}}` of it is not an `include-file-missing`, and `ldv-check-skipped` says it was not read.
   `file_loader(directory, root=)` is the loader on disk that keeps to the root.
+- Under a root one file can be named two ways: from `root/doc/t.lgd`, `a.lgd` and `../doc/a.lgd` are the
+  same file. The second path to a file already named by an include or a LegalDown attachment file is
+  `ldv-file-spelling-duplicate` (Error), at its line, and assembly refuses the template for it: name the file
+  by one path ([#123](https://github.com/ForLegalAI/legaldown-validator/issues/123)). Which paths are one file is
+  the loader's to say: `file_loader` follows symbolic links (a link to a file is that file, and a linked
+  directory can make `a.lgd` and `../doc/a.lgd` two files; a hard link is another file); a `resolve=` that
+  cannot say is taken to read a path from the document's directory as it is normalized. The conditions on the
+  two are not looked at: a file has one path.
 
 A reference-style image (`![alt][r]`, `![alt][]` or `![alt]`, with `[r]: path`) is judged by the destination
 of the definition it names, once, at the line where the definition is written. [CONFORMANCE.md](CONFORMANCE.md)
@@ -815,7 +832,7 @@ slugify_identifier("日本語", fallback="")        # "": nothing usable, as aga
 | `VALID_PLACEHOLDER_TYPES`, `DURATION_UNITS`, `VALID_DURATION_UNITS` | Placeholder types and duration units (§10); `DURATION_UNITS` is in the order the specification lists them |
 | `LIST_KINDS`, `PARAGRAPH_KINDS`, `MAX_SECTION_LEVEL`, `MAX_QUOTE_DEPTH`, `MAX_LIST_DEPTH` | Block kinds that are lists; block kinds whose text is a paragraph's (`paragraph`, `definition`, `ref`, `term`: as a section's own block, a marker at the end of one conditions the block as a whole, §5.7); the deepest heading level (5); how deep the parser reads quotes and lists |
 | `VALUE_QUESTION_TYPES`, `DECISION_QUESTION_TYPES`, `QUESTION_TYPES`, `DRAFTING_MARKER`, `FINAL_CHECK_RULES` | Template question types (§15.2); the drafting note's first line (§15.6); the rule ids of the final check (§15.9) |
-| `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`, `INCLUDE_LIMIT_RULE`, `FRONTMATTER_KEY_DUPLICATE_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5), the Error of assembly for a document whose includes nest or run past the limits (`"ldv-include-limit"`, #118), and the one for a frontmatter key that another replaces (`"ldv-frontmatter-key-duplicate"`, #126, #131, #133) |
+| `IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`, `INCLUDE_LIMIT_RULE`, `FRONTMATTER_KEY_DUPLICATE_RULE`, `FILE_SPELLING_DUPLICATE_RULE`, `FENCE_UNCLOSED_RULE`, `HEADING_DIRECTIVE_RULE`, `FRONTMATTER_PLACEHOLDER_UNQUOTED_RULE`, `ALIAS_REMOVED_RULE`, `FRONTMATTER_PLACEHOLDER_UNREAD_RULE`, `BARE_MARKERS_RULE` | The prefix (`"ldv-"`) of the rule ids this implementation defines for checks of its own (§16.1), the one it reports for a check category it did not perform (`"ldv-check-skipped"`, a Warning, §17.5), the Error of assembly for a document whose includes nest or run past the limits (`"ldv-include-limit"`, #118), the one for a frontmatter key that another replaces (`"ldv-frontmatter-key-duplicate"`, #126, #131, #133), the Error for a second path to a file already named (`"ldv-file-spelling-duplicate"`, #123), and the five for what takes content out of validation without a word (#12): a fenced code block that runs to the end of its file (`"ldv-fence-unclosed"`, a Warning), a directive in heading text (`"ldv-heading-directive"`, an Error, §4.2), a frontmatter placeholder not in a quoted string (`"ldv-frontmatter-placeholder-unquoted"`, an Error, §3.10), an alias to an anchor that assembly removes (`"ldv-frontmatter-alias-removed"`, an Error of a template), and a frontmatter placeholder in no field the model reads (`"ldv-frontmatter-placeholder-unread"`, a Warning; an Error for a value field the model reads from no written scalar at its key); and the Warning for a template line that an empty choice leaves as bare container markers that read otherwise (`"ldv-bare-markers"`, `BARE_MARKERS_RULE`, #120) |
 | `slugify_identifier(value, *, fallback="section")`, `format_section_number` | The §5.3 identifier of a heading or term text, and `fallback` where the text yields none (`""` tells that case apart); a dotted section number |
 | `is_valid_iso_date`, `is_valid_numeric`, `is_valid_money_amount`, `is_positive_numeric` | Value checks (§3.10, §10) |
 | `parse_condition` → `Condition`, `condition_problem`, `exclusive`, `Presence`, `ALWAYS` | Conditions (§15.3, §15.4): parse one, tell why one is invalid, tell whether two units can never appear together |
@@ -847,7 +864,7 @@ for _section, _index, block in document.iter_blocks():
 | `find_definition_anchors(text)` → `DefinitionAnchor` | Every `{{def:}}` in a text, with the quoted term it anchors and where that term starts (§7.2) |
 | `render_block(block)`, `render_item(item)` | The other way: a block written as LegalDown source, and a list item's content as written after its marker, as `serialize` writes them |
 | `Quote`, `block_quotes`, `is_drafting_note(block)` | The block quotes in a block and whether each is a drafting note; whether a quote block is one (§15.6) |
-| `quote_blocks(block, *, depth=0)`, `drafting_note_blocks(block, *, depth=0)` | The blocks a block quote holds, as the validator reads them, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6). `depth` is how many list items and quotes the quote is in, the count before entering it (a quote in a list item is at 1); past `MAX_QUOTE_DEPTH` the validator reads a quote as one text, so you get one paragraph of its text as written |
+| `quote_blocks(block, *, depth=0, quotes=None)`, `drafting_note_blocks(block, *, depth=0, quotes=None)` | The blocks a block quote holds, as the validator reads them when `quotes` is given, as copies you may change; a drafting note's without its `[!DRAFTING]` marker (§15.6). `depth` is how many list items and quotes the quote is in, the count before entering it (a quote in a list item is at 1), and `quotes` how many of those are quotes (by default all of them, as the count was before #139). Past `MAX_QUOTE_DEPTH` quotes the validator reads a quote as one text, so you get one paragraph of its text as written; list items do not count toward it (#139), so pass `quotes` to read a quote as the validator does |
 | `code_content(block)` → `CodeContent(info, text, fenced)` | A code block read as CommonMark reads it: the info string, and the code without its fences or indentation |
 | `FRONTMATTER_RE`, `LINE_ENDING_RE`, `HTML_COMMENT_RE`, `comment_spans`, `strip_comments`, `FENCE_OPEN_RE`, `closes_fence`, `fence_end`, `dedent`, `indent_width`, `strip_text`, `normalize_label` | The Markdown rules the reading is built on: frontmatter, line endings, comments, fenced code, indentation. To find or remove comments in text you do not trust, use `comment_spans(text)` and `strip_comments(text)`: they read comments as `HTML_COMMENT_RE` does, in linear time, where the regex is quadratic on many unclosed `<!--` |
 
@@ -934,7 +951,7 @@ The full rule set with severities and examples lives in the specification (§16)
 
 | Area | Checks include |
 |---|---|
-| **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title, raw HTML other than comments |
+| **Structure** | Heading depth and skipped levels, hardcoded section numbers, missing title, raw HTML other than comments; a directive in heading text (`ldv-heading-directive`, an Error, a Warning in a list item or quote, §4.2: it is not read as a directive, §11.4, and the message names the `---` line under a paragraph that made it a setext heading), and a fenced code block that is never closed and so runs to the end of its file, taking every later heading and directive into code (`ldv-fence-unclosed`, a Warning, at its opening line, saying how much it holds; one its list item or quote closes is not reported) — both this implementation's own ids (§16.1, #12); a directive there, or anywhere else §11.4 recognizes none, uses no question and is no blank, as assembly leaves it as written |
 | **Directive syntax** | Malformed directives, repeated parameters, parameters a directive does not define, unquoted values that begin with a curly quote, stray `{{` |
 | **Cross-references** | `{{ref:}}` targets that do not exist or point at an attachment |
 | **Anchors** | Duplicate identifiers, malformed identifiers, auto-generated collisions and lost letters, markers outside an anchor position |
@@ -942,10 +959,10 @@ The full rule set with severities and examples lives in the specification (§16)
 | **Parties and sides** | Unknown `{{party:}}` / `{{side:}}`, malformed or duplicate names, invalid party types, minimum party and side counts, empty representatives |
 | **Values** | Invalid dates, money without currency or with an unknown one, invalid durations and units, undeclared or reserved custom field types |
 | **Placeholders** | Malformed ids, invalid types, one blank with two types, currencies, or units, placeholders in structural and format-checked frontmatter fields |
-| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, invalid or contradictory conditions, references whose target a condition can remove, identifiers shared by units that can appear together, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term, in a link reference definition's destination or title, or against Markdown punctuation, fragments included twice, what a fragment or attachment file of a template may not hold (a condition, a drafting note, an include, a heading without an identifier); with `--final`, anything left unfilled; on assembly, answers that are invalid, missing, or unknown |
+| **Templates** | Malformed question declarations and defaults, placeholders that contradict their declared question, invalid or contradictory conditions, references whose target a condition can remove, identifiers shared by units that can appear together, `{{choose:}}` that misses or invents an answer, definitions inside drafting notes and mistyped `[!DRAFTING]` markers, blanks in a defined term, in a link reference definition's destination or title, or against Markdown punctuation, fragments included twice, what a fragment or attachment file of a template may not hold (a condition, a drafting note, an include, a heading without an identifier), a line that an empty choice leaves as bare markers (`- `, `> `) which assembly then writes as something else, a heading's underline, a thematic break, or lines that leave their item or quote (`ldv-bare-markers`, a Warning of this implementation's own: the specification leaves these open, #120); with `--final`, anything left unfilled; on assembly, answers that are invalid, missing, or unknown |
 | **Includes** | An include of a file that is not LegalDown, a fragment that is missing, with frontmatter or a level-1 heading, or whose headings skip a level where it is spliced in; a chain of includes that comes back (`include-cycle`) and an identifier that the document and its fragments declare twice (`include-anchor-duplicate`); the document with its fragments spliced in is validated as the one document it is (the combined document, §16.11); with a template, a fragment that holds what §15.3 forbids |
 | **Attachments** | Undeclared `{{attach:}}`, duplicate or colliding ids, empty titles, unreferenced attachments; for a LegalDown attachment file that was read: frontmatter, a level-1 heading, and an identifier it shares with the document or another file (`attachment-has-frontmatter`, `attachment-has-h1`, `attachment-anchor-duplicate`) |
-| **File paths** | A path the document names (`{{include:}}`, an image, `attachments[].file`, `amends.file`, `supersedes.file`, `translations`) that is absolute or begins with a URI scheme (`path-not-relative`), or that leads out of the `document_root` (`path-outside-root`), an image's path as each supported renderer reads it ([File references](#file-references-and-the-document-root)) |
+| **File paths** | A path the document names (`{{include:}}`, an image, `attachments[].file`, `amends.file`, `supersedes.file`, `translations`) that is absolute or begins with a URI scheme (`path-not-relative`), or that leads out of the `document_root` (`path-outside-root`), an image's path as each supported renderer reads it ([File references](#file-references-and-the-document-root)); an include or a LegalDown attachment file that names a file already named by another path, `a.lgd` and then `../doc/a.lgd` from a document in `doc` (`ldv-file-spelling-duplicate`, this implementation's own id, §16.1; an Error, of assembly too, at the second path's line) |
 | **Amendments** | Terms the amended original does not define, definition overrides, empty amendment titles |
 | **Metadata** | No frontmatter at all, invalid document type, invalid dates, missing sides, issuer side requirements, empty `supersedes` title, a declared `legaldown` version newer than 0.2, a `language`, `authoritative` or `translations` key that is not an ISO 639-1 code, an `authoritative` language the document does not declare, a frontmatter key that another replaces, in any mapping: the same key written twice (a merge key `<<` too) or keys the model reads as one (`ldv-frontmatter-key-duplicate`, this implementation's own id, §16.1; an Error for the same key written twice, a Warning for different keys the model reads as one), and in a document that links translations the headings and definitions without an explicit identifier (an Error in a translation, a Warning when `authoritative` is absent) |
 | **Beyond Core** | `ldv-check-skipped` (Warning, this implementation's own id, §16.1): for each category of checks that a construct in the document calls for and the validation did not perform, as §17.5 requires, once and listing exactly what was not done ([below](#scope)) |
@@ -954,7 +971,14 @@ Each check reports at the severity the specification assigns it — Error, Warni
 exceptions are the rules of this implementation's own (§16.1, the prefix `ldv-`): the Warning
 `ldv-check-skipped` ([Scope](#scope)), the Error `ldv-include-limit` of assembly, and
 `ldv-frontmatter-key-duplicate`, an Error for the same key written twice and a Warning for different keys that
-the model reads as one (the specification does not forbid a padded key).
+the model reads as one (the specification does not forbid a padded key), the Error `ldv-file-spelling-duplicate` for a second path to one file, which assembly refuses too (it writes each file at the path that names it, and cannot write one file by two, #123), the Error `ldv-heading-directive` (§4.2 is a
+MUST NOT, and the directive is lost: a `{{placeholder:}}` in a heading is not even filled by assembly; a Warning in a list item or quote, where this implementation reads it), the
+Warning `ldv-fence-unclosed` (the construct is valid CommonMark) and the Error `ldv-frontmatter-placeholder-unquoted`
+(a frontmatter placeholder not written as a quoted string, which §3.10 requires, and assembly does not fill), the
+Error `ldv-frontmatter-alias-removed` (an alias to an anchor that assembly removes), and
+`ldv-frontmatter-placeholder-unread` (a Warning for a frontmatter placeholder in no field the model reads; an Error, which
+refuses a template, for a value field the model reads from no written scalar at its key), [#12](https://github.com/ForLegalAI/legaldown-validator/issues/12), and the Warning `ldv-bare-markers`
+([CONFORMANCE.md](CONFORMANCE.md#spec-questions-120)).
 
 ## Assembly
 
@@ -1133,9 +1157,9 @@ checks are named depends on the validation: a fragment that was read (a document
 `include-anchor-duplicate` checks made over what it includes; and when every fragment was followed
 the combined document is validated too (§16.11, [Include fragments](#include-fragments)), so the Warning
 is not drawn for a document whose includes were all read and nothing else is skipped. While one is not, the Warning
-names the combined-document checks (a reference or a term into a fragment), and so does the Warning for an
+names the combined-document checks (a reference or a term into a fragment) for what was not followed, and so does the Warning for an
 attachment file not spliced into it (not read, or not a fragment). The id has the prefix `ldv-` that §16.1 reserves for an implementation's own checks
-(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`, `INCLUDE_LIMIT_RULE`; validation has a second, `ldv-frontmatter-key-duplicate`, `FRONTMATTER_KEY_DUPLICATE_RULE`, which is no skipped check). It is a Warning: the exit status is
+(`legaldown.grammar.IMPLEMENTATION_RULE_PREFIX`, `SKIPPED_RULE`; assembly has one more, the Error `ldv-include-limit`, `INCLUDE_LIMIT_RULE`; validation has a second, `ldv-frontmatter-key-duplicate`, `FRONTMATTER_KEY_DUPLICATE_RULE`, a third, `ldv-file-spelling-duplicate`, `FILE_SPELLING_DUPLICATE_RULE` (#123), and five more, `ldv-fence-unclosed`, `ldv-heading-directive`, `ldv-frontmatter-placeholder-unquoted`, `ldv-frontmatter-placeholder-unread` and `ldv-frontmatter-alias-removed` (#12), none of them a skipped check). It is a Warning: the exit status is
 unchanged, and `--strict` and `--warnings-as-errors` count it, so a CI gate that does should
 `--ignore ldv-check-skipped` once it has read what it says.
 

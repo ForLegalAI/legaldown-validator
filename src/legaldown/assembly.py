@@ -74,13 +74,15 @@ from .parser import (
     _layout,
     _may_interrupt,
     _parse_body,
+    _read_quote_content,
     _row_width_end,
     parse,
     quote_content,
 )
+from .positions import Locator, frontmatter_aliases, frontmatter_scalars
 from .validator import validate
 from .validator.conditions import Condition
-from .validator.core import is_template
+from .validator.core import frontmatter_value_paths, is_template
 from .validator.fragments import (
     EMPTY_CHAIN,
     Files,
@@ -96,11 +98,15 @@ from .validator.fragments import (
     no_file_message,
     not_legaldown,
     noun,
+    respelled_message,
     too_deep,
 )
-from .validator.helpers import is_positive_numeric, is_valid_money_amount
+from .validator.hazards import SKIP_BARE_MARKERS
+from .validator.helpers import is_positive_numeric, is_valid_money_amount, legaldown_attachments
 from .validator.patterns import (
+    ALIAS_REMOVED_RULE,
     DURATION_UNITS,
+    FILE_SPELLING_DUPLICATE_RULE,
     IDENTIFIER_RE,
     INCLUDE_LIMIT_RULE,
     LEGALDOWN_EXTENSIONS,
@@ -409,7 +415,7 @@ def _matches(spans: list[_BlockSpan], blocks: list[Block]) -> bool:
 
 def _content(
     spans: list[_BlockSpan] | tuple[_BlockSpan, ...], blocks: list[Block] | tuple[Block, ...],
-    depth: int = 0, base: int = 0,
+    depth: int = 0, base: int = 0, held: int = 0,
 ) -> Iterator[tuple[_BlockSpan, Block, int, bool]]:
     """Every block of *blocks*, of their list items, and of the block quotes
     among them, in document order, as the validator reads them
@@ -417,19 +423,19 @@ def _content(
     block's lines are ``[base + span.start, base + span.end)``, and *leaf*
     tells whether its text is lexed as it stands, holding no blocks, nor
     code or raw HTML (§11.4). A quote's content is read as blocks
-    (``parser.quote_content``), but for one in ``MAX_QUOTE_DEPTH`` items
-    and quotes, whose text is one. *depth*: the items and quotes *blocks*
-    are in."""
+    (``parser.quote_content``), but for one in ``MAX_QUOTE_DEPTH`` quotes,
+    whose text is one. *depth*: the items and quotes *blocks* are in;
+    *held*: the quotes."""
     for span, block in zip(spans, blocks, strict=True):
-        read = block.kind == "quote" and depth < MAX_QUOTE_DEPTH
+        read = block.kind == "quote" and held < MAX_QUOTE_DEPTH
         leaf = not read and block.kind not in (*LIST_KINDS, "code", "rule", "html", "link_definition")
         yield span, block, base, leaf
         for item_span, item in zip(span.items, block.items, strict=True):
-            yield from _content(item_span.blocks, item.blocks, depth + 1, base)
+            yield from _content(item_span.blocks, item.blocks, depth + 1, base, held)
         if read:
             children, inner = quote_content(block.text, depth + 1)
             # The quote's text holds one line per source line.
-            yield from _content(inner, children, depth + 1, base + span.start)
+            yield from _content(inner, children, depth + 1, base + span.start, held + 1)
 
 
 def _pairs(layout: _Layout, document: Document) -> Iterator[tuple[int | None, int, _BlockSpan, Block]]:
@@ -757,64 +763,6 @@ def _top_entry(lines: list[str], key: str) -> tuple[int, int] | None:
 
 _WHEN_RE = re.compile(r"[ \t]+when[ \t]*:")
 _DASH_RE = re.compile(r"[ \t]*-(?:[ \t]+|$)")
-# What may stand before a quote that opens a quoted YAML scalar: the line
-# start, a sequence dash, a key's colon, or a flow collection's bracket or
-# comma. A quote anywhere else is a character of a plain scalar.
-_SCALAR_OPENERS = frozenset("-:,[{?")
-
-
-def _scan_scalar(line: str, start: int, quote: str) -> int:
-    """The offset of *quote*'s matching close, scanning *line* from *start*
-    (just past the opening quote, or 0 for one carried from a previous line):
-    ``""`` doubles for a literal ``'``, a backslash escapes for ``"``.
-    ``len(line)`` when it does not close on this line."""
-    end = start
-    while end < len(line):
-        if quote == '"' and line[end] == "\\":
-            end += 2
-            continue
-        if line[end] == quote:
-            if quote == "'" and line[end + 1:end + 2] == "'":
-                end += 2
-                continue
-            return end
-        end += 1
-    return end
-
-
-def _quoted_scalars(line: str, carry: str = "") -> tuple[list[tuple[int, int, str]], str]:
-    """``(start, end, quote)`` of every quoted scalar on frontmatter *line*,
-    in block and flow style alike (``- {name: a, legal_name: "..."}``), so a
-    placeholder is filled wherever §3.10 lets it stand; a comment ends the
-    scan. *carry* is the quote a previous line's scalar left open, which
-    *line* then starts inside (``start`` ``-1``); the second of the pair
-    returned is *line*'s own such quote, when its last scalar runs on."""
-    spans: list[tuple[int, int, str]] = []
-    index = 0
-    if carry:
-        end = _scan_scalar(line, 0, carry)
-        spans.append((-1, end + 1, carry))
-        if end >= len(line):
-            return spans, carry
-        index = end + 1
-    while index < len(line):
-        char = line[index]
-        before = line[:index].rstrip(" \t")
-        if char == "#" and (index == 0 or line[index - 1] in " \t"):
-            break
-        if char in "\"'" and (index == 0 or line[index - 1] in " \t[{,") and (
-            not before or before[-1] in _SCALAR_OPENERS
-        ):
-            end = _scan_scalar(line, index + 1, char)
-            spans.append((index, end + 1, char))
-            if end >= len(line):
-                return spans, char
-            index = end + 1
-            continue
-        index += 1
-    return spans, ""
-
-
 def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -> None:
     lines = front.lines
     front.questions = _top_entry(lines, "questions")
@@ -822,11 +770,32 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
     if front.attachments is not None:
         front.items = _attachment_items(lines, front.attachments, document, questions)
     skip = set(range(*front.questions)) if front.questions else set()
-    carry = ""
+    # The quoted strings of the value fields, as YAML reads them (§3.10, ``positions.frontmatter_scalars``): after
+    # an anchor or a tag too (an alias's is its anchor's, where it is written), never a quote inside a block or
+    # plain scalar, and nowhere but a value field, the blanks the validator counts (#12). Offsets are in the
+    # lines joined by LF.
+    values = frontmatter_value_paths(document)
+    scalars = sorted({
+        (scalar.start, scalar.end, scalar.quote)
+        for path, scalar in frontmatter_scalars("\n".join(lines)).items()
+        if scalar.quote and path in values
+    })  # in order, and apart
+    first = 0  # the first scalar that does not end before the line
+    offset = 0
     for index, line in enumerate(lines):
-        entering = carry
-        scalars, carry = _quoted_scalars(line, carry)
-        if index in skip or (not entering and _is_comment(line)) or "{{" not in line:
+        at, offset = offset, offset + len(line) + 1
+        if index in skip or "{{" not in line:
+            continue
+        while first < len(scalars) and scalars[first][1] <= at:
+            first += 1
+        within = []
+        for start, end, q in islice(scalars, first, None):
+            if start >= at + len(line):
+                break
+            within.append((start - at, end - at, q))
+        # (A line YAML reads as a comment holds no quoted scalar; one that goes on a scalar, or that YAML breaks
+        # after its comment, does.)
+        if not within and _is_comment(line):
             continue
         for directive in lex(line).directives:
             if directive.name == "placeholder" and directive.malformed:
@@ -834,18 +803,19 @@ def _read_frontmatter(front: _Frontmatter, document: Document, questions: Any) -
                 # joins the lines, so the validator reads it whole. Any other
                 # is left as written: YAML drops one in a comment, and one
                 # the scalar's own escapes (\") confuse here is not filled.
-                if any(start < directive.start and end > len(line) for start, end, _q in scalars):
+                if any(start < directive.start and end > len(line) for start, end, _q in within):
                     front.malformed.append(directive)
             elif directive.name == "placeholder":
-                # Only a quoted scalar can hold one (§3.10); any other is
-                # left for the validator, never filled with unescaped text.
+                # Only a value field's quoted string can hold one (§3.10); any
+                # other is no blank, and left as written for the validator.
                 quote = next((
-                    q for start, end, q in scalars
+                    q for start, end, q in within
                     if start < directive.start and directive.end < end
                 ), "")
-                front.occurrences.append(_Occurrence(
-                    directive, index, directive.start, directive.end, quote,
-                ))
+                if quote:
+                    front.occurrences.append(_Occurrence(
+                        directive, index, directive.start, directive.end, quote,
+                    ))
 
 
 def _attachment_items(lines: list[str], entry: tuple[int, int], document: Document,
@@ -914,7 +884,7 @@ def _read(
     # The files the template names, as the validator reads them: *path* says which file the template is (an
     # include of it is a cycle), *root* which paths may be asked for (§2.3).
     files = Files(load_file or (lambda _path: None), replace(document, path=path) if path is not None else document, root)
-    subs, last, problems = _read_files(main, front, load_file, declared, template_like, files)
+    subs, last, problems = _read_files(main, front, load_file, declared, template_like, files, document)
     problems += _malformed(main, *subs.values(), front=front)
     for path in document.metadata.translations.values():
         # A translation group is assembled together (§15.7.2), which this
@@ -1026,10 +996,29 @@ class _Fragments:
         source.newline = newline
         self._read[path] = source, read  # (the file as ``Files`` knows it: by the spelling it was first met by)
         self.problems += _file_problems(read, kind, self._template, path)
+        if kind == "attachment":
+            self._attached.add(path)  # its checks as an attachment file are made (``attach``)
         return source
 
     def __contains__(self, path: str) -> bool:
         return path in self._read
+
+    def respelled(self, relative: str, written: str, file: str, line: int | None, report: bool = True) -> str:
+        """The path the file at *relative*, as *written* in *file* at *line*, goes by: *relative*, or the path that
+        named it first when that is another (``Files.respelled``, asked in the validator's order). Then the
+        template is refused, when *report*, with the validator's ``ldv-file-spelling-duplicate`` (#123): assembly
+        does not write one file by two paths. The walk goes on as the validator's does, with the one file by its
+        first path, so that both spend the caps alike. The template itself (which the validator does not ask
+        about: it is a cycle, or no file to read) is not asked about either, nor is anything without a loader,
+        which reads nothing (and the validator reads nothing to compare)."""
+        if self._load_file is None or self._files.is_own(relative):
+            return relative
+        named = self._files.respelled(relative)
+        if named is None:
+            return relative
+        if report:
+            self.problems.append(_respelled_diagnostic(written, named, file, line))
+        return named
 
     def meet(self, relative: str, include: _Include) -> None:
         """*include* takes in the file at *relative*, and is followed."""
@@ -1158,6 +1147,7 @@ class _Fragments:
         if (cap := too_deep(chain)) is not None:
             self._limit(cap, file, line)
             return
+        relative = self.respelled(relative, include.written, file, line, report=first)
         self.meet(relative, include)
         target = self.read(relative, "include", file, line, report=first, named=include.written)
         if target is not None and self.spliceable(relative):
@@ -1165,7 +1155,7 @@ class _Fragments:
 
 
 def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile | None,
-                declared: dict, template: bool, files: Files
+                declared: dict, template: bool, files: Files, document: Document,
                 ) -> tuple[dict[str, _Source], dict[str, _Include], list[Diagnostic]]:
     """Read every include fragment and LegalDown attachment file — the absent
     ones too: their placeholders are the template's (answer-unknown) and their
@@ -1194,24 +1184,43 @@ def _read_files(main: _Source, front: _Frontmatter | None, load_file: LoadFile |
                 "include-cycle", "error", cycle_message(files, include.source, EMPTY_CHAIN, relative), line=line,
             ))
             continue
+        relative = reading.respelled(relative, include.written, "", line)
         reading.meet(relative, include)
         source = reading.read(relative, "include", line=line, named=include.written)
         if source is not None and not template and reading.spliceable(relative):
             reading.expand(source, extend(files, EMPTY_CHAIN, relative))
+    # Another path to a file already named is refused (#123), judged of each LegalDown attachment entry as the
+    # validator judges it, after the includes, in the order of the entries.
+    where = Locator(document)
+    first_paths: dict[int, str] = {}
+    for index, _attachment, written in legaldown_attachments(document.metadata):
+        relative = files.relative(written)
+        if relative is not None:
+            first_paths[index] = reading.respelled(relative, written, "", where.key("attachments", index, "file"))
     attached: set[str] = set()
-    for item in items:
+    for index, item in enumerate(items):
         if not item.file or item.file in attached:
             continue
         attached.add(item.file)
         relative, _problem = files.locate("", item.file)
+        relative = first_paths.get(index, relative) if relative is not None else None
         if relative is None:
             reading.refuse(item.file, "attachment")
         elif relative in reading:
             reading.attach(relative)  # also an include fragment: read as one, and still an attachment file
         else:
-            reading.read(relative, "attachment")
+            reading.read(relative, "attachment", named=item.file)  # (by its entry's path, normalized, if refused)
     reading.finish()
     return reading.subs, reading.last, problems
+
+
+def _respelled_diagnostic(written: str, first: str, file: str, line: int | None) -> Diagnostic:
+    """The Error that refuses a template for *written*, in *file* at *line*, another path to the file *first* named
+    (the validator's ``ldv-file-spelling-duplicate``, #123)."""
+    return Diagnostic(
+        FILE_SPELLING_DUPLICATE_RULE, "error",
+        f"{respelled_message(written, first, nested=bool(file))} The template is not assembled.", line=line, file=file,
+    )
 
 
 def _file_problems(fragment: FragmentFile, kind: FragmentKind, template: bool, path: str) -> list[Diagnostic]:
@@ -1858,7 +1867,7 @@ def _item_column(line: str, count: int) -> int:
 class _Entry(NamedTuple):
     """One container that a line is in, as the layout has it (``_signatures``); *parent* is the one outside it."""
 
-    kind: str  #: ``i`` (a list item), ``q`` (a block quote), or ``cap`` (a quote in ``MAX_QUOTE_DEPTH``, and those it holds)
+    kind: str  #: ``i`` (a list item), ``q`` (a block quote), or ``cap`` (a quote not read into blocks, and those it holds: ``_signatures``)
     first: int  #: the line it starts on
     ordinal: int  #: of the items that start on that line, which this is (0 for the first)
     parent: _Entry | None
@@ -1871,16 +1880,44 @@ def _chain(entry: _Entry | None) -> Iterator[_Entry]:
         entry = entry.parent
 
 
+#: The block constructs that §15.7.3 has the line-start check keep a line from beginning, as ``_signatures`` names
+#: them: a backslash (or, for indented code, the removal of the indentation) where the line would begin one.
+_ESCAPABLE = frozenset({"item", "quote", "heading", "setext", "code", "rule", "html", "in-code"})
+#: What ``_signatures`` records on the lines of a multi-line block after its first, by the block's kind: a line in an
+#: indented code block (``in-code``), which removing the line's leading spaces keeps out of it as §15.7.3 prevents
+#: indented code, and a line in a fenced code block or an HTML block, which no escape of §15.7.3 keeps out (its
+#: backslash is for a line that would begin one), so the check leaves it and the validator says so (#120).
+_CONTINUED = {"code": "in-code", "fence": "in-fence", "html": "in-html"}
+#: And those ``_signatures`` records besides, by the parser's kind: a line that begins one in the output where the
+#: template's does not reads otherwise, but §15.7.3 gives no escape for it ("No other character is escaped"), so the
+#: check leaves it, and the validator says so (``ldv-bare-markers``, #120).
+_UNESCAPED = {"link_definition": "definition", "table": "table"}
+
+
+#: How deep the line-start check reads quotes into blocks for the layout (``_signatures``): twice as deep as the
+#: validator does (``MAX_QUOTE_DEPTH``), so that an item in a quote past its depth keeps its line, and past it no
+#: deeper in items and quotes together, which each read the text in them again.
+_LAYOUT_QUOTE_DEPTH = 2 * MAX_QUOTE_DEPTH
+
+
 def _signatures(
     lines: list[str], last: int | None = None
 ) -> tuple[defaultdict[int, Counter[str]], dict[int, _Entry], _Layout, tuple[tuple[int, ...], int] | None]:
     """What the parser reads *lines* as beginning, line by line, of the constructs
     §15.7.3 names: ``item``, ``quote``, ``heading`` (ATX), ``setext`` (for the underline
-    of a heading that began on an earlier line), ``code``, ``rule`` and ``html``; and the
+    of a heading that began on an earlier line), ``code``, ``rule`` and ``html``; and two it does
+    not, ``definition`` (a link reference definition) and ``table`` (at its header), which the
+    check does not escape (``_ESCAPABLE``) but which a reading compared must see (#120); on every
+    line of a code or HTML block after its first, ``in-code``, ``in-fence`` or ``in-html``
+    (``_CONTINUED``), blank lines in it included; and the
     innermost container each line lies in (``_Entry``), as the parser's layout has it, quotes
     and list items alike. Only line *last* if it is given (no containers then), and then also the
     paragraph it lies in, if that is in list items alone: the content columns of the items around
-    it, outer first, and the line it starts on."""
+    it, outer first, and the line it starts on.
+
+    A quote in ``MAX_QUOTE_DEPTH`` quotes, which the validator reads as one text, is read into blocks
+    here too, so that the items in it are in the layout (#139), to ``_LAYOUT_QUOTE_DEPTH`` quotes: past
+    that, a quote is a ``cap`` with no containers inside. Each level reads the text in it again."""
     layout = _Layout()
     blocks, sections = _parse_body(lines, layout)
     begun: defaultdict[int, Counter[str]] = defaultdict(Counter)
@@ -1899,11 +1936,22 @@ def _signatures(
 
     def mark(start: int, end: int, kind: str) -> None:
         """Record the construct of *kind* on lines ``[start, end)``: where it begins, or for
-        a heading of several lines (setext) its underline, the last."""
+        a heading of several lines (setext) its underline, the last. Code and HTML are recorded on
+        their first line as ``code`` and ``html``, and on every line after it as a line *in* one
+        (``_CONTINUED``): a line that joins one or leaves one reads otherwise (#120), where the first
+        line alone would not tell (``x``, blank, ``    code``, a deleted line, ``    more``)."""
         if kind == "heading" and end - start > 1:
             lines_kinds = [(end - 1, "setext")]
-        elif kind in ("heading", "quote", "code", "rule", "html"):
+        elif kind in _CONTINUED:
+            first = "html" if kind == "html" else "code"
+            if last is not None:
+                lines_kinds = [(last, first if last == start else _CONTINUED[kind])] if start <= last < end else []
+            else:
+                lines_kinds = [(start, first)] + [(line, _CONTINUED[kind]) for line in range(start + 1, end)]
+        elif kind in ("heading", "quote", "rule"):
             lines_kinds = [(start, kind)]
+        elif kind in _UNESCAPED:
+            lines_kinds = [(start, _UNESCAPED[kind])]
         else:
             lines_kinds = []
         for line, found in lines_kinds:
@@ -1912,15 +1960,16 @@ def _signatures(
 
     def walk(
         spans: list[_BlockSpan], model: list[Block], base: int, depth: int, opened: tuple[int, ...] | None,
-        around: tuple[int, ...] = (),
+        around: tuple[int, ...] = (), held: int = 0,
     ) -> None:
         """*opened*: the lines the items around these blocks start on, or None in a quote;
-        *around*: their content columns."""
+        *around*: their content columns; *depth*: the items and quotes they are in, *held*: the quotes."""
         for span, block in zip(spans, model, strict=True):
             start, end = base + span.start, base + span.end
             if last is not None and not start <= last < end:
                 continue
-            mark(start, end, span.kind)
+            fenced = span.kind == "code" and FENCE_OPEN_RE.match(block.text.split("\n", 1)[0]) is not None
+            mark(start, end, "fence" if fenced else span.kind)
             if last is not None and span.kind == "paragraph" and opened is not None:
                 leaf[:] = [(around, start)]
             for item_span, item in zip(span.items, block.items, strict=True):
@@ -1935,13 +1984,15 @@ def _signatures(
                     inner_around = (*around, _item_column(lines[first], inside.count(first)))
                 if last is None:
                     push("i", first, stop)
-                walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around)
+                walk(item_span.blocks, item.blocks, base, depth + 1, inside, inner_around, held)
             if block.kind == "quote":
+                # (What the validator reads, at least: a quote in fewer than MAX_QUOTE_DEPTH quotes, in any items.)
+                read = held < MAX_QUOTE_DEPTH or (held < _LAYOUT_QUOTE_DEPTH and depth < _LAYOUT_QUOTE_DEPTH)
                 if last is None:
-                    push("q" if depth < MAX_QUOTE_DEPTH else "cap", start, end)
-                if depth < MAX_QUOTE_DEPTH:
+                    push("q" if read else "cap", start, end)
+                if read:
                     children, inner = quote_content(block.text, depth + 1)
-                    walk(inner, children, start, depth + 1, None)
+                    walk(inner, children, start, depth + 1, None, (), held + 1)
 
     for heading in layout.headings:
         mark(heading.start, heading.end, "heading")
@@ -2187,12 +2238,17 @@ class _Window:
     being open (and on the line before it, for a table), and not on the other lines in it. A
     paragraph that may be a link definition is not one of plain text. After a blank line in items
     (``mode`` "blank"), when the paragraph before it was one of plain text, it is the blank line:
-    a line begins a construct there as it does after any blank line in those items."""
+    a line begins a construct there as it does after any blank line in those items.
+
+    In a block quote it is from the last block of the quote's content on, as in the body (``_quote_window``):
+    a long quote is read by its blocks, a list in it by its items (#139). *top* stays the quote's own line."""
 
     def __init__(self, lines: list[_Line]) -> None:
         self.lines = lines
         self.sync = 0  # where the last top-level block of lines[:known] starts (of a list, its last item)
         self.top = 0  # and where that block starts as a block (of a list, the list)
+        self.inside = False  # *sync* is inside the block quote at *top*, not where a top-level block starts
+        self.descend = 0  # the size of the window at which to look into the quote again (``_moved``)
         self.known = 0
         self.kind = ""  # the kind of that block
         self.mode = ""
@@ -2214,19 +2270,31 @@ class _Window:
         if self.known < k:
             texts = [line.text for line in self.lines[self.sync:k]]
             start, self.kind, top = _last_block(_layout(texts))
-            self.top = self.sync + top
-            self.sync += start
+            self._moved(start, top, k)
             self.known = k
         return [line.text for line in self.lines[self.sync:k]]
+
+    def _moved(self, start: int, top: int, end: int) -> None:
+        """The last top-level block of the lines from *sync* to *end* starts at *start* from *sync* (as a block,
+        at *top*): read from there on, and in a block quote from its last block on."""
+        if not (self.inside and top == 0) and (self.inside or self.top != self.sync + top):
+            self.top, self.inside, self.descend = self.sync + top, False, 0  # (else the quote *sync* is inside goes on)
+        self.sync += start
+        # Looked into again once the window has doubled since the last look, so that a window that cannot move (one
+        # long paragraph in the quote) is not read twice for each line: the looks cost as much as the window, in all.
+        if self.kind == "quote" and end - self.sync >= self.descend:
+            inner = _quote_window([line.text for line in self.lines[self.sync:end]])
+            self.sync += inner
+            self.inside = self.inside or inner > 0
+            self.descend = 2 * max(end - self.sync, 4)
 
     def read(self, k: int, before: list[str], tail: _Tail | None) -> None:
         """Line *k*, which was read after *before* as *tail*, is written."""
         if not self.mode and tail is not None:
             window = self.sync
-            self.top = window + tail.top
-            self.sync += tail.start
-            self.known = k + 1
             self.kind = tail.kind
+            self._moved(tail.start, tail.top, k + 1)
+            self.known = k + 1
             if tail.kind == "paragraph":
                 if not self.lines[self.sync].text.lstrip(" ").startswith("[") and self._plain(self.lines[k].text, ()):
                     self.mode, self.chain, self.first = "para", (), self.sync
@@ -2274,6 +2342,40 @@ class _Window:
         their content (by spaces), and what is left of it is plain text (``_plain_text``)."""
         column = chain[-1] if chain else 0
         return text[:column] == " " * column and _plain_text(text[column:])
+
+
+def _quote_window(texts: list[str]) -> int:
+    """Where, in *texts*, the last block of the content of their last top-level block, a block quote, starts
+    (of a list, its last item; and of a quote that is that block, its own last block, and so on): the lines from
+    there on are read as all of *texts* reads them. The blocks before it in the quote are closed, as blocks
+    before the last top-level block are in the body, and the line it starts on has the quote's markers (a lazy
+    line begins no block), which open the quote again. 0 when that is the quote's first line, or when link
+    definitions come right before the block (``_last_block`` reads from them, as a paragraph may hold them).
+    No deeper than ``MAX_QUOTE_DEPTH`` quotes, as each is read again."""
+    layout = _Layout()
+    blocks, sections = _parse_body(texts, layout)
+    pairs = [
+        (span, block)
+        for spans, model in zip(layout.containers(), [blocks, *(body for _heading, body in sections)], strict=True)
+        for span, block in zip(spans, model, strict=True)
+    ]
+    if not pairs or pairs[-1][1].kind != "quote":
+        return 0
+    span, block = pairs[-1]
+    offset = span.start
+    for depth in range(1, MAX_QUOTE_DEPTH + 1):
+        children, inner = _read_quote_content(block.text, depth)  # (not the cache: these texts are read once)
+        if not inner:
+            break
+        start, kind, _top = _last_block(_Layout(preamble=list(inner)))
+        last = inner[-1]
+        if start != (last.items[-1].start if last.items else last.start):
+            break  # link definitions before it
+        offset += start
+        if kind != "quote":
+            break
+        block = children[-1]
+    return offset
 
 
 def _plain_text(text: str) -> bool:
@@ -2418,13 +2520,32 @@ def _kept(
     longer begins a quote or an item that the template line begins has lost one of its markers, and
     is none of ours."""
     tail = _tail([*before, line])
-    if not perturbed and any(tail.begun[kind] < template[kind] for kind in ("quote", "item")):
-        return None
+    return tail if _keeps(line, tail.begun, template, plain, prefix, frame, perturbed) else None
+
+
+def _keeps(
+    line: str, begun: Counter[str], template: Counter[str], plain: str, prefix: int, frame: _Frame, perturbed: bool
+) -> bool:
+    """Whether *line*, which the parser reads as beginning *begun*, begins nothing that the check prevents and the
+    template line (*plain*, *template*) does not (``_kept``)."""
+    if not perturbed and any(begun[kind] < template[kind] for kind in ("quote", "item")):
+        return False
     # The content is read after the markers that the output has: where a template marker is
     # text in the output (a ``3.`` that no item holds), what follows it may begin a block.
-    content = line[_content_start(frame, line, tail.begun["item"], prefix):]
+    content = line[_content_start(frame, line, begun["item"], prefix):]
     was = plain[_content_start(frame, plain, template["item"], prefix):]
-    return None if tail.begun - template or _free(content, was) else tail
+    extra = begun - template
+    if template["code"] or template["in-code"]:
+        # A line the template has as code that the output has in a code block before it (two code blocks merged): it
+        # is code all the same, and removing its indentation would make text of it.
+        extra.pop("in-code", None)
+    return not (_escapable(extra) or _free(content, was))
+
+
+def _escapable(begun: Counter[str]) -> bool:
+    """Whether *begun*, what a line begins that its template line does not, holds a construct that §15.7.3 has
+    the line-start check prevent (``_ESCAPABLE``): a definition or a table it does not."""
+    return any(kind in _ESCAPABLE for kind in begun)
 
 
 def _content_start(frame: _Frame, text: str, items: int, limit: int) -> int:
@@ -2457,6 +2578,29 @@ def _free(content: str, template: str) -> bool:
     return bool(_BARE_ATX_RE.match(content)) and not _BARE_ATX_RE.match(template)
 
 
+def _escaped(body: str) -> str | None:
+    """*body*, a line's content, with a backslash before its first character, or before the ``.`` or ``)`` of an
+    ordered-list number; None where none goes (before a letter or digit, or a character escaped already)."""
+    lead = len(body) - len(body.lstrip(" \t"))
+    ordered = _ORDERED_RE.match(body, lead)
+    at = ordered.start("delim") if ordered else lead
+    if not body[at:at + 1] or body[at] not in _PUNCTUATION:
+        return None  # a backslash before a letter or digit is text
+    if body[at] == "\\" and body[at + 1:at + 2] in _PUNCTUATION:
+        return None  # that character is escaped already (by ``_escape``): another backslash would escape the backslash
+    return body[:at] + "\\" + body[at:]
+
+
+def _forms(body: str, column: int) -> list[str]:
+    """The forms ``_fix`` tries for a line's content *body*, in order: without its leading spaces and tabs (keeping
+    the *column* of the item it is in), with a backslash (``_escaped``), or both."""
+    stripped = body.lstrip(" \t")
+    if column and indent_width(body) >= column:
+        stripped = " " * column + stripped
+    forms = [stripped, _escaped(body), _escaped(stripped)] if stripped != body else [_escaped(body)]
+    return [form for form in forms if form is not None]
+
+
 def _fix(
     candidate: str, prefix: int, before: list[str], template: Counter[str], plain: str, column: int, frame: _Frame,
     perturbed: bool,
@@ -2467,28 +2611,36 @@ def _fix(
     the parser read it. If none does, the template's own markers begin the construct, and the last
     form stays."""
     head, body = candidate[:prefix], candidate[prefix:]
+    forms = _forms(body, column)
 
-    def escaped(body: str) -> str | None:
-        lead = len(body) - len(body.lstrip(" \t"))
-        ordered = _ORDERED_RE.match(body, lead)
-        at = ordered.start("delim") if ordered else lead
-        if not body[at:at + 1] or body[at] not in _PUNCTUATION:
-            return None  # a backslash before a letter or digit is text
-        if body[at] == "\\" and body[at + 1:at + 2] in _PUNCTUATION:
-            return None  # that character is escaped already (by ``_escape``): another backslash would escape the backslash
-        return body[:at] + "\\" + body[at:]
-
-    stripped = body.lstrip(" \t")
-    if column and indent_width(body) >= column:
-        stripped = " " * column + stripped
-    forms = [stripped, escaped(body), escaped(stripped)] if stripped != body else [escaped(body)]
-    forms = [form for form in forms if form is not None]
-    tail = None
-    for form in forms:
+    def read(form: str) -> tuple[bool, bool, _Tail | None]:
         tail = _kept(head + form, before, template, plain, prefix, frame, perturbed)
-        if tail is not None:
-            return head + form, tail
-    return head + (forms[-1] if forms else body), None
+        return tail is not None, tail is not None and _hides(tail.begun - template), tail
+
+    at, tail = _pick(forms, read)
+    return head + (forms[at] if forms else body), tail
+
+
+def _hides(begun: Counter[str]) -> bool:
+    """Whether *begun*, what a form of a line begins that its template line does not, is a link reference definition
+    or a part of a table: constructs that §15.7.3 does not escape, a definition of which is not displayed."""
+    return bool(begun["definition"] or begun["table"])
+
+
+def _pick(forms: list[str], read: Callable[[str], tuple[bool, bool, Any]]) -> tuple[int, Any]:
+    """Which of *forms* ``_fix`` writes, and what *read* gave for it: *read* says of a form whether the check keeps it
+    (``_keeps``) and whether it begins a definition or a table that the template line does not (``_hides``). The first
+    form kept that begins neither, else the first kept (#120: where removing the indentation of a line that would
+    join indented code makes a definition of it, the backslash form keeps it text, as the template has it), else the
+    last, with nothing read. (The validator writes lines by ``_line_starts`` itself: ``hazards._written_window``.)"""
+    found = [(at, *read(form)) for at, form in enumerate(forms)]
+    for at, kept, hides, payload in found:
+        if kept and not hides:
+            return at, payload
+    for at, kept, _hidden, payload in found:
+        if kept:
+            return at, payload
+    return len(forms) - 1, None
 
 
 # ── Frontmatter steps (2, 3, 5, 6) ───────────────────────────────
@@ -2520,6 +2672,32 @@ def _emit_frontmatter(front: _Frontmatter, decision: _Decision, answers: _Answer
         value = _frontmatter_value(occ, answers)
         if value is not None:
             lines[occ.line] = lines[occ.line][:occ.start] + value + lines[occ.line][occ.end:]
+    return front.text(lines, frozenset(_dropped(front, decision)))
+
+
+def _dangling_aliases(front: _Frontmatter, decision: _Decision) -> list[Diagnostic]:
+    """An alias that would name nothing once the lines assembly removes are gone (an anchor in the questions, an
+    attachment's ``when``, an attachment that is absent): the validator's ``ldv-frontmatter-alias-removed``, at
+    the alias, for the template is not assembled (#12)."""
+    drop = _dropped(front, decision)
+    text = "\n".join(front.lines)
+    starts = [0, *(i + 1 for i, char in enumerate(text) if char == "\n")]
+    found = []
+    for alias, anchor in frontmatter_aliases(text):
+        alias_line, anchor_line = bisect.bisect_right(starts, alias) - 1, bisect.bisect_right(starts, anchor) - 1
+        if anchor_line in drop and alias_line not in drop:
+            found.append(Diagnostic(
+                ALIAS_REMOVED_RULE, "error",
+                "This alias names an anchor that assembly removes, so the assembled frontmatter could not be "
+                "read; the template is not assembled.",
+                line=2 + alias_line,  # (the frontmatter's first line is the file's second)
+            ))
+    return found
+
+
+def _dropped(front: _Frontmatter, decision: _Decision) -> set[int]:
+    """The frontmatter's lines assembly removes (§15.7.2): the questions, and the attachments' that are absent
+    or are their ``when``."""
     drop: set[int] = set()
     for item, kept in zip(front.items, decision.attachments, strict=True):
         if not kept:
@@ -2530,7 +2708,7 @@ def _emit_frontmatter(front: _Frontmatter, decision: _Decision, answers: _Answer
         drop.update(range(*front.attachments))
     if front.questions is not None:
         drop.update(range(*front.questions))
-    return front.text(lines, frozenset(drop))
+    return drop
 
 
 # ── Step 7: identifiers ──────────────────────────────────────────
@@ -2588,7 +2766,11 @@ def _identifiers(head: str, rows: list[_Row]) -> dict[_Key, tuple[str, bool]]:
     explicit — generated by the validator, which knows alternatives (§5.5)."""
     lines = [text for text, _key in rows]
     document = parse(head + "\n".join(lines))
-    entries = validate(document).index.sections
+    token = SKIP_BARE_MARKERS.set(True)  # (the identifiers are wanted, not the advice to the template's author)
+    try:
+        entries = validate(document).index.sections
+    finally:
+        SKIP_BARE_MARKERS.reset(token)
     headings = _layout(lines).headings
     if len(headings) != len(entries):
         raise AssemblyError("The combined document's headings do not match its parsed sections.")
@@ -2726,6 +2908,8 @@ def _emit_result(
     emitted while *diagnostics* hold an Error (§15.7.2 step 1)."""
     if any(d.level == "error" for d in diagnostics):
         return AssemblyResult(diagnostics=diagnostics)
+    if t.front is not None and (dangling := _dangling_aliases(t.front, decision)):
+        return AssemblyResult(diagnostics=[*diagnostics, *dangling])
     head = _emit_frontmatter(t.front, decision, resolved) if t.front is not None else ""
     main = _emit(t.main, decision.removed[""], resolved)
     subs = {

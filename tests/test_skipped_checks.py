@@ -104,8 +104,11 @@ def test_an_include_read_beside_one_that_is_not_names_the_combined_document_stil
     assert warning.line == _at(text, "p.lgd")
     message = warning.message
     assert "1 include not read (1 could not be read (include-file-missing))" in message
-    # Not put together while a fragment is missing: a reference into the one that was read is judged as before.
-    assert "combined-document checks (§16.11)" in message
+    # Put together without it (#141): a file that is not there brings nothing in, so no combined-document check is left
+    # undone for it; one that leads out of the directory, not read, may bring something in, and the Warning says so.
+    assert "combined-document checks (§16.11)" not in message
+    (out,) = _warnings(text.replace("gone.lgd", "../gone.lgd"), resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
+    assert "combined-document checks (§16.11) for what the includes not followed would bring in" in out.message
     # Done, not listed: the fragment was read, so these were made.
     assert "include-cycle" in message and "not implemented" not in message
 
@@ -129,12 +132,19 @@ def test_the_includes_warning_of_the_end_state_is_none_when_everything_was_read(
     assert _warnings(text, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"})) == []
     # While the combined document is not put together, it is what the Warning names.
     unread = text + "\n{{include: gone.lgd}}\n"
-    (warning,) = _warnings(unread, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
+    (warning,) = _warnings(unread, resolve=_loader({}))
     assert "the combined-document checks (§16.11), such as a reference or a term into a fragment, or an auto-generated identifier the fragments and the document share" in warning.message
+    # When it is put together without a fragment that may bring something in, it names what that would (#141).
+    unread = text + "\n{{include: ../gone.lgd}}\n"
+    (warning,) = _warnings(unread, resolve=_loader({"p.lgd": "## Part {#part}\n\nText.\n"}))
+    assert (
+        "the combined-document checks (§16.11) for what the includes not followed would bring in, such as a reference "
+        "or a term into such a fragment, which are made without it"
+    ) in warning.message
     # ... and for fragments not read, the rules that read or join them, in this order.
     (unread,) = _warnings(text)
     assert (
-        "include-file-missing, include-has-frontmatter, include-has-h1, include-heading-skip, include-cycle, "
+        "include-file-missing, ldv-file-spelling-duplicate, include-has-frontmatter, include-has-h1, include-heading-skip, include-cycle, "
         "include-anchor-duplicate and the parts of template-fragment-invalid that read a fragment for the "
         "fragments not read; the combined-document checks"
     ) in unread.message
@@ -148,7 +158,7 @@ def test_each_reason_an_include_is_not_read_is_counted_apart():
     assert "1 leads out of the document's directory, which is not read" in warning.message
     # Asked for, and a file that is not there is an Error of its own: that check was made.
     assert [d.rule for d in result.diagnostics if d.rule == "include-file-missing"] == ["include-file-missing"] * 2
-    assert "include-file-missing, include-has-frontmatter" in warning.message  # for the one that leads out
+    assert "include-file-missing, ldv-file-spelling-duplicate, include-has-frontmatter" in warning.message  # for the one that leads out
 
 
 def test_an_include_of_the_document_itself_is_include_cycle_and_not_unread(tmp_path):
@@ -504,7 +514,8 @@ def test_the_command_reads_the_fragments_beside_the_document_and_says_what_is_no
     path.write_text(_FRONT + _BODY + "{{include: p.lgd}}\n\n{{include: gone.lgd}}\n", encoding="utf-8")
     assert main(["validate", str(path)]) == EXIT_DIAGNOSTICS
     out = capsys.readouterr().out
-    assert "[ldv-check-skipped]" in out and "combined-document checks (§16.11)" in out and "1 include not read" in out
+    assert "[ldv-check-skipped]" in out and "1 include not read" in out
+    assert "combined-document checks (§16.11)" not in out  # (a missing file brings nothing in, #141)
 
 
 def test_assembly_is_unchanged_by_it(tmp_path):
